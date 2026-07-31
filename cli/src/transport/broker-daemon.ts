@@ -10,14 +10,16 @@
 import { appendFileSync, readFileSync, unlinkSync } from 'node:fs';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
-  BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS, PLUGIN_WAIT_MS,
+  BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS, LOOPBACK_HOST, PLUGIN_WAIT_MS,
   PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
   type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type ReplyErr, type ReplyOk, type RequestMsg,
   type WireMsg,
 } from '../../../shared/protocol.ts';
-import { isPidAlive, readAdvertisement, selfBuildMtime, writeAdvertisement } from './broker-discovery.ts';
 import {
-  ChunkAssembler, deleteConnectionChunk, getConnectionChunks, isChunkMsg, isEventMsg, isReplyMsg, isRequestMsg,
+  cleanupOrphanedAdvertisementTempFiles, isPidAlive, readAdvertisement, selfBuildMtime, writeAdvertisement,
+} from './broker-discovery.ts';
+import {
+  ChunkAssembler, deleteConnectionChunk, envMs, getConnectionChunks, isChunkMsg, isEventMsg, isReplyMsg, isRequestMsg,
   parseWireMsg, rawToString, sendWireMsg, sweepAbandonedChunks, type ChunkBuffers,
 } from './protocol-helpers.ts';
 import { PluginRegistry, type PluginEntry } from './plugin-registry.ts';
@@ -44,14 +46,10 @@ import type { EditInput, EditSource } from '../../../shared/edit-feed.ts';
 
 const LOG_FILE = '/tmp/figma-agent-broker.log';
 
-/** Read a positive-integer env override, else fall back. Lets manual acceptance
- *  shrink the idle-shutdown / heartbeat / plugin-wait knobs to seconds. */
-function envMs(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
+// envMs (protocol-helpers.ts) lets manual acceptance shrink the idle-shutdown /
+// heartbeat / plugin-wait knobs to seconds — shared with broker-discovery.ts so
+// `isAdvertisementLive`'s staleness slack shrinks in lockstep with HEARTBEAT_MS
+// below, rather than being a second hardcoded copy of the same cadence.
 const IDLE_SHUTDOWN_MS = envMs('FIGMA_AGENT_IDLE_SHUTDOWN_MS', BROKER_IDLE_SHUTDOWN_MS);
 const HEARTBEAT_MS = envMs('FIGMA_AGENT_HEARTBEAT_MS', HEARTBEAT_INTERVAL_MS);
 const PLUGIN_WAIT_TIMEOUT_MS = envMs('FIGMA_AGENT_PLUGIN_WAIT_MS', PLUGIN_WAIT_MS);
@@ -331,7 +329,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   let port = 0;
   for (const p of ports) {
     if (wss) break;
-    const bound = await tryBind(p, '127.0.0.1');
+    const bound = await tryBind(p, LOOPBACK_HOST);
     if (bound) {
       wss = bound;
       // `.address()` gives back the REAL bound port even for an ephemeral (0) request —
@@ -361,8 +359,23 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     bindIndex, knownProjectDirs: new Set(usableDirs),
     jobs: new JobTable(), queues: new Map(), pendingChunks: new Map(),
   };
+  // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
+  // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
+  // BEFORE writing our own — startup only, not the heartbeat tick, since this lists
+  // the directory.
+  const orphanedTempFiles = cleanupOrphanedAdvertisementTempFiles(advertisePath);
+  if (orphanedTempFiles > 0) log(`swept ${orphanedTempFiles} orphaned advertisement temp file(s)`);
   writeAdvertisement(port, startedAt, advertisePath);
-  log(`broker listening on 127.0.0.1:${port}${wss6 ? ' + [::1]:' + port : ''} (${bindIndex.size} project binding(s) loaded)`);
+  // Self-heal guard (heartbeat self-heal, issue #5): true while this process is the
+  // rightful owner of `advertisePath`. The refresh interval below re-advertises if the
+  // file vanishes out from under a still-alive broker (disk cleaner, another tool's
+  // stale-file sweep, accidental `rm`) — but ONLY while this flag is true. `shutdown()`
+  // flips it false BEFORE unlinking, so a broker that has decided to exit can never have
+  // a later tick of its own refresh interval resurrect the file it just deliberately
+  // removed. Scoped to this daemon run, not derived from the filesystem — the
+  // filesystem is exactly the state a resurrection would be repairing.
+  let ownsAdvertisement = true;
+  log(`broker listening on ${LOOPBACK_HOST}:${port}${wss6 ? ' + [::1]:' + port : ''} (${bindIndex.size} project binding(s) loaded)`);
 
   // Error log writer (backlog 4.6): resolved once, one line per ReplyErr the broker relays.
   const errorsPath = errorLogPath();
@@ -437,6 +450,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
+    // Drop ownership BEFORE unlinking — a refresh-interval tick racing this shutdown
+    // (the `exit` stub in tests throws rather than truly halting the process, so later
+    // ticks are reachable) must see `ownsAdvertisement === false` and skip re-writing
+    // the file this call is about to deliberately remove.
+    ownsAdvertisement = false;
     try {
       // Only remove the advertisement if it is still ours (a newer broker may own it).
       const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as BrokerAdvertisement;
@@ -1312,12 +1330,19 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     }
   }, Math.min(30_000, Math.max(1_000, Math.floor(WATCHDOG_TIMEOUT_MS / 4))));
 
-  // Advertisement refresh (fixed 30s); yield if a different live broker took over.
+  // Advertisement refresh (30s cadence, env-overridable like the other intervals above —
+  // FIGMA_AGENT_HEARTBEAT_MS shrinks this too, since tests/broker-daemon-harness.test.ts
+  // needs to observe a self-heal cycle without a real 30s wait); yield if a different
+  // live broker took over. Self-heal (issue #5): re-advertising here is unconditional on
+  // the file's presence — if it vanished while we're still alive, this write brings it
+  // back — but `ownsAdvertisement` (false once `shutdown()` has run) stops a cleanly-
+  // exited broker's own interval from resurrecting the file it just removed.
   setInterval(() => {
+    if (!ownsAdvertisement) return;
     const ad = readAdvertisement(advertisePath);
-    if (ad && ad.pid !== process.pid && isPidAlive(ad.pid)) shutdown(0, `replaced by broker pid ${ad.pid}`);
+    if (ad && ad.pid !== process.pid && isPidAlive(ad.pid)) { shutdown(0, `replaced by broker pid ${ad.pid}`); return; }
     writeAdvertisement(port, startedAt, advertisePath);
-  }, HEARTBEAT_INTERVAL_MS);
+  }, HEARTBEAT_MS);
 
   // Idle shutdown: no plugin AND no CLI clients for the idle window (env-overridable).
   setInterval(() => {

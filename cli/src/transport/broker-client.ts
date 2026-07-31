@@ -10,12 +10,13 @@ import {
   PROTOCOL_VERSION,
   makeRequestFrame,
   makeRequestId,
+  type BrokerAdvertisement,
   type CommandName,
   type FileContext,
   type JobInfo,
   type WireError,
 } from '../../../shared/protocol.ts';
-import { ensureBroker } from './broker-discovery.ts';
+import { ensureBroker, isPidAlive, loopbackWsUrl } from './broker-discovery.ts';
 import { MUTATING_COMMANDS } from '../../../shared/mutating-commands.ts';
 import {
   ChunkAssembler,
@@ -29,6 +30,15 @@ import {
 } from './protocol-helpers.ts';
 
 const CONNECT_TIMEOUT_MS = 4_000;
+// A failed connect that isn't confirmed-dead (see isConfirmedDeadAfterFailedConnect)
+// is treated as "broker was mid-accept or busy on another handshake" — retrying
+// IMMEDIATELY re-attempts inside the exact window that caused the first failure.
+// This delay is what actually gives that busy state room to clear.
+const AMBIGUOUS_CONNECT_RETRY_DELAY_MS = 200;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 let requestCounter = 0;
 
 let expectedFile: string | undefined;
@@ -73,7 +83,7 @@ export function refusesReadOnlyAssertion(wireCmd: CommandName, readOnly: boolean
 
 function connectWs(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const ws = new WebSocket(loopbackWsUrl(port));
     const timer = setTimeout(() => {
       ws.terminate();
       reject(new CliError('E_NO_BROKER', `broker connect timed out on port ${port}`));
@@ -182,7 +192,7 @@ export function exchange(
  */
 export function fetchBrokerHello(port: number): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const ws = new WebSocket(loopbackWsUrl(port));
     const timer = setTimeout(() => {
       ws.terminate();
       reject(new CliError('E_NO_BROKER', `broker hello timed out on port ${port}`));
@@ -199,6 +209,47 @@ export function fetchBrokerHello(port: number): Promise<Record<string, unknown>>
     ws.once('error', (err) => done(() => reject(new CliError('E_NO_BROKER', `broker hello failed: ${err.message}`))));
     ws.once('close', () => { clearTimeout(timer); reject(new CliError('E_NO_BROKER', 'broker closed before hello')); });
   });
+}
+
+/**
+ * Whether a WS connect failure against an advertised broker justifies deleting its
+ * advertisement file and spawning a replacement. A single failed connect is not
+ * proof of death — it can also mean the broker was mid-accept, busy on another
+ * handshake, or hit a transient loopback hiccup. Deleting the file and spawning a
+ * SECOND broker while the first is still alive is a split-brain: two live daemons,
+ * only the newer one advertised, the older one silently orphaned while still
+ * holding the Figma plugin's live WS connection. `isPidAliveFn` is the cheap,
+ * network-independent signal used to gate that: a dead pid can never have caused
+ * the failure by being "merely busy", so deletion is safe; a live pid means the
+ * failure is ambiguous, so `runCommand` retries once before giving up rather than
+ * tearing the broker down.
+ */
+export function isConfirmedDeadAfterFailedConnect(
+  ad: BrokerAdvertisement,
+  isPidAliveFn: typeof isPidAlive = isPidAlive,
+): boolean {
+  return !isPidAliveFn(ad.pid);
+}
+
+/**
+ * After an ambiguous (not confirmed-dead) connect failure, wait a short backoff
+ * then retry the connect once. Stage-4 review round (minor) — the retry used to
+ * fire immediately, re-attempting inside the exact "broker mid-accept / busy on
+ * another handshake" window that caused the first failure; the backoff is what
+ * actually gives that window room to clear. Exported with injectable `connect`/
+ * `sleep` (defaulting to the real ones) so the backoff-then-retry ordering is
+ * unit-testable without a real broker or the real shared advertisement file.
+ */
+export async function retryAmbiguousConnect(
+  port: number,
+  deps: { connect: (port: number) => Promise<WebSocket>; sleep: (ms: number) => Promise<void>; delayMs?: number } = {
+    connect: connectWs,
+    sleep,
+    delayMs: AMBIGUOUS_CONNECT_RETRY_DELAY_MS,
+  },
+): Promise<WebSocket> {
+  await deps.sleep(deps.delayMs ?? AMBIGUOUS_CONNECT_RETRY_DELAY_MS);
+  return deps.connect(port);
 }
 
 /**
@@ -235,13 +286,27 @@ export async function runCommand(
   try {
     ws = await connectWs(ad.port);
   } catch {
-    try {
-      unlinkSync(BROKER_FILE); // advertisement lied — drop it and respawn
-    } catch {
-      /* already gone */
+    if (!isConfirmedDeadAfterFailedConnect(ad)) {
+      // Probe before kill: the pid is still alive, so the first failure is
+      // ambiguous rather than confirmed-dead — give the handshake one more try
+      // (after a short backoff) before concluding the advertisement lied.
+      try {
+        ws = await retryAmbiguousConnect(ad.port);
+      } catch {
+        throw new CliError(
+          'E_NO_BROKER',
+          `broker (pid ${ad.pid}) is alive but not answering on port ${ad.port} — see /tmp/figma-agent-broker.log`,
+        );
+      }
+    } else {
+      try {
+        unlinkSync(BROKER_FILE); // pid confirmed dead — advertisement lied, drop it and respawn
+      } catch {
+        /* already gone */
+      }
+      ad = await ensureBroker();
+      ws = await connectWs(ad.port);
     }
-    ad = await ensureBroker();
-    ws = await connectWs(ad.port);
   }
 
   const timeoutMs = opts?.timeoutMs ?? COMMAND_TIMEOUTS[wireCmd] ?? DEFAULT_TIMEOUT_MS;

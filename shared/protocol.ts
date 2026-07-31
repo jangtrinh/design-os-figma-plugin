@@ -12,6 +12,17 @@ export const PORT_RANGE_END = 9419;
 // Discovery advertisement file (refreshed every 30s by the broker).
 export const BROKER_FILE = '/tmp/figma-agent-broker.json';
 
+// The ONE literal every IPv4-loopback bind/connect/probe in cli/src/transport must
+// use — never the bare string 'localhost'. On a dual-stack macOS box, Node resolves
+// 'localhost' to the IPv6 loopback first; if a bind call and a connect/probe call
+// resolve it independently they can silently land on different address families
+// (bind succeeds on ::1, connect targets 127.0.0.1, or vice versa), and every
+// "is the broker alive" check built on that connect then reports a healthy broker as
+// dead. A fork of a sibling project (southleft/figma-console-mcp, v1.38.2) shipped
+// exactly this bug. Importing this constant everywhere host strings are needed keeps
+// bind and probe provably in agreement — see tests/broker-loopback-host.test.ts.
+export const LOOPBACK_HOST = '127.0.0.1';
+
 export interface BrokerAdvertisement {
   port: number;
   pid: number;

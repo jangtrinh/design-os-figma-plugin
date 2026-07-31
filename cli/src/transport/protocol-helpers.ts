@@ -33,6 +33,20 @@ export class CliError extends Error {
   }
 }
 
+/**
+ * Read a positive-integer env override, else fall back. Shared by broker-daemon.ts
+ * (idle-shutdown/heartbeat/plugin-wait knobs) and broker-discovery.ts
+ * (`isAdvertisementLive`'s staleness slack) so both sides of the same heartbeat
+ * contract shrink together under a test override — one function, not two
+ * independently-hardcoded copies that could silently drift apart.
+ */
+export function envMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 /** ws 'message' payloads arrive as Buffer | ArrayBuffer | Buffer[] — normalize to utf8 text. */
 export function rawToString(raw: unknown): string {
   if (typeof raw === 'string') return raw;
