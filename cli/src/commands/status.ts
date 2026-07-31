@@ -32,6 +32,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
     pid: ad.pid,
     uptimeMs: (hello.uptimeMs as number | undefined) ?? null,
     protocolVersion: (hello.protocolV as number | undefined) ?? PROTOCOL_VERSION,
+    // Sender-verification counter (backlog 2.10 / issue #15) — mirrors BROKER_HELLO's
+    // own byte-identical-when-zero contract: present only once a cross-instance reply
+    // has actually been discarded, so the common (zero) case stays unchanged here too.
+    ...(typeof hello.senderMismatchCount === 'number' && { senderMismatchCount: hello.senderMismatchCount }),
   };
   const all = Array.isArray(hello.plugins) ? (hello.plugins as PluginStatusEntryWithJob[]) : [];
 
