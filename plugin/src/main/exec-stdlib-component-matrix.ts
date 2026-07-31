@@ -1,6 +1,6 @@
 // Pure helpers behind `ui.componentSet(...)` (exec-stdlib-component-set.ts) — split out
-// so that file stays under the repo's 200-line cap (the same split-by-shape convention
-// as exec-stdlib-instance.ts). No `figma` global here, so these are unit-testable without
+// so that file stays focused on one shape (the same split-by-shape convention as
+// exec-stdlib-instance.ts). No `figma` global here, so these are unit-testable without
 // a live plugin or a mock — the cartesian-order determinism and the `=`/`,` rejection
 // are asserted directly against these functions.
 import { withCode } from './executor-styles';

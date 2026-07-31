@@ -113,7 +113,18 @@ async function componentSet(opts: ComponentSetOpts): Promise<ComponentSetResult>
       ...(build.warnings.length ? { warnings: build.warnings } : {}),
     };
   } catch (err) {
-    build.cleanup();
+    // The ORIGINAL error is what the caller must see, always — cleanup() runs on a
+    // best-effort basis over live Figma state (removing a clone, restoring a name),
+    // and can itself throw (a locked node, a clone something else already removed).
+    // A throwing cleanup must never replace the failure that triggered it (stage-4
+    // follow-up, issue #11 item 1); it is appended for visibility, never swapped in.
+    try {
+      build.cleanup();
+    } catch (cleanupErr) {
+      if (err && typeof err === 'object') {
+        (err as { cleanupError?: unknown }).cleanupError = cleanupErr;
+      }
+    }
     throw err;
   }
 }

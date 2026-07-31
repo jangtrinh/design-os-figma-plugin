@@ -32,14 +32,28 @@ return await ui.componentSet({
 });
 ```
 
-- **Run this behind `--undo-group`.** `ui.componentSet` cleans up its OWN mutations
-  (restores a renamed base, removes the clones it created) if one of ITS OWN later
-  steps throws — that is a narrow, self-scoped safety net, not a substitute for the
-  real undo bracket. If a DIFFERENT step in the same script fails after
-  `ui.componentSet` already returned successfully, `--undo-group` is what rolls the
-  whole script back; without it, a successfully-built set stays on the canvas even
-  if a later line in the same script throws. Always wrap a script that calls this
-  in `exec-js --undo-group` unless you specifically want partial results to survive.
+- **Run this behind `--undo-group`.** `ui.componentSet` cleans up its OWN mutations —
+  and ONLY those — if one of ITS OWN later steps throws (a size mismatch, a name that
+  didn't parse back to the intended axes, `combineAsVariants` itself rejecting the
+  call). Say precisely what that means, because "cleans up" understates it:
+  - **IS restored**: the base's original name (mode 1), and each combined component's
+    original name (mode 2) — whatever `buildModeA`/`buildModeB` renamed gets renamed
+    back. A clone `buildModeA` created for the matrix is removed.
+  - **IS NOT restored**: if `combineAsVariants` already ran before the failure (i.e. the
+    throw came from the post-combine verification, not from `combineAsVariants` itself),
+    the COMPONENT_SET it created stays on the canvas — cleanup renames/removes the
+    build's own nodes, it does not un-combine Figma's structure or delete the set.
+    Concretely: a verify-mismatch after a successful `combineAsVariants` leaves the
+    combined set standing. In mode 1, the base (renamed back to its original name)
+    remains as the set's only child once the clone(s) built for the matrix are removed.
+    In mode 2, every original component stays parented inside the set — each renamed
+    back to its own original name, but the set itself and its full membership persist.
+  - This is a narrow, self-scoped safety net for build's OWN pre-combine mutations, not
+    a substitute for the real undo bracket. If a DIFFERENT step in the same script fails
+    (including this leftover COMPONENT_SET case above), `--undo-group` is what rolls the
+    whole script back; without it, a successfully-built set — or the orphaned one left
+    by a verify-mismatch — stays on the canvas. Always wrap a script that calls this in
+    `exec-js --undo-group` unless you specifically want partial results to survive.
 - **Exactly one of `base`+`axes` or `components`** — both or neither throws, naming the
   two valid shapes.
 - **Axis and value names must not contain `=` or `,`** — Figma parses variant properties

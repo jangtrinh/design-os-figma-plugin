@@ -3,7 +3,7 @@
 // throw, bad-input throws, cartesian-order determinism, `=`/`,` rejection, and the
 // over-cap rejection (plan §8 Definition of Done).
 import { describe, it, expect } from 'vitest';
-import { installMockFigma, setMockComponents, type FakeNode } from './helpers/mock-figma.ts';
+import { installMockFigma, setMockComponents, FakeNode } from './helpers/mock-figma.ts';
 import { createExecStdlibComponentSet } from '../plugin/src/main/exec-stdlib-component-set.ts';
 import {
   cartesianProduct, comboName, assertCleanToken, parseComboName, sameAxisMap,
@@ -146,6 +146,33 @@ describe('componentSet — mode 1 (base + axes)', () => {
     expect(frame.children).toEqual([base]);
   });
 
+  it('surfaces the ORIGINAL error even when cleanup() itself throws — a throwing cleanup must never mask the failure that triggered it (issue #11 item 1)', async () => {
+    const figma = installMockFigma();
+    const base = makeComponent('Base');
+    setMockComponents([base]);
+    const originalCombine = figma.combineAsVariants.bind(figma);
+    // Force the same E_EVAL verify-mismatch as the test above...
+    figma.combineAsVariants = ((nodes: FakeNode[], parent: FakeNode) => {
+      const set = originalCombine(nodes, parent);
+      set.children = set.children.slice(0, 1);
+      return set;
+    }) as typeof figma.combineAsVariants;
+
+    // ...but ALSO make the helper's own cleanup() throw (a real Figma failure mode:
+    // a locked node, a clone already removed by something else, etc). The original
+    // E_EVAL must still be what the caller sees — never the cleanup failure.
+    const originalRemove = FakeNode.prototype.remove;
+    FakeNode.prototype.remove = function throwingRemove(): never {
+      throw new Error('cleanup boom: node cannot be removed');
+    };
+    try {
+      await expect(createExecStdlibComponentSet().componentSet({ base: base.id, axes: { State: ['default', 'hover'] } }))
+        .rejects.toMatchObject({ code: 'E_EVAL', message: expect.stringContaining('componentSet combined') });
+    } finally {
+      FakeNode.prototype.remove = originalRemove;
+    }
+  });
+
   it('rejects a parent that cannot sensibly hold a component set (a COMPONENT, not PAGE/FRAME/SECTION/GROUP)', async () => {
     installMockFigma();
     const base = makeComponent('Base');
@@ -199,6 +226,23 @@ describe('componentSet — mode 2 (combine existing components)', () => {
     setMockComponents([a]);
     await expect(createExecStdlibComponentSet().componentSet({ components: [a.id], variantProps: [] }))
       .rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
+  });
+
+  it('validates ALL inputs before renaming ANY of them — a later validation failure must not leave an earlier component renamed with no closure (issue #11 item 3)', async () => {
+    installMockFigma();
+    const a = makeComponent('CompA');
+    const b = makeComponent('CompB');
+    setMockComponents([a, b]);
+
+    // component[0]'s variantProps are valid; component[1]'s carry a banned token.
+    // fail-before-mutate means neither rename happens — not "the first one, then throw".
+    await expect(createExecStdlibComponentSet().componentSet({
+      components: [a.id, b.id],
+      variantProps: [{ State: 'default' }, { 'Sta=te': 'hover' }],
+    })).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
+
+    expect(a.name).toBe('CompA');
+    expect(b.name).toBe('CompB');
   });
 
   it('restores each component\'s original name when a later step throws — mode 2\'s own rollback', async () => {
