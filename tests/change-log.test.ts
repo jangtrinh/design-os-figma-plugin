@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CHANGE_LOG_FILENAME, UNBOUND_STAGING_DIRNAME, appendChangeFrames, changeLogDir,
-  changeLogLineCount, changeLogPath, changeLogPathFor, migratedMarkerPath, migrateStagedChanges,
-  unboundStagingPath,
+  changeLogLineCount, changeLogPath, changeLogPathFor, migrateLegacyUnboundChanges,
+  migratedMarkerPath, migrateStagedChanges, unboundStagingPath, unboundStagingRoot,
 } from '../cli/src/transport/change-log.ts';
 import { CHANGE_LOG_SCHEMA_VERSION, type ComponentChange } from '../shared/figma-changes.ts';
 
@@ -19,18 +19,25 @@ const change = (over: Partial<ComponentChange>): ComponentChange => ({
 });
 
 let dir: string;
+let unboundDir: string;
 let path: string;
 const prevEnv = process.env['FIGMA_AGENT_CHANGES_DIR'];
+const prevUnboundEnv = process.env['FIGMA_AGENT_UNBOUND_DIR'];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'fa-changes-'));
+  unboundDir = mkdtempSync(join(tmpdir(), 'fa-unbound-'));
   process.env['FIGMA_AGENT_CHANGES_DIR'] = dir;
+  process.env['FIGMA_AGENT_UNBOUND_DIR'] = unboundDir;
   path = changeLogPath();
 });
 afterEach(() => {
   if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
   else process.env['FIGMA_AGENT_CHANGES_DIR'] = prevEnv;
+  if (prevUnboundEnv === undefined) delete process.env['FIGMA_AGENT_UNBOUND_DIR'];
+  else process.env['FIGMA_AGENT_UNBOUND_DIR'] = prevUnboundEnv;
   rmSync(dir, { recursive: true, force: true });
+  rmSync(unboundDir, { recursive: true, force: true });
 });
 
 const readLines = (): string[] => readFileSync(path, 'utf8').split('\n').filter((l) => l.trim().length > 0);
@@ -107,9 +114,21 @@ describe('changeLogPathFor — rooted at an explicit project, not the broker cwd
   });
 });
 
+describe('unboundStagingRoot — issue #7 (backlog 5.6): cwd-independent, never changeLogDir()', () => {
+  it('honours FIGMA_AGENT_UNBOUND_DIR, independent of FIGMA_AGENT_CHANGES_DIR', () => {
+    expect(unboundStagingRoot()).toBe(unboundDir);
+    expect(unboundStagingRoot()).not.toBe(changeLogDir());
+  });
+  it('defaults to /tmp/figma-agent-unbound when the env is unset', () => {
+    delete process.env['FIGMA_AGENT_UNBOUND_DIR'];
+    expect(unboundStagingRoot()).toBe('/tmp/figma-agent-unbound');
+  });
+});
+
 describe('unboundStagingPath / migrateStagedChanges — registry-integrity fix round finding 1', () => {
-  it('stages beside the default change log, never inside a project design/', () => {
-    expect(unboundStagingPath('vsf-pcp')).toBe(join(dir, UNBOUND_STAGING_DIRNAME, 'vsf-pcp.jsonl'));
+  it('stages under unboundStagingRoot(), never inside a project design/, never under changeLogDir()', () => {
+    expect(unboundStagingPath('vsf-pcp')).toBe(join(unboundDir, UNBOUND_STAGING_DIRNAME, 'vsf-pcp.jsonl'));
+    expect(unboundStagingPath('vsf-pcp').startsWith(dir)).toBe(false);
   });
 
   it('migrating an absent staging file is a no-op (0 migrated)', () => {
@@ -204,6 +223,34 @@ describe('unboundStagingPath / migrateStagedChanges — registry-integrity fix r
       expect(existsSync(migratedMarkerPath(staging))).toBe(false); // no artifact left behind
       expect(readFileSync(bound, 'utf8').split('\n').filter(Boolean)).toHaveLength(2);
     });
+  });
+});
+
+describe('migrateLegacyUnboundChanges — issue #7 (backlog 5.6) one-time startup migration', () => {
+  it('migrates a file staged at the OLD (changeLogDir()-rooted) location to the new root', () => {
+    const legacyFile = join(dir, UNBOUND_STAGING_DIRNAME, 'vsf-pcp.jsonl');
+    mkdirSync(join(dir, UNBOUND_STAGING_DIRNAME), { recursive: true });
+    writeFileSync(legacyFile, `${JSON.stringify({ nodeId: 'a' })}\n`, 'utf8');
+
+    const migratedFiles = migrateLegacyUnboundChanges();
+    expect(migratedFiles).toBe(1);
+    expect(existsSync(legacyFile)).toBe(false); // cleaned up at the old location
+    const newPath = unboundStagingPath('vsf-pcp');
+    expect(existsSync(newPath)).toBe(true);
+    expect(readFileSync(newPath, 'utf8').trim()).toBe(JSON.stringify({ nodeId: 'a' }));
+  });
+
+  it('is a no-op (0 migrated) when nothing was ever staged at the old location', () => {
+    expect(migrateLegacyUnboundChanges()).toBe(0);
+  });
+
+  it('migrates every staged file, not just the first', () => {
+    mkdirSync(join(dir, UNBOUND_STAGING_DIRNAME), { recursive: true });
+    writeFileSync(join(dir, UNBOUND_STAGING_DIRNAME, 'a.jsonl'), `${JSON.stringify({ nodeId: '1' })}\n`, 'utf8');
+    writeFileSync(join(dir, UNBOUND_STAGING_DIRNAME, 'b.jsonl'), `${JSON.stringify({ nodeId: '2' })}\n`, 'utf8');
+    expect(migrateLegacyUnboundChanges()).toBe(2);
+    expect(existsSync(unboundStagingPath('a'))).toBe(true);
+    expect(existsSync(unboundStagingPath('b'))).toBe(true);
   });
 });
 

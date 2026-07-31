@@ -7,7 +7,7 @@
 // path is resolved from its spawn cwd (or an env override). Each frame carries
 // `fileKey`, so a future multi-project reconcile can still partition one shared log.
 import {
-  appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync,
+  appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync,
   statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -61,20 +61,62 @@ export function changeLogPathFor(projectDir: string): string {
 // resolves this file's identity.
 export const UNBOUND_STAGING_DIRNAME = 'unbound';
 
-/** `<changeLogDir()>/unbound/<slug>.jsonl` — beside the broker's own default change log,
- *  never a project's design/. Keyed by the SAME name-slug `figma-agent bind --file <name>`
- *  addresses (not fileKey — a file connecting mid-way through its unbound life must not
- *  split its staged history across two paths).
+/**
+ * Root for ALL unbound staging (this feed, edit-feed-log.ts's, and error-log.ts's) —
+ * `FIGMA_AGENT_UNBOUND_DIR` override, else a fixed `/tmp/figma-agent-unbound` default.
+ * Same convention as `project-bind.ts`'s `bindCacheFile()`: cwd-INDEPENDENT on purpose.
  *
- *  Known limitation, DEFERRED not fixed here (backlog 5.6): this root is `changeLogDir()`
- *  — the broker's own spawn cwd — so a restart with a different cwd orphans whatever was
- *  staged under the old one. Shared by BOTH feed types (this one and edit-feed-log.ts's
- *  `unboundEditStagingPath`, backlog 5.7's fold-in) since both resolve through the same
- *  `changeLogDir()`. Closing it means moving this root to a cwd-independent location — a
- *  change to this already-shipped, review-verified mechanism (RI-P1 fix#1), not a rider on
- *  whichever wave happens to touch this file next. */
+ * Issue #7 (backlog 5.6) fix: this used to be `changeLogDir()` — the broker's own spawn
+ * cwd — so a restart with a different cwd orphaned whatever was staged under the old
+ * one. That was DEFERRED at RI-P1 fix#1 specifically because closing it meant moving an
+ * already-shipped, review-verified mechanism's root — "its own small spec/review, not a
+ * rider on whichever wave happens to touch this file next" (that review is issue #7).
+ * A broker upgrading from before this fix migrates whatever it finds at the OLD root
+ * once at startup (`migrateLegacyUnboundChanges` below, `migrateLegacyUnboundEdits` in
+ * edit-feed-log.ts) — orphaning that data on the very change meant to stop orphaning it
+ * would betray this fix's own point.
+ */
+export function unboundStagingRoot(): string {
+  const env = process.env['FIGMA_AGENT_UNBOUND_DIR'];
+  if (env !== undefined && env.length > 0) return resolve(env);
+  return '/tmp/figma-agent-unbound';
+}
+
+/** `<unboundStagingRoot()>/unbound/<slug>.jsonl` — beside the broker's own restart-
+ *  survival state, never a project's design/. Keyed by the SAME name-slug
+ *  `figma-agent bind --file <name>` addresses (not fileKey — a file connecting mid-way
+ *  through its unbound life must not split its staged history across two paths). */
 export function unboundStagingPath(slug: string): string {
-  return join(changeLogDir(), UNBOUND_STAGING_DIRNAME, `${slug}.jsonl`);
+  return join(unboundStagingRoot(), UNBOUND_STAGING_DIRNAME, `${slug}.jsonl`);
+}
+
+/** The OLD (pre-issue-#7) unbound-staging root — `changeLogDir()`-rooted, broker-cwd-
+ *  relative. Kept ONLY so the one-time startup migration below can find anything a prior
+ *  broker build staged there; nothing ever writes here again. */
+function legacyUnboundStagingDir(): string {
+  return join(changeLogDir(), UNBOUND_STAGING_DIRNAME);
+}
+
+/**
+ * One-time startup migration (issue #7 / backlog 5.6 ruling: migrate, never silently
+ * orphan): copies every `<slug>.jsonl` still sitting at the OLD cwd-relative unbound
+ * root into the NEW cwd-independent one, reusing `migrateStagedChanges` as-is — a
+ * staging→staging move is exactly the same crash-safe "copy then clean up" shape as the
+ * staging→bound move that function already does. Returns the number of FILES migrated
+ * (a file may carry several frames). A fresh install (nothing ever staged at the old
+ * location) costs one `existsSync` check.
+ */
+export function migrateLegacyUnboundChanges(): number {
+  const oldDir = legacyUnboundStagingDir();
+  if (!existsSync(oldDir)) return 0;
+  let migratedFiles = 0;
+  for (const entry of readdirSync(oldDir)) {
+    if (!entry.endsWith('.jsonl')) continue;
+    const slug = entry.slice(0, -'.jsonl'.length);
+    const moved = migrateStagedChanges(join(oldDir, entry), unboundStagingPath(slug));
+    if (moved > 0) migratedFiles++;
+  }
+  return migratedFiles;
 }
 
 /** `<staging>.migrated.json` — records that a migrate's append (step b) already landed,

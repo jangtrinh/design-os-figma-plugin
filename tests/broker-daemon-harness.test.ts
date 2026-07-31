@@ -20,7 +20,7 @@
 // fresh via `vi.resetModules()` + dynamic `import()` AFTER setting env vars, guaranteeing
 // the constants observe this test's own values regardless of import order across the suite.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
@@ -32,6 +32,7 @@ type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts')
 const WATCHDOG_MS_KEY = 'FIGMA_AGENT_WATCHDOG_MS';
 const CHANGES_DIR_KEY = 'FIGMA_AGENT_CHANGES_DIR';
 const BINDS_FILE_KEY = 'FIGMA_AGENT_BINDS_FILE';
+const UNBOUND_DIR_KEY = 'FIGMA_AGENT_UNBOUND_DIR';
 
 let scratchDir: string;
 let advertisePath: string;
@@ -42,6 +43,11 @@ let sockets: WebSocket[];
 async function loadBrokerDaemon(env: Record<string, string> = {}): Promise<BrokerDaemonModule> {
   process.env[CHANGES_DIR_KEY] = scratchDir;
   process.env[BINDS_FILE_KEY] = join(scratchDir, 'binds.json');
+  // Issue #7 (backlog 5.6): unbound staging now roots at its OWN cwd-independent
+  // location, never `scratchDir`/`FIGMA_AGENT_CHANGES_DIR` — a distinct scratch subdir
+  // proves that separation, the same way this harness already isolates the real
+  // /tmp/figma-agent-broker.json and 9410-9419 port range.
+  process.env[UNBOUND_DIR_KEY] = join(scratchDir, 'unbound-root');
   for (const [k, v] of Object.entries(env)) process.env[k] = v;
   vi.resetModules();
   return import('../cli/src/transport/broker-daemon.ts');
@@ -148,6 +154,16 @@ interface EditInputLike {
   actor: 'owner' | 'agent' | 'ambiguous';
 }
 
+/** Sends a raw ReplyErr frame as the plugin — a fabricated `id` never matching a real
+ *  pending/dispatched job is safe: `isReplyFromDispatchedInstance` returns true for an
+ *  unknown job (job-table.ts:60), and `routeFromPlugin`'s pending/job lookups are simple
+ *  no-ops on a miss. Only the error-log append (issue #7's own routing) is under test. */
+function sendReplyErr(
+  ws: WebSocket, id: string, error: { code: string; message: string }, fileContext?: { fileName: string; fileKey?: string | null },
+): void {
+  ws.send(JSON.stringify({ id, ok: false, error, ...(fileContext ? { fileContext } : {}) }));
+}
+
 /** Sends an EDIT_FEED batch as the plugin — no reply is expected (best-effort append). */
 function sendEditFeed(
   ws: WebSocket, edits: readonly EditInputLike[], meta: { fileKey: string | null; fileName: string; source?: 'live' | 'gapfill' },
@@ -167,11 +183,11 @@ function sendEditFeedWithoutFileName(ws: WebSocket, edits: readonly EditInputLik
 
 async function bindProject(
   ws: WebSocket, fileName: string, projectDir: string, reqId: string,
-): Promise<{ migratedCount: number; migratedEditCount: number; fileKey: string | null }> {
+): Promise<{ migratedCount: number; migratedEditCount: number; migratedErrorCount: number; fileKey: string | null }> {
   ws.send(JSON.stringify(makeRequestFrame(reqId, 'PROJECT_BIND', { fileName, projectDir })));
   const reply = await nextFrame<ReplyOk | ReplyErr>(ws, (m) => (m as ReplyOk | ReplyErr).id === reqId);
   if (!reply.ok) throw new Error(`bind failed: ${JSON.stringify((reply as ReplyErr).error)}`);
-  return reply.result as { migratedCount: number; migratedEditCount: number; fileKey: string | null };
+  return reply.result as { migratedCount: number; migratedEditCount: number; migratedErrorCount: number; fileKey: string | null };
 }
 
 beforeEach(() => {
@@ -314,7 +330,9 @@ describe('daemon harness — EDIT_FEED routes through the binding index, never t
     await helloPlugin(plugin, 'plugin-edit-1', 'Platform - Design System');
 
     const slug = 'platform-design-system'; // safeSlug('Platform - Design System')
-    const stagingPath = join(scratchDir, 'changes', 'unbound', `${slug}.jsonl`);
+    // Issue #7 (backlog 5.6): staging now roots at the cwd-independent unbound-root
+    // scratch dir, never `scratchDir`/`FIGMA_AGENT_CHANGES_DIR` itself.
+    const stagingPath = join(scratchDir, 'unbound-root', 'changes', 'unbound', `${slug}.jsonl`);
     // The broker's own cwd-derived default — a Platform DS edit landing HERE (VSF-PCP's
     // tree, in the real live-traced incident) is the exact misattribution 5.7 fixes.
     const cwdDefaultPath = join(scratchDir, 'changes', `${slug}.jsonl`);
@@ -431,6 +449,62 @@ describe('daemon harness — EDIT_FEED with no data.fileName falls back to the r
     } finally {
       rmSync(boundProjectDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('daemon harness — the error log routes through the binding index, never a once-cached default (issue #7, backlog 5.9)', () => {
+  it('an unbound ReplyErr stages; PROJECT_BIND migrates it into the bound project\'s OWN error log; a later error lands there directly', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-err-1', 'Platform - Design System');
+
+    const slug = 'platform-design-system';
+    const stagingPath = join(scratchDir, 'unbound-root', 'errors', 'unbound', `${slug}.jsonl`);
+
+    // Unbound: sent before any bind exists for this identity.
+    sendReplyErr(plugin, 'req-err-1', { code: 'E_EVAL', message: 'boom 1' });
+    await waitFor(() => existsSync(stagingPath));
+    expect(readFileSync(stagingPath, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(JSON.parse(readFileSync(stagingPath, 'utf8').trim())).toMatchObject({ code: 'E_EVAL', message: 'boom 1' });
+
+    const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-bound-project-err-'));
+    try {
+      const cli = await connectSocket(port);
+      const bindResult = await bindProject(cli, 'Platform - Design System', boundProjectDir, 'req-bind-err-1');
+      expect(bindResult.migratedErrorCount).toBe(1);
+
+      const boundErrorPath = join(boundProjectDir, 'design', 'figma-errors.jsonl');
+      expect(existsSync(boundErrorPath)).toBe(true); // migrated into the REAL bound project
+      expect(existsSync(stagingPath)).toBe(false); // staging cleaned up after migration
+
+      // A second, now-bound error — lands DIRECTLY in the bound project, never staged.
+      sendReplyErr(plugin, 'req-err-2', { code: 'E_PLUGIN_ERROR', message: 'boom 2' });
+      await waitFor(() => readFileSync(boundErrorPath, 'utf8').trim().split('\n').length === 2);
+      expect(existsSync(stagingPath)).toBe(false); // never re-created
+    } finally {
+      rmSync(boundProjectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('daemon harness — one-time startup migration of the OLD unbound-staging root (issue #7, backlog 5.6)', () => {
+  it('migrates a file staged before this fix at the cwd-relative location into the new cwd-independent root', async () => {
+    // Simulate a prior broker build's leftover staging, at the OLD location
+    // (`<FIGMA_AGENT_CHANGES_DIR>/unbound/<slug>.jsonl`) — created BEFORE the broker
+    // (and its startup migration) ever runs.
+    const slug = 'legacy-file';
+    const legacyPath = join(scratchDir, 'unbound', `${slug}.jsonl`);
+    mkdirSync(join(scratchDir, 'unbound'), { recursive: true });
+    writeFileSync(legacyPath, `${JSON.stringify({ nodeId: 'a' })}\n`, 'utf8');
+
+    await startTestBroker();
+
+    const newPath = join(scratchDir, 'unbound-root', 'unbound', `${slug}.jsonl`);
+    await waitFor(() => existsSync(newPath));
+    expect(existsSync(legacyPath)).toBe(false); // cleaned up at the old location
+    expect(readFileSync(newPath, 'utf8').trim()).toBe(JSON.stringify({ nodeId: 'a' }));
+    // Breadcrumb written so a future restart never re-scans.
+    expect(existsSync(join(scratchDir, 'unbound-root', '.legacy-migrated'))).toBe(true);
   });
 });
 

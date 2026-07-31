@@ -7,7 +7,8 @@
 // persistent broker-daemon pattern (one long-lived relay process, hot-swappable
 // across CLI rebuilds), adapted from southleft/figma-console-mcp's websocket-server
 // pending-request correlation (347-360) / heartbeat (672-685).
-import { appendFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
   BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS, LOOPBACK_HOST, PLUGIN_WAIT_MS,
@@ -25,9 +26,14 @@ import {
 import { PluginRegistry, type PluginEntry } from './plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage } from './broker-status.ts';
 import { resolveRouteFilter, type RouteFilter } from './route-filter.ts';
-import { appendChangeFrames, changeLogPathFor, migrateStagedChanges, unboundStagingPath } from './change-log.ts';
-import { appendEditFrames, editFeedPathForIdentity, safeSlug, unboundEditStagingPath } from './edit-feed-log.ts';
-import { appendErrorFrame, buildErrorLogFrame, errorLogPath } from './error-log.ts';
+import {
+  appendChangeFrames, changeLogPathFor, migrateLegacyUnboundChanges, migrateStagedChanges,
+  unboundStagingPath, unboundStagingRoot,
+} from './change-log.ts';
+import {
+  appendEditFrames, editFeedPathForIdentity, migrateLegacyUnboundEdits, safeSlug, unboundEditStagingPath,
+} from './edit-feed-log.ts';
+import { appendErrorFrame, buildErrorLogFrame, errorLogPathFor, unboundErrorStagingPath } from './error-log.ts';
 import { readIdleMs } from './figma-sync-config.ts';
 import { spawnReconcileApply } from './figma-sync-apply.ts';
 import {
@@ -353,6 +359,25 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // only the dirs that still look like projects — a stale entry is dropped, never trusted.
   const { index: bindIndex, usableDirs } = loadBindIndex();
   writeBindCache(usableDirs);
+
+  // One-time startup migration (issue #7 / backlog 5.6 ruling: migrate, never silently
+  // orphan) — anything staged under the OLD cwd-relative unbound root, from a broker
+  // that ran before this fix, must not be abandoned by the very change that fixes
+  // cwd-misattribution for good; that would betray this wave's own thesis. Runs BEFORE
+  // the WS server accepts any connection (below), so no live DOC_CHANGE/EDIT_FEED write
+  // can race it. Guarded by a breadcrumb under the NEW root so a broker that already
+  // ran this once doesn't pay a readdir cost on every future restart.
+  const legacyMigratedMarker = join(unboundStagingRoot(), '.legacy-migrated');
+  if (!existsSync(legacyMigratedMarker)) {
+    const migratedLegacyChangeFiles = migrateLegacyUnboundChanges();
+    const migratedLegacyEditFiles = migrateLegacyUnboundEdits();
+    if (migratedLegacyChangeFiles > 0 || migratedLegacyEditFiles > 0) {
+      log(`legacy unbound staging migrated to the new root: ${migratedLegacyChangeFiles} change file(s), ${migratedLegacyEditFiles} edit file(s)`);
+    }
+    mkdirSync(unboundStagingRoot(), { recursive: true });
+    writeFileSync(legacyMigratedMarker, JSON.stringify({ at: Date.now() }), 'utf8');
+  }
+
   const st: BrokerState = {
     registry: new PluginRegistry<WebSocket>(), cliClients: new Set(), pending: new Map(),
     dispatchedTo: new Map(), waiting: [], lastBusyAt: Date.now(),
@@ -383,9 +408,6 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // this daemon run (a closure local, not module-level) so it never leaks across daemon
   // instances started back-to-back within the same test process.
   let senderMismatchCount = 0;
-
-  // Error log writer (backlog 4.6): resolved once, one line per ReplyErr the broker relays.
-  const errorsPath = errorLogPath();
 
   // Live-sync idle-commit (spec 004 P4): the idle window sent to each plugin, and a
   // debounce so a double-click never launches two overlapping `ui figma reconcile
@@ -600,8 +622,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       unboundEditStagingPath(slug),
       editFeedPathForIdentity(projectDir, fileIdentity(fileKey, fileName)),
     );
-    log(`BIND recorded: "${fileName}" → ${projectDir}${fileKey ? ` (fileKey ${fileKey})` : ' (pending fileKey)'}${migratedCount > 0 ? `, migrated ${migratedCount} staged change frame(s)` : ''}${migratedEditCount > 0 ? `, migrated ${migratedEditCount} staged edit frame(s)` : ''}`);
-    reply({ fileName, projectDir, fileKey, pendingKey: fileKey === null, migratedCount, migratedEditCount });
+    // Issue #7 (backlog 5.9) fix — SAME migration, this time for the error log's own
+    // unbound staging, giving it full parity with the other two feeds.
+    const migratedErrorCount = migrateStagedChanges(unboundErrorStagingPath(slug), errorLogPathFor(projectDir));
+    log(`BIND recorded: "${fileName}" → ${projectDir}${fileKey ? ` (fileKey ${fileKey})` : ' (pending fileKey)'}${migratedCount > 0 ? `, migrated ${migratedCount} staged change frame(s)` : ''}${migratedEditCount > 0 ? `, migrated ${migratedEditCount} staged edit frame(s)` : ''}${migratedErrorCount > 0 ? `, migrated ${migratedErrorCount} staged error frame(s)` : ''}`);
+    reply({ fileName, projectDir, fileKey, pendingKey: fileKey === null, migratedCount, migratedEditCount, migratedErrorCount });
   };
 
   const errReplyFrame = (id: string, code: ErrorCode, message: string): string =>
@@ -1130,9 +1155,23 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         routeFromPlugin(msg.id, text, true, ws);
         // Error log writer (backlog 4.6): every FAILED reply the broker relays, logged
         // regardless of whether a CLI is still around to read it live.
+        //
+        // Issue #7 (backlog 5.9) fix: path resolved FRESH per reply, same
+        // fileIdentity→resolveProjectDir shape DOC_CHANGE/EDIT_FEED already use just
+        // below — never the once-cached, binding-blind default this replaces.
         if (!msg.ok) {
-          const fallbackFileName = (st.registry.getByWs(ws)?.scene.fileName as string | undefined) ?? null;
-          appendErrorLog(errorsPath, msg, fallbackFileName);
+          const scene = st.registry.getByWs(ws)?.scene;
+          const fallbackFileName = (scene?.fileName as string | undefined) ?? null;
+          const fileName = msg.fileContext?.fileName ?? fallbackFileName;
+          const fileKey = msg.fileContext?.fileKey ?? ((scene?.fileKey as string | null | undefined) ?? null);
+          const identity = fileIdentity(fileKey, fileName);
+          const bound = resolveProjectDir(identity, st.bindIndex);
+          const errPath = bound
+            ? errorLogPathFor(bound)
+            // Staged by NAME slug specifically — same reasoning as DOC_CHANGE/EDIT_FEED's
+            // own unbound staging just below.
+            : unboundErrorStagingPath(safeSlug(fileName ?? ''));
+          appendErrorLog(errPath, msg, fallbackFileName);
         }
       }
     } else if (isRequestMsg(msg)) {
