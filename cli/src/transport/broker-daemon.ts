@@ -34,7 +34,7 @@ import {
   appendEditFrames, editFeedPathForIdentity, migrateLegacyUnboundEdits, safeSlug, unboundEditStagingPath,
 } from './edit-feed-log.ts';
 import { appendErrorFrame, buildErrorLogFrame, errorLogPathFor, unboundErrorStagingPath } from './error-log.ts';
-import { readIdleMs } from './figma-sync-config.ts';
+import { readIdleMs, readIdleMsFor } from './figma-sync-config.ts';
 import { spawnReconcileApply } from './figma-sync-apply.ts';
 import {
   fileIdentity, loadBindIndex, needsAliasPromotion, readBindMarker, recordBinding, removeBinding,
@@ -642,6 +642,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // unbound staging, giving it full parity with the other two feeds.
     const migratedErrorCount = migrateStagedChanges(unboundErrorStagingPath(slug), errorLogPathFor(projectDir));
     log(`BIND recorded: "${fileName}" → ${projectDir}${fileKey ? ` (fileKey ${fileKey})` : ' (pending fileKey)'}${migratedCount > 0 ? `, migrated ${migratedCount} staged change frame(s)` : ''}${migratedEditCount > 0 ? `, migrated ${migratedEditCount} staged edit frame(s)` : ''}${migratedErrorCount > 0 ? `, migrated ${migratedErrorCount} staged error frame(s)` : ''}`);
+    // Issue #20 fix: an ALREADY-CONNECTED plugin for this file received SYNC_CONFIG at
+    // HELLO time, before this binding existed — its idle timer is still running on the
+    // broker's cwd default (or a stale project's). Push the newly-bound project's own
+    // idle window now, so it takes effect without waiting for a reconnect.
+    if (hit) sendEvent(hit.ws, 'SYNC_CONFIG', { idleMs: readIdleMsFor(projectDir) });
     reply({ fileName, projectDir, fileKey, pendingKey: fileKey === null, migratedCount, migratedEditCount, migratedErrorCount });
   };
 
@@ -1208,7 +1213,18 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         log(`plugin registered [${instanceId}]${replaced ? ' (replaced — same instance re-hello)' : ''}: ${JSON.stringify(msg.data)}`);
         // Live-sync (spec 004 P4): hand this plugin the idle window so its debounce
         // timer matches the project's design/figma-sync.json.
-        sendEvent(ws, 'SYNC_CONFIG', { idleMs });
+        //
+        // Issue #20 fix: resolved from THIS file's binding, same fileIdentity→
+        // resolveProjectDir shape the error-log/edit-feed paths already use — never the
+        // once-cached, broker-cwd-derived `idleMs` unconditionally, or a broker spawned
+        // from one project's cwd hands every OTHER bound project's plugin the wrong idle
+        // window. A genuinely unbound file (no PROJECT_BIND yet) still falls back to the
+        // broker's own cwd default — there is nowhere else to read it from.
+        const helloScene = st.registry.getByWs(ws)?.scene;
+        const helloFileName = (helloScene?.fileName as string | undefined) ?? null;
+        const helloFileKey = (helloScene?.fileKey as string | null | undefined) ?? null;
+        const helloBound = resolveProjectDir(fileIdentity(helloFileKey, helloFileName), st.bindIndex);
+        sendEvent(ws, 'SYNC_CONFIG', { idleMs: helloBound ? readIdleMsFor(helloBound) : idleMs });
         flushWaiting(); // deliver any requests parked during the reconnect gap
         broadcastPeers();
       } else if (msg.type === 'PING') {
