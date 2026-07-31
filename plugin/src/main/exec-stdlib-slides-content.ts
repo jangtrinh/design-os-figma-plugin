@@ -20,16 +20,19 @@ const FALLBACK_FONT: FontName = { family: 'Inter', style: 'Medium' };
  * GeometryMixin, the same as any other geometry node — a REAL background API exists
  * now. No rectangle, no hardcoded size, no redundant appendChild+insertChild(0,…).
  * `method: 'slide-fill'` names it so no caller believes a `Background` rectangle now
- * exists on the slide.
+ * exists on the slide. `hadPriorFill` reports PRIOR STATE only ("a fill existed
+ * before this call") — not "the fill changed": the write itself is already honest
+ * via the awaited `setFillsAsync`, so this field must never be misread as a
+ * change-happened signal (stage-4 review finding).
  */
 export async function background(
   slideId: string, color: string,
-): Promise<{ slideId: string; color: string; updated: boolean; method: 'slide-fill' }> {
+): Promise<{ slideId: string; color: string; hadPriorFill: boolean; method: 'slide-fill' }> {
   requireEditor('ui.slides.background', ['slides']);
   const slide = await resolveSlide(slideId, 'ui.slides.background');
-  const hadFill = Array.isArray(slide.fills) && slide.fills.length > 0;
+  const hadPriorFill = Array.isArray(slide.fills) && slide.fills.length > 0;
   await slide.setFillsAsync([{ type: 'SOLID', color: rgbToFigma(hexToFigmaColor(color)) }]);
-  return { slideId, color, updated: hadFill, method: 'slide-fill' };
+  return { slideId, color, hadPriorFill, method: 'slide-fill' };
 }
 
 async function loadTextFont(fontFamily?: string, fontStyle?: string): Promise<FontName> {

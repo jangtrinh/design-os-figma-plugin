@@ -245,19 +245,19 @@ describe('ui.slides.background — real setFillsAsync, not a rectangle workaroun
     const slide = figma.createSlide();
     const result = await background(slide.id, '#112233');
     expect(result.method).toBe('slide-fill');
-    expect(result.updated).toBe(false); // no prior fill
+    expect(result.hadPriorFill).toBe(false); // no prior fill
     expect(slide.children).toHaveLength(0); // no Background rectangle, ever
     expect(slide.fills).toEqual([{ type: 'SOLID', color: { r: 17 / 255, g: 34 / 255, b: 51 / 255 } }]);
   });
 
-  it('reports updated:true when a fill already existed', async () => {
+  it('reports hadPriorFill:true when a fill already existed', async () => {
     installMockFigma();
     setMockEditorType('slides');
     const figma = asFigma();
     const slide = figma.createSlide();
     await background(slide.id, '#000000');
     const second = await background(slide.id, '#ffffff');
-    expect(second.updated).toBe(true);
+    expect(second.hadPriorFill).toBe(true);
   });
 });
 

@@ -126,8 +126,10 @@ return await ui.slides.skip(slideId, true);
 // → { id, isSkippedSlide } — fact 4: a plain assignable boolean.
 
 return await ui.slides.background(slideId, '#101010');
-// → { slideId, color, updated, method: 'slide-fill' }. REWRITTEN, not ported —
-// see below.
+// → { slideId, color, hadPriorFill, method: 'slide-fill' }. REWRITTEN, not ported —
+// see below. `hadPriorFill` names PRIOR STATE ("a fill existed before this call"),
+// never "the fill changed" — the write itself is already honest via the awaited
+// setFillsAsync.
 
 return await ui.slides.addText(slideId, { text: 'Hello', fontFamily: 'Inter', fontStyle: 'Semi Bold' });
 // → { id, characters }. Fact 10: font loaded BEFORE characters is assigned;
@@ -166,8 +168,26 @@ itself carries `fills`/`fillStyleId`/`setFillsAsync` via `GeometryMixin`, the sa
 any other geometry node — a REAL background API exists now. `ui.slides.background`
 uses it directly: no rectangle, no hardcoded size, no redundant
 `appendChild`+`insertChild(0,…)`. `method: 'slide-fill'` names it so no caller
-believes a `Background` rectangle now exists on the slide. `updated` reports whether
-the slide already carried a fill before this call.
+believes a `Background` rectangle now exists on the slide. `hadPriorFill` reports
+whether the slide already carried a fill before this call — PRIOR STATE only, never
+a claim that the fill changed (the write itself is already honest via the awaited
+`setFillsAsync`).
+
+### `INTERACTIVE_SLIDE_ELEMENT` — a real node type this code deliberately never creates
+
+Confirmed against developers.figma.com/docs/plugins/api/InteractiveSlideElementNode/:
+a Slides deck can carry `INTERACTIVE_SLIDE_ELEMENT` nodes (`POLL`/`EMBED`/`FACEPILE`/
+`ALIGNMENT`/`YOUTUBE`), but they exist ONLY when a user adds one directly in Slides —
+**the Plugin API cannot create one**, and can only read/reposition it, never touch
+the data that powers it. This is why `ui.slides.addShape` stays restricted to
+`RECTANGLE`/`ELLIPSE` (fact 11) rather than growing a third option: there is no
+`figma.createInteractiveSlideElement()` to call. `ui.slides.content()` serializes
+one exactly like any other node it does not specially recognize — `type:
+'INTERACTIVE_SLIDE_ELEMENT'`, `id`/`name`/`x`/`y`/`width`/`height` verbatim off our
+own `serializeNode` — never fabricating a shape/text/code payload for it. **State
+this constraint plainly so a future reader does not "fix" `addShape` by adding
+INTERACTIVE_SLIDE_ELEMENT creation** — the platform itself refuses that, not a gap
+in this code.
 
 ### `createSlide`'s real signature differs from the fork's own call shape
 

@@ -3885,9 +3885,9 @@
   async function background(slideId, color) {
     requireEditor("ui.slides.background", ["slides"]);
     const slide = await resolveSlide(slideId, "ui.slides.background");
-    const hadFill = Array.isArray(slide.fills) && slide.fills.length > 0;
+    const hadPriorFill = Array.isArray(slide.fills) && slide.fills.length > 0;
     await slide.setFillsAsync([{ type: "SOLID", color: rgbToFigma(hexToFigmaColor(color)) }]);
-    return { slideId, color, updated: hadFill, method: "slide-fill" };
+    return { slideId, color, hadPriorFill, method: "slide-fill" };
   }
   async function loadTextFont(fontFamily, fontStyle) {
     const requested = { family: fontFamily ?? "Inter", style: fontStyle ?? "Regular" };
