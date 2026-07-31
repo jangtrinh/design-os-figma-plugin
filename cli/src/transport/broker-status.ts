@@ -25,6 +25,11 @@ export interface BrokerMeta {
   protocolV: number;
   buildMtime: number;
   uptimeMs: number;
+  /** Sender-verification counter (backlog 2.10 / issue #15) — how many reply frames
+   *  `routeFromPlugin` has discarded this daemon run because the sending socket's
+   *  plugin instance did not match the job's `targetInstanceId` (a spoofed/misrouted
+   *  cross-instance reply). Daemon-scoped, not per-job. */
+  senderMismatchCount: number;
 }
 
 /**
@@ -65,6 +70,13 @@ export function buildBrokerHelloData(
     uptimeMs: meta.uptimeMs,
     plugins: withJobs,
     activePlugin: target ? (target.scene.fileName as string | undefined) ?? null : null,
+    // Sender-verification counter (backlog 2.10 / issue #15) — same "discarded thing
+    // gets a machine-readable counter, but not one that clutters the common zero case"
+    // contract as job-table.ts's `resultDropped`/`lateReplyCount`: present only once a
+    // mismatch has actually happened, so a broker with zero spoofed replies (the
+    // overwhelming common case) keeps this payload byte-identical to before this field
+    // existed.
+    ...(meta.senderMismatchCount > 0 && { senderMismatchCount: meta.senderMismatchCount }),
     // ── legacy compat shim (mirrors the ACTIVE plugin) ──
     pluginConnected: connected,
     pluginState: connected ? 'connected' : 'disconnected',

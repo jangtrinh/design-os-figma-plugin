@@ -1268,7 +1268,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     type: 'BROKER_HELLO',
     data: buildBrokerHelloData(
       st.registry,
-      { port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(), uptimeMs: Date.now() - startedAt },
+      {
+        port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(),
+        uptimeMs: Date.now() - startedAt, senderMismatchCount,
+      },
       currentFilter(),
       Date.now,
       jobStatusFor,
