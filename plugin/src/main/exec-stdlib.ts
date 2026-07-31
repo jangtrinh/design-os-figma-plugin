@@ -21,6 +21,9 @@ import { resolvePropKey, setProps, swapInstance } from './exec-stdlib-instance';
 // inlined here, so this file's own cap never has to make room for them.
 import { createExecStdlibVars, type ExecStdlibVars } from './exec-stdlib-variables';
 import { createExecStdlibComponentSet, type ComponentSetOpts, type ComponentSetResult } from './exec-stdlib-component-set';
+// Absorption phase-02: Slots + annotations, same namespaced-sub-object pattern.
+import { createExecStdlibSlot, type ExecStdlibSlot } from './exec-stdlib-slot';
+import { createExecStdlibAnnotate, type ExecStdlibAnnotate } from './exec-stdlib-annotate';
 
 export { resolvePropKey };
 
@@ -32,6 +35,8 @@ export interface ExecStdlib {
   q(target: SceneNode | string, opts?: { depth?: number; fields?: string[] }): Promise<unknown>;
   vars: ExecStdlibVars;
   componentSet(opts: ComponentSetOpts): Promise<ComponentSetResult>;
+  slot: ExecStdlibSlot;
+  annotate: ExecStdlibAnnotate;
 }
 
 // Figma re-keys SOME bindings under a different boundVariables key than the field name asked
@@ -154,5 +159,6 @@ export function createExecStdlib(): ExecStdlib {
   const { componentSet } = createExecStdlibComponentSet();
   return {
     setProps, swapInstance, boundFill, byPath, q, componentSet, vars: createExecStdlibVars(),
+    slot: createExecStdlibSlot(), annotate: createExecStdlibAnnotate(),
   };
 }

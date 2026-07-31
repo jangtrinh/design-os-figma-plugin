@@ -445,8 +445,8 @@
     if (availableFontsCache) return availableFontsCache;
     const stylesByFamily = /* @__PURE__ */ new Map();
     try {
-      const list = await figma.listAvailableFontsAsync();
-      for (const f of list) {
+      const list2 = await figma.listAvailableFontsAsync();
+      for (const f of list2) {
         const arr = stylesByFamily.get(f.fontName.family) ?? [];
         arr.push(f.fontName.style);
         stylesByFamily.set(f.fontName.family, arr);
@@ -1310,10 +1310,10 @@
   }
   async function applyEffectStyle(child, wanted, name, key) {
     if (safe(() => child.effectStyleId) === wanted) return false;
-    const set = child.setEffectStyleIdAsync;
-    if (typeof set !== "function") return false;
+    const set2 = child.setEffectStyleIdAsync;
+    if (typeof set2 !== "function") return false;
     try {
-      await set.call(child, wanted);
+      await set2.call(child, wanted);
       return wanted !== "";
     } catch (err) {
       pushImportWarning(
@@ -1618,10 +1618,10 @@
     const sorted = [...steps].sort((a, b) => a.offset - b.offset);
     const easing = mapCssEasingToMotion(cssEasing);
     const specs = [];
-    for (const { name, get } of FIELD_EXTRACTORS) {
+    for (const { name, get: get2 } of FIELD_EXTRACTORS) {
       const points = [];
       for (const step of sorted) {
-        const v = get(step.style);
+        const v = get2(step.style);
         if (v !== void 0 && !Number.isNaN(v)) points.push({ offset: step.offset, value: v });
       }
       if (points.length < 2) continue;
@@ -2346,7 +2346,14 @@
       fileName: figma.root.name,
       page: figma.currentPage.name,
       user: figma.currentUser ? figma.currentUser.name : null,
-      pluginVersion: PLUGIN_VERSION
+      pluginVersion: PLUGIN_VERSION,
+      // Additive field (absorption phase-02) — phases 03/04 (FigJam, Slides) and
+      // shared/editor-surface.ts's guard both read this. Read figma.editorType
+      // DIRECTLY, never inferred from the file name or which commands succeeded.
+      // `null` (NOT the fork's own silent `|| 'figma'` default, code.js:74) when an
+      // older host reports nothing — a guessed default is exactly what this repo bans;
+      // the guard treats null as "unknown: refuse and say so".
+      editorType: figma.editorType ?? null
     };
   }
   function opGetSelection(params) {
@@ -2804,11 +2811,11 @@
     const build = hasBase ? await buildModeA(opts.base, opts.axes) : await buildModeB(opts.components, opts.variantProps);
     try {
       const parent = await resolveParent(opts.parent);
-      const set = figma.combineAsVariants(build.nodes, parent);
-      if (opts.name) set.name = opts.name;
-      if (typeof opts.x === "number") set.x = opts.x;
-      if (typeof opts.y === "number") set.y = opts.y;
-      const children = set.children.filter((c) => c.type === "COMPONENT");
+      const set2 = figma.combineAsVariants(build.nodes, parent);
+      if (opts.name) set2.name = opts.name;
+      if (typeof opts.x === "number") set2.x = opts.x;
+      if (typeof opts.y === "number") set2.y = opts.y;
+      const children = set2.children.filter((c) => c.type === "COMPONENT");
       if (children.length !== build.nodes.length) {
         throw withCode(new Error(`componentSet combined ${children.length} children, expected ${build.nodes.length}`), "E_EVAL");
       }
@@ -2817,12 +2824,12 @@
       if (mismatches.length > 0) {
         throw withCode(new Error(`componentSet variant names did not parse back to the intended axes: ${JSON.stringify(mismatches)}`), "E_EVAL");
       }
-      const propertyDefinitions = set.componentPropertyDefinitions ?? {};
+      const propertyDefinitions = set2.componentPropertyDefinitions ?? {};
       const variantCount = children.length;
       const sizeWarning = variantCount > WARN_ABOVE ? `${variantCount} variants \u2014 large sets are slow to build; consider splitting by one axis` : void 0;
       return {
-        id: set.id,
-        name: set.name,
+        id: set2.id,
+        name: set2.name,
         variantCount,
         // Each variant's key AND id — instances come from a variant's key/id, never
         // the set's (fork's hint, write-tools.ts ~3040).
@@ -2838,6 +2845,410 @@
   }
   function createExecStdlibComponentSet() {
     return { componentSet };
+  }
+
+  // plugin/src/main/exec-stdlib-slot-resolve.ts
+  function readSlotContentId(node) {
+    const refs = node.componentPropertyReferences;
+    return refs?.slotContentId ?? null;
+  }
+  function serializeSlotsFromNode(root) {
+    const slotNodes = root.findAllWithCriteria({ types: ["SLOT"] });
+    return slotNodes.map((slot) => {
+      let propertyKey = null;
+      try {
+        propertyKey = readSlotContentId(slot);
+      } catch {
+      }
+      let children = [];
+      try {
+        children = slot.children.map((c) => ({ id: c.id, name: c.name, type: c.type }));
+      } catch {
+      }
+      return {
+        id: slot.id,
+        name: slot.name,
+        type: "SLOT",
+        width: slot.width,
+        height: slot.height,
+        layoutMode: slot.layoutMode || "NONE",
+        propertyKey,
+        children
+      };
+    });
+  }
+  async function resolveSlot(target) {
+    if (target.slotId) {
+      const node = await figma.getNodeByIdAsync(target.slotId);
+      if (!node) throw withCode(new Error(`slot not found: ${target.slotId}`), "E_INVALID_ARGS");
+      if (node.type !== "SLOT") throw withCode(new Error(`node is not a SLOT, got ${node.type}: ${target.slotId}`), "E_INVALID_ARGS");
+      return node;
+    }
+    if (target.instanceId && target.slotName) {
+      const inst = await figma.getNodeByIdAsync(target.instanceId);
+      if (!inst) throw withCode(new Error(`instance not found: ${target.instanceId}`), "E_INVALID_ARGS");
+      if (inst.type !== "INSTANCE") throw withCode(new Error(`instanceId must be an INSTANCE, got ${inst.type}`), "E_INVALID_ARGS");
+      const all = inst.findAllWithCriteria({ types: ["SLOT"] });
+      const named = all.filter((n) => n.name === target.slotName);
+      if (named.length === 0) {
+        throw withCode(new Error(`slot "${target.slotName}" not found on instance \u2014 available: ${all.map((n) => n.name).join(", ") || "(none)"}`), "E_INVALID_ARGS");
+      }
+      const direct = named.filter((n) => n.parent === inst);
+      if (direct.length > 1) {
+        throw withCode(new Error(`slot "${target.slotName}" is ambiguous \u2014 ${direct.length} direct matches: ${direct.map((n) => n.id).join(", ")}`), "E_INVALID_ARGS");
+      }
+      if (direct.length === 1) return direct[0];
+      if (named.length > 1) {
+        throw withCode(new Error(`slot "${target.slotName}" is ambiguous \u2014 ${named.length} nested matches, no direct child: ${named.map((n) => n.id).join(", ")}`), "E_INVALID_ARGS");
+      }
+      return named[0];
+    }
+    throw withCode(new Error("append/reset need slotId, or instanceId + slotName"), "E_INVALID_ARGS");
+  }
+
+  // plugin/src/main/exec-stdlib-slot-content.ts
+  async function createSlotContentNode(nodeType, props) {
+    let node;
+    switch (nodeType) {
+      case "RECTANGLE":
+        node = figma.createRectangle();
+        break;
+      case "FRAME":
+        node = figma.createFrame();
+        break;
+      case "TEXT": {
+        const text = figma.createText();
+        await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+        text.fontName = { family: "Inter", style: "Regular" };
+        if (props.text !== void 0) text.characters = String(props.text);
+        node = text;
+        break;
+      }
+      default:
+        throw withCode(new Error(`unsupported content.nodeType "${nodeType}" \u2014 supported: RECTANGLE, FRAME, TEXT`), "E_INVALID_ARGS");
+    }
+    if (props.name !== void 0) node.name = String(props.name);
+    if (props.width !== void 0 || props.height !== void 0) {
+      const w = props.width !== void 0 ? Number(props.width) : node.width;
+      const h = props.height !== void 0 ? Number(props.height) : node.height;
+      if (!Number.isNaN(w) && !Number.isNaN(h)) node.resize(w, h);
+    }
+    return node;
+  }
+  async function append(target, content, opts = {}) {
+    const slotNode = await resolveSlot(target);
+    let appendedNode;
+    if (content.sourceNodeId) {
+      const source = await figma.getNodeByIdAsync(content.sourceNodeId);
+      if (!source) throw withCode(new Error(`source node not found: ${content.sourceNodeId}`), "E_INVALID_ARGS");
+      if (source.type === "COMPONENT") {
+        throw withCode(new Error("a COMPONENT cannot be appended directly to a slot \u2014 create an INSTANCE first, or clone an existing instance"), "E_INVALID_ARGS");
+      }
+      appendedNode = content.clone !== false ? source.clone() : source;
+    } else if (content.nodeType) {
+      appendedNode = await createSlotContentNode(content.nodeType, content.props ?? {});
+    } else {
+      throw withCode(new Error("append needs content.sourceNodeId (clone/move existing) or content.nodeType (create new)"), "E_INVALID_ARGS");
+    }
+    if (opts.clearExisting) {
+      for (const child of [...slotNode.children]) child.remove();
+    }
+    slotNode.appendChild(appendedNode);
+    if (!slotNode.layoutMode || slotNode.layoutMode === "NONE") {
+      try {
+        appendedNode.x = 0;
+        appendedNode.y = 0;
+      } catch {
+      }
+    }
+    if (!slotNode.children.some((c) => c.id === appendedNode.id)) {
+      throw withCode(new Error(`append applied but "${appendedNode.id}" is not in slot "${slotNode.name}"'s children`), "E_EVAL");
+    }
+    return {
+      slot: { id: slotNode.id, name: slotNode.name },
+      appended: {
+        id: appendedNode.id,
+        name: appendedNode.name,
+        type: appendedNode.type,
+        width: appendedNode.width,
+        height: appendedNode.height
+      }
+    };
+  }
+  async function reset(target) {
+    const slotNode = await resolveSlot(target);
+    const typed = slotNode;
+    if (typeof typed.resetSlot !== "function") {
+      throw withCode(new Error("resetSlot() is not available on this node \u2014 ensure Figma Desktop supports Slots"), "E_INVALID_ARGS");
+    }
+    typed.resetSlot();
+    return { slot: { id: slotNode.id, name: slotNode.name, childCount: slotNode.children?.length ?? 0 } };
+  }
+
+  // plugin/src/main/exec-stdlib-slot-property.ts
+  function isNestedInsideAnotherSlot(frame, stopAt) {
+    let n = frame.parent;
+    while (n && n !== stopAt) {
+      if (n.type === "SLOT") return true;
+      n = "parent" in n ? n.parent : null;
+    }
+    return false;
+  }
+  async function addSlotProperty(componentId, propertyName, frameNodeId, opts = {}) {
+    const component = await figma.getNodeByIdAsync(componentId);
+    if (!component || component.type !== "COMPONENT" && component.type !== "COMPONENT_SET") {
+      throw withCode(new Error(`componentId must be a COMPONENT or COMPONENT_SET, got ${component?.type ?? "not found"}: ${componentId}`), "E_INVALID_ARGS");
+    }
+    const frame = await figma.getNodeByIdAsync(frameNodeId);
+    if (!frame || frame.type !== "FRAME") {
+      throw withCode(new Error(`frameNodeId must be a FRAME, got ${frame?.type ?? "not found"}: ${frameNodeId}`), "E_INVALID_ARGS");
+    }
+    if (isNestedInsideAnotherSlot(frame, component)) {
+      throw withCode(new Error(`frame "${frame.name}" is nested inside another slot \u2014 a slot's content frame cannot itself sit inside a different slot`), "E_INVALID_ARGS");
+    }
+    const directChild = frame.parent === component;
+    const variantChild = component.type === "COMPONENT_SET" && frame.parent?.type === "COMPONENT" && frame.parent.parent === component;
+    if (!directChild && !variantChild) {
+      throw withCode(new Error(
+        component.type === "COMPONENT_SET" ? `frame must be a direct child of one of "${component.name}"'s variant components` : `frame must be a direct child of "${component.name}"`
+      ), "E_INVALID_ARGS");
+    }
+    if (frame.layoutMode === "GRID") {
+      throw withCode(new Error(`frame "${frame.name}" uses GRID layout \u2014 not allowed as slot content`), "E_INVALID_ARGS");
+    }
+    const typedComponent = component;
+    const propOpts = {};
+    if (opts.description !== void 0) propOpts.description = opts.description;
+    if (opts.preferredValues !== void 0) propOpts.preferredValues = opts.preferredValues;
+    const propertyKey = typedComponent.addComponentProperty(
+      propertyName,
+      "SLOT",
+      "",
+      Object.keys(propOpts).length ? propOpts : void 0
+    );
+    const frameTyped = frame;
+    frameTyped.componentPropertyReferences = { ...frameTyped.componentPropertyReferences, slotContentId: propertyKey };
+    const defs = component.componentPropertyDefinitions;
+    if (!defs?.[propertyKey]) {
+      throw withCode(new Error(`addProperty applied but "${propertyKey}" is not in componentPropertyDefinitions`), "E_EVAL");
+    }
+    if (frameTyped.componentPropertyReferences?.slotContentId !== propertyKey) {
+      throw withCode(new Error(`addProperty applied but frame "${frame.name}" is not linked to "${propertyKey}"`), "E_EVAL");
+    }
+    return { propertyKey, frameId: frame.id, frameName: frame.name };
+  }
+
+  // plugin/src/main/exec-stdlib-slot.ts
+  var CREATE_LAYOUT_MODES = /* @__PURE__ */ new Set(["NONE", "HORIZONTAL", "VERTICAL"]);
+  async function create(componentId, opts = {}) {
+    const node = await figma.getNodeByIdAsync(componentId);
+    if (!node || node.type !== "COMPONENT") {
+      throw withCode(new Error(`componentId must be a COMPONENT node id (standalone or a variant inside a COMPONENT_SET \u2014 call once per variant), got ${node?.type ?? "not found"}: ${componentId}`), "E_INVALID_ARGS");
+    }
+    const target = node;
+    if (typeof target.createSlot !== "function") {
+      throw withCode(new Error("createSlot() is not available \u2014 update Figma Desktop to a version with Slots support"), "E_INVALID_ARGS");
+    }
+    if (opts.layoutMode && !CREATE_LAYOUT_MODES.has(opts.layoutMode)) {
+      throw withCode(new Error(`layoutMode "${opts.layoutMode}" is not allowed on a slot \u2014 use NONE, HORIZONTAL, or VERTICAL`), "E_INVALID_ARGS");
+    }
+    const slot = target.createSlot();
+    if (opts.name) slot.name = opts.name;
+    if (opts.layoutMode) slot.layoutMode = opts.layoutMode;
+    if (opts.width !== void 0 || opts.height !== void 0) {
+      slot.resize(opts.width ?? slot.width, opts.height ?? slot.height);
+    }
+    let propertyKey = null;
+    try {
+      propertyKey = slot.componentPropertyReferences?.slotContentId ?? null;
+    } catch {
+    }
+    if (slot.type !== "SLOT") {
+      throw withCode(new Error(`createSlot() returned a ${slot.type}, not SLOT`), "E_EVAL");
+    }
+    return {
+      id: slot.id,
+      name: slot.name,
+      type: "SLOT",
+      propertyKey,
+      width: slot.width,
+      height: slot.height,
+      layoutMode: slot.layoutMode || "NONE"
+    };
+  }
+  async function list(nodeId) {
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node || node.type !== "COMPONENT" && node.type !== "INSTANCE" && node.type !== "COMPONENT_SET") {
+      throw withCode(new Error(`nodeId must be a COMPONENT, COMPONENT_SET, or INSTANCE, got ${node?.type ?? "not found"}: ${nodeId}`), "E_INVALID_ARGS");
+    }
+    let slots;
+    if (node.type === "COMPONENT_SET") {
+      slots = node.children.filter((c) => c.type === "COMPONENT").flatMap((variant) => serializeSlotsFromNode(variant).map((s) => ({ ...s, variantId: variant.id, variantName: variant.name })));
+    } else {
+      slots = serializeSlotsFromNode(node);
+    }
+    return { nodeId: node.id, nodeType: node.type, slots, count: slots.length };
+  }
+  function createExecStdlibSlot() {
+    return { create, list, append, reset, addProperty: addSlotProperty };
+  }
+
+  // plugin/src/main/exec-stdlib-annotate.ts
+  var ANNOTATION_PROPERTY_TYPES = [
+    "width",
+    "height",
+    "maxWidth",
+    "minWidth",
+    "maxHeight",
+    "minHeight",
+    "fills",
+    "strokes",
+    "effects",
+    "strokeWeight",
+    "cornerRadius",
+    "textStyleId",
+    "textAlignHorizontal",
+    "fontFamily",
+    "fontStyle",
+    "fontSize",
+    "fontWeight",
+    "lineHeight",
+    "letterSpacing",
+    "itemSpacing",
+    "padding",
+    "layoutMode",
+    "alignItems",
+    "opacity",
+    "mainComponent",
+    "gridRowGap",
+    "gridColumnGap",
+    "gridRowCount",
+    "gridColumnCount",
+    "gridRowAnchorIndex",
+    "gridColumnAnchorIndex",
+    "gridRowSpan",
+    "gridColumnSpan"
+  ];
+  var TYPE_SET = new Set(ANNOTATION_PROPERTY_TYPES);
+  function levenshtein(a, b) {
+    const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+    for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+    for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+  function validatePropertyType(type) {
+    if (TYPE_SET.has(type)) return;
+    const nearest = [...ANNOTATION_PROPERTY_TYPES].sort((a, b) => levenshtein(type, a) - levenshtein(type, b)).slice(0, 3);
+    throw withCode(new Error(`invalid annotation property type "${type}" \u2014 nearest valid: ${nearest.join(", ")}`), "E_INVALID_ARGS");
+  }
+  async function getCategories() {
+    try {
+      const cats = await figma.annotations.getAnnotationCategoriesAsync();
+      return cats.map((c) => ({ id: c.id, name: c.label }));
+    } catch {
+      return [];
+    }
+  }
+  function toOutput(a, categoryMap) {
+    return {
+      label: a.label ?? null,
+      labelMarkdown: a.labelMarkdown ?? null,
+      properties: a.properties?.length ? a.properties.map((p) => ({ type: p.type })) : null,
+      categoryId: a.categoryId ?? null,
+      // Fact 4: an unmatched category id reports categoryName:null, never the id echoed.
+      categoryName: a.categoryId ? categoryMap.get(a.categoryId) ?? null : null
+    };
+  }
+  async function requireAnnotatable(nodeId) {
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw withCode(new Error(`node not found: ${nodeId}`), "E_INVALID_ARGS");
+    if (!("annotations" in node)) {
+      throw withCode(new Error(`node type ${node.type} does not support annotations`), "E_INVALID_ARGS");
+    }
+    return node;
+  }
+  async function get(nodeId, opts = {}) {
+    const node = await requireAnnotatable(nodeId);
+    const categories2 = await getCategories();
+    const categoryMap = new Map(categories2.map((c) => [c.id, c.name]));
+    const nodeAnnotations = (node.annotations ?? []).map((a) => toOutput(a, categoryMap));
+    const includeChildren = opts.includeChildren ?? false;
+    const maxDepth = opts.depth ?? 1;
+    const childResults = [];
+    let skippedChildren = 0;
+    if (includeChildren && "children" in node) {
+      const walk2 = (parent, depth) => {
+        if (depth > maxDepth) return;
+        for (const child of parent.children) {
+          try {
+            const anns = "annotations" in child ? (child.annotations ?? []).map((a) => toOutput(a, categoryMap)) : [];
+            if (anns.length > 0) childResults.push({ nodeId: child.id, nodeName: child.name, nodeType: child.type, annotations: anns });
+            if ("children" in child) walk2(child, depth + 1);
+          } catch {
+            skippedChildren += 1;
+          }
+        }
+      };
+      walk2(node, 1);
+    }
+    return {
+      nodeId: node.id,
+      nodeName: node.name,
+      nodeType: node.type,
+      annotations: nodeAnnotations,
+      annotationCount: nodeAnnotations.length,
+      ...includeChildren ? {
+        children: childResults,
+        childAnnotationCount: childResults.reduce((sum, c) => sum + c.annotations.length, 0),
+        skippedChildren
+      } : {},
+      availableCategories: categories2
+    };
+  }
+  async function set(nodeId, annotations, opts = {}) {
+    const node = await requireAnnotatable(nodeId);
+    for (const input of annotations) for (const p of input.properties ?? []) validatePropertyType(p.type);
+    const built = annotations.map((input) => {
+      const ann = {};
+      if (input.label) ann.label = input.label;
+      if (input.labelMarkdown) ann.labelMarkdown = input.labelMarkdown;
+      if (input.properties?.length) ann.properties = input.properties.map((p) => ({ type: p.type }));
+      if (input.categoryId) ann.categoryId = input.categoryId;
+      return ann;
+    });
+    const mode = opts.mode ?? "replace";
+    let finalAnnotations = built;
+    if (mode === "append") {
+      const existing = node.annotations ?? [];
+      const merged = existing.map((ex) => {
+        const copy = {};
+        if (ex.labelMarkdown) copy.labelMarkdown = ex.labelMarkdown;
+        else if (ex.label) copy.label = ex.label;
+        if (ex.properties) copy.properties = ex.properties;
+        if (ex.categoryId) copy.categoryId = ex.categoryId;
+        return copy;
+      });
+      finalAnnotations = [...merged, ...built];
+    }
+    node.annotations = finalAnnotations;
+    const categories2 = await getCategories();
+    const categoryMap = new Map(categories2.map((c) => [c.id, c.name]));
+    const readBack = (node.annotations ?? []).map((a) => toOutput(a, categoryMap));
+    if (readBack.length !== finalAnnotations.length) {
+      throw withCode(new Error(`set applied but read back ${readBack.length} annotations, expected ${finalAnnotations.length}`), "E_EVAL");
+    }
+    return { nodeId: node.id, nodeName: node.name, annotationCount: readBack.length, mode, annotations: readBack };
+  }
+  async function categories() {
+    return { categories: await getCategories() };
+  }
+  function createExecStdlibAnnotate() {
+    return { get, set, categories };
   }
 
   // plugin/src/main/exec-stdlib.ts
@@ -2937,7 +3348,9 @@
       byPath,
       q,
       componentSet: componentSet2,
-      vars: createExecStdlibVars()
+      vars: createExecStdlibVars(),
+      slot: createExecStdlibSlot(),
+      annotate: createExecStdlibAnnotate()
     };
   }
 

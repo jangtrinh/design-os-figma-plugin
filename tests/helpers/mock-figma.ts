@@ -173,6 +173,10 @@ export class FakeNode {
 
   constructor(type: string) {
     this.type = type;
+    // Every real SceneNode exposes `annotations` (default []) — PAGE/DOCUMENT do not.
+    // `'annotations' in node` is ui.annotate's own capability test (fact 1), so the
+    // fixture must mirror the real presence/absence of the key, not just its value.
+    if (type !== 'PAGE' && type !== 'DOCUMENT') this.annotations = [];
   }
 
   // ── name: REQUIRED (Figma rejects undefined/'' with a set_name validation error) ──
@@ -223,6 +227,67 @@ export class FakeNode {
       this.parent.children = this.parent.children.filter((c) => c !== this);
       this.parent = null;
     }
+  }
+
+  /** ChildrenMixin.findAllWithCriteria({types}) — deep search, matching Figma's own
+   * (a nested instance's own SLOT is found too; absorption phase-02 fact 10 depends
+   * on exactly this so its stricter direct-vs-nested ambiguity rule has something
+   * real to walk). */
+  findAllWithCriteria(criteria: { types: readonly string[] }): FakeNode[] {
+    const out: FakeNode[] = [];
+    const walk = (n: FakeNode): void => {
+      for (const c of n.children) {
+        if (criteria.types.includes(c.type)) out.push(c);
+        walk(c);
+      }
+    };
+    walk(this);
+    return out;
+  }
+
+  /** ComponentNode/ComponentSetNode.addComponentProperty(name, type, defaultValue, opts) —
+   * the manual property-authoring path `ui.slot.addProperty` calls (as opposed to
+   * `createSlot()`'s all-in-one path). Real Figma returns a namespaced key
+   * (`${name}#<seq>`); merges into componentPropertyDefinitions, never overwrites. */
+  addComponentProperty(
+    name: string,
+    type: string,
+    defaultValue: string,
+    opts?: { description?: string; preferredValues?: unknown[] },
+  ): string {
+    const key = `${name}#${idSeq++}`;
+    const defs = (this.componentPropertyDefinitions as Record<string, unknown> | undefined) ?? {};
+    defs[key] = { type, defaultValue, ...opts };
+    this.componentPropertyDefinitions = defs;
+    return key;
+  }
+
+  /** ComponentNode.createSlot() — Figma Slots (GA June 2026). Mints a SLOT child and
+   * registers a matching SLOT property on THIS component's own
+   * componentPropertyDefinitions, linked via componentPropertyReferences.slotContentId
+   * — the same link absorption phase-02's helpers read back to verify. Real Figma
+   * takes no arguments (a name argument is ignored) — mirrored here by simply not
+   * accepting one. */
+  createSlot(): FakeNode {
+    const slot = new FakeNode('SLOT');
+    slot.name = 'Slot';
+    this.appendChild(slot);
+    const propKey = `Slot#${idSeq++}`;
+    const defs = (this.componentPropertyDefinitions as Record<string, unknown> | undefined) ?? {};
+    defs[propKey] = { type: 'SLOT', defaultValue: '' };
+    this.componentPropertyDefinitions = defs;
+    slot.componentPropertyReferences = { slotContentId: propKey };
+    // Same reasoning as mk() above — a caller resolves this slot right back by id
+    // (resolveSlot's slotId path) moments after creating it.
+    nodesById.set(slot.id, slot);
+    return slot;
+  }
+
+  /** SlotNode.resetSlot() — revert to the component's default content. Simplified
+   * for the fixture: clears the slot's children (an instance's slot always starts
+   * empty in this mock, so "reset" and "empty" coincide here). */
+  resetSlot(): void {
+    for (const c of [...this.children]) c.remove();
   }
 
   /** resize() FIXES both axes of an auto-layout frame — Figma's documented
@@ -816,6 +881,13 @@ export interface MockFigma {
    * COMPONENT_SET appended to `parent`, and derives componentPropertyDefinitions
    * from every child's "Prop=Value, ..." name, exactly as Figma parses them. */
   combineAsVariants(nodes: FakeNode[], parent: FakeNode): FakeNode;
+  /** figma.editorType (absorption phase-02) — `null` unless a test sets it via
+   * setMockEditorType, matching the real "host reports nothing" default this repo
+   * deliberately does NOT paper over (see shared/editor-surface.ts). */
+  editorType: 'figma' | 'figjam' | 'slides' | 'dev' | null;
+  annotations: {
+    getAnnotationCategoriesAsync(): Promise<{ id: string; label: string }[]>;
+  };
   variables: {
     setBoundVariableForPaint: typeof setBoundVariableForPaint;
     getLocalVariablesAsync(type?: string): Promise<FakeVariable[]>;
@@ -827,6 +899,14 @@ export interface MockFigma {
   };
 }
 
+/** Test-configurable figma.editorType (absorption phase-02). */
+let mockEditorType: 'figma' | 'figjam' | 'slides' | 'dev' | null = null;
+export function setMockEditorType(t: 'figma' | 'figjam' | 'slides' | 'dev' | null): void { mockEditorType = t; }
+
+/** Test-configurable figma.annotations.getAnnotationCategoriesAsync() list. */
+let mockAnnotationCategories: { id: string; label: string }[] = [];
+export function setMockAnnotationCategories(cats: { id: string; label: string }[]): void { mockAnnotationCategories = cats; }
+
 /** Install a fresh mock on globalThis.figma; returns it. Call once per test file. */
 export function installMockFigma(): MockFigma {
   localVariables = [];
@@ -834,14 +914,25 @@ export function installMockFigma(): MockFigma {
   collections = [];
   effectStyles = [];
   mockModeCap = null;
+  mockEditorType = null;
+  mockAnnotationCategories = [];
   const mk = (type: string): FakeNode => {
     const n = new FakeNode(type);
     if (type === 'TEXT') n.name = 'Text';
+    // Every node Figma creates is resolvable by id afterward, regardless of how it
+    // was made (absorption phase-02 needs this for slot content: a plain
+    // figma.createFrame() must be findable by figma.getNodeByIdAsync just like a
+    // registered component is) — register it the same way setMockComponents does.
+    nodesById.set(n.id, n);
     return n;
   };
   const figma: MockFigma = {
     mixed: FIGMA_MIXED,
     currentPage: (() => { const p = new FakeNode('PAGE'); p.name = 'Page 1'; return p; })(),
+    get editorType() { return mockEditorType; },
+    annotations: {
+      getAnnotationCategoriesAsync: async () => mockAnnotationCategories,
+    },
     createFrame: () => mk('FRAME'),
     createText: () => mk('TEXT'),
     createRectangle: () => mk('RECTANGLE'),

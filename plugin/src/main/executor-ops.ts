@@ -90,6 +90,13 @@ export function opStatus(): Record<string, unknown> {
     page: figma.currentPage.name,
     user: figma.currentUser ? figma.currentUser.name : null,
     pluginVersion: PLUGIN_VERSION,
+    // Additive field (absorption phase-02) — phases 03/04 (FigJam, Slides) and
+    // shared/editor-surface.ts's guard both read this. Read figma.editorType
+    // DIRECTLY, never inferred from the file name or which commands succeeded.
+    // `null` (NOT the fork's own silent `|| 'figma'` default, code.js:74) when an
+    // older host reports nothing — a guessed default is exactly what this repo bans;
+    // the guard treats null as "unknown: refuse and say so".
+    editorType: figma.editorType ?? null,
   };
 }
 
