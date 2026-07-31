@@ -64,6 +64,17 @@ figma.showUI(__html__, {
   visible: true, width: PANEL_WIDTH, height: PANEL_HEIGHT, title: 'design:os by JANG', themeColors: true,
 });
 
+// Absorption phase-03 (FigJam) — which design-only boot capabilities this session
+// consciously skipped, surfaced via STATUS's `bootSkipped` (same present-only-when-
+// non-empty contract as the broker's senderMismatchCount/legacyMigrationDeferred).
+// Empty today: the phase-03 boot-path trace found nothing in THIS boot sequence that
+// needs skipping in FigJam — gap-fill/live capture already degrade honestly there
+// (verbatim node.type, no design-only property reads; see knowledge/figjam.md). Kept
+// as real, mutable state (not a hardcoded `[]` at the call site) so a future editor
+// surface (phase-04 Slides, or a later FigJam finding) has somewhere to push an entry
+// without a STATUS payload shape change.
+const bootSkipped: string[] = [];
+
 /** Block 2's Selection row: the first selected node's name (if any) + the count. */
 function selectionSummary(): { selectionName: string | null; selectionCount: number } {
   const sel = figma.currentPage.selection; // sync getter, allowed under dynamic-page
@@ -523,7 +534,7 @@ function mutationTargetIds(cmd: CommandName, params: Params): string[] {
 
 async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
   switch (cmd) {
-    case 'STATUS': return opStatus();
+    case 'STATUS': return opStatus(bootSkipped);
     case 'GET_SELECTION': return opGetSelection(params);
     case 'SCAN_DESIGN_SYSTEM': return serializeDesignSystem();
     case 'AUDIT_DS': return auditDs();

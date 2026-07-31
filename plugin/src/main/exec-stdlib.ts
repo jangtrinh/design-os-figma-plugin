@@ -24,6 +24,8 @@ import { createExecStdlibComponentSet, type ComponentSetOpts, type ComponentSetR
 // Absorption phase-02: Slots + annotations, same namespaced-sub-object pattern.
 import { createExecStdlibSlot, type ExecStdlibSlot } from './exec-stdlib-slot';
 import { createExecStdlibAnnotate, type ExecStdlibAnnotate } from './exec-stdlib-annotate';
+// Absorption phase-03: FigJam, same namespaced-sub-object pattern.
+import { createExecStdlibFigjam, type ExecStdlibFigjam } from './exec-stdlib-figjam';
 
 export { resolvePropKey };
 
@@ -37,6 +39,7 @@ export interface ExecStdlib {
   componentSet(opts: ComponentSetOpts): Promise<ComponentSetResult>;
   slot: ExecStdlibSlot;
   annotate: ExecStdlibAnnotate;
+  figjam: ExecStdlibFigjam;
 }
 
 // Figma re-keys SOME bindings under a different boundVariables key than the field name asked
@@ -159,6 +162,6 @@ export function createExecStdlib(): ExecStdlib {
   const { componentSet } = createExecStdlibComponentSet();
   return {
     setProps, swapInstance, boundFill, byPath, q, componentSet, vars: createExecStdlibVars(),
-    slot: createExecStdlibSlot(), annotate: createExecStdlibAnnotate(),
+    slot: createExecStdlibSlot(), annotate: createExecStdlibAnnotate(), figjam: createExecStdlibFigjam(),
   };
 }

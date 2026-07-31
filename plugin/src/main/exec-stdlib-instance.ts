@@ -86,6 +86,18 @@ export async function swapInstance(
   inst: InstanceNode,
   ref: string,
 ): Promise<{ id: string; mainComponent: { id: string; name: string } }> {
+  // Phase-03 (FigJam) reverse-guard audit finding: this had NO runtime check at all —
+  // only the TS type `InstanceNode`, zero protection once a caller (an exec-js script,
+  // or any wrong-type node reference) hands it a real non-instance node. Pre-dates
+  // FigJam (already reachable today by passing e.g. a FRAME); FigJam just makes it far
+  // more likely, since no FigJam node is ever type INSTANCE. A general type-check, not
+  // an editor guard — an editor guard would leave the same hole open for a wrong-type
+  // node IN Figma itself. Checked BEFORE ref resolution, same ordering as `setProps`'s
+  // own check, so a caller never sees "component not found" when the real problem is
+  // the node it passed.
+  if (inst.type !== 'INSTANCE') {
+    throw withCode(new Error(`swapInstance expects an INSTANCE, got ${inst.type}`), 'E_EVAL');
+  }
   const component = ref.includes(':')
     ? await resolveMainComponent({ componentId: ref })
     : await resolveMainComponent({ componentKey: ref });
