@@ -1,5 +1,5 @@
 // Mode-specific node preparation behind `ui.componentSet(...)` — split out of
-// exec-stdlib-component-set.ts to stay under this repo's 200-line cap. Each build
+// exec-stdlib-component-set.ts to keep that file to one shape. Each build
 // function mutates the canvas (renames, clones) and returns a `cleanup()` that
 // reverses EXACTLY those mutations — the caller (componentSet()) invokes it if a
 // LATER step (parent resolution, combineAsVariants, verification) throws, so a
@@ -72,10 +72,12 @@ export async function buildModeB(
   if (variantProps && variantProps.length !== ids.length) {
     throw withCode(new Error(`variantProps length (${variantProps.length}) must match components length (${ids.length})`), 'E_INVALID_ARGS');
   }
-  const nodes: ComponentNode[] = [];
-  const expected: Record<string, string>[] = [];
-  const warnings: string[] = [];
-  const renamed: { node: ComponentNode; originalName: string }[] = [];
+
+  // Pass 1 — resolve and validate EVERY input before mutating anything. A rejection
+  // partway through must never leave an EARLIER component in this same call already
+  // renamed with no closure (stage-4 follow-up, issue #11 item 3: fail before the
+  // first mutation, not validate-then-rename per iteration).
+  const resolved: ComponentNode[] = [];
   for (let i = 0; i < ids.length; i++) {
     const node = await figma.getNodeByIdAsync(ids[i]!);
     if (!node || node.type !== 'COMPONENT') {
@@ -89,7 +91,21 @@ export async function buildModeB(
       const keys = Object.keys(props);
       if (keys.length === 0) throw withCode(new Error(`variantProps[${i}] is empty — needs at least one property`), 'E_INVALID_ARGS');
       for (const k of keys) { assertCleanToken('property', k); assertCleanToken('value', props[k]!); }
-      renamed.push({ node: node as ComponentNode, originalName: node.name });
+    }
+    resolved.push(node as ComponentNode);
+  }
+
+  // Pass 2 — every input is validated; only now do we mutate (rename via variantProps).
+  const nodes: ComponentNode[] = [];
+  const expected: Record<string, string>[] = [];
+  const warnings: string[] = [];
+  const renamed: { node: ComponentNode; originalName: string }[] = [];
+  for (let i = 0; i < resolved.length; i++) {
+    const node = resolved[i]!;
+    if (variantProps) {
+      const props = variantProps[i]!;
+      const keys = Object.keys(props);
+      renamed.push({ node, originalName: node.name });
       node.name = comboName(props, keys);
       expected.push({ ...props });
     } else {
@@ -104,7 +120,7 @@ export async function buildModeB(
         expected.push(parseComboName(node.name));
       }
     }
-    nodes.push(node as ComponentNode);
+    nodes.push(node);
   }
   return {
     nodes, expected, warnings,

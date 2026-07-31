@@ -2746,10 +2746,7 @@
     if (variantProps && variantProps.length !== ids.length) {
       throw withCode(new Error(`variantProps length (${variantProps.length}) must match components length (${ids.length})`), "E_INVALID_ARGS");
     }
-    const nodes = [];
-    const expected = [];
-    const warnings2 = [];
-    const renamed = [];
+    const resolved = [];
     for (let i = 0; i < ids.length; i++) {
       const node = await figma.getNodeByIdAsync(ids[i]);
       if (!node || node.type !== "COMPONENT") {
@@ -2766,6 +2763,18 @@
           assertCleanToken("property", k);
           assertCleanToken("value", props[k]);
         }
+      }
+      resolved.push(node);
+    }
+    const nodes = [];
+    const expected = [];
+    const warnings2 = [];
+    const renamed = [];
+    for (let i = 0; i < resolved.length; i++) {
+      const node = resolved[i];
+      if (variantProps) {
+        const props = variantProps[i];
+        const keys = Object.keys(props);
         renamed.push({ node, originalName: node.name });
         node.name = comboName(props, keys);
         expected.push({ ...props });
@@ -2839,7 +2848,13 @@
         ...build.warnings.length ? { warnings: build.warnings } : {}
       };
     } catch (err) {
-      build.cleanup();
+      try {
+        build.cleanup();
+      } catch (cleanupErr) {
+        if (err && typeof err === "object") {
+          err.cleanupError = cleanupErr;
+        }
+      }
       throw err;
     }
   }
