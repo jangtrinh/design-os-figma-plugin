@@ -8,17 +8,30 @@
 import { resolveVariable, valuesEqual } from './executor-variables';
 import { withCode } from './executor-styles';
 
+/** A candidate list for an error message, capped so one huge file can't flood a
+ * reply — with an explicit "+N more" tail so a truncated list never reads as
+ * complete (stage-4 review, PR #10 minor 5: the old 20-item cap silently cut the
+ * list with no sign anything was missing). Used for BOTH collection names and mode
+ * names — one convention, not two. */
+function listWithMore(names: readonly string[], cap = 20): string {
+  const shown = names.slice(0, cap).join(', ');
+  const rest = names.length - cap;
+  return rest > 0 ? `${shown} (+${rest} more)` : shown;
+}
+
 /** Collection resolution: id (`VariableCollectionId:…`) or exact name. Mirrors
- * `byPath`'s error style (exec-stdlib.ts:93-101) — name the candidates, capped at 20,
- * so a miss is correctable without a second round-trip. */
+ * `byPath`'s error style (exec-stdlib.ts:93-101) — name the candidates so a miss is
+ * correctable without a second round-trip. */
 async function resolveCollection(ref: string): Promise<VariableCollection> {
   const all = await figma.variables.getLocalVariableCollectionsAsync();
   const byId = all.find((c) => c.id === ref);
   if (byId) return byId;
   const byName = all.find((c) => c.name === ref);
   if (byName) return byName;
-  const names20 = all.slice(0, 20).map((c) => c.name).join(', ');
-  throw withCode(new Error(`collection not found: "${ref}" — available: ${names20}`), 'E_INVALID_ARGS');
+  throw withCode(
+    new Error(`collection not found: "${ref}" — available: ${listWithMore(all.map((c) => c.name))}`),
+    'E_INVALID_ARGS',
+  );
 }
 
 function modeList(collection: VariableCollection): { modeId: string; name: string }[] {
@@ -29,7 +42,7 @@ function findMode(collection: VariableCollection, modeId: string): { modeId: str
   const mode = collection.modes.find((m) => m.modeId === modeId);
   if (!mode) {
     throw withCode(
-      new Error(`mode not found: "${modeId}" on collection "${collection.name}" — available: ${collection.modes.map((m) => m.name).join(', ')}`),
+      new Error(`mode not found: "${modeId}" on collection "${collection.name}" — available: ${listWithMore(collection.modes.map((m) => m.name))}`),
       'E_INVALID_ARGS',
     );
   }
@@ -59,7 +72,7 @@ async function rename(ref: string, newName: string): Promise<{ id: string; name:
  * es-debt: page-scoped reference counting omitted, not faked. Upgrade trigger: a
  * real task needs the count, or a file-wide bound-reference reader lands.
  */
-async function remove(ref: string): Promise<{ id: string; name: string; boundReferencesChecked: boolean; boundReferences?: number }> {
+async function remove(ref: string): Promise<{ id: string; name: string; boundReferencesChecked: boolean }> {
   const variable = await resolveVariable(ref);
   const id = variable.id;
   const name = variable.name;
@@ -151,16 +164,16 @@ async function setModeValue(
   const mode = collection.modes.find((m) => m.name === modeName);
   if (!mode) {
     throw withCode(
-      new Error(`mode "${modeName}" not found on collection "${collection.name}" — available: ${collection.modes.map((m) => m.name).join(', ')}`),
+      new Error(`mode "${modeName}" not found on collection "${collection.name}" — available: ${listWithMore(collection.modes.map((m) => m.name))}`),
       'E_INVALID_ARGS',
     );
   }
   variable.setValueForMode(mode.modeId, value as VariableValue);
   const actual = variable.valuesByMode[mode.modeId];
-  const matches = variable.resolvedType === 'COLOR'
-    ? valuesEqual(actual, value as VariableValue)
-    : actual === value;
-  if (!matches) {
+  // Stage-4 review (PR #10 issue 1): valuesEqual handles every real VariableValue
+  // shape (RGBA epsilon, VARIABLE_ALIAS by target id, primitives strict) — it is
+  // never reference equality, which broke every non-COLOR alias write.
+  if (!valuesEqual(actual, value as VariableValue)) {
     throw withCode(new Error(`setModeValue applied but "${modeName}" reads back ${JSON.stringify(actual)}, not ${JSON.stringify(value)}`), 'E_EVAL');
   }
   return { id: variable.id, name: variable.name, mode: { modeId: mode.modeId, name: mode.name }, value: actual };
@@ -179,7 +192,7 @@ async function resolveCollectionOfVariable(variable: Variable): Promise<Variable
 
 export interface ExecStdlibVars {
   rename(ref: string, newName: string): Promise<{ id: string; name: string; oldName: string }>;
-  remove(ref: string): Promise<{ id: string; name: string; boundReferencesChecked: boolean; boundReferences?: number }>;
+  remove(ref: string): Promise<{ id: string; name: string; boundReferencesChecked: boolean }>;
   describe(ref: string, description: string): Promise<{ id: string; name: string; description: string }>;
   addMode(collection: string, modeName: string): Promise<{ collectionId: string; name: string; modes: { modeId: string; name: string }[] }>;
   renameMode(collection: string, modeId: string, newName: string): Promise<{ collectionId: string; modes: { modeId: string; name: string }[]; oldName: string }>;

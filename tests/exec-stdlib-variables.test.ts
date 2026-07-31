@@ -3,7 +3,9 @@
 // path AND the failed-verification / bad-input throws, per the repo's own contract
 // (exec-stdlib.ts:1-4).
 import { describe, it, expect } from 'vitest';
-import { installMockFigma, setMockLocalVariables, makeMockVariable } from './helpers/mock-figma.ts';
+import {
+  installMockFigma, setMockLocalVariables, makeMockVariable, setMockModeCap,
+} from './helpers/mock-figma.ts';
 import { createExecStdlibVars } from '../plugin/src/main/exec-stdlib-variables.ts';
 
 describe('ui.vars.rename', () => {
@@ -108,6 +110,23 @@ describe('ui.vars.addMode / renameMode / removeMode', () => {
     await expect(createExecStdlibVars().addMode('Nope', 'Dark'))
       .rejects.toMatchObject({ code: 'E_INVALID_ARGS', message: expect.stringContaining('Tokens') });
   });
+
+  // Stage-4 review, PR #10 minor 3 — this catch (exec-stdlib-variables.ts's addMode)
+  // was previously never exercised by any test; the mock now has a real refusal path.
+  it('wraps a plan-limit refusal (or any addMode throw) as E_EVAL, not the raw Figma error', async () => {
+    const figma = installMockFigma();
+    const collection = figma.variables.createVariableCollection('Tokens');
+    setMockModeCap(1); // collection already has 'Mode 1' — the next addMode hits the cap
+    await expect(createExecStdlibVars().addMode(collection.name, 'Dark'))
+      .rejects.toMatchObject({ code: 'E_EVAL', message: expect.stringContaining('Limited to 1 modes only') });
+  });
+
+  it('resolveCollection truncates a long candidate list with a "+N more" tail, never a silent cut', async () => {
+    const figma = installMockFigma();
+    for (let i = 0; i < 25; i++) figma.variables.createVariableCollection(`Collection ${i}`);
+    await expect(createExecStdlibVars().addMode('Nope', 'Dark'))
+      .rejects.toMatchObject({ message: expect.stringContaining('+5 more') });
+  });
 });
 
 describe('ui.vars.setModeValue', () => {
@@ -140,5 +159,23 @@ describe('ui.vars.setModeValue', () => {
 
     const result = await createExecStdlibVars().setModeValue(variable.name, 'Mode 1', 24);
     expect(result.value).toBe(24);
+  });
+
+  // Stage-4 review, PR #10 issue 1 — a VARIABLE_ALIAS write (the semantic→primitive
+  // token layer) used to throw E_EVAL even though the canvas took it correctly: the
+  // comparison for non-COLOR types was reference equality, and the mock stored the
+  // caller's own object, so no test could see it. Both are fixed now: the mock stores
+  // a structural clone, and the comparator understands VARIABLE_ALIAS by shape.
+  it('sets a VARIABLE_ALIAS value (semantic token → primitive) and verifies it structurally', async () => {
+    const figma = installMockFigma();
+    const collection = figma.variables.createVariableCollection('Tokens');
+    const primitive = figma.variables.createVariable('color/blue/600', collection, 'COLOR');
+    const semantic = figma.variables.createVariable('color/bg/action', collection, 'COLOR');
+
+    const result = await createExecStdlibVars().setModeValue(
+      semantic.name, 'Mode 1', { type: 'VARIABLE_ALIAS', id: primitive.id },
+    );
+
+    expect(result.value).toEqual({ type: 'VARIABLE_ALIAS', id: primitive.id });
   });
 });

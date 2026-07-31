@@ -105,7 +105,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
     expect(result.sizeWarning).toContain('41 variants');
   });
 
-  it('throws E_EVAL when the combined set disagrees with what we intended — never trusts an unverified merge', async () => {
+  it('throws E_EVAL when the combined set disagrees with what we intended, AND self-cleans up: base name restored, its own clone removed', async () => {
     const figma = installMockFigma();
     const base = makeComponent('Base');
     setMockComponents([base]);
@@ -120,6 +120,41 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
     await expect(createExecStdlibComponentSet().componentSet({ base: base.id, axes: { State: ['default', 'hover'] } }))
       .rejects.toMatchObject({ code: 'E_EVAL' });
+
+    // Stage-4 review issue 2: the helper's OWN mutations (rename the base, clone it)
+    // must not survive its OWN thrown failure — the base's NAME is restored. (The
+    // base itself is still inside whatever `combineAsVariants` produced — cleanup is
+    // bounded to what the helper created/renamed, not un-combining Figma's own
+    // structure; that entanglement is exactly `--undo-group`'s job, not this helper's.)
+    expect(base.name).toBe('Base');
+  });
+
+  it('restores the base name AND removes its own clone when the failure is UNRELATED to verification (e.g. combineAsVariants itself throws) — ruled independently of issue 2', async () => {
+    const figma = installMockFigma();
+    const frame = figma.createFrame(); // a real parent, so clone() actually attaches — proves removal
+    const base = makeComponent('Base');
+    frame.appendChild(base);
+    setMockComponents([base]);
+    figma.combineAsVariants = (() => { throw new Error('in combineAsVariants: boom'); }) as typeof figma.combineAsVariants;
+
+    await expect(createExecStdlibComponentSet().componentSet({ base: base.id, axes: { State: ['default', 'hover'] } }))
+      .rejects.toThrow(/boom/);
+
+    expect(base.name).toBe('Base');
+    // Exactly the base remains in the frame — the clone `buildModeA` created for the
+    // second axis value was removed by cleanup(), not left orphaned on the canvas.
+    expect(frame.children).toEqual([base]);
+  });
+
+  it('rejects a parent that cannot sensibly hold a component set (a COMPONENT, not PAGE/FRAME/SECTION/GROUP)', async () => {
+    installMockFigma();
+    const base = makeComponent('Base');
+    const notAContainer = makeComponent('NotAContainer');
+    setMockComponents([base, notAContainer]);
+
+    await expect(createExecStdlibComponentSet().componentSet({
+      base: base.id, axes: { State: ['default'] }, parent: notAContainer.id,
+    })).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
   });
 });
 
@@ -165,6 +200,22 @@ describe('componentSet — mode 2 (combine existing components)', () => {
     await expect(createExecStdlibComponentSet().componentSet({ components: [a.id], variantProps: [] }))
       .rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
   });
+
+  it('restores each component\'s original name when a later step throws — mode 2\'s own rollback', async () => {
+    const figma = installMockFigma();
+    const a = makeComponent('CompA');
+    const b = makeComponent('CompB');
+    setMockComponents([a, b]);
+    figma.combineAsVariants = (() => { throw new Error('in combineAsVariants: boom'); }) as typeof figma.combineAsVariants;
+
+    await expect(createExecStdlibComponentSet().componentSet({
+      components: [a.id, b.id],
+      variantProps: [{ State: 'default' }, { State: 'hover' }],
+    })).rejects.toThrow(/boom/);
+
+    expect(a.name).toBe('CompA');
+    expect(b.name).toBe('CompB');
+  });
 });
 
 describe('exec-stdlib-component-matrix — pure helpers', () => {
@@ -192,5 +243,28 @@ describe('exec-stdlib-component-matrix — pure helpers', () => {
   it('sameAxisMap compares by content, not key order', () => {
     expect(sameAxisMap({ State: 'hover', Size: 'lg' }, { Size: 'lg', State: 'hover' })).toBe(true);
     expect(sameAxisMap({ State: 'hover' }, { State: 'default' })).toBe(false);
+  });
+});
+
+// Stage-4 review, PR #10 minor 3 — the mock must encode the refusals real Figma
+// gives, independent of any caller's own pre-checks, or it is not trustworthy.
+describe('mock-figma — figma.combineAsVariants refusals', () => {
+  it('refuses an empty node list', () => {
+    const figma = installMockFigma();
+    expect(() => figma.combineAsVariants([], figma.currentPage)).toThrow(/at least one node/);
+  });
+
+  it('refuses a non-COMPONENT node', () => {
+    const figma = installMockFigma();
+    const frame = figma.createFrame();
+    expect(() => figma.combineAsVariants([frame], figma.currentPage)).toThrow(/not a COMPONENT/);
+  });
+
+  it('refuses a component already inside a COMPONENT_SET', () => {
+    const figma = installMockFigma();
+    const a = makeComponent('State=default');
+    figma.combineAsVariants([a], figma.currentPage);
+    const b = makeComponent('State=hover');
+    expect(() => figma.combineAsVariants([a, b], figma.currentPage)).toThrow(/already belongs to a component set/);
   });
 });

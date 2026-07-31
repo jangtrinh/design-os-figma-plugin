@@ -215,6 +215,16 @@ export class FakeNode {
     return copy;
   }
 
+  /** BaseNode.remove() — detaches this node from its parent. Backs `ui.componentSet`'s
+   * self-compensating rollback (stage-4 review, PR #10 issue 2): a clone it created
+   * gets removed again if a LATER step in the same call throws. */
+  remove(): void {
+    if (this.parent) {
+      this.parent.children = this.parent.children.filter((c) => c !== this);
+      this.parent = null;
+    }
+  }
+
   /** resize() FIXES both axes of an auto-layout frame — Figma's documented
    * behaviour, and the one the permissive mock skipped. createFrameNode resizes
    * AFTER applying auto-layout, so without this every AUTO frame round-tripped as
@@ -710,12 +720,22 @@ export function setMockVariableCollections(cols: FakeCollection[]): void {
   collections = cols;
 }
 
+/** Test-configurable stand-in for Figma's real (plan- and date-dependent — see
+ * knowledge/variables-and-modes.md §2) mode-count cap. Not a claim about what the
+ * real limit is; just a deterministic way for a test to exercise the refusal path
+ * `ui.vars.addMode`'s catch depends on (stage-4 review, PR #10 minor 3). */
+let mockModeCap: number | null = null;
+export function setMockModeCap(cap: number | null): void { mockModeCap = cap; }
+
 function createVariableCollection(name: string): FakeCollection {
   const col: FakeCollection = {
     id: `VariableCollectionId:${idSeq++}`,
     name,
     modes: [{ modeId: `m${idSeq++}`, name: 'Mode 1' }],
     addMode(modeName: string): string {
+      if (mockModeCap !== null && col.modes.length >= mockModeCap) {
+        throw new Error(`in addMode: Limited to ${mockModeCap} modes only`);
+      }
       const modeId = `m${idSeq++}`;
       col.modes.push({ modeId, name: modeName });
       return modeId;
@@ -748,8 +768,14 @@ function createVariable(name: string, collection: FakeCollection, resolvedType: 
     resolvedType,
     variableCollectionId: collection.id,
     valuesByMode: {},
+    // Stores a STRUCTURAL CLONE, never the caller's own reference — Figma serializes
+    // a mode value into the file, it doesn't keep your object alive. A by-reference
+    // mock let a reference-equality verification bug (comparing `actual === value`)
+    // pass here while the same call would throw live: `actual` must be a genuinely
+    // DIFFERENT object than `value` for a structural-equality bug to be catchable at
+    // all (stage-4 review, PR #10 issue 1).
     setValueForMode(modeId: string, value: unknown) {
-      (this.valuesByMode as Record<string, unknown>)[modeId] = value;
+      (this.valuesByMode as Record<string, unknown>)[modeId] = JSON.parse(JSON.stringify(value));
     },
   };
   localVariables.push(v);
@@ -807,6 +833,7 @@ export function installMockFigma(): MockFigma {
   libraryVariables = [];
   collections = [];
   effectStyles = [];
+  mockModeCap = null;
   const mk = (type: string): FakeNode => {
     const n = new FakeNode(type);
     if (type === 'TEXT') n.name = 'Text';
@@ -831,6 +858,18 @@ export function installMockFigma(): MockFigma {
       return found;
     },
     combineAsVariants: (nodes: FakeNode[], parent: FakeNode) => {
+      // Real Figma refusals, encoded so the mock is trustworthy independent of a
+      // caller's own pre-checks (stage-4 review, PR #10 minor 3) — the same
+      // philosophy as removeMode refusing the last mode above.
+      if (nodes.length === 0) throw new Error('in combineAsVariants: at least one node is required');
+      for (const n of nodes) {
+        if (n.type !== 'COMPONENT') {
+          throw new Error(`in combineAsVariants: node "${n.name}" (${n.id}) is not a COMPONENT`);
+        }
+        if (n.parent?.type === 'COMPONENT_SET') {
+          throw new Error(`in combineAsVariants: node "${n.name}" (${n.id}) already belongs to a component set`);
+        }
+      }
       const set = new FakeNode('COMPONENT_SET');
       set.name = nodes[0]?.name ?? 'Component Set';
       for (const n of nodes) {

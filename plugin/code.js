@@ -625,11 +625,17 @@
     return all.find((c) => c.name === name) ?? figma.variables.createVariableCollection(name);
   }
   function valuesEqual(a, b) {
-    if (typeof a === "object" && a !== null && typeof b === "object" && b !== null && "r" in a && "r" in b) {
-      const ca = a;
-      const cb = b;
-      const eps = 1 / 512;
-      return Math.abs(ca.r - cb.r) < eps && Math.abs(ca.g - cb.g) < eps && Math.abs(ca.b - cb.b) < eps && Math.abs((ca.a ?? 1) - (cb.a ?? 1)) < eps;
+    if (typeof a === "object" && a !== null && typeof b === "object" && b !== null) {
+      if ("r" in a && "r" in b) {
+        const ca = a;
+        const cb = b;
+        const eps = 1 / 512;
+        return Math.abs(ca.r - cb.r) < eps && Math.abs(ca.g - cb.g) < eps && Math.abs(ca.b - cb.b) < eps && Math.abs((ca.a ?? 1) - (cb.a ?? 1)) < eps;
+      }
+      const aa = a;
+      const bb = b;
+      if (aa.type === "VARIABLE_ALIAS" && bb.type === "VARIABLE_ALIAS") return aa.id === bb.id;
+      return JSON.stringify(a) === JSON.stringify(b);
     }
     return a === b;
   }
@@ -2520,14 +2526,21 @@
   }
 
   // plugin/src/main/exec-stdlib-variables.ts
+  function listWithMore(names, cap = 20) {
+    const shown = names.slice(0, cap).join(", ");
+    const rest = names.length - cap;
+    return rest > 0 ? `${shown} (+${rest} more)` : shown;
+  }
   async function resolveCollection(ref) {
     const all = await figma.variables.getLocalVariableCollectionsAsync();
     const byId = all.find((c) => c.id === ref);
     if (byId) return byId;
     const byName = all.find((c) => c.name === ref);
     if (byName) return byName;
-    const names20 = all.slice(0, 20).map((c) => c.name).join(", ");
-    throw withCode(new Error(`collection not found: "${ref}" \u2014 available: ${names20}`), "E_INVALID_ARGS");
+    throw withCode(
+      new Error(`collection not found: "${ref}" \u2014 available: ${listWithMore(all.map((c) => c.name))}`),
+      "E_INVALID_ARGS"
+    );
   }
   function modeList(collection) {
     return collection.modes.map((m) => ({ modeId: m.modeId, name: m.name }));
@@ -2536,7 +2549,7 @@
     const mode = collection.modes.find((m) => m.modeId === modeId);
     if (!mode) {
       throw withCode(
-        new Error(`mode not found: "${modeId}" on collection "${collection.name}" \u2014 available: ${collection.modes.map((m) => m.name).join(", ")}`),
+        new Error(`mode not found: "${modeId}" on collection "${collection.name}" \u2014 available: ${listWithMore(collection.modes.map((m) => m.name))}`),
         "E_INVALID_ARGS"
       );
     }
@@ -2618,14 +2631,13 @@
     const mode = collection.modes.find((m) => m.name === modeName);
     if (!mode) {
       throw withCode(
-        new Error(`mode "${modeName}" not found on collection "${collection.name}" \u2014 available: ${collection.modes.map((m) => m.name).join(", ")}`),
+        new Error(`mode "${modeName}" not found on collection "${collection.name}" \u2014 available: ${listWithMore(collection.modes.map((m) => m.name))}`),
         "E_INVALID_ARGS"
       );
     }
     variable.setValueForMode(mode.modeId, value);
     const actual = variable.valuesByMode[mode.modeId];
-    const matches = variable.resolvedType === "COLOR" ? valuesEqual(actual, value) : actual === value;
-    if (!matches) {
+    if (!valuesEqual(actual, value)) {
       throw withCode(new Error(`setModeValue applied but "${modeName}" reads back ${JSON.stringify(actual)}, not ${JSON.stringify(value)}`), "E_EVAL");
     }
     return { id: variable.id, name: variable.name, mode: { modeId: mode.modeId, name: mode.name }, value: actual };
@@ -2679,15 +2691,7 @@
     return ak.every((k) => a[k] === b[k]);
   }
 
-  // plugin/src/main/exec-stdlib-component-set.ts
-  async function resolveParent(ref) {
-    if (!ref) return figma.currentPage;
-    const node = await figma.getNodeByIdAsync(ref);
-    if (!node || !("appendChild" in node)) {
-      throw withCode(new Error(`parent not found or cannot contain a component set: ${ref}`), "E_INVALID_ARGS");
-    }
-    return node;
-  }
+  // plugin/src/main/exec-stdlib-component-build.ts
   async function buildModeA(base, axes) {
     const baseNode = await figma.getNodeByIdAsync(base);
     if (!baseNode || baseNode.type !== "COMPONENT") {
@@ -2707,6 +2711,7 @@
     if (combos.length > MAX_VARIANTS) {
       throw withCode(new Error(`${combos.length} variants requested \u2014 capped at ${MAX_VARIANTS}. Split by one axis and build multiple sets.`), "E_INVALID_ARGS");
     }
+    const originalBaseName = baseNode.name;
     const stepY = Math.ceil(baseNode.height) + 40;
     baseNode.name = comboName(combos[0], axisOrder);
     const nodes = [baseNode];
@@ -2716,7 +2721,16 @@
       clone.y = baseNode.y + i * stepY;
       nodes.push(clone);
     }
-    return { nodes, expected: combos };
+    const clones = nodes.slice(1);
+    return {
+      nodes,
+      expected: combos,
+      warnings: [],
+      cleanup() {
+        for (const c of clones) c.remove();
+        baseNode.name = originalBaseName;
+      }
+    };
   }
   async function buildModeB(ids, variantProps) {
     if (ids.length > MAX_VARIANTS) {
@@ -2728,6 +2742,7 @@
     const nodes = [];
     const expected = [];
     const warnings2 = [];
+    const renamed = [];
     for (let i = 0; i < ids.length; i++) {
       const node = await figma.getNodeByIdAsync(ids[i]);
       if (!node || node.type !== "COMPONENT") {
@@ -2744,6 +2759,7 @@
           assertCleanToken("property", k);
           assertCleanToken("value", props[k]);
         }
+        renamed.push({ node, originalName: node.name });
         node.name = comboName(props, keys);
         expected.push({ ...props });
       } else {
@@ -2756,7 +2772,25 @@
       }
       nodes.push(node);
     }
-    return { nodes, expected, warnings: warnings2 };
+    return {
+      nodes,
+      expected,
+      warnings: warnings2,
+      cleanup() {
+        for (const { node, originalName } of renamed) node.name = originalName;
+      }
+    };
+  }
+
+  // plugin/src/main/exec-stdlib-component-set.ts
+  var VALID_PARENT_TYPES = /* @__PURE__ */ new Set(["PAGE", "FRAME", "SECTION", "GROUP"]);
+  async function resolveParent(ref) {
+    if (!ref) return figma.currentPage;
+    const node = await figma.getNodeByIdAsync(ref);
+    if (!node || !VALID_PARENT_TYPES.has(node.type)) {
+      throw withCode(new Error(`parent not found or cannot contain a component set: ${ref}`), "E_INVALID_ARGS");
+    }
+    return node;
   }
   async function componentSet(opts) {
     const hasBase = typeof opts.base === "string";
@@ -2764,45 +2798,43 @@
     if (hasBase === hasComponents) {
       throw withCode(new Error("componentSet needs exactly one of: base + axes, or components"), "E_INVALID_ARGS");
     }
-    let nodes;
-    let expected;
-    let warnings2 = [];
-    if (hasBase) {
-      if (!opts.axes || Object.keys(opts.axes).length === 0) {
-        throw withCode(new Error('axes is required with base \u2014 e.g. { State: ["default","hover"], Size: ["sm","lg"] }'), "E_INVALID_ARGS");
+    if (hasBase && (!opts.axes || Object.keys(opts.axes).length === 0)) {
+      throw withCode(new Error('axes is required with base \u2014 e.g. { State: ["default","hover"], Size: ["sm","lg"] }'), "E_INVALID_ARGS");
+    }
+    const build = hasBase ? await buildModeA(opts.base, opts.axes) : await buildModeB(opts.components, opts.variantProps);
+    try {
+      const parent = await resolveParent(opts.parent);
+      const set = figma.combineAsVariants(build.nodes, parent);
+      if (opts.name) set.name = opts.name;
+      if (typeof opts.x === "number") set.x = opts.x;
+      if (typeof opts.y === "number") set.y = opts.y;
+      const children = set.children.filter((c) => c.type === "COMPONENT");
+      if (children.length !== build.nodes.length) {
+        throw withCode(new Error(`componentSet combined ${children.length} children, expected ${build.nodes.length}`), "E_EVAL");
       }
-      ({ nodes, expected } = await buildModeA(opts.base, opts.axes));
-    } else {
-      ({ nodes, expected, warnings: warnings2 } = await buildModeB(opts.components, opts.variantProps));
+      const actualAxes = children.map((c) => parseComboName(c.name));
+      const mismatches = build.expected.map((exp, i) => ({ i, exp, actual: actualAxes[i] })).filter(({ exp, actual }) => !actual || !sameAxisMap(exp, actual));
+      if (mismatches.length > 0) {
+        throw withCode(new Error(`componentSet variant names did not parse back to the intended axes: ${JSON.stringify(mismatches)}`), "E_EVAL");
+      }
+      const propertyDefinitions = set.componentPropertyDefinitions ?? {};
+      const variantCount = children.length;
+      const sizeWarning = variantCount > WARN_ABOVE ? `${variantCount} variants \u2014 large sets are slow to build; consider splitting by one axis` : void 0;
+      return {
+        id: set.id,
+        name: set.name,
+        variantCount,
+        // Each variant's key AND id — instances come from a variant's key/id, never
+        // the set's (fork's hint, write-tools.ts ~3040).
+        variants: children.map((c, i) => ({ id: c.id, name: c.name, key: c.key, axes: actualAxes[i] })),
+        propertyDefinitions,
+        ...sizeWarning ? { sizeWarning } : {},
+        ...build.warnings.length ? { warnings: build.warnings } : {}
+      };
+    } catch (err) {
+      build.cleanup();
+      throw err;
     }
-    const parent = await resolveParent(opts.parent);
-    const set = figma.combineAsVariants(nodes, parent);
-    if (opts.name) set.name = opts.name;
-    if (typeof opts.x === "number") set.x = opts.x;
-    if (typeof opts.y === "number") set.y = opts.y;
-    const children = set.children.filter((c) => c.type === "COMPONENT");
-    if (children.length !== nodes.length) {
-      throw withCode(new Error(`componentSet combined ${children.length} children, expected ${nodes.length}`), "E_EVAL");
-    }
-    const actualAxes = children.map((c) => parseComboName(c.name));
-    const mismatches = expected.map((exp, i) => ({ i, exp, actual: actualAxes[i] })).filter(({ exp, actual }) => !actual || !sameAxisMap(exp, actual));
-    if (mismatches.length > 0) {
-      throw withCode(new Error(`componentSet variant names did not parse back to the intended axes: ${JSON.stringify(mismatches)}`), "E_EVAL");
-    }
-    const propertyDefinitions = set.componentPropertyDefinitions ?? {};
-    const variantCount = children.length;
-    const sizeWarning = variantCount > WARN_ABOVE ? `${variantCount} variants \u2014 large sets are slow to build; consider splitting by one axis` : void 0;
-    return {
-      id: set.id,
-      name: set.name,
-      variantCount,
-      // Each variant's key AND id — instances come from a variant's key/id, never
-      // the set's (fork's hint, write-tools.ts ~3040).
-      variants: children.map((c, i) => ({ id: c.id, name: c.name, key: c.key, axes: actualAxes[i] })),
-      propertyDefinitions,
-      ...sizeWarning ? { sizeWarning } : {},
-      ...warnings2.length ? { warnings: warnings2 } : {}
-    };
   }
   function createExecStdlibComponentSet() {
     return { componentSet };
