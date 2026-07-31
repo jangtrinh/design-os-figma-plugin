@@ -201,6 +201,20 @@ export class FakeNode {
     return this._main;
   }
 
+  /** ComponentNode.clone() — duplicate + auto-insert as the next sibling, exactly
+   * as Figma does (unlike the private `cloneAs` this uses, which the createInstance/
+   * swapComponent internals need WITHOUT the sibling-insert side effect). Backs
+   * `ui.componentSet`'s mode-1 clone-the-base path (absorption phase-01). */
+  clone(): FakeNode {
+    const copy = this.cloneAs(this.type);
+    if (this.parent) {
+      const idx = this.parent.children.indexOf(this);
+      this.parent.children.splice(idx + 1, 0, copy);
+      copy.parent = this.parent;
+    }
+    return copy;
+  }
+
   /** resize() FIXES both axes of an auto-layout frame — Figma's documented
    * behaviour, and the one the permissive mock skipped. createFrameNode resizes
    * AFTER applying auto-layout, so without this every AUTO frame round-tripped as
@@ -613,16 +627,21 @@ function setBoundVariableForPaint(
 
 /** A Variable, as the plugin API models one: identity + a value per mode.
  * `remote`/`key` are the PUBLISHED (library) variable's identity — Figma sets
- * remote=true and a stable publish key on a variable that lives in another file. */
+ * remote=true and a stable publish key on a variable that lives in another file.
+ * `description` and `remove()` back the Basket-B `ui.vars.*` helpers (absorption
+ * phase-01) — every factory below wires a working `remove()` that actually
+ * splices the variable out of whichever list it lives in, never a no-op stub. */
 export interface FakeVariable {
   id: string;
   name: string;
+  description?: string;
   resolvedType?: string;
   variableCollectionId?: string;
   remote?: boolean;
   key?: string;
   valuesByMode?: Record<string, unknown>;
   setValueForMode?(modeId: string, value: unknown): void;
+  remove(): void;
 }
 
 /** The file's LOCAL variables, as getLocalVariablesAsync reports them. A binding
@@ -636,7 +655,11 @@ export function setMockLocalVariables(vars: FakeVariable[]): void {
 /** A local variable that already EXISTS in the file — what a rebuild-from-spec
  * must find by name (spec-005 P6). */
 export function makeMockVariable(name: string, resolvedType = 'COLOR'): FakeVariable {
-  return { id: `VariableID:${idSeq++}`, name, resolvedType };
+  const v: FakeVariable = {
+    id: `VariableID:${idSeq++}`, name, resolvedType,
+    remove() { localVariables = localVariables.filter((x) => x !== v); },
+  };
+  return v;
 }
 
 /** A LOCAL variable that carries a publish key — what the live probe of
@@ -645,7 +668,11 @@ export function makeMockVariable(name: string, resolvedType = 'COLOR'): FakeVari
  * getVariableByIdAsync, but importVariableByKeyAsync refuses its key (nothing
  * published it), so a rebuild that leans on the import road alone loses it. */
 export function makeMockKeyedLocalVariable(name: string, key: string, resolvedType = 'COLOR'): FakeVariable {
-  return { id: `VariableID:${idSeq++}`, name, key, remote: false, resolvedType };
+  const v: FakeVariable = {
+    id: `VariableID:${idSeq++}`, name, key, remote: false, resolvedType,
+    remove() { localVariables = localVariables.filter((x) => x !== v); },
+  };
+  return v;
 }
 
 /** PUBLISHED variables living in a subscribed library. The contract that matters:
@@ -659,14 +686,24 @@ export function setMockLibraryVariables(vars: FakeVariable[]): void {
 
 /** A published library variable: bound by id on the canvas, reattached by key. */
 export function makeMockLibraryVariable(name: string, key: string, resolvedType = 'COLOR'): FakeVariable {
-  return { id: `VariableID:${idSeq++}`, name, key, remote: true, resolvedType };
+  const v: FakeVariable = {
+    id: `VariableID:${idSeq++}`, name, key, remote: true, resolvedType,
+    remove() { libraryVariables = libraryVariables.filter((x) => x !== v); },
+  };
+  return v;
 }
 
-/** The file's variable COLLECTIONS, as the token-import path finds/creates them. */
-interface FakeCollection {
+/** The file's variable COLLECTIONS, as the token-import path finds/creates them.
+ * `addMode`/`removeMode`/`renameMode` back the Basket-B `ui.vars.*` mode helpers
+ * (absorption phase-01) — real Figma methods on VariableCollection, not storage
+ * a caller pokes directly (`modes` is READ from, never written to, outside them). */
+export interface FakeCollection {
   id: string;
   name: string;
   modes: Array<{ modeId: string; name: string }>;
+  addMode(name: string): string;
+  removeMode(modeId: string): void;
+  renameMode(modeId: string, newName: string): void;
 }
 let collections: FakeCollection[] = [];
 export function setMockVariableCollections(cols: FakeCollection[]): void {
@@ -678,6 +715,26 @@ function createVariableCollection(name: string): FakeCollection {
     id: `VariableCollectionId:${idSeq++}`,
     name,
     modes: [{ modeId: `m${idSeq++}`, name: 'Mode 1' }],
+    addMode(modeName: string): string {
+      const modeId = `m${idSeq++}`;
+      col.modes.push({ modeId, name: modeName });
+      return modeId;
+    },
+    removeMode(modeId: string): void {
+      // Figma refuses to remove the LAST mode a collection has — mirrored here so
+      // a test proving that refusal doesn't need a live canvas to see it.
+      if (col.modes.length <= 1) {
+        throw new Error('in removeMode: Cannot remove the last mode of a variable collection');
+      }
+      const before = col.modes.length;
+      col.modes = col.modes.filter((m) => m.modeId !== modeId);
+      if (col.modes.length === before) throw new Error(`in removeMode: mode not found: ${modeId}`);
+    },
+    renameMode(modeId: string, newName: string): void {
+      const mode = col.modes.find((m) => m.modeId === modeId);
+      if (!mode) throw new Error(`in renameMode: mode not found: ${modeId}`);
+      mode.name = newName;
+    },
   };
   collections.push(col);
   return col;
@@ -720,6 +777,7 @@ export function makeMockComponent(name: string, key?: string): FakeNode {
 
 export interface MockFigma {
   mixed: symbol;
+  currentPage: FakeNode;
   createFrame(): FakeNode;
   createText(): FakeNode;
   createRectangle(): FakeNode;
@@ -728,6 +786,10 @@ export interface MockFigma {
   listAvailableFontsAsync(): Promise<Array<{ fontName: FontName }>>;
   getNodeByIdAsync(id: string): Promise<FakeNode | null>;
   importComponentByKeyAsync(key: string): Promise<FakeNode>;
+  /** figma.combineAsVariants(nodes, parent) — moves each node into a new
+   * COMPONENT_SET appended to `parent`, and derives componentPropertyDefinitions
+   * from every child's "Prop=Value, ..." name, exactly as Figma parses them. */
+  combineAsVariants(nodes: FakeNode[], parent: FakeNode): FakeNode;
   variables: {
     setBoundVariableForPaint: typeof setBoundVariableForPaint;
     getLocalVariablesAsync(type?: string): Promise<FakeVariable[]>;
@@ -752,6 +814,7 @@ export function installMockFigma(): MockFigma {
   };
   const figma: MockFigma = {
     mixed: FIGMA_MIXED,
+    currentPage: (() => { const p = new FakeNode('PAGE'); p.name = 'Page 1'; return p; })(),
     createFrame: () => mk('FRAME'),
     createText: () => mk('TEXT'),
     createRectangle: () => mk('RECTANGLE'),
@@ -766,6 +829,33 @@ export function installMockFigma(): MockFigma {
       const found = components.find((c) => c.key === key);
       if (!found) throw new Error(`component key not found: ${key}`); // the library-miss edge
       return found;
+    },
+    combineAsVariants: (nodes: FakeNode[], parent: FakeNode) => {
+      const set = new FakeNode('COMPONENT_SET');
+      set.name = nodes[0]?.name ?? 'Component Set';
+      for (const n of nodes) {
+        if (n.parent) n.parent.children = n.parent.children.filter((c) => c !== n);
+        n.parent = set;
+        set.children.push(n);
+      }
+      parent.appendChild(set);
+      // Derive componentPropertyDefinitions from every child's "Prop=Value, ..."
+      // name — Figma parses variant properties out of the names, never stores
+      // them separately, so a mock that hand-stored them could hide a naming bug.
+      const defs: Record<string, { type: string; defaultValue: string; variantOptions: string[] }> = {};
+      for (const n of nodes) {
+        for (const part of n.name.split(', ')) {
+          const eq = part.indexOf('=');
+          if (eq === -1) continue;
+          const prop = part.slice(0, eq).trim();
+          const value = part.slice(eq + 1).trim();
+          if (!defs[prop]) defs[prop] = { type: 'VARIANT', defaultValue: value, variantOptions: [] };
+          if (!defs[prop].variantOptions.includes(value)) defs[prop].variantOptions.push(value);
+        }
+      }
+      set.componentPropertyDefinitions = defs;
+      nodesById.set(set.id, set);
+      return set;
     },
     variables: {
       setBoundVariableForPaint,

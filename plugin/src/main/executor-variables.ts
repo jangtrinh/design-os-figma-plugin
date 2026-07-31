@@ -22,8 +22,10 @@ async function findOrCreateCollection(name: string): Promise<VariableCollection>
   return all.find((c) => c.name === name) ?? figma.variables.createVariableCollection(name);
 }
 
-/** Value equality: colors with epsilon (round-trip tolerance), primitives strict. */
-function valuesEqual(a: VariableValue, b: VariableValue): boolean {
+/** Value equality: colors with epsilon (round-trip tolerance), primitives strict.
+ * Exported for `exec-stdlib-variables.ts`'s `setModeValue` verification — the
+ * repo's own rule is reuse, not a second comparator (exec-stdlib.ts:5-10). */
+export function valuesEqual(a: VariableValue, b: VariableValue): boolean {
   if (typeof a === 'object' && a !== null && typeof b === 'object' && b !== null && 'r' in a && 'r' in b) {
     const ca = a as RGBA; const cb = b as RGBA;
     const eps = 1 / 512;
@@ -176,10 +178,20 @@ export async function opCreateVariable(params: Record<string, unknown>): Promise
 
   const collection = await findOrCreateCollection(typeof params.collection === 'string' && params.collection ? params.collection : COLLECTION_NAME);
   const { variable, reused } = await createOrReuseVariable(collection, name, type, value);
-  // Optional named mode (creates only the value; mode must already exist)
+  // Optional named mode (sets only the value; the mode must already exist).
+  // Was a SILENT NO-OP on a bad mode name (set nothing, reported success) — the
+  // exact mistake `ui.vars.setModeValue` (exec-stdlib-variables.ts) exists to
+  // never repeat. Absorption phase-01 §5.4: throw, naming the modes that do
+  // exist, instead of quietly leaving the mode unset.
   if (typeof params.mode === 'string') {
     const mode = collection.modes.find((m) => m.name === params.mode);
-    if (mode) variable.setValueForMode(mode.modeId, value);
+    if (!mode) {
+      throw withCode(
+        new Error(`CREATE_VARIABLE mode "${params.mode}" not found on collection "${collection.name}" — available modes: ${collection.modes.map((m) => m.name).join(', ')}`),
+        'E_INVALID_ARGS',
+      );
+    }
+    variable.setValueForMode(mode.modeId, value);
   }
   return { id: variable.id, name: variable.name, reused };
 }

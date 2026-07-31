@@ -732,7 +732,13 @@
     const { variable, reused } = await createOrReuseVariable(collection, name, type, value);
     if (typeof params.mode === "string") {
       const mode = collection.modes.find((m) => m.name === params.mode);
-      if (mode) variable.setValueForMode(mode.modeId, value);
+      if (!mode) {
+        throw withCode(
+          new Error(`CREATE_VARIABLE mode "${params.mode}" not found on collection "${collection.name}" \u2014 available modes: ${collection.modes.map((m) => m.name).join(", ")}`),
+          "E_INVALID_ARGS"
+        );
+      }
+      variable.setValueForMode(mode.modeId, value);
     }
     return { id: variable.id, name: variable.name, reused };
   }
@@ -2513,6 +2519,295 @@
     return { id: inst.id, mainComponent: { id: component.id, name: component.name } };
   }
 
+  // plugin/src/main/exec-stdlib-variables.ts
+  async function resolveCollection(ref) {
+    const all = await figma.variables.getLocalVariableCollectionsAsync();
+    const byId = all.find((c) => c.id === ref);
+    if (byId) return byId;
+    const byName = all.find((c) => c.name === ref);
+    if (byName) return byName;
+    const names20 = all.slice(0, 20).map((c) => c.name).join(", ");
+    throw withCode(new Error(`collection not found: "${ref}" \u2014 available: ${names20}`), "E_INVALID_ARGS");
+  }
+  function modeList(collection) {
+    return collection.modes.map((m) => ({ modeId: m.modeId, name: m.name }));
+  }
+  function findMode(collection, modeId) {
+    const mode = collection.modes.find((m) => m.modeId === modeId);
+    if (!mode) {
+      throw withCode(
+        new Error(`mode not found: "${modeId}" on collection "${collection.name}" \u2014 available: ${collection.modes.map((m) => m.name).join(", ")}`),
+        "E_INVALID_ARGS"
+      );
+    }
+    return mode;
+  }
+  async function rename(ref, newName) {
+    if (typeof newName !== "string" || newName.length === 0) {
+      throw withCode(new Error("rename requires a non-empty newName"), "E_INVALID_ARGS");
+    }
+    const variable = await resolveVariable(ref);
+    const oldName = variable.name;
+    variable.name = newName;
+    if (variable.name !== newName) {
+      throw withCode(new Error(`rename applied but variable.name is still "${variable.name}"`), "E_EVAL");
+    }
+    return { id: variable.id, name: variable.name, oldName };
+  }
+  async function remove(ref) {
+    const variable = await resolveVariable(ref);
+    const id = variable.id;
+    const name = variable.name;
+    variable.remove();
+    return { id, name, boundReferencesChecked: false };
+  }
+  async function describe(ref, description) {
+    if (typeof description !== "string") {
+      throw withCode(new Error("describe requires a string description"), "E_INVALID_ARGS");
+    }
+    const variable = await resolveVariable(ref);
+    variable.description = description;
+    if (variable.description !== description) {
+      throw withCode(new Error(`describe applied but variable.description is still "${variable.description}"`), "E_EVAL");
+    }
+    return { id: variable.id, name: variable.name, description: variable.description };
+  }
+  async function addMode(collectionRef, modeName) {
+    if (typeof modeName !== "string" || modeName.length === 0) {
+      throw withCode(new Error("addMode requires a non-empty modeName"), "E_INVALID_ARGS");
+    }
+    const collection = await resolveCollection(collectionRef);
+    const before = collection.modes.length;
+    let modeId;
+    try {
+      modeId = collection.addMode(modeName);
+    } catch (err) {
+      throw withCode(new Error(`addMode "${modeName}" failed: ${String(err)}`), "E_EVAL");
+    }
+    if (collection.modes.length !== before + 1 || !collection.modes.some((m) => m.modeId === modeId)) {
+      throw withCode(new Error(`addMode "${modeName}" did not take \u2014 modes: ${collection.modes.map((m) => m.name).join(", ")}`), "E_EVAL");
+    }
+    return { collectionId: collection.id, name: collection.name, modes: modeList(collection) };
+  }
+  async function renameMode(collectionRef, modeId, newName) {
+    if (typeof newName !== "string" || newName.length === 0) {
+      throw withCode(new Error("renameMode requires a non-empty newName"), "E_INVALID_ARGS");
+    }
+    const collection = await resolveCollection(collectionRef);
+    const mode = findMode(collection, modeId);
+    const oldName = mode.name;
+    collection.renameMode(modeId, newName);
+    const after = findMode(collection, modeId);
+    if (after.name !== newName) {
+      throw withCode(new Error(`renameMode applied but mode "${modeId}" is still "${after.name}"`), "E_EVAL");
+    }
+    return { collectionId: collection.id, modes: modeList(collection), oldName };
+  }
+  async function removeMode(collectionRef, modeId) {
+    const collection = await resolveCollection(collectionRef);
+    findMode(collection, modeId);
+    collection.removeMode(modeId);
+    if (collection.modes.some((m) => m.modeId === modeId)) {
+      throw withCode(new Error(`removeMode applied but "${modeId}" is still present`), "E_EVAL");
+    }
+    return { collectionId: collection.id, modes: modeList(collection) };
+  }
+  async function setModeValue(ref, modeName, value) {
+    const variable = await resolveVariable(ref);
+    const collection = await resolveCollectionOfVariable(variable);
+    const mode = collection.modes.find((m) => m.name === modeName);
+    if (!mode) {
+      throw withCode(
+        new Error(`mode "${modeName}" not found on collection "${collection.name}" \u2014 available: ${collection.modes.map((m) => m.name).join(", ")}`),
+        "E_INVALID_ARGS"
+      );
+    }
+    variable.setValueForMode(mode.modeId, value);
+    const actual = variable.valuesByMode[mode.modeId];
+    const matches = variable.resolvedType === "COLOR" ? valuesEqual(actual, value) : actual === value;
+    if (!matches) {
+      throw withCode(new Error(`setModeValue applied but "${modeName}" reads back ${JSON.stringify(actual)}, not ${JSON.stringify(value)}`), "E_EVAL");
+    }
+    return { id: variable.id, name: variable.name, mode: { modeId: mode.modeId, name: mode.name }, value: actual };
+  }
+  async function resolveCollectionOfVariable(variable) {
+    const all = await figma.variables.getLocalVariableCollectionsAsync();
+    const collection = all.find((c) => c.id === variable.variableCollectionId);
+    if (!collection) {
+      throw withCode(new Error(`collection not found for variable "${variable.name}" (${variable.variableCollectionId})`), "E_EVAL");
+    }
+    return collection;
+  }
+  function createExecStdlibVars() {
+    return { rename, remove, describe, addMode, renameMode, removeMode, setModeValue };
+  }
+
+  // plugin/src/main/exec-stdlib-component-matrix.ts
+  var MAX_VARIANTS = 100;
+  var WARN_ABOVE = 40;
+  function assertCleanToken(kind, s) {
+    if (s.includes("=") || s.includes(",")) {
+      throw withCode(new Error(`${kind} "${s}" must not contain "=" or "," \u2014 Figma parses variant names on those characters`), "E_INVALID_ARGS");
+    }
+  }
+  function comboName(combo, axisOrder) {
+    return axisOrder.map((a) => `${a}=${combo[a]}`).join(", ");
+  }
+  function cartesianProduct(axes) {
+    const axisOrder = Object.keys(axes);
+    let combos = [{}];
+    for (const axis of axisOrder) {
+      const next = [];
+      for (const c of combos) for (const v of axes[axis]) next.push({ ...c, [axis]: v });
+      combos = next;
+    }
+    return combos;
+  }
+  function parseComboName(name) {
+    const out = {};
+    for (const part of name.split(", ")) {
+      const eq = part.indexOf("=");
+      if (eq === -1) continue;
+      out[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+    }
+    return out;
+  }
+  function sameAxisMap(a, b) {
+    const ak = Object.keys(a).sort();
+    const bk = Object.keys(b).sort();
+    if (ak.length !== bk.length || ak.some((k, i) => k !== bk[i])) return false;
+    return ak.every((k) => a[k] === b[k]);
+  }
+
+  // plugin/src/main/exec-stdlib-component-set.ts
+  async function resolveParent(ref) {
+    if (!ref) return figma.currentPage;
+    const node = await figma.getNodeByIdAsync(ref);
+    if (!node || !("appendChild" in node)) {
+      throw withCode(new Error(`parent not found or cannot contain a component set: ${ref}`), "E_INVALID_ARGS");
+    }
+    return node;
+  }
+  async function buildModeA(base, axes) {
+    const baseNode = await figma.getNodeByIdAsync(base);
+    if (!baseNode || baseNode.type !== "COMPONENT") {
+      throw withCode(new Error(`base must be a COMPONENT node id, got ${baseNode?.type ?? "not found"}: ${base}`), "E_INVALID_ARGS");
+    }
+    if (baseNode.parent?.type === "COMPONENT_SET") {
+      throw withCode(new Error(`base "${baseNode.name}" is already a variant inside "${baseNode.parent.name}"`), "E_INVALID_ARGS");
+    }
+    const axisOrder = Object.keys(axes);
+    for (const axis of axisOrder) {
+      assertCleanToken("axis", axis);
+      const values = axes[axis];
+      if (values.length === 0) throw withCode(new Error(`axis "${axis}" has no values`), "E_INVALID_ARGS");
+      for (const v of values) assertCleanToken("value", v);
+    }
+    const combos = cartesianProduct(axes);
+    if (combos.length > MAX_VARIANTS) {
+      throw withCode(new Error(`${combos.length} variants requested \u2014 capped at ${MAX_VARIANTS}. Split by one axis and build multiple sets.`), "E_INVALID_ARGS");
+    }
+    const stepY = Math.ceil(baseNode.height) + 40;
+    baseNode.name = comboName(combos[0], axisOrder);
+    const nodes = [baseNode];
+    for (let i = 1; i < combos.length; i++) {
+      const clone = baseNode.clone();
+      clone.name = comboName(combos[i], axisOrder);
+      clone.y = baseNode.y + i * stepY;
+      nodes.push(clone);
+    }
+    return { nodes, expected: combos };
+  }
+  async function buildModeB(ids, variantProps) {
+    if (ids.length > MAX_VARIANTS) {
+      throw withCode(new Error(`${ids.length} components requested \u2014 capped at ${MAX_VARIANTS}.`), "E_INVALID_ARGS");
+    }
+    if (variantProps && variantProps.length !== ids.length) {
+      throw withCode(new Error(`variantProps length (${variantProps.length}) must match components length (${ids.length})`), "E_INVALID_ARGS");
+    }
+    const nodes = [];
+    const expected = [];
+    const warnings2 = [];
+    for (let i = 0; i < ids.length; i++) {
+      const node = await figma.getNodeByIdAsync(ids[i]);
+      if (!node || node.type !== "COMPONENT") {
+        throw withCode(new Error(`components[${i}] must be a COMPONENT node id, got ${node?.type ?? "not found"}: ${ids[i]}`), "E_INVALID_ARGS");
+      }
+      if (node.parent?.type === "COMPONENT_SET") {
+        throw withCode(new Error(`components[${i}] "${node.name}" is already a variant inside "${node.parent.name}"`), "E_INVALID_ARGS");
+      }
+      if (variantProps) {
+        const props = variantProps[i];
+        const keys = Object.keys(props);
+        if (keys.length === 0) throw withCode(new Error(`variantProps[${i}] is empty \u2014 needs at least one property`), "E_INVALID_ARGS");
+        for (const k of keys) {
+          assertCleanToken("property", k);
+          assertCleanToken("value", props[k]);
+        }
+        node.name = comboName(props, keys);
+        expected.push({ ...props });
+      } else {
+        if (!node.name.includes("=")) {
+          warnings2.push(`component "${node.name}" is not named "Prop=Value" \u2014 Figma will file it under "Property 1=${node.name}"`);
+          expected.push({});
+        } else {
+          expected.push(parseComboName(node.name));
+        }
+      }
+      nodes.push(node);
+    }
+    return { nodes, expected, warnings: warnings2 };
+  }
+  async function componentSet(opts) {
+    const hasBase = typeof opts.base === "string";
+    const hasComponents = Array.isArray(opts.components) && opts.components.length > 0;
+    if (hasBase === hasComponents) {
+      throw withCode(new Error("componentSet needs exactly one of: base + axes, or components"), "E_INVALID_ARGS");
+    }
+    let nodes;
+    let expected;
+    let warnings2 = [];
+    if (hasBase) {
+      if (!opts.axes || Object.keys(opts.axes).length === 0) {
+        throw withCode(new Error('axes is required with base \u2014 e.g. { State: ["default","hover"], Size: ["sm","lg"] }'), "E_INVALID_ARGS");
+      }
+      ({ nodes, expected } = await buildModeA(opts.base, opts.axes));
+    } else {
+      ({ nodes, expected, warnings: warnings2 } = await buildModeB(opts.components, opts.variantProps));
+    }
+    const parent = await resolveParent(opts.parent);
+    const set = figma.combineAsVariants(nodes, parent);
+    if (opts.name) set.name = opts.name;
+    if (typeof opts.x === "number") set.x = opts.x;
+    if (typeof opts.y === "number") set.y = opts.y;
+    const children = set.children.filter((c) => c.type === "COMPONENT");
+    if (children.length !== nodes.length) {
+      throw withCode(new Error(`componentSet combined ${children.length} children, expected ${nodes.length}`), "E_EVAL");
+    }
+    const actualAxes = children.map((c) => parseComboName(c.name));
+    const mismatches = expected.map((exp, i) => ({ i, exp, actual: actualAxes[i] })).filter(({ exp, actual }) => !actual || !sameAxisMap(exp, actual));
+    if (mismatches.length > 0) {
+      throw withCode(new Error(`componentSet variant names did not parse back to the intended axes: ${JSON.stringify(mismatches)}`), "E_EVAL");
+    }
+    const propertyDefinitions = set.componentPropertyDefinitions ?? {};
+    const variantCount = children.length;
+    const sizeWarning = variantCount > WARN_ABOVE ? `${variantCount} variants \u2014 large sets are slow to build; consider splitting by one axis` : void 0;
+    return {
+      id: set.id,
+      name: set.name,
+      variantCount,
+      // Each variant's key AND id — instances come from a variant's key/id, never
+      // the set's (fork's hint, write-tools.ts ~3040).
+      variants: children.map((c, i) => ({ id: c.id, name: c.name, key: c.key, axes: actualAxes[i] })),
+      propertyDefinitions,
+      ...sizeWarning ? { sizeWarning } : {},
+      ...warnings2.length ? { warnings: warnings2 } : {}
+    };
+  }
+  function createExecStdlibComponentSet() {
+    return { componentSet };
+  }
+
   // plugin/src/main/exec-stdlib.ts
   var BOUND_FIELD_EXPANSIONS = {
     cornerRadius: ["cornerRadius", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"],
@@ -2602,7 +2897,16 @@
     return jsonSafe(fields ? projectSerialized(full, fields) : full);
   }
   function createExecStdlib() {
-    return { setProps, swapInstance, boundFill, byPath, q };
+    const { componentSet: componentSet2 } = createExecStdlibComponentSet();
+    return {
+      setProps,
+      swapInstance,
+      boundFill,
+      byPath,
+      q,
+      componentSet: componentSet2,
+      vars: createExecStdlibVars()
+    };
   }
 
   // plugin/src/main/exec-js-normalize.ts

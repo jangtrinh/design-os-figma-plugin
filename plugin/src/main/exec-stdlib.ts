@@ -15,6 +15,12 @@ import {
 import { withCode } from './executor-styles';
 import { readBindings } from './scan-node-utils';
 import { resolvePropKey, setProps, swapInstance } from './exec-stdlib-instance';
+// Absorption phase-01 (Basket B): variable/mode CRUD and variant-matrix component-set
+// helpers, each its own split file for the same 200-line-cap reason as
+// exec-stdlib-instance.ts — `vars` and `componentSet` are namespaced sub-objects, not
+// inlined here, so this file's own cap never has to make room for them.
+import { createExecStdlibVars, type ExecStdlibVars } from './exec-stdlib-variables';
+import { createExecStdlibComponentSet, type ComponentSetOpts, type ComponentSetResult } from './exec-stdlib-component-set';
 
 export { resolvePropKey };
 
@@ -24,6 +30,8 @@ export interface ExecStdlib {
   boundFill(node: SceneNode, varName: string, field?: string): Promise<{ id: string; field: string; variable: string }>;
   byPath(rootId: string, names: string[]): Promise<SceneNode>;
   q(target: SceneNode | string, opts?: { depth?: number; fields?: string[] }): Promise<unknown>;
+  vars: ExecStdlibVars;
+  componentSet(opts: ComponentSetOpts): Promise<ComponentSetResult>;
 }
 
 // Figma re-keys SOME bindings under a different boundVariables key than the field name asked
@@ -143,5 +151,8 @@ async function q(target: SceneNode | string, opts: { depth?: number; fields?: st
 }
 
 export function createExecStdlib(): ExecStdlib {
-  return { setProps, swapInstance, boundFill, byPath, q };
+  const { componentSet } = createExecStdlibComponentSet();
+  return {
+    setProps, swapInstance, boundFill, byPath, q, componentSet, vars: createExecStdlibVars(),
+  };
 }
