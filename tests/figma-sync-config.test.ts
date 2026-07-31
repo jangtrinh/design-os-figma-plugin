@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readIdleMs, projectDir, syncConfigPath } from '../cli/src/transport/figma-sync-config.ts';
+import { readIdleMs, syncConfigPath } from '../cli/src/transport/figma-sync-config.ts';
 import { DEFAULT_IDLE_MS, MIN_IDLE_MS } from '../shared/protocol.ts';
 
 let dir: string;
@@ -53,8 +53,5 @@ describe('figma-sync-config — readIdleMs', () => {
   it('a non-numeric idleMs falls back to DEFAULT_IDLE_MS', () => {
     writeConfig({ idleMs: 'soon' });
     expect(readIdleMs()).toBe(DEFAULT_IDLE_MS);
-  });
-  it('projectDir is the parent of the design/ change-log dir', () => {
-    expect(projectDir()).toBe(dir);
   });
 });

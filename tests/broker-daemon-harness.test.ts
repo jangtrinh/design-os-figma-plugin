@@ -695,3 +695,83 @@ describe('daemon harness — routeFromPlugin verifies the reply sender against t
     expect((hello.data as Record<string, unknown>).senderMismatchCount).toBe(1);
   });
 });
+
+describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, never the broker\'s spawn cwd (issue #20)', () => {
+  it('a plugin bound to a project with its OWN figma-sync.json gets THAT idleMs, not the broker cwd default, on HELLO after the bind', async () => {
+    // Simulates the broker being spawned from "Project A"'s cwd — its own idle window,
+    // distinct from the project this daemon ends up serving.
+    writeFileSync(join(scratchDir, 'figma-sync.json'), JSON.stringify({ idleMs: 111_000 }), 'utf8');
+    const port = await startTestBroker();
+
+    const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-sync-bound-project-'));
+    try {
+      mkdirSync(join(boundProjectDir, 'design'), { recursive: true });
+      // "Project B" — the project this file is actually bound to — has its OWN idle
+      // window, deliberately different from the broker's cwd default above.
+      writeFileSync(join(boundProjectDir, 'design', 'figma-sync.json'), JSON.stringify({ idleMs: 222_000 }), 'utf8');
+
+      const plugin = await connectSocket(port);
+      await helloPlugin(plugin, 'plugin-sync-1', 'Project B File');
+
+      const cli = await connectSocket(port);
+      await bindProject(cli, 'Project B File', boundProjectDir, 'req-bind-sync-1');
+
+      // A fresh HELLO for the SAME (now-bound) file — e.g. a plugin reconnect, or the
+      // broker itself having restarted from a different cwd in the meantime. The file
+      // identity is bound to Project B, so its SYNC_CONFIG must reflect Project B's own
+      // figma-sync.json, never the broker's spawn-cwd default (Project A's 111_000).
+      const plugin2 = await connectSocket(port);
+      const syncConfigPromise = nextFrame<EventMsg>(plugin2, (m) => (m as EventMsg).type === 'SYNC_CONFIG');
+      plugin2.send(JSON.stringify({
+        type: 'PLUGIN_HELLO',
+        data: { instanceId: 'plugin-sync-2', fileName: 'Project B File', fileKey: null, caps: ['fileGuard'] },
+      } satisfies EventMsg));
+      const syncConfig = await syncConfigPromise;
+      expect((syncConfig.data as { idleMs: number }).idleMs).toBe(222_000);
+    } finally {
+      rmSync(boundProjectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('an ALREADY-CONNECTED plugin gets an updated SYNC_CONFIG the moment its file is bound, without needing to reconnect — and an unrelated plugin bound to a DIFFERENT project gets nothing', async () => {
+    writeFileSync(join(scratchDir, 'figma-sync.json'), JSON.stringify({ idleMs: 111_000 }), 'utf8');
+    const port = await startTestBroker();
+
+    const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-sync-bound-project-live-'));
+    const otherProjectDir = mkdtempSync(join(tmpdir(), 'fa-sync-other-project-'));
+    try {
+      mkdirSync(join(boundProjectDir, 'design'), { recursive: true });
+      writeFileSync(join(boundProjectDir, 'design', 'figma-sync.json'), JSON.stringify({ idleMs: 333_000 }), 'utf8');
+      mkdirSync(join(otherProjectDir, 'design'), { recursive: true });
+      writeFileSync(join(otherProjectDir, 'design', 'figma-sync.json'), JSON.stringify({ idleMs: 444_000 }), 'utf8');
+
+      // An unrelated plugin, already bound to a DIFFERENT project, connected BEFORE
+      // Project C's bind fires — proves the post-bind push targets the one socket whose
+      // file was just bound, never every connected plugin.
+      const pluginOther = await connectSocket(port);
+      await helloPlugin(pluginOther, 'plugin-sync-other-1', 'Project Other File');
+      const cliOther = await connectSocket(port);
+      await bindProject(cliOther, 'Project Other File', otherProjectDir, 'req-bind-sync-other-1');
+      const otherFrames = collectFrames(pluginOther); // observe from here on — its own HELLO/bind traffic already drained
+
+      const plugin = await connectSocket(port);
+      await helloPlugin(plugin, 'plugin-sync-live-1', 'Project C File'); // unbound: gets the broker-cwd default
+
+      const postBindSyncConfig = nextFrame<EventMsg>(plugin, (m) => (m as EventMsg).type === 'SYNC_CONFIG');
+      const cli = await connectSocket(port);
+      await bindProject(cli, 'Project C File', boundProjectDir, 'req-bind-sync-live-1');
+
+      const syncConfig = await postBindSyncConfig;
+      expect((syncConfig.data as { idleMs: number }).idleMs).toBe(333_000);
+
+      // Give the unrelated plugin's socket a beat to receive anything it's going to
+      // receive, then assert it got NOTHING out of Project C's bind — targeted, not
+      // broadcast.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(otherFrames.frames.some((f) => (f as EventMsg).type === 'SYNC_CONFIG')).toBe(false);
+    } finally {
+      rmSync(boundProjectDir, { recursive: true, force: true });
+      rmSync(otherProjectDir, { recursive: true, force: true });
+    }
+  });
+});
