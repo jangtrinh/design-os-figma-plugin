@@ -351,7 +351,37 @@ export class FakeNode {
     this.height = h;
   }
 
+  // ── SlideNode transitions (absorption phase-04) — generic on the class, same as
+  // `resizeWithoutConstraints` above: our own code enforces the SLIDE type check
+  // before ever calling these, so the mock does not re-gate by type either. ──
+  private _transition: { style: string; duration: number; curve: string; timing: { type: string; delay?: number } } = {
+    style: 'NONE', duration: 0.3, curve: 'LINEAR', timing: { type: 'ON_CLICK' },
+  };
+
+  setSlideTransition(t: { style: string; duration: number; curve: string; timing: { type: string; delay?: number } }): void {
+    this._transition = { ...t };
+  }
+
+  getSlideTransition(): { style: string; duration: number; curve: string; timing: { type: string; delay?: number } } {
+    return { ...this._transition };
+  }
+
+  /** SlideNode.setFillsAsync — absorption phase-04's re-anchor finding: a real
+   *  background API (GeometryMixin), not a rectangle workaround. Mirrors the sync
+   *  `fills` setter (including the bound-variable mirror) so `ui.slides.background`'s
+   *  before/after `updated` check reads a real prior state. */
+  async setFillsAsync(paints: unknown): Promise<void> {
+    this.fills = paints;
+  }
+
+  /** BaseNode.appendChild — a node can only have ONE parent; real Figma DETACHES it
+   *  from wherever it was first. Absorption phase-04 surfaced this: the mock used to
+   *  just push, so a node default-parented under one slide and then explicitly
+   *  re-parented under another (`ui.slides.addText`'s own parent-verify pattern)
+   *  ended up listed under BOTH — a bug this mock had simply never been asked to
+   *  reparent an already-parented node before. */
   appendChild(child: FakeNode): void {
+    if (child.parent) child.parent.children = child.parent.children.filter((c) => c !== child);
     child.parent = this;
     this.children.push(child);
   }
@@ -925,6 +955,19 @@ export interface MockFigma {
   createSection(): FakeNode;
   createTable(numRows?: number, numColumns?: number): FakeNode;
   createCodeBlock(): FakeNode;
+  /** Figma Slides node creation (absorption phase-04). */
+  createEllipse(): FakeNode;
+  /** figma.createSlide(row?, col?) — positional args (real typings; the fork's own
+   *  object-shaped `{row, col}` call is JS-only and does not match `tsc`). With no
+   *  args, appends to the last row (creating a first row if the grid is empty). */
+  createSlide(row?: number, col?: number): FakeNode;
+  /** figma.getSlideGrid()/setSlideGrid() — plain nested arrays (absorbed fact 1: NOT
+   *  objects with `.children`), a fresh copy on every read so a caller mutating the
+   *  returned arrays never corrupts the mock's own grid state. */
+  getSlideGrid(): FakeNode[][];
+  setSlideGrid(rows: FakeNode[][]): void;
+  /** figma.viewport.slidesView — 'grid' | 'single-slide' (absorption phase-04). */
+  viewport: { slidesView: 'grid' | 'single-slide' };
   loadFontAsync(font: FontName): Promise<void>;
   listAvailableFontsAsync(): Promise<Array<{ fontName: FontName }>>;
   getNodeByIdAsync(id: string): Promise<FakeNode | null>;
@@ -971,6 +1014,15 @@ export function setMockAnnotationCategories(cats: { id: string; label: string }[
 let mockFontFailure: ((font: FontName) => boolean) | null = null;
 export function setMockFontFailure(predicate: ((font: FontName) => boolean) | null): void { mockFontFailure = predicate; }
 
+/** The Slides deck's grid state (absorption phase-04) — a real Slides file's grid
+ *  lives outside the ordinary page/children tree the rest of this mock models, so it
+ *  gets its own module state, reset per `installMockFigma()` call like every other
+ *  test-configurable surface here. */
+let slideGrid: FakeNode[][] = [];
+/** figma.viewport.slidesView (absorption phase-04) — 'grid' by default, matching a
+ *  freshly opened deck. */
+let mockSlidesView: 'grid' | 'single-slide' = 'grid';
+
 /** A FigJam text sublayer (StickyNode.text / ConnectorNode.text / ShapeWithTextNode.text
  *  / TableCellNode.text) — a plain mutable object, never a full FakeNode (it is not a
  *  scene node itself). `fontName` defaults to a real-shaped default the way a freshly
@@ -990,6 +1042,8 @@ export function installMockFigma(): MockFigma {
   mockAnnotationCategories = [];
   mockCurrentUser = { name: 'Test User' };
   mockFontFailure = null;
+  slideGrid = [];
+  mockSlidesView = 'grid';
   const mk = (type: string): FakeNode => {
     const n = new FakeNode(type);
     if (type === 'TEXT') n.name = 'Text';
@@ -1000,7 +1054,22 @@ export function installMockFigma(): MockFigma {
     nodesById.set(n.id, n);
     return n;
   };
-  const currentPage = (() => { const p = new FakeNode('PAGE'); p.name = 'Page 1'; return p; })();
+  const currentPage = (() => { const p = new FakeNode('PAGE'); p.name = 'Page 1'; p.focusedSlide = null; return p; })();
+  /** Figma Slides (absorption phase-04): in single-slide view, Figma's own create
+   *  methods append to the FOCUSED slide by default, not wherever the caller
+   *  intends (confirmed against developers.figma.com's Slides docs, not assumed) —
+   *  the exact behavior `ui.slides.addText`/`addShape`'s explicit re-parent +
+   *  verify step exists to catch. Reproduced ONLY under `editorType: 'slides'` +
+   *  `slidesView: 'single-slide'` + a set `focusedSlide` — every other test's
+   *  createText/createRectangle/createEllipse call is unaffected (grid view or a
+   *  non-Slides editor never triggers this branch). */
+  const createDefaultParented = (type: string): FakeNode => {
+    const n = mk(type);
+    if (mockEditorType === 'slides' && mockSlidesView === 'single-slide' && currentPage.focusedSlide) {
+      (currentPage.focusedSlide as FakeNode).appendChild(n);
+    }
+    return n;
+  };
   /** FigJam node creation (absorption phase-03) — real Figma parents a freshly
    *  created node under `figma.currentPage` by default; mirrored here so `board()`'s
    *  top-level walk and `connections()`'s `findAll` both see it without a test
@@ -1061,9 +1130,32 @@ export function installMockFigma(): MockFigma {
     },
     createCodeBlock: () => { const n = mkFigjam('CODE_BLOCK'); n.name = 'Code block'; n.code = ''; n.codeLanguage = 'PLAINTEXT'; return n; },
     createFrame: () => mk('FRAME'),
-    createText: () => mk('TEXT'),
-    createRectangle: () => mk('RECTANGLE'),
+    createText: () => createDefaultParented('TEXT'),
+    createRectangle: () => createDefaultParented('RECTANGLE'),
+    createEllipse: () => createDefaultParented('ELLIPSE'),
     createComponent: () => mk('COMPONENT'),
+    createSlide: (row?: number, col?: number): FakeNode => {
+      const n = mk('SLIDE');
+      n.name = `Slide ${n.id}`;
+      n.isSkippedSlide = false;
+      if (typeof row === 'number' && typeof col === 'number') {
+        while (slideGrid.length <= row) slideGrid.push([]);
+        slideGrid[row]!.splice(col, 0, n);
+      } else {
+        if (slideGrid.length === 0) slideGrid.push([]);
+        slideGrid[slideGrid.length - 1]!.push(n);
+      }
+      return n;
+    },
+    // Fresh copies on every read (absorbed fact 1: plain nested arrays, not
+    // `.children`-bearing rows) — a caller mutating the returned arrays must never
+    // corrupt the mock's own grid state.
+    getSlideGrid: (): FakeNode[][] => slideGrid.map((row) => [...row]),
+    setSlideGrid: (rows: FakeNode[][]): void => { slideGrid = rows.map((row) => [...row]); },
+    viewport: {
+      get slidesView(): 'grid' | 'single-slide' { return mockSlidesView; },
+      set slidesView(v: 'grid' | 'single-slide') { mockSlidesView = v; },
+    },
     loadFontAsync: async (font: FontName) => {
       if (mockFontFailure && mockFontFailure(font)) {
         throw new Error(`in loadFontAsync: font not found: ${font.family} ${font.style}`);
