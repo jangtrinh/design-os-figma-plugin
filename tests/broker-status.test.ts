@@ -7,7 +7,10 @@ import { buildBrokerHelloData, noPluginMessage, type BrokerMeta } from '../cli/s
 import type { RouteFilter } from '../cli/src/transport/route-filter.ts';
 
 const sock = (): RegistrySocket => ({ readyState: WS_OPEN });
-const META: BrokerMeta = { port: 9410, pid: 4242, protocolV: 1, buildMtime: 111, uptimeMs: 5000, senderMismatchCount: 0 };
+const META: BrokerMeta = {
+  port: 9410, pid: 4242, protocolV: 1, buildMtime: 111, uptimeMs: 5000,
+  senderMismatchCount: 0, legacyMigrationDeferred: false,
+};
 
 /** Registry with a fixed clock so lastHeartbeatAge is deterministic. */
 function seed(now = 1_000) {
@@ -109,6 +112,20 @@ describe('buildBrokerHelloData — senderMismatchCount (issue #15, PR #14 review
     const { reg, clock } = seed();
     const d = buildBrokerHelloData(reg, { ...META, senderMismatchCount: 3 }, null, clock);
     expect(d.senderMismatchCount).toBe(3);
+  });
+});
+
+describe('buildBrokerHelloData — legacyMigrationDeferred (issue #7 fix round, reviewer finding 1)', () => {
+  it('false → the key is OMITTED, keeping the payload byte-identical to before this field existed', () => {
+    const { reg, clock } = seed();
+    const d = buildBrokerHelloData(reg, { ...META, legacyMigrationDeferred: false }, null, clock);
+    expect('legacyMigrationDeferred' in d).toBe(false);
+  });
+
+  it('true surfaces verbatim — same "discarded/stuck thing gets a machine-readable flag" contract as senderMismatchCount', () => {
+    const { reg, clock } = seed();
+    const d = buildBrokerHelloData(reg, { ...META, legacyMigrationDeferred: true }, null, clock);
+    expect(d.legacyMigrationDeferred).toBe(true);
   });
 });
 

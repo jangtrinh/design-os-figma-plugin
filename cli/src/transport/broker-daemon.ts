@@ -367,15 +367,31 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // the WS server accepts any connection (below), so no live DOC_CHANGE/EDIT_FEED write
   // can race it. Guarded by a breadcrumb under the NEW root so a broker that already
   // ran this once doesn't pay a readdir cost on every future restart.
+  //
+  // Stage-4 fix (reviewer finding 1) — START-AND-DEFER, with loud visibility, never
+  // ABORT: this is a best-effort move of already-safe, already-retryable UNBOUND staging
+  // data (copy-before-delete in migrateStagedChanges), not a reason to keep the whole
+  // relay from ever accepting a connection. A readdir/append/mkdir failure here (a full
+  // or unwritable /tmp) is caught, logged clearly, and the breadcrumb is deliberately
+  // NOT written — the next restart retries. `legacyMigrationDeferred` is surfaced in
+  // BROKER_HELLO/status (same "discarded thing gets a machine-readable counter" pattern
+  // as `senderMismatchCount`, backlog 2.10/issue #15) so an operator can't miss that
+  // unbound data is still stuck, even though the broker itself came up fine.
+  let legacyMigrationDeferred = false;
   const legacyMigratedMarker = join(unboundStagingRoot(), '.legacy-migrated');
   if (!existsSync(legacyMigratedMarker)) {
-    const migratedLegacyChangeFiles = migrateLegacyUnboundChanges();
-    const migratedLegacyEditFiles = migrateLegacyUnboundEdits();
-    if (migratedLegacyChangeFiles > 0 || migratedLegacyEditFiles > 0) {
-      log(`legacy unbound staging migrated to the new root: ${migratedLegacyChangeFiles} change file(s), ${migratedLegacyEditFiles} edit file(s)`);
+    try {
+      const migratedLegacyChangeFiles = migrateLegacyUnboundChanges();
+      const migratedLegacyEditFiles = migrateLegacyUnboundEdits();
+      if (migratedLegacyChangeFiles > 0 || migratedLegacyEditFiles > 0) {
+        log(`legacy unbound staging migrated to the new root: ${migratedLegacyChangeFiles} change file(s), ${migratedLegacyEditFiles} edit file(s)`);
+      }
+      mkdirSync(unboundStagingRoot(), { recursive: true });
+      writeFileSync(legacyMigratedMarker, JSON.stringify({ at: Date.now() }), 'utf8');
+    } catch (err) {
+      legacyMigrationDeferred = true;
+      log(`LEGACY UNBOUND STAGING MIGRATION FAILED, deferred to next restart (data untouched, not lost): ${(err as Error).message}`);
     }
-    mkdirSync(unboundStagingRoot(), { recursive: true });
-    writeFileSync(legacyMigratedMarker, JSON.stringify({ at: Date.now() }), 'utf8');
   }
 
   const st: BrokerState = {
@@ -1309,7 +1325,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       st.registry,
       {
         port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(),
-        uptimeMs: Date.now() - startedAt, senderMismatchCount,
+        uptimeMs: Date.now() - startedAt, senderMismatchCount, legacyMigrationDeferred,
       },
       currentFilter(),
       Date.now,

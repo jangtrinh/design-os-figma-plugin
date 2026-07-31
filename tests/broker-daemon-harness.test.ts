@@ -509,23 +509,52 @@ describe('daemon harness — the error log routes through the binding index, nev
 });
 
 describe('daemon harness — one-time startup migration of the OLD unbound-staging root (issue #7, backlog 5.6)', () => {
-  it('migrates a file staged before this fix at the cwd-relative location into the new cwd-independent root', async () => {
-    // Simulate a prior broker build's leftover staging, at the OLD location
-    // (`<FIGMA_AGENT_CHANGES_DIR>/unbound/<slug>.jsonl`) — created BEFORE the broker
-    // (and its startup migration) ever runs.
-    const slug = 'legacy-file';
-    const legacyPath = join(scratchDir, 'unbound', `${slug}.jsonl`);
+  it('migrates BOTH the change-log\'s and the edit feed\'s legacy staging into the new cwd-independent root, in one boot', async () => {
+    // Simulate a prior broker build's leftover staging at BOTH old locations
+    // (`<FIGMA_AGENT_CHANGES_DIR>/unbound/<slug>.jsonl` for change-log, and
+    // `<FIGMA_AGENT_CHANGES_DIR>/changes/unbound/<slug>.jsonl` for the edit feed) —
+    // created BEFORE the broker (and its startup migration) ever runs.
+    const changeSlug = 'legacy-change';
+    const editSlug = 'legacy-edit';
+    const legacyChangePath = join(scratchDir, 'unbound', `${changeSlug}.jsonl`);
+    const legacyEditPath = join(scratchDir, 'changes', 'unbound', `${editSlug}.jsonl`);
     mkdirSync(join(scratchDir, 'unbound'), { recursive: true });
-    writeFileSync(legacyPath, `${JSON.stringify({ nodeId: 'a' })}\n`, 'utf8');
+    mkdirSync(join(scratchDir, 'changes', 'unbound'), { recursive: true });
+    writeFileSync(legacyChangePath, `${JSON.stringify({ nodeId: 'a' })}\n`, 'utf8');
+    writeFileSync(legacyEditPath, `${JSON.stringify({ nodeId: 'b' })}\n`, 'utf8');
 
     await startTestBroker();
 
-    const newPath = join(scratchDir, 'unbound-root', 'unbound', `${slug}.jsonl`);
-    await waitFor(() => existsSync(newPath));
-    expect(existsSync(legacyPath)).toBe(false); // cleaned up at the old location
-    expect(readFileSync(newPath, 'utf8').trim()).toBe(JSON.stringify({ nodeId: 'a' }));
+    const newChangePath = join(scratchDir, 'unbound-root', 'unbound', `${changeSlug}.jsonl`);
+    const newEditPath = join(scratchDir, 'unbound-root', 'changes', 'unbound', `${editSlug}.jsonl`);
+    await waitFor(() => existsSync(newChangePath) && existsSync(newEditPath));
+    expect(existsSync(legacyChangePath)).toBe(false); // cleaned up at the old location
+    expect(existsSync(legacyEditPath)).toBe(false);
+    expect(readFileSync(newChangePath, 'utf8').trim()).toBe(JSON.stringify({ nodeId: 'a' }));
+    expect(readFileSync(newEditPath, 'utf8').trim()).toBe(JSON.stringify({ nodeId: 'b' }));
     // Breadcrumb written so a future restart never re-scans.
     expect(existsSync(join(scratchDir, 'unbound-root', '.legacy-migrated'))).toBe(true);
+  });
+
+  // Stage-4 fix (reviewer finding 1) — a migration failure must DEFER, not ABORT: the
+  // broker still has to come up and accept connections, since this is a best-effort
+  // move of already-safe, already-retryable staging data, not a reason to keep the
+  // whole relay from ever accepting a connection.
+  it('a migration failure defers (never aborts) startup — the broker still accepts connections and surfaces the deferral', async () => {
+    // A regular FILE where `legacyUnboundStagingDir()` expects a DIRECTORY —
+    // `readdirSync` throws ENOTDIR on it, a real filesystem failure, no mocking needed.
+    writeFileSync(join(scratchDir, 'unbound'), 'not a directory', 'utf8');
+
+    const port = await startTestBroker();
+    const { hello } = await connectAndAwaitBrokerHello(port);
+    expect((hello.data as { legacyMigrationDeferred?: boolean }).legacyMigrationDeferred).toBe(true);
+
+    // The broker is genuinely up and serving — not just alive enough to answer HELLO.
+    await helloPlugin(await connectSocket(port), 'plugin-legacy-fail', 'Some File');
+
+    // No breadcrumb written — a future restart must retry the migration, not skip it
+    // forever having never actually succeeded.
+    expect(existsSync(join(scratchDir, 'unbound-root', '.legacy-migrated'))).toBe(false);
   });
 });
 

@@ -30,6 +30,12 @@ export interface BrokerMeta {
    *  plugin instance did not match the job's `targetInstanceId` (a spoofed/misrouted
    *  cross-instance reply). Daemon-scoped, not per-job. */
   senderMismatchCount: number;
+  /** Issue #7 (backlog 5.6) fix round, reviewer finding 1 — true when the one-time
+   *  startup migration of the OLD unbound-staging root failed (a full/unwritable
+   *  /tmp, say) and was deferred to the next restart rather than aborting broker
+   *  startup. The staged data itself is untouched (migration is copy-before-delete),
+   *  but an operator needs to know it's still stuck at the old location. */
+  legacyMigrationDeferred: boolean;
 }
 
 /**
@@ -77,6 +83,11 @@ export function buildBrokerHelloData(
     // overwhelming common case) keeps this payload byte-identical to before this field
     // existed.
     ...(meta.senderMismatchCount > 0 && { senderMismatchCount: meta.senderMismatchCount }),
+    // Issue #7 fix round — same "present only once it's actually true" contract as
+    // senderMismatchCount just above: a broker whose legacy migration succeeded (or had
+    // nothing to migrate — the overwhelming common case) keeps this payload
+    // byte-identical to before this field existed.
+    ...(meta.legacyMigrationDeferred && { legacyMigrationDeferred: true }),
     // ── legacy compat shim (mirrors the ACTIVE plugin) ──
     pluginConnected: connected,
     pluginState: connected ? 'connected' : 'disconnected',
