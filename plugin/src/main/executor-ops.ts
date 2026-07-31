@@ -84,7 +84,7 @@ async function appendToParent(node: SceneNode, params: Params): Promise<void> {
   if (typeof params.y === 'number') node.y = params.y;
 }
 
-export function opStatus(): Record<string, unknown> {
+export function opStatus(bootSkipped: readonly string[] = []): Record<string, unknown> {
   return {
     fileName: figma.root.name,
     page: figma.currentPage.name,
@@ -97,6 +97,18 @@ export function opStatus(): Record<string, unknown> {
     // older host reports nothing — a guessed default is exactly what this repo bans;
     // the guard treats null as "unknown: refuse and say so".
     editorType: figma.editorType ?? null,
+    // Additive field (absorption phase-03) — same "present only once meaningful"
+    // contract as the broker's senderMismatchCount/legacyMigrationDeferred (issue
+    // #15/#19): which design-only boot capabilities main.ts consciously chose NOT to
+    // run this session (e.g. a future editor-specific skip), never left for an agent
+    // to infer from a later failure. `bootSkipped` is caller-supplied (main.ts owns
+    // the actual list) — this function never guesses what was skipped. Empty today:
+    // the phase-03 boot-path trace found nothing in the current boot sequence that
+    // needs skipping in FigJam (gap-fill/capture already degrade honestly there; see
+    // knowledge/figjam.md) — the field exists so a FUTURE editor (phase-04 Slides, or
+    // a later FigJam finding) has somewhere to report one, without a payload shape
+    // change.
+    ...(bootSkipped.length > 0 && { bootSkipped: [...bootSkipped] }),
   };
 }
 

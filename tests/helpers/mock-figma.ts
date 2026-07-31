@@ -158,6 +158,12 @@ type Sides = { top: number; right: number; bottom: number; left: number };
 export class FakeNode {
   id = `S:${idSeq++}`;
   type: string;
+  // Absorption phase-03: a real SceneNode ALWAYS carries x/y (never absent, possibly
+  // 0) — `ui.figjam.arrange`'s own `'x' in node` resolution check depends on this
+  // being a real own-property from creation, same as width/height already are, not
+  // something that only appears once a caller happens to assign it.
+  x = 0;
+  y = 0;
   width = 0;
   height = 0;
   parent: FakeNode | null = null;
@@ -231,6 +237,22 @@ export class FakeNode {
       this.parent.children = this.parent.children.filter((c) => c !== this);
       this.parent = null;
     }
+  }
+
+  /** ChildrenMixin.findAll(predicate) — deep, predicate-based search (absorption
+   * phase-03: `ui.figjam.connections`' own `findAll(n => n.type === 'CONNECTOR')`,
+   * absorbed fact 11). Distinct from `findAllWithCriteria` below (types-array,
+   * absorption phase-02) — both are real Figma methods with different signatures. */
+  findAll(predicate: (n: FakeNode) => boolean): FakeNode[] {
+    const out: FakeNode[] = [];
+    const walk = (n: FakeNode): void => {
+      for (const c of n.children) {
+        if (predicate(c)) out.push(c);
+        walk(c);
+      }
+    };
+    walk(this);
+    return out;
   }
 
   /** ChildrenMixin.findAllWithCriteria({types}) — deep search, matching Figma's own
@@ -318,6 +340,15 @@ export class FakeNode {
       this.primaryAxisSizingMode = 'FIXED';
       this.counterAxisSizingMode = 'FIXED';
     }
+  }
+
+  /** SectionNode.resizeWithoutConstraints — absorption phase-03 (FigJam). Unlike
+   *  `resize()` above, a section never propagates constraints to its children, so
+   *  this is a plain width/height set with none of `resize()`'s auto-layout-FIXED
+   *  axis nuance. */
+  resizeWithoutConstraints(w: number, h: number): void {
+    this.width = w;
+    this.height = h;
   }
 
   appendChild(child: FakeNode): void {
@@ -879,11 +910,21 @@ export function makeMockComponent(name: string, key?: string): FakeNode {
 
 export interface MockFigma {
   mixed: symbol;
+  root: FakeNode;
+  currentUser: { name: string } | null;
   currentPage: FakeNode;
   createFrame(): FakeNode;
   createText(): FakeNode;
   createRectangle(): FakeNode;
   createComponent(): FakeNode;
+  /** FigJam node creation (absorption phase-03) — each auto-parents under
+   *  `figma.currentPage`, mirroring real Figma's default. */
+  createSticky(): FakeNode;
+  createConnector(): FakeNode;
+  createShapeWithText(): FakeNode;
+  createSection(): FakeNode;
+  createTable(numRows?: number, numColumns?: number): FakeNode;
+  createCodeBlock(): FakeNode;
   loadFontAsync(font: FontName): Promise<void>;
   listAvailableFontsAsync(): Promise<Array<{ fontName: FontName }>>;
   getNodeByIdAsync(id: string): Promise<FakeNode | null>;
@@ -914,9 +955,29 @@ export interface MockFigma {
 let mockEditorType: 'figma' | 'figjam' | 'slides' | 'dev' | null = null;
 export function setMockEditorType(t: 'figma' | 'figjam' | 'slides' | 'dev' | null): void { mockEditorType = t; }
 
+/** Test-configurable figma.currentUser (absorption phase-03 — opStatus()'s own
+ *  read). `null` matches a real logged-out/no-permission state; a real session
+ *  always carries a name. */
+let mockCurrentUser: { name: string } | null = { name: 'Test User' };
+export function setMockCurrentUser(u: { name: string } | null): void { mockCurrentUser = u; }
+
 /** Test-configurable figma.annotations.getAnnotationCategoriesAsync() list. */
 let mockAnnotationCategories: { id: string; label: string }[] = [];
 export function setMockAnnotationCategories(cats: { id: string; label: string }[]): void { mockAnnotationCategories = cats; }
+
+/** Test-configurable `figma.loadFontAsync` failure (absorption phase-03) — a test
+ *  proving the font-fallback path (Inter Medium) needs the PRIMARY font to actually
+ *  fail, the same way a live Desktop build without a brand font installed would. */
+let mockFontFailure: ((font: FontName) => boolean) | null = null;
+export function setMockFontFailure(predicate: ((font: FontName) => boolean) | null): void { mockFontFailure = predicate; }
+
+/** A FigJam text sublayer (StickyNode.text / ConnectorNode.text / ShapeWithTextNode.text
+ *  / TableCellNode.text) — a plain mutable object, never a full FakeNode (it is not a
+ *  scene node itself). `fontName` defaults to a real-shaped default the way a freshly
+ *  created FigJam node's sublayer already carries a font Figma picked. */
+function makeTextSublayer(): { characters: string; fontName: FontName; fontSize: number; fills: unknown[] } {
+  return { characters: '', fontName: { family: 'Inter', style: 'Regular' }, fontSize: 12, fills: [] };
+}
 
 /** Install a fresh mock on globalThis.figma; returns it. Call once per test file. */
 export function installMockFigma(): MockFigma {
@@ -927,6 +988,8 @@ export function installMockFigma(): MockFigma {
   mockModeCap = null;
   mockEditorType = null;
   mockAnnotationCategories = [];
+  mockCurrentUser = { name: 'Test User' };
+  mockFontFailure = null;
   const mk = (type: string): FakeNode => {
     const n = new FakeNode(type);
     if (type === 'TEXT') n.name = 'Text';
@@ -937,18 +1000,75 @@ export function installMockFigma(): MockFigma {
     nodesById.set(n.id, n);
     return n;
   };
+  const currentPage = (() => { const p = new FakeNode('PAGE'); p.name = 'Page 1'; return p; })();
+  /** FigJam node creation (absorption phase-03) — real Figma parents a freshly
+   *  created node under `figma.currentPage` by default; mirrored here so `board()`'s
+   *  top-level walk and `connections()`'s `findAll` both see it without a test
+   *  having to append it manually. */
+  const mkFigjam = (type: string): FakeNode => {
+    const n = mk(type);
+    currentPage.appendChild(n);
+    return n;
+  };
   const figma: MockFigma = {
     mixed: FIGMA_MIXED,
-    currentPage: (() => { const p = new FakeNode('PAGE'); p.name = 'Page 1'; return p; })(),
+    root: (() => { const r = new FakeNode('DOCUMENT'); r.name = 'Mock File'; return r; })(),
+    get currentUser() { return mockCurrentUser; },
+    currentPage,
     get editorType() { return mockEditorType; },
     annotations: {
       getAnnotationCategoriesAsync: async () => mockAnnotationCategories,
     },
+    createSticky: () => { const n = mkFigjam('STICKY'); n.name = 'Sticky'; n.text = makeTextSublayer(); n.fills = []; return n; },
+    createConnector: () => {
+      const n = mkFigjam('CONNECTOR');
+      n.name = 'Connector';
+      n.text = makeTextSublayer();
+      n.connectorStart = { position: { x: 0, y: 0 } };
+      n.connectorEnd = { position: { x: 0, y: 0 } };
+      return n;
+    },
+    createShapeWithText: () => {
+      const n = mkFigjam('SHAPE_WITH_TEXT');
+      n.name = 'Shape with text';
+      n.text = makeTextSublayer();
+      n.shapeType = 'SQUARE';
+      n.fills = [];
+      n.strokes = [];
+      return n;
+    },
+    createSection: () => { const n = mkFigjam('SECTION'); n.name = 'Section'; n.fills = []; return n; },
+    createTable: (numRows = 2, numColumns = 2) => {
+      const n = mkFigjam('TABLE');
+      n.name = 'Table';
+      n.numRows = numRows;
+      n.numColumns = numColumns;
+      const cells = new Map<string, FakeNode>();
+      n.cellAt = (rowIndex: number, columnIndex: number): FakeNode => {
+        const key = `${rowIndex},${columnIndex}`;
+        let cell = cells.get(key);
+        if (!cell) {
+          cell = new FakeNode('TABLE_CELL');
+          cell.name = 'Table cell';
+          cell.text = makeTextSublayer();
+          cell.rowIndex = rowIndex;
+          cell.columnIndex = columnIndex;
+          cells.set(key, cell);
+        }
+        return cell;
+      };
+      return n;
+    },
+    createCodeBlock: () => { const n = mkFigjam('CODE_BLOCK'); n.name = 'Code block'; n.code = ''; n.codeLanguage = 'PLAINTEXT'; return n; },
     createFrame: () => mk('FRAME'),
     createText: () => mk('TEXT'),
     createRectangle: () => mk('RECTANGLE'),
     createComponent: () => mk('COMPONENT'),
-    loadFontAsync: async () => { /* every font "exists" */ },
+    loadFontAsync: async (font: FontName) => {
+      if (mockFontFailure && mockFontFailure(font)) {
+        throw new Error(`in loadFontAsync: font not found: ${font.family} ${font.style}`);
+      }
+    },
     listAvailableFontsAsync: async () => [],
     // Components by id, plus every node an instance owns — the live API resolves a
     // compound inner id, and the P12 pre-pass depends on it (probed, not assumed).

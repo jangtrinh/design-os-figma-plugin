@@ -2133,11 +2133,11 @@
       variantAxes = {};
     }
     const variantCount = n.type === "COMPONENT_SET" ? n.children.length : 0;
-    let section = null;
+    let section2 = null;
     let p = n.parent;
     while (p) {
       if (p.type === "SECTION") {
-        section = p.name;
+        section2 = p.name;
         break;
       }
       p = p.parent;
@@ -2177,7 +2177,7 @@
       variantCount,
       variantAxes,
       pageName,
-      section,
+      section: section2,
       deprecatedData,
       width,
       height,
@@ -2341,7 +2341,7 @@
     if (typeof params.x === "number") node.x = params.x;
     if (typeof params.y === "number") node.y = params.y;
   }
-  function opStatus() {
+  function opStatus(bootSkipped2 = []) {
     return {
       fileName: figma.root.name,
       page: figma.currentPage.name,
@@ -2353,7 +2353,19 @@
       // `null` (NOT the fork's own silent `|| 'figma'` default, code.js:74) when an
       // older host reports nothing — a guessed default is exactly what this repo bans;
       // the guard treats null as "unknown: refuse and say so".
-      editorType: figma.editorType ?? null
+      editorType: figma.editorType ?? null,
+      // Additive field (absorption phase-03) — same "present only once meaningful"
+      // contract as the broker's senderMismatchCount/legacyMigrationDeferred (issue
+      // #15/#19): which design-only boot capabilities main.ts consciously chose NOT to
+      // run this session (e.g. a future editor-specific skip), never left for an agent
+      // to infer from a later failure. `bootSkipped` is caller-supplied (main.ts owns
+      // the actual list) — this function never guesses what was skipped. Empty today:
+      // the phase-03 boot-path trace found nothing in the current boot sequence that
+      // needs skipping in FigJam (gap-fill/capture already degrade honestly there; see
+      // knowledge/figjam.md) — the field exists so a FUTURE editor (phase-04 Slides, or
+      // a later FigJam finding) has somewhere to report one, without a payload shape
+      // change.
+      ...bootSkipped2.length > 0 && { bootSkipped: [...bootSkipped2] }
     };
   }
   function opGetSelection(params) {
@@ -2522,6 +2534,9 @@
     return out;
   }
   async function swapInstance(inst, ref) {
+    if (inst.type !== "INSTANCE") {
+      throw withCode(new Error(`swapInstance expects an INSTANCE, got ${inst.type}`), "E_EVAL");
+    }
     const component = ref.includes(":") ? await resolveMainComponent({ componentId: ref }) : await resolveMainComponent({ componentKey: ref });
     if (!component) throw withCode(new Error(`component not found: ${ref}`), "E_EVAL");
     inst.swapComponent(component);
@@ -3282,6 +3297,396 @@
     return { get, set, categories };
   }
 
+  // shared/editor-surface.ts
+  var EDITOR_LABEL = {
+    figma: "a Figma design file",
+    figjam: "a FigJam board",
+    slides: "a Figma Slides deck",
+    dev: "Dev Mode"
+  };
+  var NEXT_ACTION = {
+    figma: "open this file in Figma (design mode) and re-run",
+    figjam: "open this board in FigJam and re-run",
+    slides: "open this deck in Figma Slides and re-run",
+    dev: "switch to Dev Mode and re-run"
+  };
+  function editorRefusal(opts) {
+    const { capability, required, found } = opts;
+    if (found !== null && required.includes(found)) return null;
+    const foundLabel = found === null ? "the host did not report an editor type" : EDITOR_LABEL[found];
+    const requiredLabels = required.filter((r) => r !== null).map((r) => EDITOR_LABEL[r]);
+    const requiredList = requiredLabels.length === 1 ? requiredLabels[0] : `one of: ${requiredLabels.join(", ")}`;
+    const firstRequired = required.find((r) => r !== null);
+    const nextAction = firstRequired ? NEXT_ACTION[firstRequired] : "reopen the file the capability needs";
+    return `${capability} needs ${requiredList}, but ${foundLabel} is open \u2014 ${nextAction}.`;
+  }
+
+  // plugin/src/main/exec-stdlib-editor.ts
+  function requireEditor(capability, required) {
+    const found = figma.editorType ?? null;
+    const message = editorRefusal({ capability, required, found });
+    if (message !== null) throw withCode(new Error(message), "E_INVALID_ARGS");
+  }
+
+  // plugin/src/main/exec-stdlib-figjam-types.ts
+  var MAX_STICKIES_PER_BATCH = 200;
+  var MAX_TABLE_ROWS = 100;
+  var MAX_TABLE_COLUMNS = 50;
+  var MAX_TEXT_CHARS = 5e3;
+  var MAX_CODE_BLOCK_CHARS = 5e4;
+  var MAX_ARRANGE_NODES = 500;
+  var MAX_BOARD_READ_NODES = 1e3;
+  var STICKY_COLORS = {
+    YELLOW: { r: 1, g: 0.85, b: 0.4 },
+    BLUE: { r: 0.53, g: 0.78, b: 1 },
+    GREEN: { r: 0.55, g: 0.87, b: 0.53 },
+    PINK: { r: 1, g: 0.6, b: 0.78 },
+    ORANGE: { r: 1, g: 0.71, b: 0.42 },
+    PURPLE: { r: 0.78, g: 0.65, b: 1 },
+    RED: { r: 1, g: 0.55, b: 0.55 },
+    LIGHT_GRAY: { r: 0.9, g: 0.9, b: 0.9 },
+    GRAY: { r: 0.7, g: 0.7, b: 0.7 }
+  };
+
+  // plugin/src/main/exec-stdlib-figjam-content.ts
+  var FALLBACK_FONT = { family: "Inter", style: "Medium" };
+  async function loadOrFallback(sublayer) {
+    try {
+      await figma.loadFontAsync(sublayer.fontName);
+    } catch {
+      await figma.loadFontAsync(FALLBACK_FONT);
+      sublayer.fontName = FALLBACK_FONT;
+    }
+  }
+  function assertTextLength(text, field) {
+    if (text.length > MAX_TEXT_CHARS) {
+      throw withCode(new Error(`${field} exceeds ${MAX_TEXT_CHARS} chars (batch cap, timeout guard \u2014 not a Figma limit)`), "E_INVALID_ARGS");
+    }
+  }
+  async function sticky(text, opts = {}) {
+    requireEditor("ui.figjam.sticky", ["figjam"]);
+    assertTextLength(text, "sticky text");
+    const node = figma.createSticky();
+    await figma.loadFontAsync(node.text.fontName);
+    node.text.characters = text;
+    if (opts.color) {
+      const rgb = STICKY_COLORS[opts.color.toUpperCase()];
+      if (!rgb) {
+        throw withCode(new Error(`unknown sticky color "${opts.color}" \u2014 valid: ${Object.keys(STICKY_COLORS).join(", ")}`), "E_INVALID_ARGS");
+      }
+      node.fills = [{ type: "SOLID", color: rgb }];
+    }
+    if (typeof opts.x === "number") node.x = opts.x;
+    if (typeof opts.y === "number") node.y = opts.y;
+    return { id: node.id, type: "STICKY", name: node.name, x: node.x, y: node.y };
+  }
+  async function stickies(specs) {
+    requireEditor("ui.figjam.stickies", ["figjam"]);
+    if (specs.length > MAX_STICKIES_PER_BATCH) {
+      throw withCode(new Error(`${specs.length} stickies requested \u2014 capped at ${MAX_STICKIES_PER_BATCH} per batch`), "E_INVALID_ARGS");
+    }
+    const results = [];
+    const errors = [];
+    let batchFont = null;
+    for (let i = 0; i < specs.length; i++) {
+      const spec = specs[i];
+      try {
+        assertTextLength(spec.text, `stickies[${i}].text`);
+        const node = figma.createSticky();
+        if (!batchFont) batchFont = node.text.fontName;
+        await figma.loadFontAsync(batchFont);
+        node.text.characters = spec.text;
+        if (spec.color) {
+          const rgb = STICKY_COLORS[spec.color.toUpperCase()];
+          if (!rgb) throw new Error(`unknown sticky color "${spec.color}" \u2014 valid: ${Object.keys(STICKY_COLORS).join(", ")}`);
+          node.fills = [{ type: "SOLID", color: rgb }];
+        }
+        if (typeof spec.x === "number") node.x = spec.x;
+        if (typeof spec.y === "number") node.y = spec.y;
+        results.push({ id: node.id, type: "STICKY", name: node.name, x: node.x, y: node.y });
+      } catch (err) {
+        errors.push({ index: i, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { created: results.length, failed: errors.length, results, errors };
+  }
+  async function connector(startNodeId, endNodeId, opts = {}) {
+    requireEditor("ui.figjam.connector", ["figjam"]);
+    const startNode = await figma.getNodeByIdAsync(startNodeId);
+    if (!startNode) throw withCode(new Error(`connector start node not found: ${startNodeId}`), "E_INVALID_ARGS");
+    const endNode = await figma.getNodeByIdAsync(endNodeId);
+    if (!endNode) throw withCode(new Error(`connector end node not found: ${endNodeId}`), "E_INVALID_ARGS");
+    const node = figma.createConnector();
+    node.connectorStart = { endpointNodeId: startNodeId, magnet: opts.startMagnet ?? "AUTO" };
+    node.connectorEnd = { endpointNodeId: endNodeId, magnet: opts.endMagnet ?? "AUTO" };
+    if (opts.label) {
+      assertTextLength(opts.label, "connector label");
+      await loadOrFallback(node.text);
+      node.text.characters = opts.label;
+    }
+    return { id: node.id, type: "CONNECTOR", name: node.name };
+  }
+  async function shape(opts = {}) {
+    requireEditor("ui.figjam.shape", ["figjam"]);
+    const node = figma.createShapeWithText();
+    if (opts.shapeType) node.shapeType = opts.shapeType;
+    if (typeof opts.x === "number") node.x = opts.x;
+    if (typeof opts.y === "number") node.y = opts.y;
+    if (typeof opts.width === "number" || typeof opts.height === "number") {
+      node.resize(opts.width ?? node.width, opts.height ?? node.height);
+    }
+    if (opts.fillColor) node.fills = [{ type: "SOLID", color: rgbToFigma(hexToFigmaColor(opts.fillColor)) }];
+    if (opts.strokeColor) node.strokes = [{ type: "SOLID", color: rgbToFigma(hexToFigmaColor(opts.strokeColor)) }];
+    if (opts.strokeDashPattern) node.dashPattern = opts.strokeDashPattern;
+    if (opts.text) {
+      assertTextLength(opts.text, "shape text");
+      await loadOrFallback(node.text);
+      if (typeof opts.fontSize === "number") node.text.fontSize = opts.fontSize;
+      node.text.characters = opts.text;
+    }
+    return { id: node.id, type: "SHAPE_WITH_TEXT", name: node.name, x: node.x, y: node.y, width: node.width, height: node.height };
+  }
+  async function section(opts = {}) {
+    requireEditor("ui.figjam.section", ["figjam"]);
+    const node = figma.createSection();
+    if (opts.name) node.name = opts.name;
+    if (typeof opts.x === "number") node.x = opts.x;
+    if (typeof opts.y === "number") node.y = opts.y;
+    if (typeof opts.width === "number" || typeof opts.height === "number") {
+      node.resizeWithoutConstraints(opts.width ?? node.width, opts.height ?? node.height);
+    }
+    if (opts.fillColor) node.fills = [{ type: "SOLID", color: rgbToFigma(hexToFigmaColor(opts.fillColor)) }];
+    return { id: node.id, type: "SECTION", name: node.name, x: node.x, y: node.y, width: node.width, height: node.height };
+  }
+
+  // plugin/src/main/exec-stdlib-figjam-table.ts
+  var FALLBACK_FONT2 = { family: "Inter", style: "Medium" };
+  async function table(rows, columns, opts = {}) {
+    requireEditor("ui.figjam.table", ["figjam"]);
+    if (rows > MAX_TABLE_ROWS || columns > MAX_TABLE_COLUMNS) {
+      throw withCode(new Error(`table ${rows}x${columns} exceeds the cap of ${MAX_TABLE_ROWS}x${MAX_TABLE_COLUMNS}`), "E_INVALID_ARGS");
+    }
+    const node = figma.createTable(rows, columns);
+    if (typeof opts.x === "number") node.x = opts.x;
+    if (typeof opts.y === "number") node.y = opts.y;
+    let cellsWritten = 0;
+    let dataRowsIgnored = 0;
+    if (opts.data) {
+      let cellFont = null;
+      for (let r = 0; r < opts.data.length; r++) {
+        if (r >= rows) {
+          dataRowsIgnored++;
+          continue;
+        }
+        const row = opts.data[r];
+        for (let c = 0; c < row.length && c < columns; c++) {
+          const cell = node.cellAt(r, c);
+          if (!cellFont) cellFont = cell.text.fontName;
+          await figma.loadFontAsync(cellFont);
+          cell.text.characters = row[c] ?? "";
+          cellsWritten++;
+        }
+      }
+    }
+    return {
+      id: node.id,
+      type: "TABLE",
+      name: node.name,
+      rows: node.numRows,
+      columns: node.numColumns,
+      cellsWritten,
+      ...dataRowsIgnored > 0 && { dataRowsIgnored }
+    };
+  }
+  async function codeBlock(code, opts = {}) {
+    requireEditor("ui.figjam.codeBlock", ["figjam"]);
+    if (code.length > MAX_CODE_BLOCK_CHARS) {
+      throw withCode(new Error(`code block exceeds ${MAX_CODE_BLOCK_CHARS} chars (batch cap)`), "E_INVALID_ARGS");
+    }
+    const node = figma.createCodeBlock();
+    try {
+      await figma.loadFontAsync({ family: "Source Code Pro", style: "Medium" });
+    } catch {
+      await figma.loadFontAsync(FALLBACK_FONT2);
+    }
+    node.code = code;
+    if (opts.language) {
+      node.codeLanguage = opts.language;
+    }
+    if (typeof opts.x === "number") node.x = opts.x;
+    if (typeof opts.y === "number") node.y = opts.y;
+    return { id: node.id, type: "CODE_BLOCK", name: node.name, x: node.x, y: node.y };
+  }
+
+  // plugin/src/main/exec-stdlib-figjam-arrange.ts
+  function computeArrangement(nodes, layout, spacing, columns) {
+    let x = 0;
+    let y = 0;
+    let rowHeight = 0;
+    let col = 0;
+    const cols = layout === "grid" ? columns ?? Math.ceil(Math.sqrt(nodes.length)) : nodes.length;
+    for (const node of nodes) {
+      if (layout === "horizontal") {
+        node.x = x;
+        node.y = 0;
+        x += node.width + spacing;
+      } else if (layout === "vertical") {
+        node.x = 0;
+        node.y = y;
+        y += node.height + spacing;
+      } else {
+        node.x = x;
+        node.y = y;
+        rowHeight = Math.max(rowHeight, node.height);
+        col += 1;
+        x += node.width + spacing;
+        if (col >= cols) {
+          col = 0;
+          x = 0;
+          y += rowHeight + spacing;
+          rowHeight = 0;
+        }
+      }
+    }
+  }
+  async function arrange(nodeIds, opts = {}) {
+    requireEditor("ui.figjam.arrange", ["figjam"]);
+    if (nodeIds.length > MAX_ARRANGE_NODES) {
+      throw withCode(new Error(`${nodeIds.length} nodes requested \u2014 capped at ${MAX_ARRANGE_NODES} per arrange`), "E_INVALID_ARGS");
+    }
+    const layout = opts.layout ?? "grid";
+    const spacing = opts.spacing ?? 20;
+    const resolved = [];
+    const skipped = [];
+    for (const id of nodeIds) {
+      const node = await figma.getNodeByIdAsync(id);
+      if (!node || !("x" in node) || !("width" in node)) {
+        skipped.push(id);
+        continue;
+      }
+      resolved.push(node);
+    }
+    computeArrangement(resolved, layout, spacing, opts.columns);
+    return { arranged: resolved.length, layout, skipped };
+  }
+
+  // plugin/src/main/exec-stdlib-figjam-read.ts
+  var TABLE_READ_ROW_CAP = 10;
+  var FIGJAM_READABLE_TYPES = /* @__PURE__ */ new Set([
+    "STICKY",
+    "SHAPE_WITH_TEXT",
+    "CONNECTOR",
+    "CODE_BLOCK",
+    "TABLE",
+    "SECTION",
+    "FRAME",
+    "TEXT"
+  ]);
+  function firstSolidFillHex(fills) {
+    if (!Array.isArray(fills) || fills.length === 0) return null;
+    const solid = fills.find((f) => f?.type === "SOLID");
+    if (!solid) return null;
+    return figmaColorToHex(solid.color);
+  }
+  function extractBoardNode(node) {
+    const base = { id: node.id, name: node.name, type: node.type };
+    switch (node.type) {
+      case "STICKY": {
+        const sticky2 = node;
+        return { ...base, text: sticky2.text.characters, color: firstSolidFillHex(sticky2.fills) };
+      }
+      case "SHAPE_WITH_TEXT": {
+        const shapeNode = node;
+        return { ...base, text: shapeNode.text.characters, shapeType: shapeNode.shapeType };
+      }
+      case "CONNECTOR": {
+        const conn = node;
+        return {
+          ...base,
+          label: conn.text.characters || null,
+          start: "endpointNodeId" in conn.connectorStart ? conn.connectorStart.endpointNodeId : null,
+          end: "endpointNodeId" in conn.connectorEnd ? conn.connectorEnd.endpointNodeId : null
+        };
+      }
+      case "CODE_BLOCK": {
+        const code = node;
+        return { ...base, code: code.code, language: code.codeLanguage };
+      }
+      case "TABLE": {
+        const tableNode = node;
+        const rowCap = Math.min(TABLE_READ_ROW_CAP, tableNode.numRows);
+        const data = [];
+        for (let r = 0; r < rowCap; r++) {
+          const row = [];
+          for (let c = 0; c < tableNode.numColumns; c++) row.push(tableNode.cellAt(r, c).text.characters);
+          data.push(row);
+        }
+        return {
+          ...base,
+          rows: tableNode.numRows,
+          columns: tableNode.numColumns,
+          data,
+          cellDataTruncated: tableNode.numRows > TABLE_READ_ROW_CAP
+        };
+      }
+      case "SECTION": {
+        const sectionNode = node;
+        return { ...base, childCount: sectionNode.children.length };
+      }
+      case "TEXT": {
+        const text = node;
+        return { ...base, text: text.characters };
+      }
+      default:
+        return base;
+    }
+  }
+  async function board(opts = {}) {
+    requireEditor("ui.figjam.board", ["figjam"]);
+    const maxNodes = opts.maxNodes ?? MAX_BOARD_READ_NODES;
+    const topLevel = figma.currentPage.children;
+    const matching = opts.nodeTypes ? topLevel.filter((c) => opts.nodeTypes.includes(c.type)) : topLevel.filter((c) => FIGJAM_READABLE_TYPES.has(c.type));
+    const truncated = matching.length > maxNodes;
+    const nodes = matching.slice(0, maxNodes).map(extractBoardNode);
+    return { nodes, totalFound: matching.length, truncated, page: figma.currentPage.name, scope: "page-top-level" };
+  }
+  async function resolveEndpoint(ep) {
+    if (!("endpointNodeId" in ep)) {
+      return { nodeId: null, unresolved: false, position: "position" in ep ? ep.position : null };
+    }
+    const node = await figma.getNodeByIdAsync(ep.endpointNodeId);
+    return { nodeId: ep.endpointNodeId, unresolved: !node, position: null };
+  }
+  async function connections() {
+    requireEditor("ui.figjam.connections", ["figjam"]);
+    const connectors = figma.currentPage.findAll((n) => n.type === "CONNECTOR");
+    const connectedNodes = {};
+    const edges = [];
+    for (const conn of connectors) {
+      const start = await resolveEndpoint(conn.connectorStart);
+      const end = await resolveEndpoint(conn.connectorEnd);
+      edges.push({ id: conn.id, label: conn.text.characters || null, start, end });
+      for (const ep of [start, end]) {
+        if (!ep.nodeId || ep.unresolved || connectedNodes[ep.nodeId]) continue;
+        const node = await figma.getNodeByIdAsync(ep.nodeId);
+        if (!node) continue;
+        const asText = "characters" in node ? node.characters : void 0;
+        connectedNodes[ep.nodeId] = {
+          id: node.id,
+          type: node.type,
+          name: node.name ?? node.id,
+          text: typeof asText === "string" ? asText : null
+        };
+      }
+    }
+    return { edges, connectedNodes, totalConnectors: connectors.length, totalConnectedNodes: Object.keys(connectedNodes).length };
+  }
+
+  // plugin/src/main/exec-stdlib-figjam.ts
+  function createExecStdlibFigjam() {
+    return { sticky, stickies, connector, shape, section, table, codeBlock, arrange, board, connections };
+  }
+
   // plugin/src/main/exec-stdlib.ts
   var BOUND_FIELD_EXPANSIONS = {
     cornerRadius: ["cornerRadius", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"],
@@ -3381,7 +3786,8 @@
       componentSet: componentSet2,
       vars: createExecStdlibVars(),
       slot: createExecStdlibSlot(),
-      annotate: createExecStdlibAnnotate()
+      annotate: createExecStdlibAnnotate(),
+      figjam: createExecStdlibFigjam()
     };
   }
 
@@ -3882,6 +4288,7 @@
     title: "design:os by JANG",
     themeColors: true
   });
+  var bootSkipped = [];
   function selectionSummary() {
     const sel = figma.currentPage.selection;
     return { selectionName: sel.length > 0 ? sel[0].name : null, selectionCount: sel.length };
@@ -4159,7 +4566,7 @@
   async function dispatch(cmd, params) {
     switch (cmd) {
       case "STATUS":
-        return opStatus();
+        return opStatus(bootSkipped);
       case "GET_SELECTION":
         return opGetSelection(params);
       case "SCAN_DESIGN_SYSTEM":
