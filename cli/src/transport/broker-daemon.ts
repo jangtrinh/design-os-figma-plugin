@@ -35,7 +35,7 @@ import {
   resolveProjectDir, writeBindCache, writeBindMarker, type Binding,
 } from './project-bind.ts';
 import {
-  JobTable, isFinishedState, toJobInfo, type JobRecord,
+  JobTable, isFinishedState, isReplyFromDispatchedInstance, toJobInfo, type JobRecord,
 } from './job-table.ts';
 import {
   completeSkippingStale, emptyQueue, enqueue as enqueueJob, queuePosition, remove as removeFromQueue,
@@ -376,6 +376,13 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // filesystem is exactly the state a resurrection would be repairing.
   let ownsAdvertisement = true;
   log(`broker listening on ${LOOPBACK_HOST}:${port}${wss6 ? ' + [::1]:' + port : ''} (${bindIndex.size} project binding(s) loaded)`);
+
+  // Sender-verification counter (backlog 2.10) — how many reply frames `routeFromPlugin`
+  // discarded because the sending socket's plugin instance did not match the job's
+  // `targetInstanceId`. Logged for visibility ("nothing vanishes silently"); scoped to
+  // this daemon run (a closure local, not module-level) so it never leaks across daemon
+  // instances started back-to-back within the same test process.
+  let senderMismatchCount = 0;
 
   // Error log writer (backlog 4.6): resolved once, one line per ReplyErr the broker relays.
   const errorsPath = errorLogPath();
@@ -850,12 +857,34 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (delivered > 0) log(`flushed ${delivered} parked request(s)`);
   };
 
-  const routeFromPlugin = (id: string, rawText: string, final: boolean): void => {
+  /**
+   * `senderWs` is the socket that ACTUALLY sent this reply/chunk frame — verified
+   * against the job's pinned `targetInstanceId` (backlog 2.10 audit) before anything
+   * below is allowed to touch `pending`/job state. Pre-fix, this function took only
+   * `(id, rawText, final)` and routed on `id` alone: any OTHER connected plugin
+   * instance sending a reply carrying the SAME id (reachable via a CLI-side request-id
+   * collision — ids are minted `c_<counter>_<ts>` per CLI PROCESS, so two concurrent
+   * CLI invocations can collide within the same millisecond) was accepted and forwarded
+   * to whichever CLI was waiting on that id, with no signal it came from the wrong
+   * plugin. A mismatched sender is now discarded outright — same shape as the
+   * already-terminal-job discard below (count + log, never mutate `replyFrames` or
+   * `pending`), so the REAL dispatched plugin's reply (or the watchdog timeout) is
+   * still what resolves the job.
+   */
+  const routeFromPlugin = (id: string, rawText: string, final: boolean, senderWs: WebSocket): void => {
+    const job = st.jobs.byRequestId(id);
+    const senderInstanceId = st.registry.getByWs(senderWs)?.instanceId ?? null;
+    if (!isReplyFromDispatchedInstance(job, senderInstanceId)) {
+      senderMismatchCount += 1;
+      log(`reply for job ${job?.jobId ?? '?'} (request ${id}) arrived from instance ` +
+        `[${senderInstanceId ?? 'unrecognised socket'}], expected [${job?.targetInstanceId}] — ` +
+        `discarded (sender mismatch #${senderMismatchCount})`);
+      return; // never touch pending/job state — the real dispatched target may still answer
+    }
     const client = st.pending.get(id);
     if (client && client.readyState === WebSocket.OPEN) {
       try { client.send(rawText); } catch { /* requester vanished */ }
     }
-    const job = st.jobs.byRequestId(id);
     if (job && isFinishedState(job.state)) {
       // Closing round (R1+R2 unified, reviewer Q1) — this job is ALREADY terminal
       // (force-released, watchdog-timed-out, or a genuine prior finish): this frame is
@@ -1092,13 +1121,13 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // THEN admits the request with its real `cmd`/`readOnly`/`expectedFile`/
       // `projectDir` — never a synthetic pseudo-command that would misroute a filtered
       // request or force a declared-read-only EXEC_JS to queue.
-      if (isPlugin) { st.registry.touchActive(ws); routeFromPlugin(msg.id, text, msg.last); }
+      if (isPlugin) { st.registry.touchActive(ws); routeFromPlugin(msg.id, text, msg.last, ws); }
       else admitChunk(ws, msg.id, text, msg.last);
     } else if (isReplyMsg(msg)) {
       if (isPlugin) {
         st.registry.touchActive(ws);
         broadcastPeers();
-        routeFromPlugin(msg.id, text, true);
+        routeFromPlugin(msg.id, text, true, ws);
         // Error log writer (backlog 4.6): every FAILED reply the broker relays, logged
         // regardless of whether a CLI is still around to read it live.
         if (!msg.ok) {

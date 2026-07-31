@@ -483,3 +483,58 @@ describe('daemon harness — advertisement self-heals while alive, never resurre
     expect(existsSync(advertisePath)).toBe(false);
   });
 });
+
+// Backlog 2.10 audit — sender verification in routeFromPlugin. AUDIT FINDING:
+// `routeFromPlugin` routed a reply frame to the waiting CLI keyed on `id` ALONE — it
+// never checked which socket actually sent the frame against `job.targetInstanceId`
+// (the plugin instance the job was dispatched to, pinned at admission). ANY other
+// currently-connected plugin instance sending a reply carrying the same `id` was
+// accepted and forwarded as if it were the real dispatched plugin's answer. Reachable
+// in practice via a CLI-side request-id collision: ids are minted `c_<counter>_<ts>`
+// per CLI PROCESS (`requestCounter` resets to 0 on every fresh `figma-agent` invocation),
+// so two concurrent CLI invocations issuing their first command in the same millisecond
+// produce identical ids. The fix (job-table.ts's `isReplyFromDispatchedInstance`,
+// wired into `routeFromPlugin` with the sender's `ws`) verifies by INSTANCE IDENTITY,
+// not raw socket reference, so an honest plugin reconnect (new ws, same instanceId)
+// still completes its own job normally — only a genuinely different instance's reply
+// is discarded.
+describe('daemon harness — routeFromPlugin verifies the reply sender against the dispatched instance (backlog 2.10)', () => {
+  it('a reply from a DIFFERENT plugin instance carrying the dispatched job\'s id is discarded, not delivered to the waiting CLI', async () => {
+    const port = await startTestBroker();
+    const pluginX = await connectSocket(port);
+    const pluginY = await connectSocket(port);
+    await helloPlugin(pluginX, 'inst-x', 'FileX');
+    await helloPlugin(pluginY, 'inst-y', 'FileY');
+
+    const cli = await connectSocket(port);
+    const reqId = 'req-sender-verify-1';
+    // `expectedFile` pins dispatch to X specifically — two plugins are connected, so
+    // dispatch must not depend on ambient recency to land on X.
+    cli.send(JSON.stringify(makeRequestFrame(reqId, 'SET_TEXT', { nodeId: '1:1', text: 'x' }, undefined, 'FileX')));
+    await nextFrame(cli, (m) => (m as EventMsg).type === 'JOB_STATE'); // dispatch confirmed
+
+    // Y (a DIFFERENT, genuinely connected instance) sends a reply carrying X's dispatched
+    // id — simulating the collision/cross-talk this audit exists to catch.
+    pluginY.send(JSON.stringify({ id: reqId, ok: true, result: { spoofed: true, from: 'Y' } }));
+
+    // X (the REAL dispatched target) sends its own, later, genuine reply.
+    pluginX.send(JSON.stringify({ id: reqId, ok: true, result: { spoofed: false, from: 'X' } }));
+
+    const reply = await nextFrame<ReplyOk>(cli, (m) => (m as ReplyOk | ReplyErr).id === reqId);
+    // The FIRST (and only) frame the CLI actually receives for this id must be X's real
+    // reply — Y's spoofed frame must never have reached it at all.
+    expect(reply.result).toEqual({ spoofed: false, from: 'X' });
+  });
+
+  // NOTE on reconnect: a full end-to-end "reconnect, then the NEW socket answers the
+  // OLD dispatched id" integration test is not exercised here, because it races an
+  // orthogonal, PRE-EXISTING behavior — `handleClose`'s disconnect-triggered job
+  // failure. The daemon closes the superseded (pre-reconnect) socket itself the
+  // moment the SAME instanceId re-HELLOs; that socket's 'close' event fires
+  // `handleClose`, which fails every job still pinned to it (E_NO_PLUGIN) BEFORE the
+  // reconnected socket could plausibly answer — unaffected by this fix either way.
+  // The identity-vs-socket-reference distinction this fix actually adds (an honest
+  // reconnect must not be misread as "a different instance") is proven directly and
+  // deterministically at the predicate level instead — see
+  // tests/job-table-sender-verification.test.ts.
+});
