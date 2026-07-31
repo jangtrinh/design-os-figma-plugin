@@ -445,8 +445,8 @@
     if (availableFontsCache) return availableFontsCache;
     const stylesByFamily = /* @__PURE__ */ new Map();
     try {
-      const list2 = await figma.listAvailableFontsAsync();
-      for (const f of list2) {
+      const list3 = await figma.listAvailableFontsAsync();
+      for (const f of list3) {
         const arr = stylesByFamily.get(f.fontName.family) ?? [];
         arr.push(f.fontName.style);
         stylesByFamily.set(f.fontName.family, arr);
@@ -2965,18 +2965,18 @@
     }
     return node;
   }
-  async function append(target, content, opts = {}) {
+  async function append(target, content2, opts = {}) {
     const slotNode = await resolveSlot(target);
     let appendedNode;
-    if (content.sourceNodeId) {
-      const source = await figma.getNodeByIdAsync(content.sourceNodeId);
-      if (!source) throw withCode(new Error(`source node not found: ${content.sourceNodeId}`), "E_INVALID_ARGS");
+    if (content2.sourceNodeId) {
+      const source = await figma.getNodeByIdAsync(content2.sourceNodeId);
+      if (!source) throw withCode(new Error(`source node not found: ${content2.sourceNodeId}`), "E_INVALID_ARGS");
       if (source.type === "COMPONENT") {
         throw withCode(new Error("a COMPONENT cannot be appended directly to a slot \u2014 create an INSTANCE first, or clone an existing instance"), "E_INVALID_ARGS");
       }
-      appendedNode = content.clone !== false ? source.clone() : source;
-    } else if (content.nodeType) {
-      appendedNode = await createSlotContentNode(content.nodeType, content.props ?? {});
+      appendedNode = content2.clone !== false ? source.clone() : source;
+    } else if (content2.nodeType) {
+      appendedNode = await createSlotContentNode(content2.nodeType, content2.props ?? {});
     } else {
       throw withCode(new Error("append needs content.sourceNodeId (clone/move existing) or content.nodeType (create new)"), "E_INVALID_ARGS");
     }
@@ -3687,6 +3687,306 @@
     return { sticky, stickies, connector, shape, section, table, codeBlock, arrange, board, connections };
   }
 
+  // plugin/src/main/exec-stdlib-slides-resolve.ts
+  async function resolveSlide(slideId, capability) {
+    const node = await figma.getNodeByIdAsync(slideId);
+    if (!node) throw withCode(new Error(`${capability}: node not found: ${slideId}`), "E_INVALID_ARGS");
+    if (node.type !== "SLIDE") {
+      throw withCode(new Error(`${capability}: node ${slideId} is a ${node.type}, not a SLIDE`), "E_INVALID_ARGS");
+    }
+    return node;
+  }
+
+  // plugin/src/main/exec-stdlib-slides-crud.ts
+  async function list2() {
+    requireEditor("ui.slides.list", ["slides"]);
+    const slideGrid = figma.getSlideGrid();
+    const slides = [];
+    for (let row = 0; row < slideGrid.length; row++) {
+      const cols = slideGrid[row];
+      for (let col = 0; col < cols.length; col++) {
+        const slide = cols[col];
+        slides.push({
+          id: slide.id,
+          name: slide.name,
+          row,
+          col,
+          isSkippedSlide: slide.isSkippedSlide,
+          childCount: slide.children.length
+        });
+      }
+    }
+    return { slides, totalSlides: slides.length, totalRows: slideGrid.length };
+  }
+  async function grid() {
+    requireEditor("ui.slides.grid", ["slides"]);
+    const slideGrid = figma.getSlideGrid();
+    const rows = [];
+    for (let row = 0; row < slideGrid.length; row++) {
+      const cols = slideGrid[row];
+      rows.push({
+        rowIndex: row,
+        slides: cols.map((s, col) => ({ id: s.id, name: s.name, col, isSkippedSlide: s.isSkippedSlide }))
+      });
+    }
+    return { grid: rows, totalRows: rows.length };
+  }
+  async function create2(opts = {}) {
+    requireEditor("ui.slides.create", ["slides"]);
+    const slide = typeof opts.row === "number" && typeof opts.col === "number" ? figma.createSlide(opts.row, opts.col) : figma.createSlide();
+    return { id: slide.id, name: slide.name };
+  }
+  async function remove2(slideId) {
+    requireEditor("ui.slides.remove", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.remove");
+    const name = slide.name;
+    slide.remove();
+    return { deleted: slideId, name };
+  }
+  async function duplicate(slideId) {
+    requireEditor("ui.slides.duplicate", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.duplicate");
+    const clone = slide.clone();
+    return { originalId: slideId, newId: clone.id, name: clone.name };
+  }
+  async function reorder(gridOfIds) {
+    requireEditor("ui.slides.reorder", ["slides"]);
+    const currentGrid = figma.getSlideGrid();
+    const slideMap = /* @__PURE__ */ new Map();
+    const currentIds = [];
+    for (const row of currentGrid) {
+      for (const slide of row) {
+        slideMap.set(slide.id, slide);
+        currentIds.push(slide.id);
+      }
+    }
+    const inputIds = gridOfIds.flat();
+    const inputSeen = /* @__PURE__ */ new Set();
+    const duplicated = /* @__PURE__ */ new Set();
+    const missing = [];
+    for (const id of inputIds) {
+      if (inputSeen.has(id)) duplicated.add(id);
+      inputSeen.add(id);
+      if (!slideMap.has(id)) missing.push(id);
+    }
+    const dropped = currentIds.filter((id) => !inputSeen.has(id));
+    if (missing.length > 0 || duplicated.size > 0 || dropped.length > 0) {
+      const parts = [];
+      if (missing.length > 0) parts.push(`unknown ids: ${missing.join(", ")}`);
+      if (duplicated.size > 0) parts.push(`duplicated ids: ${[...duplicated].join(", ")}`);
+      if (dropped.length > 0) parts.push(`missing ids (would silently reorganise the deck): ${dropped.join(", ")}`);
+      throw withCode(
+        new Error(`ui.slides.reorder: grid does not match the current deck exactly \u2014 ${parts.join("; ")}`),
+        "E_INVALID_ARGS"
+      );
+    }
+    const reorderedRows = gridOfIds.map((row) => row.map((id) => slideMap.get(id)));
+    figma.setSlideGrid(reorderedRows);
+    const after = figma.getSlideGrid();
+    return { rows: after.length, grid: after.map((row) => row.map((s) => s.id)) };
+  }
+
+  // plugin/src/main/exec-stdlib-slides-types.ts
+  var MAX_TEXT_CHARS2 = 1e4;
+  var MAX_FONT_SIZE = 1e3;
+  var MAX_DIMENSION = 1e4;
+  var TRANSITION_STYLES = [
+    "NONE",
+    "DISSOLVE",
+    "SLIDE_FROM_LEFT",
+    "SLIDE_FROM_RIGHT",
+    "SLIDE_FROM_TOP",
+    "SLIDE_FROM_BOTTOM",
+    "PUSH_FROM_LEFT",
+    "PUSH_FROM_RIGHT",
+    "PUSH_FROM_TOP",
+    "PUSH_FROM_BOTTOM",
+    "MOVE_FROM_LEFT",
+    "MOVE_FROM_RIGHT",
+    "MOVE_FROM_TOP",
+    "MOVE_FROM_BOTTOM",
+    "SLIDE_OUT_TO_LEFT",
+    "SLIDE_OUT_TO_RIGHT",
+    "SLIDE_OUT_TO_TOP",
+    "SLIDE_OUT_TO_BOTTOM",
+    "MOVE_OUT_TO_LEFT",
+    "MOVE_OUT_TO_RIGHT",
+    "MOVE_OUT_TO_TOP",
+    "MOVE_OUT_TO_BOTTOM",
+    "SMART_ANIMATE"
+  ];
+  var TRANSITION_CURVES = [
+    "LINEAR",
+    "EASE_IN",
+    "EASE_OUT",
+    "EASE_IN_AND_OUT",
+    "GENTLE",
+    "QUICK",
+    "BOUNCY",
+    "SLOW"
+  ];
+  var TIMING_TYPES = ["ON_CLICK", "AFTER_DELAY"];
+
+  // plugin/src/main/exec-stdlib-slides-view.ts
+  function assertTransition(t, capability) {
+    if (!TRANSITION_STYLES.includes(t.style)) {
+      throw withCode(new Error(`${capability}: unknown style "${t.style}" \u2014 valid: ${TRANSITION_STYLES.join(", ")}`), "E_INVALID_ARGS");
+    }
+    if (!TRANSITION_CURVES.includes(t.curve)) {
+      throw withCode(new Error(`${capability}: unknown curve "${t.curve}" \u2014 valid: ${TRANSITION_CURVES.join(", ")}`), "E_INVALID_ARGS");
+    }
+    if (t.timing && !TIMING_TYPES.includes(t.timing.type)) {
+      throw withCode(new Error(`${capability}: unknown timing.type "${t.timing.type}" \u2014 valid: ${TIMING_TYPES.join(", ")}`), "E_INVALID_ARGS");
+    }
+  }
+  async function setTransition(slideId, opts) {
+    requireEditor("ui.slides.setTransition", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.setTransition");
+    const config = { ...opts, timing: opts.timing ?? { type: "ON_CLICK" } };
+    assertTransition(config, "ui.slides.setTransition");
+    slide.setSlideTransition(config);
+    return { id: slideId, transition: slide.getSlideTransition() };
+  }
+  async function transition(slideId) {
+    requireEditor("ui.slides.transition", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.transition");
+    return { id: slideId, transition: slide.getSlideTransition() };
+  }
+  var VIEW_MODES = ["grid", "single-slide"];
+  async function viewMode(mode) {
+    requireEditor("ui.slides.viewMode", ["slides"]);
+    if (!VIEW_MODES.includes(mode)) {
+      throw withCode(new Error(`ui.slides.viewMode: unknown mode "${mode}" \u2014 valid: ${VIEW_MODES.join(", ")}`), "E_INVALID_ARGS");
+    }
+    figma.viewport.slidesView = mode;
+    return { mode: figma.viewport.slidesView };
+  }
+  async function focused() {
+    requireEditor("ui.slides.focused", ["slides"]);
+    const slide = figma.currentPage.focusedSlide;
+    return slide ? { id: slide.id, name: slide.name } : { focused: null };
+  }
+  async function focus(slideId) {
+    requireEditor("ui.slides.focus", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.focus");
+    figma.viewport.slidesView = "single-slide";
+    figma.currentPage.focusedSlide = slide;
+    return { focused: slide.id, name: slide.name, viewMode: figma.viewport.slidesView };
+  }
+  async function skip(slideId, doSkip) {
+    requireEditor("ui.slides.skip", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.skip");
+    slide.isSkippedSlide = !!doSkip;
+    return { id: slide.id, isSkippedSlide: slide.isSkippedSlide };
+  }
+
+  // plugin/src/main/exec-stdlib-slides-content.ts
+  var FALLBACK_FONT3 = { family: "Inter", style: "Medium" };
+  async function background(slideId, color) {
+    requireEditor("ui.slides.background", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.background");
+    const hadFill = Array.isArray(slide.fills) && slide.fills.length > 0;
+    await slide.setFillsAsync([{ type: "SOLID", color: rgbToFigma(hexToFigmaColor(color)) }]);
+    return { slideId, color, updated: hadFill, method: "slide-fill" };
+  }
+  async function loadTextFont(fontFamily, fontStyle) {
+    const requested = { family: fontFamily ?? "Inter", style: fontStyle ?? "Regular" };
+    try {
+      await figma.loadFontAsync(requested);
+      return requested;
+    } catch {
+      await figma.loadFontAsync(FALLBACK_FONT3);
+      return FALLBACK_FONT3;
+    }
+  }
+  function appendAndVerify(slide, node, capability) {
+    slide.appendChild(node);
+    if (node.parent !== slide) {
+      throw withCode(
+        new Error(`${capability}: node ${node.id} landed on the wrong slide (parent is ${node.parent?.id ?? "none"}, expected ${slide.id})`),
+        "E_EVAL"
+      );
+    }
+  }
+  async function addText(slideId, opts) {
+    requireEditor("ui.slides.addText", ["slides"]);
+    if (opts.text.length > MAX_TEXT_CHARS2) {
+      throw withCode(new Error(`ui.slides.addText: text exceeds ${MAX_TEXT_CHARS2} chars`), "E_INVALID_ARGS");
+    }
+    if (typeof opts.fontSize === "number" && opts.fontSize > MAX_FONT_SIZE) {
+      throw withCode(new Error(`ui.slides.addText: fontSize exceeds ${MAX_FONT_SIZE}`), "E_INVALID_ARGS");
+    }
+    const slide = await resolveSlide(slideId, "ui.slides.addText");
+    const node = figma.createText();
+    node.fontName = await loadTextFont(opts.fontFamily, opts.fontStyle);
+    node.characters = opts.text;
+    if (typeof opts.fontSize === "number") node.fontSize = opts.fontSize;
+    node.x = typeof opts.x === "number" ? opts.x : 100;
+    node.y = typeof opts.y === "number" ? opts.y : 100;
+    if (opts.color) node.fills = [{ type: "SOLID", color: rgbToFigma(hexToFigmaColor(opts.color)) }];
+    if (opts.textAlign) node.textAlignHorizontal = opts.textAlign;
+    if (typeof opts.width === "number") {
+      node.resize(opts.width, node.height);
+      node.textAutoResize = "HEIGHT";
+    }
+    if (typeof opts.lineHeight === "number") node.lineHeight = { value: opts.lineHeight, unit: "PIXELS" };
+    if (typeof opts.letterSpacing === "number") node.letterSpacing = { value: opts.letterSpacing, unit: "PIXELS" };
+    if (opts.textCase) node.textCase = opts.textCase;
+    appendAndVerify(slide, node, "ui.slides.addText");
+    return { id: node.id, characters: node.characters };
+  }
+  async function addShape(slideId, opts = {}) {
+    requireEditor("ui.slides.addShape", ["slides"]);
+    const shapeType = opts.shapeType ?? "RECTANGLE";
+    if (shapeType !== "RECTANGLE" && shapeType !== "ELLIPSE") {
+      throw withCode(new Error(`ui.slides.addShape: unknown shapeType "${shapeType}" \u2014 valid: RECTANGLE, ELLIPSE`), "E_INVALID_ARGS");
+    }
+    if (typeof opts.width === "number" && opts.width > MAX_DIMENSION || typeof opts.height === "number" && opts.height > MAX_DIMENSION) {
+      throw withCode(new Error(`ui.slides.addShape: dimension exceeds ${MAX_DIMENSION}`), "E_INVALID_ARGS");
+    }
+    const slide = await resolveSlide(slideId, "ui.slides.addShape");
+    const node = shapeType === "ELLIPSE" ? figma.createEllipse() : figma.createRectangle();
+    node.x = typeof opts.x === "number" ? opts.x : 100;
+    node.y = typeof opts.y === "number" ? opts.y : 100;
+    node.resize(typeof opts.width === "number" ? opts.width : 200, typeof opts.height === "number" ? opts.height : 200);
+    if (opts.color) {
+      if (!/^#?[0-9a-fA-F]{6}$/.test(opts.color)) {
+        throw withCode(new Error(`ui.slides.addShape: invalid hex color "${opts.color}"`), "E_INVALID_ARGS");
+      }
+      node.fills = [{ type: "SOLID", color: rgbToFigma(hexToFigmaColor(opts.color)) }];
+    }
+    appendAndVerify(slide, node, "ui.slides.addShape");
+    return { id: node.id, type: node.type };
+  }
+  async function content(slideId, opts = {}) {
+    requireEditor("ui.slides.content", ["slides"]);
+    const slide = await resolveSlide(slideId, "ui.slides.content");
+    const serialized = serializeNode(slide, opts.depth ?? 10);
+    return jsonSafe(serialized);
+  }
+
+  // plugin/src/main/exec-stdlib-slides.ts
+  function createExecStdlibSlides() {
+    return {
+      list: list2,
+      grid,
+      content,
+      create: create2,
+      remove: remove2,
+      duplicate,
+      reorder,
+      setTransition,
+      transition,
+      viewMode,
+      focused,
+      focus,
+      skip,
+      background,
+      addText,
+      addShape
+    };
+  }
+
   // plugin/src/main/exec-stdlib.ts
   var BOUND_FIELD_EXPANSIONS = {
     cornerRadius: ["cornerRadius", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"],
@@ -3787,7 +4087,8 @@
       vars: createExecStdlibVars(),
       slot: createExecStdlibSlot(),
       annotate: createExecStdlibAnnotate(),
-      figjam: createExecStdlibFigjam()
+      figjam: createExecStdlibFigjam(),
+      slides: createExecStdlibSlides()
     };
   }
 

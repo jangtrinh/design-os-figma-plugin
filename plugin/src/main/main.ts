@@ -67,12 +67,12 @@ figma.showUI(__html__, {
 // Absorption phase-03 (FigJam) — which design-only boot capabilities this session
 // consciously skipped, surfaced via STATUS's `bootSkipped` (same present-only-when-
 // non-empty contract as the broker's senderMismatchCount/legacyMigrationDeferred).
-// Empty today: the phase-03 boot-path trace found nothing in THIS boot sequence that
-// needs skipping in FigJam — gap-fill/live capture already degrade honestly there
-// (verbatim node.type, no design-only property reads; see knowledge/figjam.md). Kept
+// Empty today: neither the phase-03 (FigJam) nor phase-04 (Slides) boot-path trace
+// found anything in THIS boot sequence that needs skipping — gap-fill/live capture
+// already degrade honestly for both editors' native node types (verbatim node.type,
+// no design-only property reads; see knowledge/figjam.md, knowledge/slides.md). Kept
 // as real, mutable state (not a hardcoded `[]` at the call site) so a future editor
-// surface (phase-04 Slides, or a later FigJam finding) has somewhere to push an entry
-// without a STATUS payload shape change.
+// surface has somewhere to push an entry without a STATUS payload shape change.
 const bootSkipped: string[] = [];
 
 /** Block 2's Selection row: the first selected node's name (if any) + the count. */
