@@ -433,3 +433,53 @@ describe('daemon harness — EDIT_FEED with no data.fileName falls back to the r
     }
   });
 });
+
+// Broker hardening (issue #5), item 2 — heartbeat self-heal, guarded. The
+// advertisement-refresh interval must re-advertise if its own file vanishes while
+// the broker is still alive (a disk cleaner, another tool's stale-file sweep, an
+// accidental `rm` — anything short of the broker itself deciding to exit), but a
+// broker that HAS decided to exit must never have a later tick of that same
+// interval resurrect the file it just deliberately removed.
+//
+// FIGMA_AGENT_HEARTBEAT_MS shrinks the refresh cadence so this observes real
+// interval ticks instead of waiting out the real 30s production cadence — this
+// override only works because the refresh interval now reads the same env-derived
+// `HEARTBEAT_MS` the WS-ping interval already used (pre-fix, the refresh interval
+// was hardcoded to the raw `HEARTBEAT_INTERVAL_MS` constant and un-overridable).
+//
+// This test fails against pre-fix code: with no `ownsAdvertisement` guard, the
+// interval's `writeAdvertisement` call after BROKER_SHUTDOWN_REQUEST is
+// unconditional, so the file reappears within one tick of the shutdown that just
+// removed it (the `exit` stub in this harness throws rather than truly halting the
+// process, so the interval keeps ticking exactly like a real hung shutdown would).
+describe('daemon harness — advertisement self-heals while alive, never resurrects after a clean shutdown (issue #5)', () => {
+  afterEach(() => {
+    delete process.env.FIGMA_AGENT_HEARTBEAT_MS; // don't leak a shrunk cadence into later tests
+  });
+
+  it('re-advertises when its file is deleted out from under it, but stays gone after BROKER_SHUTDOWN_REQUEST', async () => {
+    const port = await startTestBroker({ FIGMA_AGENT_HEARTBEAT_MS: '150' });
+    const cli = await connectSocket(port);
+
+    expect(existsSync(advertisePath)).toBe(true); // startTestBroker's own startup write
+    const originalPid = (JSON.parse(readFileSync(advertisePath, 'utf8')) as { pid: number }).pid;
+
+    // Simulate the file vanishing while the broker is still very much alive.
+    rmSync(advertisePath);
+    expect(existsSync(advertisePath)).toBe(false);
+
+    await waitFor(() => existsSync(advertisePath), 1_000, 20);
+    const healed = JSON.parse(readFileSync(advertisePath, 'utf8')) as { pid: number };
+    expect(healed.pid).toBe(originalPid); // the SAME broker re-advertised — no competing spawn
+
+    // Now shut it down for real via the daemon's own designed path.
+    cli.send(JSON.stringify({ type: 'BROKER_SHUTDOWN_REQUEST' }));
+    await waitFor(() => !existsSync(advertisePath), 1_000, 20);
+
+    // Give the refresh interval several more ticks. Pre-fix, the very next tick's
+    // unconditional writeAdvertisement() resurrects the file this shutdown just
+    // removed.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(existsSync(advertisePath)).toBe(false);
+  });
+});

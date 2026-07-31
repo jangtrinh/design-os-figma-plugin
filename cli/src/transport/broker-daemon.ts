@@ -10,7 +10,7 @@
 import { appendFileSync, readFileSync, unlinkSync } from 'node:fs';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
-  BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS, PLUGIN_WAIT_MS,
+  BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS, LOOPBACK_HOST, PLUGIN_WAIT_MS,
   PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
   type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type ReplyErr, type ReplyOk, type RequestMsg,
   type WireMsg,
@@ -331,7 +331,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   let port = 0;
   for (const p of ports) {
     if (wss) break;
-    const bound = await tryBind(p, '127.0.0.1');
+    const bound = await tryBind(p, LOOPBACK_HOST);
     if (bound) {
       wss = bound;
       // `.address()` gives back the REAL bound port even for an ephemeral (0) request —
@@ -362,7 +362,16 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     jobs: new JobTable(), queues: new Map(), pendingChunks: new Map(),
   };
   writeAdvertisement(port, startedAt, advertisePath);
-  log(`broker listening on 127.0.0.1:${port}${wss6 ? ' + [::1]:' + port : ''} (${bindIndex.size} project binding(s) loaded)`);
+  // Self-heal guard (heartbeat self-heal, issue #5): true while this process is the
+  // rightful owner of `advertisePath`. The refresh interval below re-advertises if the
+  // file vanishes out from under a still-alive broker (disk cleaner, another tool's
+  // stale-file sweep, accidental `rm`) — but ONLY while this flag is true. `shutdown()`
+  // flips it false BEFORE unlinking, so a broker that has decided to exit can never have
+  // a later tick of its own refresh interval resurrect the file it just deliberately
+  // removed. Scoped to this daemon run, not derived from the filesystem — the
+  // filesystem is exactly the state a resurrection would be repairing.
+  let ownsAdvertisement = true;
+  log(`broker listening on ${LOOPBACK_HOST}:${port}${wss6 ? ' + [::1]:' + port : ''} (${bindIndex.size} project binding(s) loaded)`);
 
   // Error log writer (backlog 4.6): resolved once, one line per ReplyErr the broker relays.
   const errorsPath = errorLogPath();
@@ -437,6 +446,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
+    // Drop ownership BEFORE unlinking — a refresh-interval tick racing this shutdown
+    // (the `exit` stub in tests throws rather than truly halting the process, so later
+    // ticks are reachable) must see `ownsAdvertisement === false` and skip re-writing
+    // the file this call is about to deliberately remove.
+    ownsAdvertisement = false;
     try {
       // Only remove the advertisement if it is still ours (a newer broker may own it).
       const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as BrokerAdvertisement;
@@ -1312,12 +1326,19 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     }
   }, Math.min(30_000, Math.max(1_000, Math.floor(WATCHDOG_TIMEOUT_MS / 4))));
 
-  // Advertisement refresh (fixed 30s); yield if a different live broker took over.
+  // Advertisement refresh (30s cadence, env-overridable like the other intervals above —
+  // FIGMA_AGENT_HEARTBEAT_MS shrinks this too, since tests/broker-daemon-harness.test.ts
+  // needs to observe a self-heal cycle without a real 30s wait); yield if a different
+  // live broker took over. Self-heal (issue #5): re-advertising here is unconditional on
+  // the file's presence — if it vanished while we're still alive, this write brings it
+  // back — but `ownsAdvertisement` (false once `shutdown()` has run) stops a cleanly-
+  // exited broker's own interval from resurrecting the file it just removed.
   setInterval(() => {
+    if (!ownsAdvertisement) return;
     const ad = readAdvertisement(advertisePath);
-    if (ad && ad.pid !== process.pid && isPidAlive(ad.pid)) shutdown(0, `replaced by broker pid ${ad.pid}`);
+    if (ad && ad.pid !== process.pid && isPidAlive(ad.pid)) { shutdown(0, `replaced by broker pid ${ad.pid}`); return; }
     writeAdvertisement(port, startedAt, advertisePath);
-  }, HEARTBEAT_INTERVAL_MS);
+  }, HEARTBEAT_MS);
 
   // Idle shutdown: no plugin AND no CLI clients for the idle window (env-overridable).
   setInterval(() => {
