@@ -7,7 +7,7 @@ import { buildBrokerHelloData, noPluginMessage, type BrokerMeta } from '../cli/s
 import type { RouteFilter } from '../cli/src/transport/route-filter.ts';
 
 const sock = (): RegistrySocket => ({ readyState: WS_OPEN });
-const META: BrokerMeta = { port: 9410, pid: 4242, protocolV: 1, buildMtime: 111, uptimeMs: 5000 };
+const META: BrokerMeta = { port: 9410, pid: 4242, protocolV: 1, buildMtime: 111, uptimeMs: 5000, senderMismatchCount: 0 };
 
 /** Registry with a fixed clock so lastHeartbeatAge is deterministic. */
 function seed(now = 1_000) {
@@ -95,6 +95,20 @@ describe('buildBrokerHelloData — jobStatusFor (concurrency & jobs, backlog 1.1
     // An idle file reports null + 0 explicitly — never an omitted key.
     expect(ds.runningJob).toBeNull();
     expect(ds.queueDepth).toBe(0);
+  });
+});
+
+describe('buildBrokerHelloData — senderMismatchCount (issue #15, PR #14 review)', () => {
+  it('zero mismatches → the key is OMITTED, keeping the payload byte-identical to before this field existed', () => {
+    const { reg, clock } = seed();
+    const d = buildBrokerHelloData(reg, { ...META, senderMismatchCount: 0 }, null, clock);
+    expect('senderMismatchCount' in d).toBe(false);
+  });
+
+  it('a nonzero count surfaces verbatim — the same "discarded thing gets a machine-readable counter" contract as resultDropped/lateReplyCount', () => {
+    const { reg, clock } = seed();
+    const d = buildBrokerHelloData(reg, { ...META, senderMismatchCount: 3 }, null, clock);
+    expect(d.senderMismatchCount).toBe(3);
   });
 });
 

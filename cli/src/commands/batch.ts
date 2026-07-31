@@ -31,6 +31,15 @@ function loadOps(filePath: string): BatchOp[] {
   });
 }
 
+// Mirrors southleft/figma-console-mcp's componentSetTimeoutMs's per-unit budget,
+// hop buffer, and cap — shared between `batchTimeoutMs` (scales the wait) and
+// `maxBatchOps`/`assertBatchAdmissible` (issue #16: refuses what the SAME formula
+// says the cap can no longer cover). Hoisted to module scope so both readings of
+// the formula can never drift apart.
+const PER_OP_MS = 1_200; // mirrors componentSetTimeoutMs's per-unit budget
+const HOP_BUFFER_MS = 5_000; // mirrors the fork's buffer over its own hop
+const CAP_MS = 120_000; // same cap the fork uses
+
 /**
  * Audit backlog 2.10, phase 2 — BATCH executes every op sequentially in ONE
  * uncancellable pass (the plugin sandbox cannot be interrupted mid-sequence), so a
@@ -49,12 +58,40 @@ function loadOps(filePath: string): BatchOp[] {
  * `CAP_MS` — mirroring the fork's own cap.
  */
 export function batchTimeoutMs(opCount: number): number {
-  const PER_OP_MS = 1_200; // mirrors componentSetTimeoutMs's per-unit budget
-  const HOP_BUFFER_MS = 5_000; // mirrors the fork's buffer over its own hop
-  const CAP_MS = 120_000; // same cap the fork uses
   const base = COMMAND_TIMEOUTS.BATCH ?? DEFAULT_TIMEOUT_MS;
   const scaled = opCount * PER_OP_MS + HOP_BUFFER_MS;
   return Math.min(CAP_MS, Math.max(base, scaled));
+}
+
+/**
+ * Issue #16 ruling (follow-up to PR #14) — the largest op count whose UNCAPPED
+ * scaled budget (`opCount * PER_OP_MS + HOP_BUFFER_MS`) still fits inside `CAP_MS`.
+ * Above this count, `batchTimeoutMs` clamps the wait to `CAP_MS` while the formula
+ * itself says the pass needs MORE than that — the clamp doesn't shrink the work,
+ * only the time the CLI is told to wait for it, so the uncancellable plugin-side
+ * pass keeps running past the clamped timeout and the CLI reports a false timeout
+ * failure mid-flight (with the ops still landing, inviting a double-apply retry).
+ */
+export function maxBatchOps(): number {
+  return Math.floor((CAP_MS - HOP_BUFFER_MS) / PER_OP_MS);
+}
+
+/**
+ * Hard refusal (issue #16), not a raised cap: a BATCH whose scaled budget would
+ * exceed `CAP_MS` is refused BEFORE dispatch — a job is never created for a pass
+ * this codebase already knows it cannot honor in one uncancellable round trip.
+ * Cheap, loud, and carries no double-apply risk (nothing was sent to the broker
+ * yet), unlike letting it run and hit the wire timeout, or raising the cap (which
+ * only moves the same failure to a higher op count).
+ */
+export function assertBatchAdmissible(opCount: number): void {
+  const max = maxBatchOps();
+  if (opCount > max) {
+    throw new CliError(
+      'E_INVALID_ARGS',
+      `${opCount} ops exceeds the single-pass budget of ${CAP_MS / 1_000}s; split into batches of ≤${max}`,
+    );
+  }
 }
 
 /** A command runner (the BATCH transport call), injectable for tests. */
@@ -71,6 +108,7 @@ export async function execute(
   runner: Runner = runCommand,
 ): Promise<unknown> {
   const ops = loadOps(resolve(filePath));
+  assertBatchAdmissible(ops.length);
   return runner('BATCH', { ops, stopOnError }, { timeoutMs: batchTimeoutMs(ops.length) });
 }
 

@@ -78,6 +78,27 @@ function connectSocket(port: number): Promise<WebSocket> {
   });
 }
 
+/** Connect AND resolve with the greeting BROKER_HELLO frame — race-free by construction:
+ *  the broker sends BROKER_HELLO the instant its 'connection' handler fires (broker-
+ *  daemon.ts's `onConnection`), which can beat this client's own 'open' event under load
+ *  (both are separate events derived from the same handshake completing). Attaching the
+ *  `message` listener HERE, synchronously at socket construction — instead of the usual
+ *  `connectSocket` → `await 'open'` → THEN attach a listener sequence every other helper
+ *  uses — means the listener exists before any I/O can possibly happen, so no frame the
+ *  broker sends immediately on connect can ever be dropped waiting for a listener that
+ *  attaches only after a network round trip. */
+function connectAndAwaitBrokerHello(port: number): Promise<{ ws: WebSocket; hello: EventMsg }> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    sockets.push(ws);
+    ws.once('error', reject);
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString()) as WireMsg;
+      if ((msg as EventMsg).type === 'BROKER_HELLO') resolve({ ws, hello: msg as EventMsg });
+    });
+  });
+}
+
 /** Resolve on the next parsed frame matching `predicate` (default: any frame). */
 function nextFrame<T extends WireMsg | EventMsg>(ws: WebSocket, predicate?: (m: WireMsg) => boolean): Promise<T> {
   return new Promise((resolve) => {
@@ -611,4 +632,37 @@ describe('daemon harness — routeFromPlugin verifies the reply sender against t
   // reconnect must not be misread as "a different instance") is proven directly and
   // deterministically at the predicate level instead — see
   // tests/job-table-sender-verification.test.ts.
+
+  // Issue #15 (PR #14 review, non-blocking) — the discard above incremented a
+  // `senderMismatchCount` that was LOG-ONLY: no machine-readable trace of a spoofed/
+  // misrouted reply existed anywhere a caller could read. This repo's own law
+  // ("nothing vanishes silently") already surfaces this exact counter class
+  // (resultDropped, lateReplyCount) in envelopes — a discarded cross-instance reply is
+  // the most security-relevant member of that class, so it must surface too.
+  it('a discarded cross-instance reply bumps senderMismatchCount, visible on a fresh BROKER_HELLO', async () => {
+    const port = await startTestBroker();
+    const pluginX = await connectSocket(port);
+    const pluginY = await connectSocket(port);
+    await helloPlugin(pluginX, 'inst-x', 'FileX');
+    await helloPlugin(pluginY, 'inst-y', 'FileY');
+
+    const cli = await connectSocket(port);
+    const reqId = 'req-sender-verify-mismatch-count';
+    cli.send(JSON.stringify(makeRequestFrame(reqId, 'SET_TEXT', { nodeId: '1:1', text: 'x' }, undefined, 'FileX')));
+    await nextFrame(cli, (m) => (m as EventMsg).type === 'JOB_STATE');
+
+    // Y spoofs X's dispatched id — discarded by isReplyFromDispatchedInstance.
+    pluginY.send(JSON.stringify({ id: reqId, ok: true, result: { spoofed: true, from: 'Y' } }));
+    pluginX.send(JSON.stringify({ id: reqId, ok: true, result: { spoofed: false, from: 'X' } }));
+    await nextFrame<ReplyOk>(cli, (m) => (m as ReplyOk | ReplyErr).id === reqId); // drain X's real reply
+
+    // A NEW connection's BROKER_HELLO greeting (the same data `figma-agent status`
+    // reads via fetchBrokerHello) must now report the mismatch — daemon-scoped, not
+    // per-job, so it must be visible from ANY connection, not just the original CLI.
+    // `connectAndAwaitBrokerHello` (not `connectSocket` + `nextFrame`) is deliberate: the
+    // broker sends this greeting synchronously in its 'connection' handler, which can
+    // race this client's own 'open' event — see that helper's own doc.
+    const { hello } = await connectAndAwaitBrokerHello(port);
+    expect((hello.data as Record<string, unknown>).senderMismatchCount).toBe(1);
+  });
 });
