@@ -36,6 +36,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
     // own byte-identical-when-zero contract: present only once a cross-instance reply
     // has actually been discarded, so the common (zero) case stays unchanged here too.
     ...(typeof hello.senderMismatchCount === 'number' && { senderMismatchCount: hello.senderMismatchCount }),
+    // Issue #7 fix round — same mirror-only-when-true contract: an operator running
+    // `status` sees this the moment the one-time legacy-staging migration deferred,
+    // without needing to grep the broker log.
+    ...(hello.legacyMigrationDeferred === true && { legacyMigrationDeferred: true }),
   };
   const all = Array.isArray(hello.plugins) ? (hello.plugins as PluginStatusEntryWithJob[]) : [];
 

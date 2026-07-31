@@ -10,10 +10,10 @@
 // from its spawn cwd, same as changeLogDir(). A CLI run from project B can therefore read
 // a feed the broker wrote under project A. `FIGMA_AGENT_CHANGES_DIR` overrides both logs'
 // base directory together, so they always move as one unit — never independently.
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { changeLogDir } from './change-log.ts';
+import { changeLogDir, migrateStagedChanges, unboundStagingRoot } from './change-log.ts';
 import { fileIdentity, safeSlug } from './file-identity.ts';
 import { rotateIfNeeded } from './log-rotate.ts';
 import {
@@ -62,19 +62,40 @@ export function editFeedPathForIdentity(projectDir: string, identity: string): s
 // shapes and must never land in the same staging file.
 export const EDIT_FEED_UNBOUND_STAGING_DIRNAME = 'unbound';
 
-/** `<changeLogDir()>/changes/unbound/<slug>.jsonl` — keyed by the SAME name-slug
+/** `<unboundStagingRoot()>/changes/unbound/<slug>.jsonl` — keyed by the SAME name-slug
  *  (`fileIdentity(null, fileName)` === `safeSlug(fileName)`) `handleProjectBind` and
  *  DOC_CHANGE's own unbound staging use — a file connecting mid-way through its unbound
  *  life must not split its staged history across two different keys.
  *
- *  Known limitation, DEFERRED not fixed here (backlog 5.6, ruling: implement 5.7 mirroring
- *  today's pattern exactly, don't fold 5.6 in): this root is `editFeedDir()` →
- *  `changeLogDir()` — the broker's own spawn cwd — so a restart with a different cwd
- *  orphans whatever was staged under the old one. Shared with change-log.ts's OWN
- *  `unboundStagingPath` for the exact same reason. Closing it means moving both roots to a
- *  cwd-independent location, its own small spec/review, not a rider on this wave. */
+ *  Issue #7 (backlog 5.6) fix: this used to be `editFeedDir()` → `changeLogDir()` — the
+ *  broker's own spawn cwd — deferred at 5.7-fold-in time ("its own small spec/review, not
+ *  a rider on this wave"). Now rooted at `unboundStagingRoot()`, the SAME cwd-independent
+ *  base change-log.ts's own `unboundStagingPath` uses — kept in this feed's OWN `changes/`
+ *  sub-path so the two logs' staged history still can never cross-contaminate. */
 export function unboundEditStagingPath(slug: string): string {
-  return join(editFeedDir(), EDIT_FEED_UNBOUND_STAGING_DIRNAME, `${slug}.jsonl`);
+  return join(unboundStagingRoot(), EDIT_FEED_DIRNAME, EDIT_FEED_UNBOUND_STAGING_DIRNAME, `${slug}.jsonl`);
+}
+
+/** The OLD (pre-issue-#7) unbound-staging dir for this feed — `editFeedDir()`-rooted,
+ *  broker-cwd-relative. Kept ONLY for the one-time startup migration below. */
+function legacyEditUnboundStagingDir(): string {
+  return join(editFeedDir(), EDIT_FEED_UNBOUND_STAGING_DIRNAME);
+}
+
+/** One-time startup migration (issue #7 / backlog 5.6), this feed's own — mirrors
+ *  change-log.ts's `migrateLegacyUnboundChanges` exactly (schema-agnostic reuse of
+ *  `migrateStagedChanges`, same reasoning: migrate, never silently orphan). */
+export function migrateLegacyUnboundEdits(): number {
+  const oldDir = legacyEditUnboundStagingDir();
+  if (!existsSync(oldDir)) return 0;
+  let migratedFiles = 0;
+  for (const entry of readdirSync(oldDir)) {
+    if (!entry.endsWith('.jsonl')) continue;
+    const slug = entry.slice(0, -'.jsonl'.length);
+    const moved = migrateStagedChanges(join(oldDir, entry), unboundEditStagingPath(slug));
+    if (moved > 0) migratedFiles++;
+  }
+  return migratedFiles;
 }
 
 /**

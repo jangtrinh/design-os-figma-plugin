@@ -2,14 +2,14 @@
 // PROJECT FILE (fileKey|fileName slug), deliberately separate from change-log.ts so the
 // two logs can never converge (spec A6). Mirrors tests/change-log.test.ts's shape.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   EDIT_FEED_DIRNAME, EDIT_FEED_UNBOUND_STAGING_DIRNAME, appendEditFrames, editFeedDir, editFeedPath,
-  editFeedPathForIdentity, unboundEditStagingPath,
+  editFeedPathForIdentity, migrateLegacyUnboundEdits, unboundEditStagingPath,
 } from '../cli/src/transport/edit-feed-log.ts';
-import { migrateStagedChanges } from '../cli/src/transport/change-log.ts';
+import { migrateStagedChanges, unboundStagingRoot } from '../cli/src/transport/change-log.ts';
 import { EDIT_FEED_SCHEMA_VERSION, type EditInput } from '../shared/edit-feed.ts';
 
 const edit = (over: Partial<EditInput> = {}): EditInput => ({
@@ -19,16 +19,23 @@ const edit = (over: Partial<EditInput> = {}): EditInput => ({
 });
 
 let dir: string;
+let unboundDir: string;
 const prevEnv = process.env['FIGMA_AGENT_CHANGES_DIR'];
+const prevUnboundEnv = process.env['FIGMA_AGENT_UNBOUND_DIR'];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'fa-edit-feed-'));
+  unboundDir = mkdtempSync(join(tmpdir(), 'fa-edit-feed-unbound-'));
   process.env['FIGMA_AGENT_CHANGES_DIR'] = dir;
+  process.env['FIGMA_AGENT_UNBOUND_DIR'] = unboundDir;
 });
 afterEach(() => {
   if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
   else process.env['FIGMA_AGENT_CHANGES_DIR'] = prevEnv;
+  if (prevUnboundEnv === undefined) delete process.env['FIGMA_AGENT_UNBOUND_DIR'];
+  else process.env['FIGMA_AGENT_UNBOUND_DIR'] = prevUnboundEnv;
   rmSync(dir, { recursive: true, force: true });
+  rmSync(unboundDir, { recursive: true, force: true });
 });
 
 const readLines = (path: string): string[] =>
@@ -178,10 +185,11 @@ describe('editFeedPathForIdentity — rooted at an explicit project, not the bro
 });
 
 describe('unboundEditStagingPath — mirrors change-log.ts\'s unboundStagingPath contract', () => {
-  it('lives under <editFeedDir()>/unbound/, its OWN subdir (never DOC_CHANGE\'s unbound/)', () => {
+  it('lives under <unboundStagingRoot()>/changes/unbound/, its OWN subdir (never DOC_CHANGE\'s unbound/), never under changeLogDir()', () => {
     expect(unboundEditStagingPath('vsf-pcp')).toBe(
-      join(editFeedDir(), EDIT_FEED_UNBOUND_STAGING_DIRNAME, 'vsf-pcp.jsonl'),
+      join(unboundStagingRoot(), EDIT_FEED_DIRNAME, EDIT_FEED_UNBOUND_STAGING_DIRNAME, 'vsf-pcp.jsonl'),
     );
+    expect(unboundEditStagingPath('vsf-pcp').startsWith(dir)).toBe(false);
   });
 
   it('is a DIFFERENT path from change-log.ts\'s own unbound staging for the same slug', () => {
@@ -196,7 +204,6 @@ describe('migrateStagedChanges reused as-is for the edit feed (schema-agnostic r
   it('migrates staged EditFrame lines into the bound project\'s own edit feed, idempotently', () => {
     const staging = unboundEditStagingPath('vsf-pcp');
     const bound = editFeedPathForIdentity(join(dir, 'bound-project'), 'vsf-pcp');
-    mkdirSync(join(dir, EDIT_FEED_DIRNAME, EDIT_FEED_UNBOUND_STAGING_DIRNAME), { recursive: true });
     appendEditFrames(staging, [edit({ nodeId: 'a' })], { fileKey: null, fileName: 'VSF - PCP', source: 'live' }, 1);
 
     expect(migrateStagedChanges(staging, bound)).toBe(1);
@@ -211,5 +218,24 @@ describe('migrateStagedChanges reused as-is for the edit feed (schema-agnostic r
     const staging = unboundEditStagingPath('never-staged');
     const bound = editFeedPathForIdentity(join(dir, 'bound-project'), 'never-staged');
     expect(migrateStagedChanges(staging, bound)).toBe(0);
+  });
+});
+
+describe('migrateLegacyUnboundEdits — issue #7 (backlog 5.6) one-time startup migration', () => {
+  it('migrates a file staged at the OLD (editFeedDir()-rooted) location to the new root', () => {
+    const legacyFile = join(dir, EDIT_FEED_DIRNAME, EDIT_FEED_UNBOUND_STAGING_DIRNAME, 'vsf-pcp.jsonl');
+    mkdirSync(join(dir, EDIT_FEED_DIRNAME, EDIT_FEED_UNBOUND_STAGING_DIRNAME), { recursive: true });
+    writeFileSync(legacyFile, `${JSON.stringify({ nodeId: 'a' })}\n`, 'utf8');
+
+    const migratedFiles = migrateLegacyUnboundEdits();
+    expect(migratedFiles).toBe(1);
+    expect(existsSync(legacyFile)).toBe(false);
+    const newPath = unboundEditStagingPath('vsf-pcp');
+    expect(existsSync(newPath)).toBe(true);
+    expect(readFileSync(newPath, 'utf8').trim()).toBe(JSON.stringify({ nodeId: 'a' }));
+  });
+
+  it('is a no-op (0 migrated) when nothing was ever staged at the old location', () => {
+    expect(migrateLegacyUnboundEdits()).toBe(0);
   });
 });

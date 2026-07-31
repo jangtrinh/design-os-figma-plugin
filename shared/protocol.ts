@@ -117,7 +117,11 @@ export interface RequestMsg {
 /** Which file answered. Echoed on every reply so a caller can prove where a command landed. */
 export interface FileContext {
   fileName: string;
-  fileKey?: string | null;   // null for non-org plugins — carried, never used for routing
+  // null for non-org plugins. Issue #7: now used for routing on the ERROR-LOG path
+  // (broker-daemon.ts's `!msg.ok` branch feeds it into `fileIdentity`) — DOC_CHANGE and
+  // EDIT_FEED already derived their own routing identity from other fields (the
+  // registry's own scene / the payload's own fileKey), never from this reply-echoed one.
+  fileKey?: string | null;
 }
 
 export interface ReplyOk {

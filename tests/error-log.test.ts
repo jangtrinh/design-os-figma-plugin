@@ -2,12 +2,14 @@
 // ReplyErr relayed, at design/figma-errors.jsonl (sibling of figma.changes.jsonl, shares
 // the base dir with the 4.4 edit feed via changeLogDir()). Mirrors change-log.test.ts's shape.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ERROR_LOG_FILENAME, appendErrorFrame, buildErrorLogFrame, errorLogPath,
+  ERROR_LOG_FILENAME, ERROR_STAGING_DIRNAME, ERROR_UNBOUND_STAGING_DIRNAME,
+  appendErrorFrame, buildErrorLogFrame, errorLogPath, errorLogPathFor, unboundErrorStagingPath,
 } from '../cli/src/transport/error-log.ts';
+import { unboundStagingRoot } from '../cli/src/transport/change-log.ts';
 import type { ReplyErr } from '../shared/protocol.ts';
 
 const replyErr = (over: Partial<ReplyErr> = {}): ReplyErr => ({
@@ -18,16 +20,23 @@ const replyErr = (over: Partial<ReplyErr> = {}): ReplyErr => ({
 });
 
 let dir: string;
+let unboundDir: string;
 const prevEnv = process.env['FIGMA_AGENT_CHANGES_DIR'];
+const prevUnboundEnv = process.env['FIGMA_AGENT_UNBOUND_DIR'];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'fa-error-log-'));
+  unboundDir = mkdtempSync(join(tmpdir(), 'fa-error-log-unbound-'));
   process.env['FIGMA_AGENT_CHANGES_DIR'] = dir;
+  process.env['FIGMA_AGENT_UNBOUND_DIR'] = unboundDir;
 });
 afterEach(() => {
   if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
   else process.env['FIGMA_AGENT_CHANGES_DIR'] = prevEnv;
+  if (prevUnboundEnv === undefined) delete process.env['FIGMA_AGENT_UNBOUND_DIR'];
+  else process.env['FIGMA_AGENT_UNBOUND_DIR'] = prevUnboundEnv;
   rmSync(dir, { recursive: true, force: true });
+  rmSync(unboundDir, { recursive: true, force: true });
 });
 
 const readLines = (path: string): string[] =>
@@ -36,6 +45,26 @@ const readLines = (path: string): string[] =>
 describe('errorLogPath — shares the change-log base dir + env override', () => {
   it('lives directly at <changeLogDir()>/figma-errors.jsonl (a SIBLING of the change log)', () => {
     expect(errorLogPath()).toBe(join(dir, ERROR_LOG_FILENAME));
+  });
+});
+
+describe('errorLogPathFor — issue #7 (backlog 5.9): rooted at an explicit project, not the broker cwd', () => {
+  it('names the same file under <projectDir>/design', () => {
+    expect(errorLogPathFor('/tmp/some-project')).toBe(join('/tmp/some-project', 'design', ERROR_LOG_FILENAME));
+  });
+});
+
+describe('unboundErrorStagingPath — issue #7 (backlog 5.9): mirrors change-log.ts / edit-feed-log.ts\'s unbound staging exactly', () => {
+  it('lives under <unboundStagingRoot()>/errors/unbound/, its OWN subdir, never under changeLogDir()', () => {
+    expect(unboundErrorStagingPath('vsf-pcp')).toBe(
+      join(unboundStagingRoot(), ERROR_STAGING_DIRNAME, ERROR_UNBOUND_STAGING_DIRNAME, 'vsf-pcp.jsonl'),
+    );
+    expect(unboundErrorStagingPath('vsf-pcp').startsWith(dir)).toBe(false);
+  });
+
+  it('is a DIFFERENT path from change-log.ts\'s / edit-feed-log.ts\'s own unbound staging for the same slug', () => {
+    const errStaging = unboundErrorStagingPath('vsf-pcp');
+    expect(errStaging).toContain(`${ERROR_STAGING_DIRNAME}/${ERROR_UNBOUND_STAGING_DIRNAME}`);
   });
 });
 
@@ -110,5 +139,23 @@ describe('appendErrorFrame — one JSONL line per error, append-only', () => {
     appendErrorFrame(path, buildErrorLogFrame(replyErr({ id: 'a' }), null, 1));
     appendErrorFrame(path, buildErrorLogFrame(replyErr({ id: 'b' }), null, 2));
     expect(readLines(path).map((l) => JSON.parse(l).requestId)).toEqual(['a', 'b']);
+  });
+
+  // Issue #7 minor fix: log-rotate.ts's own module header always named this feed as one
+  // of the three its policy covers, but the call here was never actually wired — this
+  // crosses that boundary directly with the SAME default 8 MiB policy the other two
+  // feeds use (rotateIfNeeded's own exhaustive behavior — boundary, marker ordering,
+  // generation retention — is tested in log-rotate.test.ts; this only proves
+  // appendErrorFrame's call site is real, not a documentation claim).
+  it('rotates once the file crosses the default 8 MiB policy, same as appendChangeFrame/appendEditFrame', () => {
+    const path = errorLogPath();
+    const oneMib = 'x'.repeat(1024 * 1024);
+    for (let i = 0; i < 9; i++) {
+      appendErrorFrame(path, buildErrorLogFrame(replyErr({ id: `req-${i}`, error: { code: 'E_EVAL', message: oneMib } }), null, i));
+    }
+    expect(existsSync(`${path}.rotated.json`)).toBe(true); // rotated at least once past 8 MiB
+    expect(existsSync(`${path}.1`)).toBe(true); // the archived generation
+    // The live file was reset — its own size is small again (last append(s) only).
+    expect(readLines(path).length).toBeLessThan(9);
   });
 });
