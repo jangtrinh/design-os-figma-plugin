@@ -733,14 +733,26 @@ describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, neve
     }
   });
 
-  it('an ALREADY-CONNECTED plugin gets an updated SYNC_CONFIG the moment its file is bound, without needing to reconnect', async () => {
+  it('an ALREADY-CONNECTED plugin gets an updated SYNC_CONFIG the moment its file is bound, without needing to reconnect — and an unrelated plugin bound to a DIFFERENT project gets nothing', async () => {
     writeFileSync(join(scratchDir, 'figma-sync.json'), JSON.stringify({ idleMs: 111_000 }), 'utf8');
     const port = await startTestBroker();
 
     const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-sync-bound-project-live-'));
+    const otherProjectDir = mkdtempSync(join(tmpdir(), 'fa-sync-other-project-'));
     try {
       mkdirSync(join(boundProjectDir, 'design'), { recursive: true });
       writeFileSync(join(boundProjectDir, 'design', 'figma-sync.json'), JSON.stringify({ idleMs: 333_000 }), 'utf8');
+      mkdirSync(join(otherProjectDir, 'design'), { recursive: true });
+      writeFileSync(join(otherProjectDir, 'design', 'figma-sync.json'), JSON.stringify({ idleMs: 444_000 }), 'utf8');
+
+      // An unrelated plugin, already bound to a DIFFERENT project, connected BEFORE
+      // Project C's bind fires — proves the post-bind push targets the one socket whose
+      // file was just bound, never every connected plugin.
+      const pluginOther = await connectSocket(port);
+      await helloPlugin(pluginOther, 'plugin-sync-other-1', 'Project Other File');
+      const cliOther = await connectSocket(port);
+      await bindProject(cliOther, 'Project Other File', otherProjectDir, 'req-bind-sync-other-1');
+      const otherFrames = collectFrames(pluginOther); // observe from here on — its own HELLO/bind traffic already drained
 
       const plugin = await connectSocket(port);
       await helloPlugin(plugin, 'plugin-sync-live-1', 'Project C File'); // unbound: gets the broker-cwd default
@@ -751,8 +763,15 @@ describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, neve
 
       const syncConfig = await postBindSyncConfig;
       expect((syncConfig.data as { idleMs: number }).idleMs).toBe(333_000);
+
+      // Give the unrelated plugin's socket a beat to receive anything it's going to
+      // receive, then assert it got NOTHING out of Project C's bind — targeted, not
+      // broadcast.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(otherFrames.frames.some((f) => (f as EventMsg).type === 'SYNC_CONFIG')).toBe(false);
     } finally {
       rmSync(boundProjectDir, { recursive: true, force: true });
+      rmSync(otherProjectDir, { recursive: true, force: true });
     }
   });
 });

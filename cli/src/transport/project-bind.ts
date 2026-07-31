@@ -1,6 +1,6 @@
 // Registry-integrity phase 01 (5.1) — file↔project binding. Durable project state (the
 // registry, its sidecars, cursor, manifest) currently derives from the broker's OWN spawn
-// cwd (figma-sync-config.ts's `projectDir()`), never from which project the edit actually
+// cwd (change-log.ts's `changeLogDir()`), never from which project the edit actually
 // came from. This module is the fix's pure core: it never guesses a project for an unknown
 // file — the caller (figma-sync-apply.ts §3) must refuse instead.
 //
