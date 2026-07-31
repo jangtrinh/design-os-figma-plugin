@@ -12,6 +12,15 @@
 // sync. This is a source-text regression lock: it fails the moment any transport
 // file reintroduces a `'localhost'` (or `"localhost"`) string literal for a
 // socket/URL call, which is exactly the shape of the fork's regression.
+//
+// This lock is deliberately scoped to cli/src/transport only, never plugin/src.
+// plugin/src/ui/ui-relay.ts (probePort, ~L353-361) connects to a dedicated
+// `figma-agent.localhost` hostname on purpose — Figma Desktop's manifest rejects a
+// literal IP-address domain, while `.localhost` is exempt. That is a different
+// constraint (a Figma Desktop manifest rule, not Node's dual-stack resolution) with
+// a different fix, so it is an intentional exception, not the bug this test guards
+// against — do not "fix" it into a `LOOPBACK_HOST` literal, and do not add
+// plugin/src to FILES_THAT_TOUCH_LOOPBACK_SOCKETS below.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

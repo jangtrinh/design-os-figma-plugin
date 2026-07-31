@@ -3,17 +3,24 @@
 // (BROKER_SHUTDOWN_REQUEST) and/or spawn a detached `node <self> __broker`,
 // polling until advertised.
 import { spawn } from 'node:child_process';
-import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, basename, join } from 'node:path';
+import { readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import {
   BROKER_FILE,
+  HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_STALE_MS,
   LOOPBACK_HOST,
   PROTOCOL_VERSION,
   type BrokerAdvertisement,
 } from '../../../shared/protocol.ts';
-import { CliError } from './protocol-helpers.ts';
+import { CliError, envMs } from './protocol-helpers.ts';
+
+// Mirrors broker-daemon.ts's own `HEARTBEAT_MS` override (same env var, same
+// fallback) — see envMs's doc for why this must be the ONE shared reader, not a
+// second hardcoded 30_000 that could drift from the cadence it is meant to track.
+const HEARTBEAT_MS = envMs('FIGMA_AGENT_HEARTBEAT_MS', HEARTBEAT_INTERVAL_MS);
 
 const SPAWN_POLL_MS = 50;
 const SPAWN_DEADLINE_MS = 5_000;
@@ -68,9 +75,16 @@ export function readAdvertisement(path: string = BROKER_FILE): BrokerAdvertiseme
   }
 }
 
-/** Live = pid alive AND advertisement refreshed recently (guards pid reuse). */
+/**
+ * Live = pid alive AND advertisement refreshed recently (guards pid reuse). The
+ * slack added past `HEARTBEAT_STALE_MS` is one refresh cadence — enough that a
+ * broker that just missed a single tick isn't misread as dead — so it derives
+ * from `HEARTBEAT_MS` (the same env-overridable cadence the refresh interval
+ * itself runs on) rather than a second hardcoded copy of the 30s default that
+ * could silently drift from it.
+ */
 export function isAdvertisementLive(ad: BrokerAdvertisement): boolean {
-  return isPidAlive(ad.pid) && Date.now() - ad.lastSeen < HEARTBEAT_STALE_MS + 30_000;
+  return isPidAlive(ad.pid) && Date.now() - ad.lastSeen < HEARTBEAT_STALE_MS + HEARTBEAT_MS;
 }
 
 /**
@@ -94,6 +108,38 @@ function writeFileAtomic(path: string, contents: string): void {
     try { unlinkSync(tmpPath); } catch { /* best-effort */ }
     throw err;
   }
+}
+
+/**
+ * Sweep leftover `${path}.<pid>.tmp` files whose embedded pid is dead. `writeFileAtomic`'s
+ * own catch already best-effort-removes the temp file IT just failed to rename, but a
+ * `SIGKILL` between the `writeFileSync` and the `renameSync` leaves nothing to run that
+ * catch — the temp file orphans on disk permanently (pid-scoped naming means a live
+ * process is never mistaken for the dead one that left it behind, but nothing ever swept
+ * it either). Call ONCE at daemon startup, before the first `writeAdvertisement` — not on
+ * every heartbeat tick, since this lists the directory. Scoped to this advertisement's own
+ * `${basename}.<digits>.tmp` naming pattern in its own directory; never touches anything
+ * else living in /tmp.
+ */
+export function cleanupOrphanedAdvertisementTempFiles(path: string): number {
+  const dir = dirname(path);
+  const base = basename(path);
+  const pattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(\\d+)\\.tmp$`);
+  let cleaned = 0;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0; // directory unreadable — nothing to sweep
+  }
+  for (const entry of entries) {
+    const match = pattern.exec(entry);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (isPidAlive(pid)) continue; // owning process may still be mid-write — leave it
+    try { unlinkSync(join(dir, entry)); cleaned++; } catch { /* already gone */ }
+  }
+  return cleaned;
 }
 
 /** Write/refresh the daemon's advertisement (called from broker-daemon only). `path`
@@ -208,6 +254,44 @@ async function spawnBroker(): Promise<BrokerAdvertisement> {
   throw new CliError('E_NO_BROKER', 'broker did not start within 5s (see /tmp/figma-agent-broker.log)');
 }
 
+export type BrokerDecision = 'reuse' | 'replace' | 'spawn';
+
+/**
+ * Pure decision core of `ensureBroker` — given an advertisement (or none) and this
+ * process's own build mtime, decide whether to reuse it as-is, replace it (request
+ * shutdown, then spawn fresh), or spawn outright (no advertisement, or genuinely
+ * dead). Touches no network, process table, or filesystem itself — `ensureBroker`
+ * is a thin wrapper that reads the advertisement and carries out whichever
+ * decision comes back, which is what makes this independently unit-testable
+ * without spawning a real broker or touching the real shared advertisement file.
+ *
+ * `probeStaleButAlive` (folded into `alive` below) only answers "is a competing
+ * spawn safe to skip" — it is NOT a substitute for the protocol/build gate.
+ * Stage-4 review round (regression): an earlier version returned a
+ * stale-but-alive advertisement unconditionally, which reused a pre-rebuild
+ * broker after a laptop slept through a heartbeat window (reachable via the most
+ * ordinary path: close the lid, rebuild while it's closed, reopen — the old
+ * broker's pid is alive and its handshake answers, so it looked "trustworthy"
+ * with no signal that it was stale). Both liveness signals (fresh heartbeat OR a
+ * passing handshake) now feed the SAME gate and the SAME consequence: a match on
+ * protocol + build reuses the broker, a mismatch replaces it — so a rebuilt CLI
+ * always ends up talking to a matching broker either way.
+ */
+export async function decideBrokerAction(
+  ad: BrokerAdvertisement | null,
+  myMtime: number,
+  deps: { isAdvertisementLive: typeof isAdvertisementLive; probeStaleButAlive: typeof probeStaleButAlive } = {
+    isAdvertisementLive,
+    probeStaleButAlive,
+  },
+): Promise<BrokerDecision> {
+  if (!ad) return 'spawn';
+  const alive = deps.isAdvertisementLive(ad) || (await deps.probeStaleButAlive(ad));
+  if (!alive) return 'spawn';
+  const outdatedBuild = myMtime - ad.buildMtime > 1; // 1ms float tolerance
+  return ad.protocolV === PROTOCOL_VERSION && !outdatedBuild ? 'reuse' : 'replace';
+}
+
 /**
  * Ensure a healthy broker is running and return its advertisement.
  * Replaces brokers with mismatched protocol or an older bundle build.
@@ -215,14 +299,8 @@ async function spawnBroker(): Promise<BrokerAdvertisement> {
 export async function ensureBroker(): Promise<BrokerAdvertisement> {
   const myMtime = selfBuildMtime();
   const ad = readAdvertisement();
-  if (ad && isAdvertisementLive(ad)) {
-    const outdatedBuild = myMtime - ad.buildMtime > 1; // 1ms float tolerance
-    if (ad.protocolV === PROTOCOL_VERSION && !outdatedBuild) return ad;
-    await requestBrokerShutdown(ad); // stale build / protocol → replace
-  } else if (ad && (await probeStaleButAlive(ad))) {
-    // Heartbeat looked stale but a handshake proves it is still serving —
-    // reuse it instead of spawning a second broker on top of a live one.
-    return ad;
-  }
+  const action = await decideBrokerAction(ad, myMtime);
+  if (action === 'reuse') return ad as BrokerAdvertisement;
+  if (action === 'replace') await requestBrokerShutdown(ad as BrokerAdvertisement); // stale build/protocol → replace
   return spawnBroker();
 }

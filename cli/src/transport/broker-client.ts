@@ -30,6 +30,15 @@ import {
 } from './protocol-helpers.ts';
 
 const CONNECT_TIMEOUT_MS = 4_000;
+// A failed connect that isn't confirmed-dead (see isConfirmedDeadAfterFailedConnect)
+// is treated as "broker was mid-accept or busy on another handshake" — retrying
+// IMMEDIATELY re-attempts inside the exact window that caused the first failure.
+// This delay is what actually gives that busy state room to clear.
+const AMBIGUOUS_CONNECT_RETRY_DELAY_MS = 200;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 let requestCounter = 0;
 
 let expectedFile: string | undefined;
@@ -223,6 +232,27 @@ export function isConfirmedDeadAfterFailedConnect(
 }
 
 /**
+ * After an ambiguous (not confirmed-dead) connect failure, wait a short backoff
+ * then retry the connect once. Stage-4 review round (minor) — the retry used to
+ * fire immediately, re-attempting inside the exact "broker mid-accept / busy on
+ * another handshake" window that caused the first failure; the backoff is what
+ * actually gives that window room to clear. Exported with injectable `connect`/
+ * `sleep` (defaulting to the real ones) so the backoff-then-retry ordering is
+ * unit-testable without a real broker or the real shared advertisement file.
+ */
+export async function retryAmbiguousConnect(
+  port: number,
+  deps: { connect: (port: number) => Promise<WebSocket>; sleep: (ms: number) => Promise<void>; delayMs?: number } = {
+    connect: connectWs,
+    sleep,
+    delayMs: AMBIGUOUS_CONNECT_RETRY_DELAY_MS,
+  },
+): Promise<WebSocket> {
+  await deps.sleep(deps.delayMs ?? AMBIGUOUS_CONNECT_RETRY_DELAY_MS);
+  return deps.connect(port);
+}
+
+/**
  * Run one command through the broker. Connect failure after a valid
  * advertisement forces one rediscovery (broker may have just died).
  *
@@ -259,9 +289,9 @@ export async function runCommand(
     if (!isConfirmedDeadAfterFailedConnect(ad)) {
       // Probe before kill: the pid is still alive, so the first failure is
       // ambiguous rather than confirmed-dead — give the handshake one more try
-      // before concluding the advertisement lied.
+      // (after a short backoff) before concluding the advertisement lied.
       try {
-        ws = await connectWs(ad.port);
+        ws = await retryAmbiguousConnect(ad.port);
       } catch {
         throw new CliError(
           'E_NO_BROKER',

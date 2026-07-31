@@ -15,9 +15,11 @@ import {
   type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type ReplyErr, type ReplyOk, type RequestMsg,
   type WireMsg,
 } from '../../../shared/protocol.ts';
-import { isPidAlive, readAdvertisement, selfBuildMtime, writeAdvertisement } from './broker-discovery.ts';
 import {
-  ChunkAssembler, deleteConnectionChunk, getConnectionChunks, isChunkMsg, isEventMsg, isReplyMsg, isRequestMsg,
+  cleanupOrphanedAdvertisementTempFiles, isPidAlive, readAdvertisement, selfBuildMtime, writeAdvertisement,
+} from './broker-discovery.ts';
+import {
+  ChunkAssembler, deleteConnectionChunk, envMs, getConnectionChunks, isChunkMsg, isEventMsg, isReplyMsg, isRequestMsg,
   parseWireMsg, rawToString, sendWireMsg, sweepAbandonedChunks, type ChunkBuffers,
 } from './protocol-helpers.ts';
 import { PluginRegistry, type PluginEntry } from './plugin-registry.ts';
@@ -44,14 +46,10 @@ import type { EditInput, EditSource } from '../../../shared/edit-feed.ts';
 
 const LOG_FILE = '/tmp/figma-agent-broker.log';
 
-/** Read a positive-integer env override, else fall back. Lets manual acceptance
- *  shrink the idle-shutdown / heartbeat / plugin-wait knobs to seconds. */
-function envMs(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
+// envMs (protocol-helpers.ts) lets manual acceptance shrink the idle-shutdown /
+// heartbeat / plugin-wait knobs to seconds — shared with broker-discovery.ts so
+// `isAdvertisementLive`'s staleness slack shrinks in lockstep with HEARTBEAT_MS
+// below, rather than being a second hardcoded copy of the same cadence.
 const IDLE_SHUTDOWN_MS = envMs('FIGMA_AGENT_IDLE_SHUTDOWN_MS', BROKER_IDLE_SHUTDOWN_MS);
 const HEARTBEAT_MS = envMs('FIGMA_AGENT_HEARTBEAT_MS', HEARTBEAT_INTERVAL_MS);
 const PLUGIN_WAIT_TIMEOUT_MS = envMs('FIGMA_AGENT_PLUGIN_WAIT_MS', PLUGIN_WAIT_MS);
@@ -361,6 +359,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     bindIndex, knownProjectDirs: new Set(usableDirs),
     jobs: new JobTable(), queues: new Map(), pendingChunks: new Map(),
   };
+  // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
+  // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
+  // BEFORE writing our own — startup only, not the heartbeat tick, since this lists
+  // the directory.
+  const orphanedTempFiles = cleanupOrphanedAdvertisementTempFiles(advertisePath);
+  if (orphanedTempFiles > 0) log(`swept ${orphanedTempFiles} orphaned advertisement temp file(s)`);
   writeAdvertisement(port, startedAt, advertisePath);
   // Self-heal guard (heartbeat self-heal, issue #5): true while this process is the
   // rightful owner of `advertisePath`. The refresh interval below re-advertises if the
