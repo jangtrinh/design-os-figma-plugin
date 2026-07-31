@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+*.local
+*.log
+.DS_Store
+
+# Secrets / local credentials — never tracked.
+.env
+.env.*
+.npmrc
+*.npmrc
+
+# Broker runtime scratch (change-log / sync-state / edit feed when the broker
+# runs from this checkout) — rebuilt live, never a source of truth.
+design/
+
+# Local perf-baseline scratch (tests/scale-baseline.test.ts bootstraps this once per
+# machine, never a checked-in contract).
+plans/
