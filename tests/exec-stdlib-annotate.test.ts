@@ -101,10 +101,27 @@ describe('ui.annotate.categories', () => {
     const result = await createExecStdlibAnnotate().categories();
     expect(result.categories).toEqual([{ id: 'cat:1', name: 'Accessibility' }, { id: 'cat:2', name: 'Content' }]);
   });
+
+  it('throws E_EVAL (never an honest-looking empty list) when the host API itself throws (stage-4 BLOCKER 1)', async () => {
+    installMockFigma();
+    const figma = (globalThis as unknown as { figma: { annotations: { getAnnotationCategoriesAsync(): Promise<unknown> } } }).figma;
+    figma.annotations.getAnnotationCategoriesAsync = async () => { throw new Error('host refused'); };
+
+    await expect(createExecStdlibAnnotate().categories()).rejects.toMatchObject({ code: 'E_EVAL', message: expect.stringContaining('host refused') });
+  });
+
+  it('get() propagates the same failure — never silently nulls every categoryName instead', async () => {
+    installMockFigma();
+    const figma = (globalThis as unknown as { figma: { annotations: { getAnnotationCategoriesAsync(): Promise<unknown> } } }).figma;
+    figma.annotations.getAnnotationCategoriesAsync = async () => { throw new Error('host refused'); };
+    const node = getFigma().createFrame();
+
+    await expect(createExecStdlibAnnotate().get(node.id)).rejects.toMatchObject({ code: 'E_EVAL' });
+  });
 });
 
 describe('ui.annotate.set', () => {
-  it('rejects an invalid property type, naming the nearest valid ones (fact 3)', async () => {
+  it('rejects an invalid property type, naming every valid one (fact 3)', async () => {
     installMockFigma();
     const node = getFigma().createFrame();
 
@@ -144,6 +161,22 @@ describe('ui.annotate.set', () => {
     Object.defineProperty(node, 'annotations', {
       get: () => stored.slice(0, 0),
       set: (v: unknown[]) => { stored = v; },
+      configurable: true,
+    });
+
+    await expect(createExecStdlibAnnotate().set(node.id, [{ label: 'A' }, { label: 'B' }]))
+      .rejects.toMatchObject({ code: 'E_EVAL' });
+  });
+
+  it('throws E_EVAL when the read-back count matches but the content does not (stage-4 minor m2)', async () => {
+    installMockFigma();
+    const node = getFigma().createFrame();
+    // Same LENGTH as written, but a hostile getter silently substitutes different
+    // content — the old count-only check would have missed this entirely.
+    let stored: { label?: string }[] = [];
+    Object.defineProperty(node, 'annotations', {
+      get: () => stored.map(() => ({ label: 'not what was written' })),
+      set: (v: { label?: string }[]) => { stored = v; },
       configurable: true,
     });
 

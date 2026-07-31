@@ -323,4 +323,60 @@ describe('ui.slot.addProperty', () => {
     const result = await createExecStdlibSlot().addProperty(set.id, 'Content', frame.id);
     expect(result.frameId).toBe(frame.id);
   });
+
+  it('rejects when addComponentProperty() is unavailable (host too old, stage-4 minor m1)', async () => {
+    installMockFigma();
+    const component = makeComponent('Card');
+    setMockComponents([component]);
+    const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();
+    component.appendChild(frame);
+    (component as unknown as { addComponentProperty?: unknown }).addComponentProperty = undefined;
+
+    await expect(createExecStdlibSlot().addProperty(component.id, 'Content', frame.id))
+      .rejects.toMatchObject({ code: 'E_INVALID_ARGS', message: expect.stringContaining('update Figma Desktop') });
+  });
+
+  it('deletes the freshly-minted property when the post-mint verify fails (stage-4 BLOCKER 2)', async () => {
+    installMockFigma();
+    const component = makeComponent('Card');
+    setMockComponents([component]);
+    const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();
+    component.appendChild(frame);
+    // Force the frame-side verify to fail: the write always reads back empty,
+    // regardless of what was just assigned.
+    Object.defineProperty(frame, 'componentPropertyReferences', {
+      get: () => ({}),
+      set: () => { /* accepted but never visible — simulates a lost write */ },
+      configurable: true,
+    });
+
+    await expect(createExecStdlibSlot().addProperty(component.id, 'Content', frame.id))
+      .rejects.toMatchObject({ code: 'E_EVAL' });
+
+    // The property this call minted must not survive the rollback — it was never
+    // linked to anything, so leaving it behind would be an unlinked orphan.
+    const defs = component.componentPropertyDefinitions as Record<string, unknown>;
+    expect(Object.keys(defs)).toHaveLength(0);
+  });
+
+  it('names the leftover property in the error when the rollback deletion itself fails (stage-4 BLOCKER 2 fallback)', async () => {
+    installMockFigma();
+    const component = makeComponent('Card');
+    setMockComponents([component]);
+    const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();
+    component.appendChild(frame);
+    Object.defineProperty(frame, 'componentPropertyReferences', {
+      get: () => ({}),
+      set: () => { /* lost write, same as above */ },
+      configurable: true,
+    });
+    (component as unknown as { deleteComponentProperty: unknown }).deleteComponentProperty = () => {
+      throw new Error('deletion refused');
+    };
+
+    await expect(createExecStdlibSlot().addProperty(component.id, 'Content', frame.id))
+      .rejects.toMatchObject({
+        message: expect.stringMatching(/not linked to.*additionally.*cleanup.*deletion refused/s),
+      });
+  });
 });

@@ -216,6 +216,10 @@ export class FakeNode {
       this.parent.children.splice(idx + 1, 0, copy);
       copy.parent = this.parent;
     }
+    // Stage-4 fix (minor m3): every creation path resolves by id afterward — clone()
+    // is a creation path exactly like mk()/createSlot() above, and `ui.slot.append`'s
+    // clone-then-verify-by-id step depends on it.
+    nodesById.set(copy.id, copy);
     return copy;
   }
 
@@ -260,6 +264,13 @@ export class FakeNode {
     defs[key] = { type, defaultValue, ...opts };
     this.componentPropertyDefinitions = defs;
     return key;
+  }
+
+  /** ComponentNode/ComponentSetNode.deleteComponentProperty(name) — the rollback
+   * `ui.slot.addProperty` calls on a failed post-mint verify (stage-4 BLOCKER 2). */
+  deleteComponentProperty(name: string): void {
+    const defs = this.componentPropertyDefinitions as Record<string, unknown> | undefined;
+    if (defs) delete defs[name];
   }
 
   /** ComponentNode.createSlot() — Figma Slots (GA June 2026). Mints a SLOT child and

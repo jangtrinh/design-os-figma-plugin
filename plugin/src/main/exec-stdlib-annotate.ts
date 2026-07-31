@@ -16,24 +16,16 @@ const ANNOTATION_PROPERTY_TYPES = [
 ] as const;
 const TYPE_SET = new Set<string>(ANNOTATION_PROPERTY_TYPES);
 
-function levenshtein(a: string, b: string): number {
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
-  for (let i = 0; i <= a.length; i++) dp[i]![0] = i;
-  for (let j = 0; j <= b.length; j++) dp[0]![j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      dp[i]![j] = a[i - 1] === b[j - 1] ? dp[i - 1]![j - 1]! : 1 + Math.min(dp[i - 1]![j]!, dp[i]![j - 1]!, dp[i - 1]![j - 1]!);
-    }
-  }
-  return dp[a.length]![b.length]!;
-}
-
-/** Fact 3: an invalid type throws naming the value AND the nearest valid ones —
- * never a silent drop. */
+/** Fact 3: an invalid type throws naming the value AND every valid one — never a
+ * silent drop. Stage-4 fix (minor m4): list the candidates plainly, the same way
+ * `q()`'s unknown-field error and `byPath`'s not-found error already do in this
+ * codebase, instead of a bespoke edit-distance ranking. */
 function validatePropertyType(type: string): void {
   if (TYPE_SET.has(type)) return;
-  const nearest = [...ANNOTATION_PROPERTY_TYPES].sort((a, b) => levenshtein(type, a) - levenshtein(type, b)).slice(0, 3);
-  throw withCode(new Error(`invalid annotation property type "${type}" — nearest valid: ${nearest.join(', ')}`), 'E_INVALID_ARGS');
+  throw withCode(
+    new Error(`invalid annotation property type "${type}" — valid: ${ANNOTATION_PROPERTY_TYPES.join(', ')}`),
+    'E_INVALID_ARGS',
+  );
 }
 
 export interface AnnotationPropertyInput { type: string }
@@ -52,10 +44,22 @@ interface RawAnnotation {
 }
 
 async function getCategories(): Promise<{ id: string; name: string }[]> {
+  // Stage-4 fix (BLOCKER 1): a THROWN category list must never look identical to
+  // "this file genuinely has none" — that swallow was the fabricated-fact class
+  // this repo exists to kill (a real API failure would have silently reported
+  // count:0 and nulled every categoryName downstream, both wrong). An empty array
+  // IS a legitimate, honest answer from a successful call; a throw is not the same
+  // thing and must surface as E_EVAL, never be caught into [].
+  let cats: { id: string; label: string }[];
   try {
-    const cats = await figma.annotations.getAnnotationCategoriesAsync();
-    return cats.map((c) => ({ id: c.id, name: c.label }));
-  } catch { return []; }
+    cats = await figma.annotations.getAnnotationCategoriesAsync();
+  } catch (err) {
+    throw withCode(
+      new Error(`annotation categories unavailable: ${err instanceof Error ? err.message : String(err)}`),
+      'E_EVAL',
+    );
+  }
+  return cats.map((c) => ({ id: c.id, name: c.label }));
 }
 
 function toOutput(a: RawAnnotation, categoryMap: Map<string, string>): AnnotationOutput {
@@ -159,12 +163,20 @@ async function set(
 
   (node as unknown as { annotations: RawAnnotation[] }).annotations = finalAnnotations;
 
-  // Verify: re-read, never trust the input we just built.
+  // Verify: re-read, never trust the input we just built. Stage-4 fix (minor m2):
+  // compare the annotations actually written, not just their count — a count match
+  // with silently-reordered or silently-altered content would pass the old check.
   const categories = await getCategories();
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
   const readBack = (node.annotations ?? []).map((a) => toOutput(a, categoryMap));
-  if (readBack.length !== finalAnnotations.length) {
-    throw withCode(new Error(`set applied but read back ${readBack.length} annotations, expected ${finalAnnotations.length}`), 'E_EVAL');
+  const expected = finalAnnotations.map((a) => toOutput(a, categoryMap));
+  const mismatch = readBack.length !== expected.length
+    || expected.some((e, i) => JSON.stringify(e) !== JSON.stringify(readBack[i]));
+  if (mismatch) {
+    throw withCode(
+      new Error(`set applied but read back does not match what was written — expected ${JSON.stringify(expected)}, got ${JSON.stringify(readBack)}`),
+      'E_EVAL',
+    );
   }
   return { nodeId: node.id, nodeName: (node as SceneNode).name, annotationCount: readBack.length, mode, annotations: readBack };
 }

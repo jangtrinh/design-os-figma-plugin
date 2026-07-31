@@ -58,7 +58,15 @@ export async function addSlotProperty(
 
   const typedComponent = component as (ComponentNode | ComponentSetNode) & {
     addComponentProperty(name: string, type: 'SLOT', value: string, opts?: Record<string, unknown>): string;
+    deleteComponentProperty(name: string): void;
   };
+  // Stage-4 fix (minor m1): same old-host defensiveness as `ui.slot.create` —
+  // `addComponentProperty` reaches straight into the platform, so an old Desktop
+  // build must refuse cleanly here too, not throw whatever raw error the platform
+  // happens to produce.
+  if (typeof typedComponent.addComponentProperty !== 'function') {
+    throw withCode(new Error('addComponentProperty() is not available — update Figma Desktop to a version with Slots support'), 'E_INVALID_ARGS');
+  }
   const propOpts: Record<string, unknown> = {};
   if (opts.description !== undefined) propOpts.description = opts.description;
   if (opts.preferredValues !== undefined) propOpts.preferredValues = opts.preferredValues;
@@ -66,18 +74,45 @@ export async function addSlotProperty(
     propertyName, 'SLOT', '', Object.keys(propOpts).length ? propOpts : undefined,
   );
 
-  // Merge, never assign — a fresh object would wipe an existing binding (e.g. a
-  // BOOLEAN property driving `visible`).
-  const frameTyped = frame as FrameNode & { componentPropertyReferences?: Record<string, string> };
-  frameTyped.componentPropertyReferences = { ...frameTyped.componentPropertyReferences, slotContentId: propertyKey };
+  // Stage-4 fix (BLOCKER 2): everything from here on can fail (the frame-side
+  // write, or either verify re-read) — and unlike a create-then-verify pair with
+  // no side effect on failure, `addComponentProperty` above already mutated the
+  // component. A failure past this point must not leave an unlinked property
+  // silently sitting on the component, unmentioned in the thrown error.
+  //
+  // Deleting it here is safe SPECIFICALLY because `propertyKey` was minted in this
+  // same synchronous call, on the single-threaded plugin main thread: nothing else
+  // running in this same tick could have referenced, bound to, or come to depend on
+  // it between the mint above and the failure below. This cleanup only ever
+  // touches the property THIS call just created — it must never be generalised to
+  // delete a pre-existing property another variant (or another call) may depend on.
+  try {
+    // Merge, never assign — a fresh object would wipe an existing binding (e.g. a
+    // BOOLEAN property driving `visible`).
+    const frameTyped = frame as FrameNode & { componentPropertyReferences?: Record<string, string> };
+    frameTyped.componentPropertyReferences = { ...frameTyped.componentPropertyReferences, slotContentId: propertyKey };
 
-  // Verify: re-read both sides of the link.
-  const defs = (component as ComponentNode | ComponentSetNode).componentPropertyDefinitions;
-  if (!defs?.[propertyKey]) {
-    throw withCode(new Error(`addProperty applied but "${propertyKey}" is not in componentPropertyDefinitions`), 'E_EVAL');
-  }
-  if (frameTyped.componentPropertyReferences?.slotContentId !== propertyKey) {
-    throw withCode(new Error(`addProperty applied but frame "${frame.name}" is not linked to "${propertyKey}"`), 'E_EVAL');
+    // Verify: re-read both sides of the link.
+    const defs = (component as ComponentNode | ComponentSetNode).componentPropertyDefinitions;
+    if (!defs?.[propertyKey]) {
+      throw withCode(new Error(`addProperty applied but "${propertyKey}" is not in componentPropertyDefinitions`), 'E_EVAL');
+    }
+    if (frameTyped.componentPropertyReferences?.slotContentId !== propertyKey) {
+      throw withCode(new Error(`addProperty applied but frame "${frame.name}" is not linked to "${propertyKey}"`), 'E_EVAL');
+    }
+  } catch (err) {
+    const original = err instanceof Error ? err : new Error(String(err));
+    try {
+      typedComponent.deleteComponentProperty(propertyKey);
+    } catch (cleanupErr) {
+      // Fallback honesty: if the rollback itself fails, do not pretend it worked —
+      // name the leftover key so it is traceable, on top of the original failure.
+      throw withCode(
+        new Error(`${original.message} — additionally, cleanup of the unlinked property "${propertyKey}" failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`),
+        (original as Error & { code?: string }).code ?? 'E_EVAL',
+      );
+    }
+    throw original;
   }
 
   return { propertyKey, frameId: frame.id, frameName: frame.name };

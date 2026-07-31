@@ -3017,6 +3017,9 @@
       throw withCode(new Error(`frame "${frame.name}" uses GRID layout \u2014 not allowed as slot content`), "E_INVALID_ARGS");
     }
     const typedComponent = component;
+    if (typeof typedComponent.addComponentProperty !== "function") {
+      throw withCode(new Error("addComponentProperty() is not available \u2014 update Figma Desktop to a version with Slots support"), "E_INVALID_ARGS");
+    }
     const propOpts = {};
     if (opts.description !== void 0) propOpts.description = opts.description;
     if (opts.preferredValues !== void 0) propOpts.preferredValues = opts.preferredValues;
@@ -3026,14 +3029,27 @@
       "",
       Object.keys(propOpts).length ? propOpts : void 0
     );
-    const frameTyped = frame;
-    frameTyped.componentPropertyReferences = { ...frameTyped.componentPropertyReferences, slotContentId: propertyKey };
-    const defs = component.componentPropertyDefinitions;
-    if (!defs?.[propertyKey]) {
-      throw withCode(new Error(`addProperty applied but "${propertyKey}" is not in componentPropertyDefinitions`), "E_EVAL");
-    }
-    if (frameTyped.componentPropertyReferences?.slotContentId !== propertyKey) {
-      throw withCode(new Error(`addProperty applied but frame "${frame.name}" is not linked to "${propertyKey}"`), "E_EVAL");
+    try {
+      const frameTyped = frame;
+      frameTyped.componentPropertyReferences = { ...frameTyped.componentPropertyReferences, slotContentId: propertyKey };
+      const defs = component.componentPropertyDefinitions;
+      if (!defs?.[propertyKey]) {
+        throw withCode(new Error(`addProperty applied but "${propertyKey}" is not in componentPropertyDefinitions`), "E_EVAL");
+      }
+      if (frameTyped.componentPropertyReferences?.slotContentId !== propertyKey) {
+        throw withCode(new Error(`addProperty applied but frame "${frame.name}" is not linked to "${propertyKey}"`), "E_EVAL");
+      }
+    } catch (err) {
+      const original = err instanceof Error ? err : new Error(String(err));
+      try {
+        typedComponent.deleteComponentProperty(propertyKey);
+      } catch (cleanupErr) {
+        throw withCode(
+          new Error(`${original.message} \u2014 additionally, cleanup of the unlinked property "${propertyKey}" failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`),
+          original.code ?? "E_EVAL"
+        );
+      }
+      throw original;
     }
     return { propertyKey, frameId: frame.id, frameName: frame.name };
   }
@@ -3130,29 +3146,24 @@
     "gridColumnSpan"
   ];
   var TYPE_SET = new Set(ANNOTATION_PROPERTY_TYPES);
-  function levenshtein(a, b) {
-    const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-    for (let i = 0; i <= a.length; i++) dp[i][0] = i;
-    for (let j = 0; j <= b.length; j++) dp[0][j] = j;
-    for (let i = 1; i <= a.length; i++) {
-      for (let j = 1; j <= b.length; j++) {
-        dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
-      }
-    }
-    return dp[a.length][b.length];
-  }
   function validatePropertyType(type) {
     if (TYPE_SET.has(type)) return;
-    const nearest = [...ANNOTATION_PROPERTY_TYPES].sort((a, b) => levenshtein(type, a) - levenshtein(type, b)).slice(0, 3);
-    throw withCode(new Error(`invalid annotation property type "${type}" \u2014 nearest valid: ${nearest.join(", ")}`), "E_INVALID_ARGS");
+    throw withCode(
+      new Error(`invalid annotation property type "${type}" \u2014 valid: ${ANNOTATION_PROPERTY_TYPES.join(", ")}`),
+      "E_INVALID_ARGS"
+    );
   }
   async function getCategories() {
+    let cats;
     try {
-      const cats = await figma.annotations.getAnnotationCategoriesAsync();
-      return cats.map((c) => ({ id: c.id, name: c.label }));
-    } catch {
-      return [];
+      cats = await figma.annotations.getAnnotationCategoriesAsync();
+    } catch (err) {
+      throw withCode(
+        new Error(`annotation categories unavailable: ${err instanceof Error ? err.message : String(err)}`),
+        "E_EVAL"
+      );
     }
+    return cats.map((c) => ({ id: c.id, name: c.label }));
   }
   function toOutput(a, categoryMap) {
     return {
@@ -3239,8 +3250,13 @@
     const categories2 = await getCategories();
     const categoryMap = new Map(categories2.map((c) => [c.id, c.name]));
     const readBack = (node.annotations ?? []).map((a) => toOutput(a, categoryMap));
-    if (readBack.length !== finalAnnotations.length) {
-      throw withCode(new Error(`set applied but read back ${readBack.length} annotations, expected ${finalAnnotations.length}`), "E_EVAL");
+    const expected = finalAnnotations.map((a) => toOutput(a, categoryMap));
+    const mismatch = readBack.length !== expected.length || expected.some((e, i) => JSON.stringify(e) !== JSON.stringify(readBack[i]));
+    if (mismatch) {
+      throw withCode(
+        new Error(`set applied but read back does not match what was written \u2014 expected ${JSON.stringify(expected)}, got ${JSON.stringify(readBack)}`),
+        "E_EVAL"
+      );
     }
     return { nodeId: node.id, nodeName: node.name, annotationCount: readBack.length, mode, annotations: readBack };
   }
