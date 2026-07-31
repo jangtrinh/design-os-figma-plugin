@@ -28,6 +28,39 @@ export function isFinishedState(state: JobInfo['state']): boolean {
   return FINISHED_STATES.has(state);
 }
 
+/**
+ * Sender verification (backlog 2.10) — whether a reply frame's ACTUAL sender is the
+ * plugin instance a job was dispatched to. `routeFromPlugin` (broker-daemon.ts) used to
+ * accept a reply keyed on `id` alone: it never checked which socket sent it against
+ * `job.targetInstanceId` (pinned at admission — see `JobRecord.targetInstanceId`'s own
+ * doc). Any OTHER currently-connected plugin instance sending a reply carrying the same
+ * `id` — reachable via a request-id collision (ids are minted CLI-process-side as
+ * `c_<counter>_<ts>`; two concurrent CLI invocations can collide within the same
+ * millisecond) — was routed to the waiting CLI as though it were the real dispatched
+ * plugin's answer, with zero signal that it wasn't.
+ *
+ * Deliberately identity-based (instanceId), never raw WebSocket-reference-based: a
+ * plugin's own reconnect (Figma iframe reload) replaces its socket in the registry
+ * while keeping the SAME instanceId (`PluginRegistry.register`'s `carried` id), so a
+ * ws-equality check would misclassify an honest reconnect as a spoof. This still
+ * correctly rejects the actual vulnerability (a genuinely DIFFERENT instance's socket),
+ * because that instance carries its OWN distinct instanceId.
+ *
+ * `senderInstanceId` is `null`/`undefined` when the registry does not recognise the
+ * sending socket at all (e.g. a stale reference to an already-superseded pre-reconnect
+ * socket) — treated the same as a genuine mismatch, never as a pass: an unidentifiable
+ * sender is not a verified one. A `job` of `undefined` (unknown/expired id — nothing to
+ * verify against) is not this function's concern; `routeFromPlugin`'s existing
+ * "no job found" handling already no-ops safely for that case.
+ */
+export function isReplyFromDispatchedInstance(
+  job: Pick<JobRecord, 'targetInstanceId'> | undefined,
+  senderInstanceId: string | null | undefined,
+): boolean {
+  if (!job) return true;
+  return senderInstanceId != null && senderInstanceId === job.targetInstanceId;
+}
+
 export interface JobRecord extends JobInfo {
   /** The join to `pending` / `dispatchedTo` — the SAME id `routeFromPlugin` routes replies by. */
   requestId: string;
