@@ -18,7 +18,10 @@
     "build:plugin-main": "node scripts/build.mjs plugin-main",
     "build:plugin-ui": "node scripts/build.mjs plugin-ui",
     "typecheck": "tsc -p cli --noEmit && tsc -p plugin --noEmit",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts",
+    "lint:comments": "node scripts/check-comment-hygiene.mjs",
+    "lint:comments:update-baseline": "node scripts/check-comment-hygiene.mjs --update-baseline",
+    "lint:comments:self-test": "node scripts/check-comment-hygiene.mjs --self-test"
   },
   "dependencies": {
     "ws": "^8.18.0"

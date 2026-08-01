@@ -1,0 +1,733 @@
+{
+  "cli/src/commands/batch.ts": {
+    "issue/PR number::issue #16": 3,
+    "issue/PR number::pr #14": 1,
+    "phase label::phase-2": 1,
+    "roadmap/backlog label::backlog-2.10": 1
+  },
+  "cli/src/commands/bind.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::backlog-5.7": 1
+  },
+  "cli/src/commands/changes.ts": {
+    "phase label::phase-01": 1,
+    "phase label::phase-02": 2,
+    "roadmap/backlog label::wave-4.4": 2
+  },
+  "cli/src/commands/errors.ts": {
+    "roadmap/backlog label::backlog-4.5": 1,
+    "roadmap/backlog label::backlog-4.6": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "cli/src/commands/job.ts": {
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-1.1": 1,
+    "roadmap/backlog label::backlog-2.6": 1
+  },
+  "cli/src/commands/mirror-verify.ts": {
+    "phase-P label::p14": 1,
+    "phase-P label::p17": 1,
+    "phase-P label::p5": 1,
+    "phase-P label::p9": 1,
+    "spec number::spec-005": 3
+  },
+  "cli/src/commands/scan-conventions.ts": {
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "cli/src/commands/scan-node.ts": {
+    "roadmap/backlog label::backlog-1.1": 1,
+    "spec number::spec-005": 3
+  },
+  "cli/src/commands/seat.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "cli/src/commands/status.ts": {
+    "issue/PR number::issue #15": 1,
+    "issue/PR number::issue #7": 1,
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-1.1": 1,
+    "roadmap/backlog label::backlog-2.10": 1
+  },
+  "cli/src/commands/sync-corrections.ts": {
+    "phase label::phase-04": 1
+  },
+  "cli/src/figma-agent.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::backlog-1.1": 3,
+    "roadmap/backlog label::backlog-4.6": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "cli/src/seat/routing.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "cli/src/transport/broker-client.ts": {
+    "phase label::phase-01": 1,
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-1.1": 3
+  },
+  "cli/src/transport/broker-daemon.ts": {
+    "issue/PR number::issue #15": 1,
+    "issue/PR number::issue #20": 2,
+    "issue/PR number::issue #5": 2,
+    "issue/PR number::issue #7": 3,
+    "phase label::phase-01": 8,
+    "phase label::phase-02": 5,
+    "phase label::phase-03": 2,
+    "roadmap/backlog label::backlog-1.1": 6,
+    "roadmap/backlog label::backlog-2.10": 3,
+    "roadmap/backlog label::backlog-4.6": 2,
+    "roadmap/backlog label::backlog-5.6": 1,
+    "roadmap/backlog label::backlog-5.7": 3,
+    "roadmap/backlog label::backlog-5.9": 2,
+    "roadmap/backlog label::wave-4.4": 2,
+    "spec number::spec-004": 3
+  },
+  "cli/src/transport/broker-discovery.ts": {
+    "issue/PR number::issue #24": 1
+  },
+  "cli/src/transport/broker-status.ts": {
+    "issue/PR number::issue #15": 2,
+    "issue/PR number::issue #7": 2,
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-1.1": 2,
+    "roadmap/backlog label::backlog-2.10": 2,
+    "roadmap/backlog label::backlog-5.6": 1
+  },
+  "cli/src/transport/change-log.ts": {
+    "issue/PR number::fix#1": 1,
+    "issue/PR number::issue #7": 3,
+    "phase label::phase-01": 2,
+    "phase label::phase-04": 1,
+    "phase-P label::p2/p4": 1,
+    "roadmap/backlog label::backlog-5.6": 2,
+    "roadmap/backlog label::ri-p1": 1,
+    "spec number::spec-004": 1
+  },
+  "cli/src/transport/edit-feed-log.ts": {
+    "issue/PR number::issue #7": 2,
+    "phase label::phase-01": 1,
+    "phase label::phase-02": 1,
+    "phase label::phase-04": 1,
+    "roadmap/backlog label::backlog-5.6": 2,
+    "roadmap/backlog label::backlog-5.7": 2,
+    "roadmap/backlog label::codex-p1": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "cli/src/transport/error-log.ts": {
+    "issue/PR number::issue #7": 2,
+    "roadmap/backlog label::backlog-4.4": 1,
+    "roadmap/backlog label::backlog-4.6": 1,
+    "roadmap/backlog label::backlog-5.9": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "cli/src/transport/figma-mirror-capture-run.ts": {
+    "phase label::phase-02": 5,
+    "phase label::phase-03": 2,
+    "spec number::spec-005": 1
+  },
+  "cli/src/transport/figma-sync-apply.ts": {
+    "phase label::phase-02": 1,
+    "phase label::phase-03": 1,
+    "spec number::spec-004": 1,
+    "spec number::spec-005": 2
+  },
+  "cli/src/transport/figma-sync-config.ts": {
+    "issue/PR number::issue #20": 2,
+    "spec number::spec-004": 1
+  },
+  "cli/src/transport/file-identity.ts": {
+    "phase label::phase-03": 1
+  },
+  "cli/src/transport/file-queue.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "cli/src/transport/job-table.ts": {
+    "phase label::phase-01": 1,
+    "phase label::phase-02": 2,
+    "roadmap/backlog label::backlog-1.1": 1,
+    "roadmap/backlog label::backlog-2.10": 1,
+    "roadmap/backlog label::backlog-2.6": 1,
+    "roadmap/backlog label::backlog-4.3": 1
+  },
+  "cli/src/transport/log-rotate.ts": {
+    "phase label::phase-04": 1
+  },
+  "cli/src/transport/plugin-registry.ts": {
+    "phase-P label::p4": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "cli/src/transport/project-bind.ts": {
+    "phase label::phase-01": 2
+  },
+  "cli/src/transport/protocol-helpers.ts": {
+    "roadmap/backlog label::backlog-1.1": 2
+  },
+  "cli/src/transport/warm-retry.ts": {
+    "roadmap/backlog label::backlog-1.1": 1,
+    "roadmap/backlog label::backlog-2.6": 1
+  },
+  "cli/src/util/json-out.ts": {
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "cli/src/util/mirror-normalize.ts": {
+    "phase-P label::p14": 1,
+    "spec number::spec-005": 1
+  },
+  "cli/src/util/structural-diff-bound-projection.ts": {
+    "spec number::spec-005": 1
+  },
+  "cli/src/util/structural-diff-keyed.ts": {
+    "spec number::spec-005": 1
+  },
+  "cli/src/util/structural-diff.ts": {
+    "phase-P label::p17": 1,
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/correction-edge-store.ts": {
+    "phase label::phase-04": 3
+  },
+  "plugin/src/main/edit-actor.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::codex-p1": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "plugin/src/main/edit-gapfill.ts": {
+    "phase label::phase-02": 2,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "plugin/src/main/exec-stdlib-annotate.ts": {
+    "phase label::phase-02": 1
+  },
+  "plugin/src/main/exec-stdlib-component-build.ts": {
+    "issue/PR number::issue #11": 1,
+    "issue/PR number::pr #10": 1
+  },
+  "plugin/src/main/exec-stdlib-component-set.ts": {
+    "issue/PR number::issue #11": 1,
+    "issue/PR number::issue #24": 1,
+    "issue/PR number::pr #10": 1,
+    "phase label::phase-01": 1
+  },
+  "plugin/src/main/exec-stdlib-editor.ts": {
+    "phase label::phase-02": 2,
+    "phase label::phase-03": 1
+  },
+  "plugin/src/main/exec-stdlib-figjam-arrange.ts": {
+    "phase label::phase-03": 1
+  },
+  "plugin/src/main/exec-stdlib-figjam-content.ts": {
+    "phase label::phase-03": 1
+  },
+  "plugin/src/main/exec-stdlib-figjam-read.ts": {
+    "phase label::phase-03": 1
+  },
+  "plugin/src/main/exec-stdlib-figjam-table.ts": {
+    "phase label::phase-03": 1
+  },
+  "plugin/src/main/exec-stdlib-figjam-types.ts": {
+    "phase label::phase-03": 1
+  },
+  "plugin/src/main/exec-stdlib-figjam.ts": {
+    "phase label::phase-03": 1
+  },
+  "plugin/src/main/exec-stdlib-instance.ts": {
+    "phase label::phase-03": 1,
+    "roadmap/backlog label::backlog-3.1": 1
+  },
+  "plugin/src/main/exec-stdlib-slides-content.ts": {
+    "phase label::phase-04": 2
+  },
+  "plugin/src/main/exec-stdlib-slides-crud.ts": {
+    "phase label::phase-04": 2
+  },
+  "plugin/src/main/exec-stdlib-slides-resolve.ts": {
+    "phase label::phase-04": 1
+  },
+  "plugin/src/main/exec-stdlib-slides-types.ts": {
+    "phase label::phase-04": 1
+  },
+  "plugin/src/main/exec-stdlib-slides-view.ts": {
+    "phase label::phase-04": 1
+  },
+  "plugin/src/main/exec-stdlib-slides.ts": {
+    "phase label::phase-04": 1
+  },
+  "plugin/src/main/exec-stdlib-slot-content.ts": {
+    "phase label::phase-02": 2
+  },
+  "plugin/src/main/exec-stdlib-slot-property.ts": {
+    "phase label::phase-02": 1
+  },
+  "plugin/src/main/exec-stdlib-slot-types.ts": {
+    "phase label::phase-02": 1
+  },
+  "plugin/src/main/exec-stdlib-slot.ts": {
+    "phase label::phase-02": 2
+  },
+  "plugin/src/main/exec-stdlib-variables.ts": {
+    "issue/PR number::pr #10": 2,
+    "phase label::phase-01": 1
+  },
+  "plugin/src/main/exec-stdlib.ts": {
+    "phase label::phase-01": 1,
+    "phase label::phase-02": 1,
+    "phase label::phase-03": 1,
+    "phase label::phase-04": 1,
+    "roadmap/backlog label::backlog-3.1": 1
+  },
+  "plugin/src/main/executor-frame.ts": {
+    "spec number::spec-005": 4
+  },
+  "plugin/src/main/executor-instance-inner-overrides.ts": {
+    "phase-P label::p10": 1,
+    "phase-P label::p13": 1,
+    "phase-P label::p15": 1,
+    "phase-P label::p9": 1,
+    "spec number::spec-005": 3
+  },
+  "plugin/src/main/executor-instance-inner-slot.ts": {
+    "spec number::spec-005": 3
+  },
+  "plugin/src/main/executor-instance-inner-visual.ts": {
+    "phase-P label::p14": 1,
+    "phase-P label::p9": 1,
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/executor-instance.ts": {
+    "spec number::spec-005": 4
+  },
+  "plugin/src/main/executor-keyed-vars.ts": {
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/executor-ops.ts": {
+    "phase label::phase-02": 1,
+    "phase label::phase-03": 2,
+    "phase label::phase-04": 1,
+    "phase label::phase-1": 1
+  },
+  "plugin/src/main/executor-shapes.ts": {
+    "spec number::spec-005": 1
+  },
+  "plugin/src/main/executor-text.ts": {
+    "spec number::spec-005": 1
+  },
+  "plugin/src/main/executor-token-var-resolve.ts": {
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/executor-variables.ts": {
+    "issue/PR number::pr #10": 1,
+    "phase label::phase-01": 1,
+    "phase label::phase-1": 1,
+    "spec number::spec-005": 1
+  },
+  "plugin/src/main/instance-inner-fill-sizing.ts": {
+    "phase-P label::p9": 1,
+    "spec number::spec-005": 1
+  },
+  "plugin/src/main/instance-inner-override-keys.ts": {
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/instance-inner-visual.ts": {
+    "spec number::spec-005": 1
+  },
+  "plugin/src/main/main.ts": {
+    "phase label::phase-01": 4,
+    "phase label::phase-02": 3,
+    "phase label::phase-03": 3,
+    "phase label::phase-04": 1,
+    "roadmap/backlog label::codex-p1": 2,
+    "roadmap/backlog label::wave-4.4": 7,
+    "spec number::spec-004": 3,
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/resolve-main-component.ts": {
+    "spec number::spec-005": 1
+  },
+  "plugin/src/main/scan-keyed-vars.ts": {
+    "phase-P label::p15": 1,
+    "spec number::spec-005": 3
+  },
+  "plugin/src/main/scan-node-inner-overrides.ts": {
+    "phase-P label::p14": 1,
+    "phase-P label::p15": 1,
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/scan-node-instance.ts": {
+    "phase-P label::p11": 1,
+    "phase-P label::p14": 1,
+    "spec number::spec-005": 2
+  },
+  "plugin/src/main/scan-node-types.ts": {
+    "spec number::spec-005": 3
+  },
+  "plugin/src/main/scan-node-utils.ts": {
+    "spec number::spec-005": 1
+  },
+  "plugin/src/main/scan-node.ts": {
+    "spec number::spec-005": 4
+  },
+  "plugin/src/main/scan-token-refs.ts": {
+    "phase-P label::p8": 1,
+    "spec number::spec-005": 3
+  },
+  "plugin/src/ui/activity-feed.ts": {
+    "roadmap/backlog label::backlog-4.7": 1
+  },
+  "plugin/src/ui/panel-model.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::backlog-1.1": 1,
+    "roadmap/backlog label::backlog-4.4": 1,
+    "spec number::spec-004": 1,
+    "spec number::spec-005": 1
+  },
+  "plugin/src/ui/panel-ui.ts": {
+    "roadmap/backlog label::backlog-4.7": 2,
+    "spec number::spec-004": 2
+  },
+  "plugin/src/ui/panel.html": {
+    "phase label::phase-01": 1,
+    "phase label::phase-02": 3,
+    "phase label::phase-03": 5,
+    "roadmap/backlog label::backlog-4.7": 1,
+    "spec number::spec-004": 2
+  },
+  "plugin/src/ui/ui-relay.ts": {
+    "phase-P label::p2": 1,
+    "roadmap/backlog label::backlog-4.6": 2,
+    "roadmap/backlog label::wave-4.4": 1,
+    "spec number::spec-004": 3
+  },
+  "shared/edit-feed.ts": {
+    "phase label::phase-01": 1,
+    "phase label::phase-02": 2,
+    "phase label::phase-03": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "shared/edit-vocabulary.ts": {
+    "phase label::phase-02": 1,
+    "phase label::phase-03": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "shared/editor-surface.ts": {
+    "phase label::phase-02": 1
+  },
+  "shared/figma-changes.ts": {
+    "phase label::phase-03": 1,
+    "phase-P label::p2/p4": 2,
+    "spec number::spec-004": 1
+  },
+  "shared/figma-payload-types.ts": {
+    "phase-P label::p3": 1,
+    "spec number::spec-005": 9
+  },
+  "shared/figma-sync-summary.ts": {
+    "spec number::spec-004": 1,
+    "spec number::spec-005": 1
+  },
+  "shared/figma-unbindable-fields.ts": {
+    "spec number::spec-005": 1
+  },
+  "shared/mutating-commands.ts": {
+    "roadmap/backlog label::backlog-2.4": 1
+  },
+  "shared/protocol.ts": {
+    "issue/PR number::issue #7": 1,
+    "phase label::phase-01": 3,
+    "phase label::phase-02": 1,
+    "phase label::phase-1": 1,
+    "phase-P label::p2": 1,
+    "phase-P label::p4": 1,
+    "roadmap/backlog label::backlog-1.1": 5,
+    "roadmap/backlog label::backlog-4.6": 1,
+    "roadmap/backlog label::wave-4.4": 1,
+    "spec number::spec-004": 3
+  },
+  "shared/safe-cleanup.ts": {
+    "issue/PR number::issue #24": 1,
+    "issue/PR number::pr #12": 1,
+    "issue/PR number::pr #13": 1,
+    "issue/PR number::pr #23": 2
+  },
+  "shared/supervised-memory.ts": {
+    "phase label::phase-04": 1
+  },
+  "tests/activity-feed.test.ts": {
+    "roadmap/backlog label::backlog-4.7": 1
+  },
+  "tests/batch-op-ceiling.test.ts": {
+    "issue/PR number::issue #16": 1,
+    "issue/PR number::pr #14": 3
+  },
+  "tests/batch-timeout-scaling.test.ts": {
+    "phase label::phase-2": 1,
+    "roadmap/backlog label::backlog-2.10": 1
+  },
+  "tests/broker-advertisement-atomic.test.ts": {
+    "issue/PR number::issue #5": 1
+  },
+  "tests/broker-daemon-harness.test.ts": {
+    "issue/PR number::issue #15": 1,
+    "issue/PR number::issue #20": 1,
+    "issue/PR number::issue #32": 2,
+    "issue/PR number::issue #5": 2,
+    "issue/PR number::issue #7": 5,
+    "issue/PR number::pr #14": 1,
+    "roadmap/backlog label::backlog-2.10": 2,
+    "roadmap/backlog label::backlog-5.6": 3,
+    "roadmap/backlog label::backlog-5.7": 1,
+    "roadmap/backlog label::backlog-5.9": 1
+  },
+  "tests/broker-discovery-probe.test.ts": {
+    "issue/PR number::issue #5": 2
+  },
+  "tests/broker-loopback-host.test.ts": {
+    "issue/PR number::issue #5": 1
+  },
+  "tests/broker-status.test.ts": {
+    "issue/PR number::issue #15": 1,
+    "issue/PR number::issue #7": 1,
+    "issue/PR number::pr #14": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/change-log.test.ts": {
+    "issue/PR number::issue #7": 2,
+    "phase label::phase-03": 2,
+    "phase-P label::p2/p4": 1,
+    "roadmap/backlog label::backlog-5.6": 2,
+    "spec number::spec-004": 1
+  },
+  "tests/changes-command.test.ts": {
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "tests/chunk-buffer-sweep.test.ts": {
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/correction-edge-store.test.ts": {
+    "phase label::phase-04": 1
+  },
+  "tests/edit-actor.test.ts": {
+    "roadmap/backlog label::codex-p1": 2
+  },
+  "tests/edit-feed-log.test.ts": {
+    "issue/PR number::issue #7": 1,
+    "roadmap/backlog label::backlog-5.6": 1,
+    "roadmap/backlog label::backlog-5.7": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "tests/edit-feed.test.ts": {
+    "phase label::phase-02": 2,
+    "roadmap/backlog label::codex-p1": 2
+  },
+  "tests/edit-gapfill.test.ts": {
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "tests/editor-surface.test.ts": {
+    "phase label::phase-02": 1
+  },
+  "tests/error-log.test.ts": {
+    "issue/PR number::issue #7": 3,
+    "roadmap/backlog label::backlog-4.6": 1,
+    "roadmap/backlog label::backlog-5.9": 2
+  },
+  "tests/errors-command.test.ts": {
+    "roadmap/backlog label::backlog-4.6": 1,
+    "roadmap/backlog label::wave-4.4": 1
+  },
+  "tests/exec-js-normalize.test.ts": {
+    "phase label::phase-02": 1
+  },
+  "tests/exec-stdlib-annotate.test.ts": {
+    "phase label::phase-02": 1
+  },
+  "tests/exec-stdlib-component-set.test.ts": {
+    "issue/PR number::issue #11": 2,
+    "issue/PR number::pr #10": 1,
+    "phase label::phase-01": 1
+  },
+  "tests/exec-stdlib-editor.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/exec-stdlib-figjam-arrange.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/exec-stdlib-figjam-content.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/exec-stdlib-figjam-read.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/exec-stdlib-figjam-table.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/exec-stdlib-instance-swap.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/exec-stdlib-props.test.ts": {
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-3.1": 1
+  },
+  "tests/exec-stdlib-slides.test.ts": {
+    "phase label::phase-04": 1
+  },
+  "tests/exec-stdlib-slot.test.ts": {
+    "phase label::phase-02": 1
+  },
+  "tests/exec-stdlib-variables.test.ts": {
+    "issue/PR number::pr #10": 2,
+    "phase label::phase-01": 1
+  },
+  "tests/exec-undo-group.test.ts": {
+    "phase label::phase-02": 1
+  },
+  "tests/executor-ops-status.test.ts": {
+    "issue/PR number::issue #15": 1,
+    "issue/PR number::issue #3": 1,
+    "phase label::phase-02": 1,
+    "phase label::phase-03": 2
+  },
+  "tests/executor-variables.test.ts": {
+    "phase label::phase-01": 1
+  },
+  "tests/figma-changes-coalesce.test.ts": {
+    "spec number::spec-004": 1
+  },
+  "tests/figma-mirror-capture-run.test.ts": {
+    "phase label::phase-02": 3,
+    "spec number::spec-005": 1
+  },
+  "tests/figma-plugin-panel.test.ts": {
+    "phase label::phase-02": 2,
+    "phase label::phase-03": 3,
+    "roadmap/backlog label::backlog-4.7": 1
+  },
+  "tests/figma-sync-config.test.ts": {
+    "spec number::spec-004": 1
+  },
+  "tests/figma-sync-summary.test.ts": {
+    "spec number::spec-004": 1,
+    "spec number::spec-005": 1
+  },
+  "tests/file-guard-plumbing.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/file-queue.test.ts": {
+    "phase label::phase-01": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/helpers/mock-figma.ts": {
+    "issue/PR number::pr #10": 4,
+    "phase label::phase-01": 3,
+    "phase label::phase-02": 6,
+    "phase label::phase-03": 7,
+    "phase label::phase-04": 8,
+    "phase-P label::p5": 1,
+    "spec number::spec-005": 15
+  },
+  "tests/instance-inherited-fill-binding.test.ts": {
+    "spec number::spec-005": 2
+  },
+  "tests/instance-inner-component-properties.test.ts": {
+    "spec number::spec-005": 4
+  },
+  "tests/instance-inner-fill-sizing.test.ts": {
+    "phase-P label::p16": 1,
+    "spec number::spec-005": 3
+  },
+  "tests/instance-inner-overrides.test.ts": {
+    "spec number::spec-005": 4
+  },
+  "tests/instance-inner-visual-overrides.test.ts": {
+    "spec number::spec-005": 3
+  },
+  "tests/job-command.test.ts": {
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/job-table-sender-verification.test.ts": {
+    "roadmap/backlog label::backlog-2.10": 1
+  },
+  "tests/job-table.test.ts": {
+    "phase label::phase-01": 2,
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/json-out.test.ts": {
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/keyed-var-binding.test.ts": {
+    "spec number::spec-005": 1
+  },
+  "tests/log-rotate.test.ts": {
+    "phase label::phase-04": 1
+  },
+  "tests/mirror-verify.test.ts": {
+    "spec number::spec-005": 1
+  },
+  "tests/mutating-commands.test.ts": {
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/panel-model.test.ts": {
+    "roadmap/backlog label::backlog-4.4": 1,
+    "spec number::spec-004": 1
+  },
+  "tests/plugin-registry.test.ts": {
+    "phase label::phase-01": 2
+  },
+  "tests/project-bind.test.ts": {
+    "phase label::phase-01": 1
+  },
+  "tests/route-filter.test.ts": {
+    "phase label::phase-03": 1
+  },
+  "tests/safe-cleanup.test.ts": {
+    "issue/PR number::pr #23": 1
+  },
+  "tests/scale-baseline.test.ts": {
+    "phase label::phase-04": 1,
+    "plan-dir slug::260730-0847-": 2,
+    "plan-dir slug::260730-1204-": 1
+  },
+  "tests/scan-node-fixed-point.test.ts": {
+    "spec number::spec-005": 10
+  },
+  "tests/scan-node-walker-bundle.test.ts": {
+    "spec number::spec-005": 2
+  },
+  "tests/seat-routing.test.ts": {
+    "phase label::phase-01": 2,
+    "roadmap/backlog label::backlog-1.1": 2
+  },
+  "tests/structural-diff-bound-projection.test.ts": {
+    "spec number::spec-005": 4
+  },
+  "tests/structural-diff-keyed.test.ts": {
+    "spec number::spec-005": 3
+  },
+  "tests/structural-diff.test.ts": {
+    "spec number::spec-005": 1
+  },
+  "tests/supervised-memory.test.ts": {
+    "phase label::phase-04": 1
+  },
+  "tests/sync-corrections.test.ts": {
+    "phase label::phase-04": 1
+  },
+  "tests/text-binding-fidelity.test.ts": {
+    "spec number::spec-005": 1
+  },
+  "tests/timeout-job-hint.test.ts": {
+    "phase label::phase-02": 1,
+    "roadmap/backlog label::backlog-1.1": 1
+  },
+  "tests/token-var-reattach.test.ts": {
+    "spec number::spec-005": 1
+  },
+  "tests/warm-retry.test.ts": {
+    "roadmap/backlog label::backlog-1.1": 1
+  }
+}

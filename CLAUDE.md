@@ -24,6 +24,13 @@ GitHub issue = one Sonnet-ready task. The standard lifecycle, using installed ak
 
 - `npm run typecheck` · `npm run build` · `npm test` (includes the panel gate,
   `tests/figma-plugin-panel.test.ts`, which needs `git submodule update --init --depth 1`).
+- `npm run lint:comments` — fails on a NEW plan-id/issue-number/phase-label/finding-code
+  citation in a tracked comment or test name under `plugin/src`, `cli/src`, `shared`,
+  `tests`. Pre-existing citations are grandfathered in `scripts/comment-hygiene-baseline.json`
+  (content-keyed, not line-keyed, so unrelated edits never invalidate it); a genuinely new
+  citation anywhere — including one added right next to an existing one — still fails. Run
+  `npm run lint:comments:update-baseline` only when deliberately retiring an old citation by
+  restating its invariant directly (never to launder a new one through).
 - The panel gate runs the kernel's own linters from the pinned `kernel/design-os` submodule —
   a bridge until `ease-design/lint` is published (issue #9). Bump the pin deliberately.
 
