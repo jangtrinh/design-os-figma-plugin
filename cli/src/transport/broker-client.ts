@@ -51,7 +51,7 @@ let readOnlyGlobal = false;
 export function setExpectedFile(name: string | undefined): void { expectedFile = name; }
 
 /**
- * Set once per CLI invocation from the global `--instance` flag (spec 260801-1050); stamped on
+ * Set once per CLI invocation from the global `--instance` flag; stamped on
  * every request envelope the SAME choke point `setExpectedFile` uses. Mutual exclusion with
  * `--file` is enforced at the CLI boundary before either setter runs, so the two are never both
  * non-empty here.

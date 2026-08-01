@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   }
   const fileFlag = (args.str('file') ?? '').trim();
   const instanceFlag = (args.str('instance') ?? '').trim();
-  // Mutual exclusion at the CLI boundary (spec 260801-1050): both set is refused outright,
+  // Mutual exclusion at the CLI boundary: both set is refused outright,
   // never silently resolved to one — resolveRouteFilter's own instance-beats-file precedence
   // exists for env/recency fallback, not for a caller contradicting itself in one request.
   if (fileFlag !== '' && instanceFlag !== '') {

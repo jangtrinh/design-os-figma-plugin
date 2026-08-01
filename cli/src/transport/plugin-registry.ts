@@ -157,8 +157,8 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
   }
 
   /**
-   * Live entries matching the filter. `opts.kind === 'instance'` (instance targeting, spec
-   * 260801-1050) branches to `getByInstanceId` instead of name matching: an instanceId is
+   * Live entries matching the filter. `opts.kind === 'instance'` (instance targeting)
+   * branches to `getByInstanceId` instead of name matching: an instanceId is
    * exact and unique by construction, so the result is the single live entry or `[]` — NEVER
    * a name-fuzzy list, even when other entries share the same fileName (the whole reason
    * `--instance` exists: two unsaved files both named "Untitled" are otherwise indistinguishable).

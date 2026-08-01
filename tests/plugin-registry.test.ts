@@ -218,7 +218,7 @@ describe('matching(filter, {exact}) — exact mode + the ambiguity input', () =>
   });
 });
 
-describe('matching/selectTarget(filter, {kind:"instance"}) — instanceId targeting (spec 260801-1050)', () => {
+describe('matching/selectTarget(filter, {kind:"instance"}) — instanceId targeting', () => {
   it('a known live instanceId → the single matching entry, never a name-fuzzy list', () => {
     const { reg, tick } = makeReg();
     reg.register(sock(), { instanceId: 'p_1_100', fileName: 'Design' });

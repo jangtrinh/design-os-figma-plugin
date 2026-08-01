@@ -776,12 +776,12 @@ describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, neve
   });
 });
 
-// Spec 260801-1050 (P1) — `--instance <id>` admission. NOT run by the executor: this harness
+// `--instance <id>` admission. NOT run by the executor: this harness
 // spawns a real in-process broker via `runBrokerDaemon`, and per the assigned constraint on
 // this machine a live plugin session is connected and this harness pollutes its broker
 // discovery (issue #32) — written here (the one file that exercises the real `admitRequest`
 // closure) and left for the orchestrator to run post-smoke.
-describe('daemon harness — admitRequest with an `--instance` (expectedInstance) filter (spec 260801-1050 P1)', () => {
+describe('daemon harness — admitRequest with an `--instance` (expectedInstance) filter', () => {
   it('an instanceId matching NO connected plugin → E_NO_PLUGIN names the instanceId, never "open the file panel"', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);

@@ -98,7 +98,7 @@ export interface RequestMsg {
    */
   expectedFile?: string;
   /**
-   * The exact plugin instance this command is FOR (`--instance <id>`), spec 260801-1050. Envelope-
+   * The exact plugin instance this command is FOR (`--instance <id>`). Envelope-
    * level, exactly like `expectedFile`, so the broker routes on it without parsing `params`.
    * Mutually exclusive with `expectedFile` at the CLI boundary (refused before a request is ever
    * built) — the broker only ever sees one of the two set. Omitted entirely when unset, same
