@@ -74,16 +74,29 @@ export const PANEL_HEIGHT = 420;
 // The panel's honest answer to "which file will my command hit?" — must never say
 // "command target" when the broker's routing target is elsewhere. Driven by the new
 // PEERS event (broker → every connected plugin, count + isActiveTarget).
-export function fileNote(count: number, isActiveTarget: boolean): string {
-  if (count <= 1) return isActiveTarget ? 'command target' : ''; // count<=1 && !isActiveTarget cannot happen today
+//
+// `pinned` (#35 P2, additive — defaults `false` so every pre-existing call site/test is
+// untouched): PEERS' own `pinned` flag, true when THIS plugin is the target because the
+// owner explicitly pinned it via "Target this plugin", not merely because it is the
+// most-recently-active file. Distinct wording, never a separate boolean note, so the one
+// line stays the single source of "why does my command land here".
+export function fileNote(count: number, isActiveTarget: boolean, pinned = false): string {
+  if (count <= 1) return isActiveTarget ? (pinned ? 'pinned target' : 'command target') : ''; // count<=1 && !isActiveTarget cannot happen today
   const others = count - 1;
   const files = others === 1 ? 'file' : 'files';
   // Wording pass (owner directive 2026-07-30): "connected" is redundant here — the whole
   // Context block only ever shows OTHER connected files — and "commands go to another
   // file" trims to "elsewhere" without losing the honest claim.
-  return isActiveTarget
-    ? `command target · ${others} other ${files}`
-    : `${others} other ${files} — commands go elsewhere`;
+  if (!isActiveTarget) return `${others} other ${files} — commands go elsewhere`;
+  return pinned ? `pinned target · ${others} other ${files}` : `command target · ${others} other ${files}`;
+}
+
+// ─── Target pin (#35 P2) — the "Target this plugin" button's own label ──────
+// A toggle: pinned → "Targeted ✓" (click clears it); unpinned → "Target this plugin"
+// (click sets it). Kept as a pure mapping so the DOM glue (panel-ui.ts) never composes
+// this string itself.
+export function targetButtonLabel(pinned: boolean): string {
+  return pinned ? 'Targeted ✓' : 'Target this plugin';
 }
 
 // ─── Idle-commit sync prompt (spec 004 P4) ────────────────────────────────────

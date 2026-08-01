@@ -1021,3 +1021,189 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
     expect(Object.values(store[slug]!)[0]!.jobCount).toBe(1);
   });
 });
+
+// #35 P2 — the panel's "Target this plugin" button (SET_TARGET/CLEAR_TARGET) and the
+// daemon's `targetInstancePin` it sets. Exercises the REAL `admitRequest`/`handleClose`/
+// `broadcastPeers` closures end to end, same isolation as every other describe block here.
+function setTarget(ws: WebSocket, instanceId: string): void {
+  ws.send(JSON.stringify({ type: 'SET_TARGET', data: { instanceId } } satisfies EventMsg));
+}
+function clearTarget(ws: WebSocket, instanceId: string): void {
+  ws.send(JSON.stringify({ type: 'CLEAR_TARGET', data: { instanceId } } satisfies EventMsg));
+}
+/** A read-only request (GET_SELECTION, IMPLICIT_READ_ONLY) — dispatches immediately, no
+ *  per-file queue to reason about, so a test only has to observe WHICH plugin received it. */
+function sendReadOnlyRequest(ws: WebSocket, reqId: string, expectedInstance?: string): void {
+  ws.send(JSON.stringify(makeRequestFrame(reqId, 'GET_SELECTION', {}, undefined, undefined, undefined, undefined, expectedInstance)));
+}
+/**
+ * JOB_STATE is sent to the CLI the moment a request is ADMITTED (dispatched to a plugin
+ * or queued) — BEFORE any plugin reply, which these tests' bare `WebSocket` "plugins"
+ * never send. Waiting for a real reply here would hang forever (that bug produced this
+ * helper); JOB_STATE alone is the correct, always-present admission signal these
+ * precedence/routing tests need.
+ */
+function waitForJobState(ws: WebSocket): Promise<void> {
+  return nextFrame(ws, (m) => (m as EventMsg).type === 'JOB_STATE').then(() => undefined);
+}
+/**
+ * Distinguishes "admitted, dispatched somewhere" (a JOB_STATE arrives) from "refused
+ * outright" (an immediate ReplyErr carrying `reqId` arrives, with NO JOB_STATE ever sent
+ * — `admitRequest`'s `E_TARGET_DISCONNECTED` refusal returns before job creation). Used
+ * only where a test must tell the two apart; every other pin test only needs
+ * `waitForJobState` (dispatch always succeeds there).
+ */
+function admissionOutcome(ws: WebSocket, reqId: string): Promise<'dispatched' | 'refused'> {
+  return Promise.race([
+    nextFrame(ws, (m) => (m as EventMsg).type === 'JOB_STATE').then(() => 'dispatched' as const),
+    nextFrame(ws, (m) => (m as ReplyErr).id === reqId && (m as ReplyErr).ok === false).then(() => 'refused' as const),
+  ]);
+}
+
+describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, precedence, disconnect-clears, PEERS', () => {
+  it('SET_TARGET pins routing to that instance even though a DIFFERENT plugin is more recently active', async () => {
+    const port = await startTestBroker();
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-pin-a', 'PinFileA');
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-pin-b', 'PinFileB'); // B HELLOs after A — B is recency-favored by default
+    // Drain the HELLO-triggered PEERS broadcast(s) before attaching the listeners below —
+    // otherwise a straggler from registration (not from SET_TARGET) can land on a
+    // freshly-attached listener and be misread as this test's own signal.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+
+    setTarget(pluginA, 'inst-pin-a');
+    await waitFor(() => framesA.frames.some((f) => (f as { type?: string }).type === 'PEERS'));
+
+    const cli = await connectSocket(port);
+    sendReadOnlyRequest(cli, 'req-pin-1');
+    await waitForJobState(cli);
+    await waitFor(() => framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-1'));
+
+    expect(framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-1')).toBe(true);
+    expect(framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-1')).toBe(false);
+  });
+
+  it('a per-request --instance still overrides the pin (per-request flags always win)', async () => {
+    const port = await startTestBroker();
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-pin-a2', 'PinFileA2');
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-pin-b2', 'PinFileB2');
+    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+
+    setTarget(pluginA, 'inst-pin-a2');
+    await waitFor(() => framesA.frames.some((f) => (f as { type?: string }).type === 'PEERS'));
+
+    const cli = await connectSocket(port);
+    sendReadOnlyRequest(cli, 'req-pin-2', 'inst-pin-b2'); // explicit --instance targets B despite A's pin
+    await waitForJobState(cli);
+    await waitFor(() => framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-2'));
+
+    expect(framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-2')).toBe(true);
+    expect(framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-2')).toBe(false);
+  });
+
+  it('CLEAR_TARGET clears the pin — a later no-flag command falls back to recency', async () => {
+    const port = await startTestBroker();
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-pin-a3', 'PinFileA3');
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-pin-b3', 'PinFileB3'); // recency-favored once unpinned
+    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+
+    setTarget(pluginA, 'inst-pin-a3');
+    await waitFor(() => framesA.frames.some((f) => (f as { type?: string }).type === 'PEERS'));
+    clearTarget(pluginA, 'inst-pin-a3');
+    await waitFor(() => framesA.frames.filter((f) => (f as { type?: string }).type === 'PEERS').length >= 2);
+
+    const cli = await connectSocket(port);
+    sendReadOnlyRequest(cli, 'req-pin-3');
+    await waitForJobState(cli);
+    await waitFor(() => framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-3'));
+
+    expect(framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-3')).toBe(true);
+    expect(framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-3')).toBe(false);
+  });
+
+  it('the pinned instance disconnecting clears the pin — a later no-flag command falls through to recency, never stuck refusing', async () => {
+    const port = await startTestBroker();
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-pin-a4', 'PinFileA4');
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-pin-b4', 'PinFileB4');
+    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    const framesA = collectFrames(pluginA);
+
+    setTarget(pluginA, 'inst-pin-a4');
+    await waitFor(() => framesA.frames.some((f) => (f as { type?: string }).type === 'PEERS'));
+
+    const peersAfterDisconnect = nextFrame<EventMsg>(pluginB, (m) => (m as EventMsg).type === 'PEERS');
+    pluginA.terminate(); // the pinned instance disconnects
+    // `handleClose` clears the pin + broadcasts PEERS to survivors in the SAME turn the
+    // registry drops A's entry — B (the only survivor) is trivially the recency target
+    // now, and no longer merely "the non-pinned one".
+    const peers = await peersAfterDisconnect;
+    expect(peers.data).toMatchObject({ isActiveTarget: true, pinned: false });
+
+    const cli = await connectSocket(port);
+    sendReadOnlyRequest(cli, 'req-pin-4');
+    // JOB_STATE means it was ADMITTED (dispatched to B via ordinary recency); a ReplyErr
+    // would mean it was REFUSED (E_TARGET_DISCONNECTED against the now-gone pin) —
+    // exactly the regression this test exists to catch.
+    const outcome = await admissionOutcome(cli, 'req-pin-4');
+    expect(outcome).toBe('dispatched');
+  });
+
+  it('SET_TARGET refuses a claimed instanceId that does not match the sender\'s OWN registered instance', async () => {
+    const port = await startTestBroker();
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-pin-a5', 'PinFileA5');
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-pin-b5', 'PinFileB5'); // recency-favored — proves the pin never took
+    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+
+    setTarget(pluginA, 'inst-pin-b5'); // A claims to be B — must be refused
+    await new Promise((resolve) => setTimeout(resolve, 100)); // let the broker process it (no ack frame to await)
+
+    const cli = await connectSocket(port);
+    sendReadOnlyRequest(cli, 'req-pin-5');
+    await waitForJobState(cli);
+    await waitFor(() => framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-5'));
+
+    expect(framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-5')).toBe(true); // recency, unaffected
+    expect(framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-5')).toBe(false);
+  });
+
+  it('PEERS reflects the pin: `pinned`/`isActiveTarget` on the pinned entry, both false elsewhere; CLEAR_TARGET reverts to recency', async () => {
+    const port = await startTestBroker();
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-pin-a6', 'PinFileA6');
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-pin-b6', 'PinFileB6'); // recency-favored while unpinned
+    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+
+    const peersAAfterPin = nextFrame<EventMsg>(pluginA, (m) => (m as EventMsg).type === 'PEERS');
+    const peersBAfterPin = nextFrame<EventMsg>(pluginB, (m) => (m as EventMsg).type === 'PEERS');
+    setTarget(pluginA, 'inst-pin-a6');
+    const [helloA, helloB] = await Promise.all([peersAAfterPin, peersBAfterPin]);
+    expect(helloA.data).toMatchObject({ isActiveTarget: true, pinned: true });
+    expect(helloB.data).toMatchObject({ isActiveTarget: false, pinned: false });
+
+    const peersAAfterClear = nextFrame<EventMsg>(pluginA, (m) => (m as EventMsg).type === 'PEERS');
+    const peersBAfterClear = nextFrame<EventMsg>(pluginB, (m) => (m as EventMsg).type === 'PEERS');
+    clearTarget(pluginA, 'inst-pin-a6');
+    const [clearedA, clearedB] = await Promise.all([peersAAfterClear, peersBAfterClear]);
+    // Unpinned: recency decides — B HELLO'd after A, so B is the recency target, neither is pinned.
+    expect(clearedA.data).toMatchObject({ isActiveTarget: false, pinned: false });
+    expect(clearedB.data).toMatchObject({ isActiveTarget: true, pinned: false });
+  });
+});

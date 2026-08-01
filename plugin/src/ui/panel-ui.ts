@@ -14,6 +14,7 @@ import {
   statusSentence, showOnboarding, fileNote, PANEL_HEIGHT,
   syncPromptLabel, syncResultLabel, syncNowLabel, shouldClearPendingCount,
   syncStartSentence, syncResultSentence, syncStuckSentence, syncSupersededSentence, SYNC_STUCK_TIMEOUT_MS,
+  targetButtonLabel,
 } from './panel-model';
 import {
   toActivityRecord, toActivityResult, pushActivity, resolveActivity, diffRowKeys,
@@ -36,6 +37,7 @@ const ctxFile = el('fga-ctx-file');
 const ctxFileNote = el('fga-ctx-file-note');
 const ctxPage = el('fga-ctx-page');
 const ctxSelection = el('fga-ctx-selection');
+const targetBtn = el('fga-target-btn') as HTMLButtonElement;
 const activityList = el('fga-activity');
 const versionEl = el('fga-version');
 const syncPrompt = el('fga-sync');
@@ -52,6 +54,7 @@ let selectionName: string | null = null;
 let selectionCount = 0;
 let peersCount = 1;
 let peersIsActiveTarget = true; // sole plugin ⇒ trivially the target until PEERS says otherwise
+let peersPinned = false; // #35 P2: THIS plugin is the target because the owner pinned it, not merely recency
 
 // ─── Icons (Phosphor inline SVG — no text glyphs anywhere, §1) ───────────────
 // Official @phosphor-icons/core v2 path data, "regular" weight, 256x256 viewBox, MIT —
@@ -91,10 +94,11 @@ function makeIcon(name: IconName): SVGSVGElement {
 function renderContext(): void {
   ctxFile.textContent = sceneFile || '—';
   ctxFile.title = sceneFile || ''; // the row ellipsises — hover still tells the truth
-  ctxFileNote.textContent = fileNote(peersCount, peersIsActiveTarget);
+  ctxFileNote.textContent = fileNote(peersCount, peersIsActiveTarget, peersPinned);
   ctxPage.textContent = scenePage || '—';
   ctxPage.title = scenePage || '';
   ctxSelection.textContent = selectionText();
+  targetBtn.textContent = targetButtonLabel(peersPinned);
 }
 
 /** "None" / "Hero card" / "Hero card +2 more". Never fabricates a name. The <dt>
@@ -241,10 +245,14 @@ window.addEventListener('figma-agent:activity', (ev) => {
 });
 
 // Peers (panel IA v2): the broker's honest answer to "which file will my command hit?".
+// `pinned` (#35 P2, additive): true only when THIS plugin is the standing target pin, not
+// merely the most-recently-active file — an older broker never sends it, so it stays
+// false (the pre-#35 behavior) rather than crash on the missing field.
 window.addEventListener('figma-agent:peers', (ev) => {
-  const d = (ev as CustomEvent).detail as { count?: unknown; isActiveTarget?: unknown } | undefined;
+  const d = (ev as CustomEvent).detail as { count?: unknown; isActiveTarget?: unknown; pinned?: unknown } | undefined;
   if (typeof d?.count === 'number' && Number.isFinite(d.count)) peersCount = d.count;
   if (typeof d?.isActiveTarget === 'boolean') peersIsActiveTarget = d.isActiveTarget;
+  peersPinned = typeof d?.pinned === 'boolean' && d.pinned;
   renderContext();
 });
 
@@ -363,6 +371,16 @@ window.addEventListener('figma-agent:sync-result', (ev) => {
   parent.postMessage({ pluginMessage: { type: 'SYNC_DONE', commit } }, '*');
   syncPrompt.hidden = false;
   if (commit) setTimeout(() => { syncPrompt.hidden = true; }, 4000);
+});
+
+// #35 P2 — "Target this plugin": a toggle. Pinned → clicking sends CLEAR_TARGET;
+// unpinned → SET_TARGET. `peersPinned` (from the last PEERS event) is the state read at
+// click time — no local optimistic flip: the button's own label/state is driven entirely
+// by the broker's next PEERS broadcast, the same "the wire is the source of truth" shape
+// every other panel affordance here already follows (sync prompt, activity feed).
+targetBtn.addEventListener('click', () => {
+  const event = peersPinned ? 'figma-agent:clear-target' : 'figma-agent:set-target';
+  try { window.dispatchEvent(new CustomEvent(event)); } catch { /* no DOM events */ }
 });
 
 versionEl.textContent = `v0.1.0 · ${typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'}`;

@@ -203,8 +203,17 @@ export interface EventMsg {
   // thread and its iframe — they never cross this wire, so they are not listed here.)
   //
   // PEERS (panel IA v2): broker → every connected plugin, whenever the live registry
-  // changes (register/disconnect/scene update) or a reply lands. { count, isActiveTarget }
-  // — additive and ignorable by an older plugin bundle.
+  // changes (register/disconnect/scene update) or a reply lands. { count, isActiveTarget,
+  // pinned } — additive and ignorable by an older plugin bundle. `pinned` (#35 P2): true
+  // for the ONE entry, if any, matching the daemon's `targetInstancePin`; `isActiveTarget`
+  // reflects that same pin when one is set, falling back to recency otherwise — so a panel
+  // can tell "I'm the target because I'm pinned" from "…because I'm most-recent".
+  //
+  // SET_TARGET / CLEAR_TARGET (#35 P2): panel → broker, carrying the panel's own
+  // `instanceId` — sets/clears `targetInstancePin` (a daemon RUNTIME pin, never
+  // persisted). The broker validates the sender's own registered instance before
+  // pinning; an unrecognised/disconnected instanceId is ignored. Disconnecting the
+  // pinned instance clears the pin too (see broker-daemon.ts's `handleClose`).
   //
   // EDIT_FEED (wave 4.4 P1): the plugin's widened, actor-labelled documentchange batch —
   // plugin → broker; the broker appends it to its own per-file feed
@@ -222,7 +231,7 @@ export interface EventMsg {
   type:
     | 'BROKER_HELLO' | 'PLUGIN_HELLO' | 'FILE_INFO' | 'PLUGIN_GONE' | 'PING' | 'PONG'
     | 'DOC_CHANGE' | 'SYNC_CONFIG' | 'SYNC_REQUEST' | 'SYNC_RESULT' | 'PEERS' | 'EDIT_FEED'
-    | 'JOB_STATE';
+    | 'JOB_STATE' | 'SET_TARGET' | 'CLEAR_TARGET';
   data: Record<string, unknown>;
 }
 
@@ -305,7 +314,12 @@ export type ErrorCode =
   // layer (see `RequestMsg.readOnly`'s own comment): the plugin is the one place that
   // can actually observe whether the script wrote anything, so this is where the
   // mis-declaration turns from a silent breach into a refusal.
-  | 'E_READONLY_VIOLATION';
+  | 'E_READONLY_VIOLATION'
+  // #35 P2 — a no-flag command with a standing `targetInstancePin` set, whose pinned
+  // instance has disconnected. Never falls through to the env pin or recency (Law 1: a
+  // standing pin never silently re-points at another plugin) — the caller re-targets via
+  // the panel's "Target this plugin" button, or clears the pin and retries unpinned.
+  | 'E_TARGET_DISCONNECTED';
 
 // ── Timeouts (ms) ───────────────────────────────────────────────────
 export const DEFAULT_TIMEOUT_MS = 15_000;

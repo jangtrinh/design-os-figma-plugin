@@ -664,6 +664,9 @@ code {
   overflow-wrap: anywhere;
 }
 .detail-note:empty { display: none; }
+/* #35 P2 — "Target this plugin": reuses .sync-btn's own look (outlined, not filled),
+   spaced off the grid above it the same way .sync-actions separates from .sync-msg. */
+#fga-target-btn { margin-top: var(--space-1); }
 
 /* Block 3 — ACTIVITY: mono-free, sentence-case prose rows — [icon][sentence]
    + a caption line with relative time. The sentence says what the agent DID. */
@@ -914,6 +917,11 @@ code {
       <div class="detail-cell"><dt>Page</dt><dd id="fga-ctx-page">—</dd></div>
       <div class="detail-cell"><dt>Selection</dt><dd id="fga-ctx-selection">None</dd></div>
     </dl>
+    <!-- #35 P2: pins the daemon's routing target to THIS plugin instance (a runtime-only,
+         human-set pin — see broker-daemon.ts's `targetInstancePin`). Toggles between
+         "Target this plugin" and "Targeted ✓" — panel-ui.ts wires the click, panel-model.ts
+         owns the label text. -->
+    <button class="sync-btn" id="fga-target-btn" type="button">Target this plugin</button>
   </section>
 
   <section class="activity fga-block" id="fga-activity-block" aria-label="Activity log">
