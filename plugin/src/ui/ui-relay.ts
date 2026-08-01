@@ -457,4 +457,15 @@ window.addEventListener('figma-agent:sync-request', () => {
   wsSend({ type: 'SYNC_REQUEST', data: {} });
 });
 
+// #35 P2: the panel's "Target this plugin" button dispatches these DOM events; forward
+// to the broker as SET_TARGET/CLEAR_TARGET carrying THIS iframe's own INSTANCE_ID — the
+// broker only ever pins the socket that sent the message (see broker-daemon.ts's
+// SET_TARGET handler), so there is no other identity to carry here.
+window.addEventListener('figma-agent:set-target', () => {
+  wsSend({ type: 'SET_TARGET', data: { instanceId: INSTANCE_ID } });
+});
+window.addEventListener('figma-agent:clear-target', () => {
+  wsSend({ type: 'CLEAR_TARGET', data: { instanceId: INSTANCE_ID } });
+});
+
 void connectLoop();

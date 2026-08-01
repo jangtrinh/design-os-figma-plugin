@@ -664,6 +664,9 @@ code {
   overflow-wrap: anywhere;
 }
 .detail-note:empty { display: none; }
+/* #35 P2 — "Target this plugin": reuses .sync-btn's own look (outlined, not filled),
+   spaced off the grid above it the same way .sync-actions separates from .sync-msg. */
+#fga-target-btn { margin-top: var(--space-1); }
 
 /* Block 3 — ACTIVITY: mono-free, sentence-case prose rows — [icon][sentence]
    + a caption line with relative time. The sentence says what the agent DID. */
@@ -914,6 +917,11 @@ code {
       <div class="detail-cell"><dt>Page</dt><dd id="fga-ctx-page">—</dd></div>
       <div class="detail-cell"><dt>Selection</dt><dd id="fga-ctx-selection">None</dd></div>
     </dl>
+    <!-- #35 P2: pins the daemon's routing target to THIS plugin instance (a runtime-only,
+         human-set pin — see broker-daemon.ts's `targetInstancePin`). Toggles between
+         "Target this plugin" and "Targeted ✓" — panel-ui.ts wires the click, panel-model.ts
+         owns the label text. -->
+    <button class="sync-btn" id="fga-target-btn" type="button">Target this plugin</button>
   </section>
 
   <section class="activity fga-block" id="fga-activity-block" aria-label="Activity log">
@@ -1003,11 +1011,15 @@ code {
   function showOnboarding(state, hadConnection2) {
     return !hadConnection2 && (state === "disconnected" || state === "probing");
   }
-  function fileNote(count, isActiveTarget) {
-    if (count <= 1) return isActiveTarget ? "command target" : "";
+  function fileNote(count, isActiveTarget, pinned = false) {
+    if (count <= 1) return isActiveTarget ? pinned ? "pinned target" : "command target" : "";
     const others = count - 1;
     const files = others === 1 ? "file" : "files";
-    return isActiveTarget ? `command target \xB7 ${others} other ${files}` : `${others} other ${files} \u2014 commands go elsewhere`;
+    if (!isActiveTarget) return `${others} other ${files} \u2014 commands go elsewhere`;
+    return pinned ? `pinned target \xB7 ${others} other ${files}` : `command target \xB7 ${others} other ${files}`;
+  }
+  function targetButtonLabel(pinned) {
+    return pinned ? "Targeted \u2713" : "Target this plugin";
   }
   function syncPromptLabel(count) {
     const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 1;
@@ -1162,6 +1174,7 @@ code {
   var ctxFileNote = el("fga-ctx-file-note");
   var ctxPage = el("fga-ctx-page");
   var ctxSelection = el("fga-ctx-selection");
+  var targetBtn = el("fga-target-btn");
   var activityList = el("fga-activity");
   var versionEl = el("fga-version");
   var syncPrompt = el("fga-sync");
@@ -1177,6 +1190,7 @@ code {
   var selectionCount = 0;
   var peersCount = 1;
   var peersIsActiveTarget = true;
+  var peersPinned = false;
   var SVG_NS = "http://www.w3.org/2000/svg";
   var ICONS = {
     // check-circle, regular — the wrapper's aria-label carries the state; colour (via
@@ -1201,10 +1215,11 @@ code {
   function renderContext() {
     ctxFile.textContent = sceneFile || "\u2014";
     ctxFile.title = sceneFile || "";
-    ctxFileNote.textContent = fileNote(peersCount, peersIsActiveTarget);
+    ctxFileNote.textContent = fileNote(peersCount, peersIsActiveTarget, peersPinned);
     ctxPage.textContent = scenePage || "\u2014";
     ctxPage.title = scenePage || "";
     ctxSelection.textContent = selectionText();
+    targetBtn.textContent = targetButtonLabel(peersPinned);
   }
   function selectionText() {
     if (selectionCount <= 0) return "None";
@@ -1313,6 +1328,7 @@ code {
     const d = ev.detail;
     if (typeof d?.count === "number" && Number.isFinite(d.count)) peersCount = d.count;
     if (typeof d?.isActiveTarget === "boolean") peersIsActiveTarget = d.isActiveTarget;
+    peersPinned = typeof d?.pinned === "boolean" && d.pinned;
     renderContext();
   });
   window.addEventListener("message", (ev) => {
@@ -1411,6 +1427,13 @@ code {
     if (commit) setTimeout(() => {
       syncPrompt.hidden = true;
     }, 4e3);
+  });
+  targetBtn.addEventListener("click", () => {
+    const event = peersPinned ? "figma-agent:clear-target" : "figma-agent:set-target";
+    try {
+      window.dispatchEvent(new CustomEvent(event));
+    } catch {
+    }
   });
   versionEl.textContent = `v0.1.0 \xB7 ${true ? "cc4b840" : "dev"}`;
   setInterval(render, 1e3);
@@ -3210,6 +3233,12 @@ code {
   }
   window.addEventListener("figma-agent:sync-request", () => {
     wsSend({ type: "SYNC_REQUEST", data: {} });
+  });
+  window.addEventListener("figma-agent:set-target", () => {
+    wsSend({ type: "SET_TARGET", data: { instanceId: INSTANCE_ID } });
+  });
+  window.addEventListener("figma-agent:clear-target", () => {
+    wsSend({ type: "CLEAR_TARGET", data: { instanceId: INSTANCE_ID } });
   });
   void connectLoop();
 })();

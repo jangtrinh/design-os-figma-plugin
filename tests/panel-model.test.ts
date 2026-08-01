@@ -7,6 +7,7 @@ import {
   statusSentence, formatAge, showOnboarding, fileNote, PANEL_WIDTH, PANEL_HEIGHT,
   syncPromptLabel, syncResultLabel, syncNowLabel, shouldClearPendingCount,
   syncStartSentence, syncResultSentence, syncStuckSentence, syncSupersededSentence, SYNC_STUCK_TIMEOUT_MS,
+  targetButtonLabel,
 } from '../plugin/src/ui/panel-model.ts';
 
 describe('statusSentence — Block 1: the problem and the next action, six branches', () => {
@@ -80,6 +81,34 @@ describe('fileNote — Block 2: honest answer to "which file will my command hit
   it('multiple files, another is the target → says where commands go', () => {
     expect(fileNote(3, false)).toBe('2 other files — commands go elsewhere');
     expect(fileNote(2, false)).toBe('1 other file — commands go elsewhere');
+  });
+});
+
+// #35 P2 — `pinned` distinguishes "target because pinned" from "target because
+// most-recent"; omitted/false reproduces the pre-pin wording exactly (proven above).
+describe('fileNote — pinned distinction (#35 P2)', () => {
+  it('single file, pinned target → "pinned target" (never "command target")', () => {
+    expect(fileNote(1, true, true)).toBe('pinned target');
+  });
+  it('multiple files, pinned target → pinned + peer count', () => {
+    expect(fileNote(3, true, true)).toBe('pinned target · 2 other files');
+  });
+  it('not the target at all → the "elsewhere" wording, regardless of pinned (cannot happen today, but must never claim pinned falsely)', () => {
+    expect(fileNote(3, false, true)).toBe('2 other files — commands go elsewhere');
+  });
+  it('pinned omitted defaults to false — identical to the pre-#35 wording', () => {
+    expect(fileNote(2, true)).toBe(fileNote(2, true, false));
+    expect(fileNote(1, true)).toBe('command target');
+  });
+});
+
+describe('targetButtonLabel — the "Target this plugin" toggle (#35 P2)', () => {
+  it('unpinned → invites the click', () => {
+    expect(targetButtonLabel(false)).toBe('Target this plugin');
+  });
+  it('pinned → confirms state, doubles as the clear-it toggle', () => {
+    expect(targetButtonLabel(true)).toBe('Targeted ✓');
+    expect(targetButtonLabel(true)).not.toBe(targetButtonLabel(false));
   });
 });
 

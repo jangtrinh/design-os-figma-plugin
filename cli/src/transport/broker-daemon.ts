@@ -25,7 +25,7 @@ import {
 } from './protocol-helpers.ts';
 import { PluginRegistry, type PluginEntry } from './plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage } from './broker-status.ts';
-import { resolveRouteFilter, type RouteFilter } from './route-filter.ts';
+import { pinDisconnected, resolveRouteFilter, type RouteFilter } from './route-filter.ts';
 import {
   appendChangeFrames, changeLogPathFor, migrateLegacyUnboundChanges, migrateStagedChanges,
   unboundStagingPath, unboundStagingRoot,
@@ -483,6 +483,13 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const idleMs = readIdleMs();
   let syncInFlight = false;
 
+  // Target pin (#35 P2): the panel's "Target this plugin" button routes here — a
+  // deliberate human act, ranked above the env pin and recency but below a per-request
+  // `--instance`/`--file` (see route-filter.ts). RUNTIME-ONLY (never persisted, never
+  // survives a broker restart, like every other piece of `st`) and cleared the moment its
+  // instance disconnects (`handleClose`) — a pin must never keep pointing at a dead plugin.
+  let targetInstancePin: string | null = null;
+
   /** Send one unsolicited EventMsg to a single socket (best-effort). */
   const sendEvent = (ws: WebSocket, type: EventMsg['type'], data: Record<string, unknown>): void => {
     try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, data } satisfies EventMsg)); }
@@ -496,15 +503,22 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // busy command stream does not spam the socket.
   let lastPeersSig = '';
   const broadcastPeers = (): void => {
-    const target = st.registry.selectTarget(currentFilter());
+    // #35 P2: a LIVE pin outranks recency for `isActiveTarget` too — the panel's whole
+    // point is telling the owner "commands go here because you pinned it", not the
+    // ordinary recency story. A pin whose instance already vanished (about to be cleared
+    // by `handleClose`, or a stale read racing that clear) is never treated as live here.
+    const pinnedEntry = targetInstancePin !== null ? st.registry.getByInstanceId(targetInstancePin) : null;
+    const pinnedLive = pinnedEntry && pinnedEntry.ws.readyState === WebSocket.OPEN ? pinnedEntry : null;
+    const target = pinnedLive ?? st.registry.selectTarget(currentFilter());
     const entries = st.registry.liveEntries();
-    const sig = `${entries.length}|${target?.instanceId ?? ''}`;
+    const sig = `${entries.length}|${target?.instanceId ?? ''}|${pinnedLive?.instanceId ?? ''}`;
     if (sig === lastPeersSig) return; // nothing a panel would render differently
     lastPeersSig = sig;
     for (const entry of entries) {
       sendEvent(entry.ws, 'PEERS', {
         count: entries.length,
         isActiveTarget: target?.instanceId === entry.instanceId,
+        pinned: pinnedLive?.instanceId === entry.instanceId,
       });
     }
   };
@@ -800,7 +814,20 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     from: WebSocket, id: string, rawText: string, cmd?: string, expectedFile?: string,
     expectedInstance?: string, readOnly = false, projectDir?: string, activity?: string,
   ): void => {
-    const filter = resolveRouteFilter(expectedFile, currentFilter(), expectedInstance);
+    // #35 P2: the standing runtime pin is consulted BEFORE `resolveRouteFilter` — a
+    // per-request `--instance`/`--file` still bypasses it entirely (route-filter.ts's own
+    // precedence), but a no-flag command with a pin set must never silently fall through
+    // to the env pin or recency once its instance is gone (Law 1). Liveness is this
+    // daemon's own registry check — `pinDisconnected` (pure) only composes that fact with
+    // the override rule.
+    const pin = targetInstancePin;
+    const pinLive = pin !== null && st.registry.getByInstanceId(pin)?.ws.readyState === WebSocket.OPEN;
+    if (pin !== null && pinDisconnected(expectedFile, expectedInstance, pin, pinLive)) {
+      sendReplyErr(from, id, 'E_TARGET_DISCONNECTED',
+        `the pinned plugin (instance ${pin}) is no longer connected — re-target it with the panel's "Target this plugin" button, or clear the pin and retry`);
+      return;
+    }
+    const filter = resolveRouteFilter(expectedFile, currentFilter(), expectedInstance, pinLive ? pin : null);
     let targetWs = st.dispatchedTo.get(id);
     if (targetWs && targetWs.readyState !== WebSocket.OPEN) targetWs = undefined;
     if (!targetWs) {
@@ -1226,6 +1253,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (removedId !== null) {
       const remaining = st.registry.size();
       log(`plugin [${removedId}] disconnected (${remaining} still connected)`);
+      // #35 P2: a pin must never keep pointing at a plugin that just left — Law 1 applies
+      // symmetrically here (an admission refuses a dead pin outright; a disconnect clears
+      // it outright), so the NEXT no-flag command falls through to the env pin/recency
+      // instead of hitting E_TARGET_DISCONNECTED forever.
+      if (removedId === targetInstancePin) {
+        targetInstancePin = null;
+        log(`target pin cleared — pinned instance [${removedId}] disconnected`);
+      }
       // Only announce PLUGIN_GONE when the LAST plugin leaves — a CLI waiting on a
       // still-connected file must not be told the bridge is gone.
       if (remaining === 0) broadcastToClients(JSON.stringify({ type: 'PLUGIN_GONE', data: {} } satisfies EventMsg));
@@ -1414,6 +1449,33 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // Live-sync commit (spec 004 P4): the panel's "Sync now" click → run the
         // deterministic kernel apply and report the result back to this plugin.
         if (isPlugin) handleSyncRequest(ws);
+      } else if (msg.type === 'SET_TARGET') {
+        // #35 P2: the panel's "Target this plugin" button. `data.instanceId` is validated
+        // against THIS socket's own registered entry, never looked up independently — a
+        // panel can only ever pin ITSELF this way, so a sender that is a registered live
+        // plugin is by construction a live instance, with no separate liveness re-check
+        // needed. A mismatched/stale payload (a race, or a forged frame) is refused, never
+        // silently applied to the wrong instance.
+        if (isPlugin) {
+          const data = msg.data as { instanceId?: unknown };
+          const claimed = typeof data?.instanceId === 'string' ? data.instanceId : null;
+          const own = st.registry.getByWs(ws)?.instanceId ?? null;
+          if (claimed !== null && claimed === own) {
+            targetInstancePin = own;
+            log(`target pin set → [${own}]`);
+            broadcastPeers();
+          } else {
+            log(`SET_TARGET refused — claimed instance [${claimed ?? '?'}] does not match this socket's own [${own ?? '?'}]`);
+          }
+        }
+      } else if (msg.type === 'CLEAR_TARGET') {
+        // Explicit human un-pin — a no-op (no log, no broadcast) if nothing was pinned, so
+        // clicking "Targeted ✓" twice in a row from two different panels never spams the log.
+        if (isPlugin && targetInstancePin !== null) {
+          log(`target pin cleared (was [${targetInstancePin}])`);
+          targetInstancePin = null;
+          broadcastPeers();
+        }
       } else if (isPlugin) {
         broadcastToClients(text); // other plugin events fan out to CLI clients
       }
