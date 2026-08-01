@@ -290,19 +290,34 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
     }
     const live = this.liveEntries();
     const hits = f ? live.filter((e) => fileMatches(e.scene.fileName as string | undefined, f, opts?.exact === true)) : live;
+    // A named/filtered ask is a deliberate targeting decision — it always resolves by
+    // pure recency, reaching a suspected zombie if that's what the name (or instance,
+    // handled above) names. Only the UNFILTERED default selection deprioritizes a
+    // suspected zombie: it must never win the no-flag routing slot over a healthy
+    // plugin purely by having re-HELLO'd more recently. When every live candidate is
+    // suspected, the group collapses to one and recency alone decides — a fallback,
+    // never a refusal, since a suspected zombie is still a connected, usable plugin.
+    if (!f) {
+      const now = this.now();
+      return [...hits].sort((a, b) => {
+        const zombieRank = Number(suspectedZombie(a, now)) - Number(suspectedZombie(b, now));
+        return zombieRank !== 0 ? zombieRank : b.lastActiveAt - a.lastActiveAt;
+      });
+    }
     return [...hits].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
   }
 
   /**
-   * The routing target: the live plugin with the most-recent `lastSeenAt` — "the
-   * file the user touched last". An optional fileName filter (case-insensitive
-   * substring by default, or `opts.exact` for a whole-name match — see `matching`)
-   * restricts candidates, or `opts.kind: 'instance'` resolves `filter` as an exact
-   * instanceId instead; no candidate matches → null. Ties keep the most-recent
-   * (see `matching`'s sort).
+   * The routing target: the live plugin with the most-recent `lastActiveAt` — "the
+   * file the user touched last" — EXCEPT when no filter is given at all, where a
+   * suspected zombie (see `suspectedZombie`) is deprioritized behind any healthy
+   * plugin (see `matching`). An optional fileName filter (case-insensitive substring
+   * by default, or `opts.exact` for a whole-name match — see `matching`) restricts
+   * candidates by pure recency instead — a named/instance ask is explicit targeting
+   * and reaches a suspected zombie on purpose; no candidate matches → null.
    */
   selectTarget(filter?: string | null, opts?: { exact?: boolean; kind?: FilterKind }): PluginEntry<S> | null {
-    return this.matching(filter, opts)[0] ?? null;   // unchanged semantics for existing callers
+    return this.matching(filter, opts)[0] ?? null;
   }
 
   /** The per-file list for BROKER_HELLO / `figma-agent status`, most-recent first. */

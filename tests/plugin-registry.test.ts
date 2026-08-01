@@ -262,6 +262,62 @@ describe('matching/selectTarget(filter, {kind:"instance"}) — instanceId target
   });
 });
 
+describe('selectTarget — suspected-zombie deprioritization (no-filter recency path only)', () => {
+  /** Re-HELLOs the same instance on an unchanged scene enough times to trip the
+   *  throttled-flapper branch of `suspectedZombie` — each re-HELLO also bumps
+   *  `lastActiveAt`, so a flapping zombie can end up MORE recent than a healthy
+   *  plugin that has not touched anything in a while. Ticks stay well under
+   *  FROZEN_AFTER_MS so an untouched healthy fixture in the same test never
+   *  drifts into the OTHER (frozen) zombie branch purely from elapsed time. */
+  function flapToZombie(reg: ReturnType<typeof makeReg>['reg'], tick: (ms?: number) => number, instanceId: string, fileName: string) {
+    let ws = sock();
+    reg.register(ws, { instanceId, fileName });
+    for (let i = 0; i < 3; i++) {
+      tick(2_000); // within the streak-locality window, well outside a single tick
+      ws = sock();
+      reg.register(ws, { instanceId, fileName });
+    }
+    return ws;
+  }
+
+  it('a no-flag selectTarget prefers the HEALTHY plugin even though the zombie re-HELLO\'d more recently', () => {
+    const { reg, tick } = makeReg();
+    reg.register(sock(), { instanceId: 'h', fileName: 'Healthy' });
+    tick(5);
+    const healthy = reg.getByInstanceId('h')!;
+    const zombieWs = flapToZombie(reg, tick, 'z', 'Zombie');
+    const zombie = reg.getByWs(zombieWs)!;
+    expect(zombie.sameSceneStreak).toBe(3); // confirms it IS suspected
+    expect(zombie.lastActiveAt).toBeGreaterThan(healthy.lastActiveAt); // sanity: recency alone would pick the zombie
+    expect(reg.selectTarget()?.instanceId).toBe('h'); // healthy wins despite lower recency
+  });
+
+  it('explicit --instance and exact --file targeting still reach a suspected zombie', () => {
+    const { reg, tick } = makeReg();
+    reg.register(sock(), { instanceId: 'h', fileName: 'Healthy' });
+    tick(5);
+    flapToZombie(reg, tick, 'z', 'Zombie');
+    expect(reg.selectTarget('z', { kind: 'instance' })?.instanceId).toBe('z');
+    expect(reg.selectTarget('Zombie', { exact: true })?.instanceId).toBe('z');
+  });
+
+  it('all live entries suspected → most-recent among them, no refusal', () => {
+    const { reg, tick } = makeReg();
+    flapToZombie(reg, tick, 'z1', 'Z1');
+    tick(2_000);
+    flapToZombie(reg, tick, 'z2', 'Z2');
+    expect(reg.selectTarget()?.instanceId).toBe('z2'); // more-recently-flapped zombie, not a null refusal
+  });
+
+  it('with no suspected zombies, selectTarget stays pure recency (unchanged behavior)', () => {
+    const { reg, tick } = makeReg();
+    reg.register(sock(), { instanceId: 'a', fileName: 'A' });
+    tick(5);
+    reg.register(sock(), { instanceId: 'b', fileName: 'B' });
+    expect(reg.selectTarget()?.instanceId).toBe('b');
+  });
+});
+
 describe('park → flush decision (what the daemon keys off)', () => {
   it('filter set + only a NON-matching file → no target (park); matching file appears → target (flush)', () => {
     const { reg, tick } = makeReg();
