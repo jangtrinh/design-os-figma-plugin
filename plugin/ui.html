@@ -1412,7 +1412,7 @@ code {
       syncPrompt.hidden = true;
     }, 4e3);
   });
-  versionEl.textContent = `v0.1.0 \xB7 ${true ? "db3c452" : "dev"}`;
+  versionEl.textContent = `v0.1.0 \xB7 ${true ? "48035be" : "dev"}`;
   setInterval(render, 1e3);
   render();
 
@@ -3036,7 +3036,13 @@ code {
         }, "*");
       } else {
         parent.postMessage({
-          pluginMessage: { requestId: req.id, cmd: req.cmd, params: req.params, expectedFile: req.expectedFile }
+          pluginMessage: {
+            requestId: req.id,
+            cmd: req.cmd,
+            params: req.params,
+            expectedFile: req.expectedFile,
+            ...req.readOnly === true && { readOnly: true }
+          }
         }, "*");
       }
     } catch (err) {
