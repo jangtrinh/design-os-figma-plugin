@@ -7,12 +7,13 @@
 //
 // Isolation (team-lead ruling, option B — dependency injection, NOT core extraction):
 // `runBrokerDaemon`'s optional `options` param — an OS-assigned ephemeral port
-// (`ports: [0]`), a tmpdir advertisement path, and an `exit` stub that THROWS instead of
-// killing the vitest worker — so this file NEVER touches this machine's real
-// /tmp/figma-agent-broker.json, the real 9410-9419 port range, or a real live broker. Also
-// redirects the change-log dir (`FIGMA_AGENT_CHANGES_DIR`, existing test convention — see
-// change-log.ts's own header) and the bind-cache file (`FIGMA_AGENT_BINDS_FILE`, existing
-// override — see project-bind.ts) to the same scratch tmpdir.
+// (`ports: [0]`), a tmpdir advertisement path, a scratch `logFile`, and an `exit` stub
+// that THROWS instead of killing the vitest worker — so this file NEVER touches this
+// machine's real /tmp/figma-agent-broker.json, the real 9410-9419 port range, the real
+// /tmp/figma-agent-broker.log, or a real live broker. Also redirects the change-log dir
+// (`FIGMA_AGENT_CHANGES_DIR`, existing test convention — see change-log.ts's own header)
+// and the bind-cache file (`FIGMA_AGENT_BINDS_FILE`, existing override — see
+// project-bind.ts) to the same scratch tmpdir.
 //
 // `WATCHDOG_TIMEOUT_MS`/`HEARTBEAT_MS`/etc. are `envMs(...)`-derived MODULE-LOAD-TIME
 // constants in broker-daemon.ts (not read per-call) — a `beforeEach` env assignment is too
@@ -31,12 +32,14 @@ import type { ContentionStore } from '../cli/src/transport/contention-log.ts';
 type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts');
 
 const WATCHDOG_MS_KEY = 'FIGMA_AGENT_WATCHDOG_MS';
+const PLUGIN_WAIT_MS_KEY = 'FIGMA_AGENT_PLUGIN_WAIT_MS';
 const CHANGES_DIR_KEY = 'FIGMA_AGENT_CHANGES_DIR';
 const BINDS_FILE_KEY = 'FIGMA_AGENT_BINDS_FILE';
 const UNBOUND_DIR_KEY = 'FIGMA_AGENT_UNBOUND_DIR';
 
 let scratchDir: string;
 let advertisePath: string;
+let scratchLogFile: string;
 let sockets: WebSocket[];
 
 /** Load `broker-daemon.ts` fresh, AFTER the given env vars are set — required for the
@@ -65,7 +68,9 @@ function testExit(): (code: number) => never {
 
 async function startTestBroker(env: Record<string, string> = {}): Promise<number> {
   const mod = await loadBrokerDaemon(env);
-  await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
+  // `logFile` keeps this in-process broker's own log traffic in the scratch dir —
+  // the default `/tmp/figma-agent-broker.log` is shared with a live dev session.
+  await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit(), logFile: scratchLogFile });
   const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number };
   return ad.port;
 }
@@ -215,6 +220,7 @@ async function bindProject(
 beforeEach(() => {
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-broker-harness-'));
   advertisePath = join(scratchDir, 'broker.json');
+  scratchLogFile = join(scratchDir, 'broker.log');
   sockets = [];
 });
 
@@ -777,14 +783,16 @@ describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, neve
   });
 });
 
-// `--instance <id>` admission. NOT run by the executor: this harness
-// spawns a real in-process broker via `runBrokerDaemon`, and per the assigned constraint on
-// this machine a live plugin session is connected and this harness pollutes its broker
-// discovery (issue #32) — written here (the one file that exercises the real `admitRequest`
-// closure) and left for the orchestrator to run post-smoke.
+// `--instance <id>` admission — exercises the real `admitRequest` closure via a real
+// in-process broker started with its own scratch advertisement path, ephemeral port,
+// and log file, so it never touches a live plugin session's broker discovery.
 describe('daemon harness — admitRequest with an `--instance` (expectedInstance) filter', () => {
   it('an instanceId matching NO connected plugin → E_NO_PLUGIN names the instanceId, never "open the file panel"', async () => {
-    const port = await startTestBroker();
+    // A non-matching --instance parks (same as any unmatched filter) until the plugin-wait
+    // window elapses, then answers E_NO_PLUGIN — shrink the window so this test observes
+    // that real deadline instead of the 12s production default (same envMs override
+    // pattern the watchdog tests already use).
+    const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '200' });
     const plugin = await connectSocket(port);
     await helloPlugin(plugin, 'inst-live', 'FileLive');
 
@@ -822,12 +830,9 @@ describe('daemon harness — admitRequest with an `--instance` (expectedInstance
 });
 
 // `job --force-release` guard (a HEALTHY still-running job is refused unless `--force`
-// overrides it; a watchdog-wedged job keeps unwedging with a bare `--force-release`). NOT
-// run by the executor: this harness spawns a real in-process broker via `runBrokerDaemon`,
-// and per the assigned constraint on this machine a live plugin session is connected and
-// this harness pollutes its broker discovery (issue #32) — written here (the one file that
-// exercises the real `handleJobCommand`/`advanceQueue` closures) and left for the
-// orchestrator to run post-smoke.
+// overrides it; a watchdog-wedged job keeps unwedging with a bare `--force-release`) —
+// exercises the real `handleJobCommand`/`advanceQueue` closures via a real in-process
+// broker, isolated from a live plugin session's broker discovery the same way as above.
 describe('daemon harness — force-release refuses a HEALTHY running job, allows `--force`, never regresses the wedged-unwedge path', () => {
   it('a bare `--force-release` on a job still `running` inside the watchdog window is REFUSED — the slot stays held, nothing advances', async () => {
     const port = await startTestBroker();
@@ -955,6 +960,11 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
 
     const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-bound-contention-'));
     try {
+      // `resolveProjectDir`'s own `isUsable()` treats a project without a `design/` dir
+      // as "stopped looking like a project" (never a fallback guess) — pre-create it the
+      // way a genuine bind target always already has one (same idiom as the other bound
+      // fixtures in this file).
+      mkdirSync(join(boundProjectDir, 'design'), { recursive: true });
       const cliBind = await connectSocket(port);
       await bindProject(cliBind, 'Bound Contention File', boundProjectDir, 'req-cont-bind');
 
