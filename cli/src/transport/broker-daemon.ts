@@ -23,7 +23,7 @@ import {
   ChunkAssembler, deleteConnectionChunk, envMs, getConnectionChunks, isChunkMsg, isEventMsg, isReplyMsg, isRequestMsg,
   parseWireMsg, rawToString, sendWireMsg, sweepAbandonedChunks, type ChunkBuffers,
 } from './protocol-helpers.ts';
-import { PluginRegistry, type PluginEntry } from './plugin-registry.ts';
+import { PluginRegistry, suspectedZombie, type PluginEntry } from './plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage } from './broker-status.ts';
 import { pinDisconnected, resolveRouteFilter, type RouteFilter } from './route-filter.ts';
 import {
@@ -1289,7 +1289,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (!msg) return;
     // Hidden control frame from a newer CLI build replacing this broker.
     if ((msg as { type?: string }).type === 'BROKER_SHUTDOWN_REQUEST') shutdown(0, 'BROKER_SHUTDOWN_REQUEST');
-    const isPlugin = st.registry.touch(ws); // any plugin frame = LIVENESS (heartbeat cull)
+    // Any parsed frame here only exists because real JS constructed and sent it —
+    // this is the APP-liveness sensor (zombie-watchdog observability), distinct from
+    // the transport-only `touch` the raw WS 'pong' handler below uses.
+    const isPlugin = st.registry.touchApp(ws);
     if (isChunkMsg(msg)) {
       // Reply-side chunks (plugin → broker) pass straight to routeFromPlugin, which now
       // accumulates every frame onto the job record itself (concurrency & jobs, backlog
@@ -1530,8 +1533,15 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   wss.on('connection', onConnection);
   wss6?.on('connection', onConnection);
 
+  // Zombie-watchdog observability — last known `suspectedZombie` state per
+  // instanceId, scoped to this daemon run (a closure local, same lifetime as
+  // `senderMismatchCount` above) so a log line fires only on a FLIP, never once per
+  // tick. Deliberately observation-only: no socket here is ever terminated for this.
+  const zombieFlagged = new Map<string, boolean>();
+
   // Heartbeat: WS-ping on the heartbeat cadence; drop sockets that missed the
   // previous pong (broker→client liveness; browsers auto-pong at the WS layer).
+  // Piggybacks the zombie-watchdog flip check onto this SAME tick — no new interval.
   setInterval(() => {
     const allClients = [...wss!.clients, ...(wss6 ? wss6.clients : [])];
     for (const ws of allClients) {
@@ -1540,6 +1550,23 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       tracked.isAlive = false;
       tracked.ping();
     }
+    const now = Date.now();
+    const liveIds = new Set<string>();
+    for (const e of st.registry.liveEntries()) {
+      liveIds.add(e.instanceId);
+      const flagged = suspectedZombie(e, now);
+      if (flagged !== (zombieFlagged.get(e.instanceId) ?? false)) {
+        const fileName = (e.scene.fileName as string | undefined) ?? '(unnamed)';
+        log(flagged
+          ? `suspected zombie [${e.instanceId}] "${fileName}" — app-silence ${now - e.lastAppFrameAt}ms, same-scene streak ${e.sameSceneStreak}`
+          : `zombie flag cleared [${e.instanceId}] "${fileName}"`);
+      }
+      zombieFlagged.set(e.instanceId, flagged);
+    }
+    // Drop bookkeeping for instances no longer connected (disconnect, or an
+    // already-superseded entry) — this map must never grow across a long-lived
+    // daemon run.
+    for (const id of zombieFlagged.keys()) if (!liveIds.has(id)) zombieFlagged.delete(id);
   }, HEARTBEAT_MS);
 
   // Sweep parked requests: fail any that outlived their plugin-wait window, and

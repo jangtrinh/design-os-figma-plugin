@@ -265,6 +265,36 @@ export interface PluginStatusEntry {
    * FileContext.fileKey.
    */
   fileKey?: string | null;
+  /**
+   * Zombie-watchdog observability — the raw APP-liveness sensor: ms since the last
+   * JS-originated frame (HELLO/FILE_INFO/command reply/chunk) from this instance.
+   * ALWAYS present, even at 0, so an agent can judge staleness for itself rather than
+   * trusting only the derived `suspectedZombie` flag. Deliberately distinct from
+   * `lastHeartbeatAge`: that ages on ANY frame including a transport-only WS pong,
+   * which a frozen (but not yet closed) iframe keeps answering from the browser's
+   * network process even after its JS stopped running.
+   */
+  appSilenceMs: number;
+  /**
+   * Total same-instance re-registers this broker run — a diagnostic counter, not a
+   * verdict by itself (a healthy reconnect after a real network blip also bumps it).
+   * Present only once > 0, same "discarded/stuck thing gets a machine-readable counter,
+   * but the common zero case stays byte-identical" contract as senderMismatchCount.
+   */
+  reHelloCount?: number;
+  /**
+   * True when either liveness sensor tripped: app-frame silence past the frozen
+   * threshold, or a same-scene reconnect streak past the flapper threshold. Present
+   * only when flagged — the common healthy case keeps this payload byte-identical to
+   * before the field existed.
+   */
+  suspectedZombie?: true;
+  /**
+   * Human-readable cause paired with `suspectedZombie` — the field an agent reads to
+   * decide what to do, not just that something is wrong. Present only alongside
+   * `suspectedZombie`.
+   */
+  zombieReason?: string;
 }
 
 // Chunked transport for payloads > CHUNK_LIMIT (both directions).

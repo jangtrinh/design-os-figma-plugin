@@ -3,7 +3,9 @@
 // the FIGMA_AGENT_FILE substring filter, the park→flush decision, and the status
 // list shape. Fake sockets are just `{ readyState }`; a mutable clock drives recency.
 import { describe, it, expect } from 'vitest';
-import { PluginRegistry, WS_OPEN, extractScene, type RegistrySocket } from '../cli/src/transport/plugin-registry.ts';
+import {
+  FROZEN_AFTER_MS, PluginRegistry, WS_OPEN, extractScene, suspectedZombie, type RegistrySocket,
+} from '../cli/src/transport/plugin-registry.ts';
 
 const CLOSED = 3; // WebSocket.CLOSED
 const sock = (open = true): RegistrySocket => ({ readyState: open ? WS_OPEN : CLOSED });
@@ -284,6 +286,7 @@ describe('statusList — the per-file rows, most-recent first', () => {
       lastHeartbeatAge: 0, // b was just registered at `now`
       connectedAt: bConnectedAt,
       fileKey: null, // absent from the HELLO payload here — registry-integrity phase 01 §2
+      appSilenceMs: 0, // b's HELLO IS an app frame — zombie-watchdog sensor, always present
     });
     expect(list[1]).toMatchObject({ instanceId: 'a', fileName: 'A', page: 'P1', connectedAt: aConnectedAt });
     expect(list[1].lastHeartbeatAge).toBe(20); // a last seen 20ms ago
@@ -342,6 +345,133 @@ describe('getByInstanceId — pinned-target resolution (concurrency & jobs)', ()
     reg.register(ws, { instanceId: 'p1', fileName: 'A' });
     reg.removeByWs(ws);
     expect(reg.getByInstanceId('p1')).toBeNull();
+  });
+});
+
+describe('zombie-watchdog — transport vs app liveness split', () => {
+  it('THE load-bearing test: a transport pong (touch) does NOT clear the frozen flag; only touchApp does', () => {
+    const { reg, tick, at } = makeReg();
+    const ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F' });
+    tick(FROZEN_AFTER_MS + 1_000); // JS has gone silent long past the frozen threshold
+    expect(suspectedZombie(reg.getByWs(ws)!, at())).toBe(true);
+
+    reg.touch(ws); // a raw WS pong — Chromium auto-answers this even while frozen
+    expect(suspectedZombie(reg.getByWs(ws)!, at())).toBe(true); // still flagged — pong proves nothing
+
+    reg.touchApp(ws); // a real JS-originated frame
+    expect(suspectedZombie(reg.getByWs(ws)!, at())).toBe(false); // NOW it clears
+  });
+
+  it('suspectedZombie — FROZEN_AFTER_MS boundary: exactly at threshold not flagged, one ms over is', () => {
+    const { reg, tick, at } = makeReg();
+    const ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F' });
+    tick(FROZEN_AFTER_MS);
+    expect(suspectedZombie(reg.getByWs(ws)!, at())).toBe(false); // == threshold, not over it
+    tick(1);
+    expect(suspectedZombie(reg.getByWs(ws)!, at())).toBe(true);
+  });
+});
+
+describe('zombie-watchdog — same-scene reconnect (throttled flapper) streak', () => {
+  it('3 same-scene reconnects within the window flag; a scene-changing updateScene resets it', () => {
+    const { reg, tick } = makeReg();
+    let ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F', page: 'P1' });
+    tick(1_000);
+    ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F', page: 'P1' }); // reconnect 1 — same scene
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(1);
+    tick(1_000);
+    ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F', page: 'P1' }); // reconnect 2 — same scene, within window
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(2);
+    expect(reg.statusList()[0].suspectedZombie).toBeUndefined(); // not yet at the threshold
+    tick(1_000);
+    ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F', page: 'P1' }); // reconnect 3 — flags
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(3);
+    expect(reg.statusList()[0].suspectedZombie).toBe(true);
+
+    reg.updateScene(ws, { page: 'P2' }); // scene actually CHANGED — proves this wasn't flapping
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(0);
+    expect(reg.statusList()[0].suspectedZombie).toBeUndefined();
+  });
+
+  it('touchActive (real interaction) resets the streak the same way', () => {
+    const { reg, tick } = makeReg();
+    let ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F' });
+    for (let i = 0; i < 2; i++) {
+      tick(1_000);
+      ws = sock();
+      reg.register(ws, { instanceId: 'a', fileName: 'F' });
+    }
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(2);
+    reg.touchActive(ws);
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(0);
+  });
+
+  it('re-sending the identical scene on updateScene does NOT reset the streak (no change = no proof)', () => {
+    const { reg, tick } = makeReg();
+    let ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F', page: 'P1' });
+    for (let i = 0; i < 2; i++) {
+      tick(1_000);
+      ws = sock();
+      reg.register(ws, { instanceId: 'a', fileName: 'F', page: 'P1' });
+    }
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(2);
+    reg.updateScene(ws, { page: 'P1' }); // identical — nothing actually changed
+    expect(reg.getByWs(ws)!.sameSceneStreak).toBe(2); // unchanged
+  });
+
+  it('daily-cadence re-HELLOs (>10 min apart) never accumulate toward the threshold', () => {
+    const { reg, tick } = makeReg();
+    let ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F' });
+    for (let i = 0; i < 4; i++) {
+      tick(11 * 60_000); // 11 minutes — always outside the 10-minute streak-locality window
+      ws = sock();
+      reg.register(ws, { instanceId: 'a', fileName: 'F' });
+      expect(reg.getByWs(ws)!.sameSceneStreak).toBe(1); // never grows past 1
+    }
+  });
+});
+
+describe('statusList — zombie-watchdog present-only serialization', () => {
+  it('appSilenceMs always present; suspectedZombie/zombieReason/reHelloCount omitted in the healthy zero case', () => {
+    const { reg } = makeReg();
+    reg.register(sock(), { instanceId: 'a', fileName: 'F' });
+    const [row] = reg.statusList();
+    expect('appSilenceMs' in row).toBe(true);
+    expect(row.appSilenceMs).toBe(0);
+    expect('suspectedZombie' in row).toBe(false);
+    expect('zombieReason' in row).toBe(false);
+    expect('reHelloCount' in row).toBe(false);
+  });
+
+  it('reHelloCount appears once > 0, even before any flag trips', () => {
+    const { reg, tick } = makeReg();
+    let ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F' });
+    tick(5);
+    ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F' }); // one reconnect — not yet a flapper
+    const row = reg.statusList().find((p) => p.instanceId === 'a')!;
+    expect(row.reHelloCount).toBe(1);
+    expect('suspectedZombie' in row).toBe(false);
+  });
+
+  it('suspectedZombie + zombieReason appear together, with the reason naming the cause', () => {
+    const { reg, tick } = makeReg();
+    const ws = sock();
+    reg.register(ws, { instanceId: 'a', fileName: 'F' });
+    tick(FROZEN_AFTER_MS + 1_000);
+    const row = reg.statusList()[0];
+    expect(row.suspectedZombie).toBe(true);
+    expect(row.zombieReason).toMatch(/no app heartbeat for \d+s/);
   });
 });
 
