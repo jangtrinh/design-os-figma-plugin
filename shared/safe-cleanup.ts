@@ -1,9 +1,16 @@
-// Shared helper closing the "a throwing cleanup() masks the original error" class
-// (issue #24). That bug was found and fixed independently four times — PR #12
-// (broker-discovery.ts's `writeFileAtomic`), PR #13 stage-4 (`addSlotProperty`'s
-// rollback, exec-stdlib-slot-property.ts), and PR #23 stage-4
-// (`componentSet`'s cleanup, exec-stdlib-component-set.ts) are the confirmed
-// sites — each correct on its own, each a local copy of the same pattern.
+// Shared helper closing the "a throwing cleanup() masks the original error" class.
+// That bug was written independently several times, each a local copy of the same
+// pattern. The two sites where cleanup FULLY REPLACED the original error route
+// through this helper: `writeFileAtomic` (broker-discovery.ts) and `componentSet`'s
+// cleanup (exec-stdlib-component-set.ts).
+//
+// `addSlotProperty`'s rollback (exec-stdlib-slot-property.ts) is deliberately NOT
+// routed here and is NOT a member of this class: on a cleanup failure it throws a
+// NEW error that PRESERVES the original `code` (via `withCode`) and combines the
+// original message with the cleanup detail — an intentional "fallback honesty" that
+// surfaces the leftover-key detail in `.message`. Routing it through `safeCleanup`
+// would move that detail out of `.message` into `.cleanupError`, a behavior change,
+// so it keeps its own combine form.
 //
 // Contract: run `cleanupFn` in its own try. If it throws, attach the cleanup
 // failure to `originalError` as `.cleanupError` — WITHOUT substituting — then
