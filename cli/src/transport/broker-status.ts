@@ -97,14 +97,22 @@ export function buildBrokerHelloData(
 }
 
 /**
- * The E_NO_PLUGIN message. With a routing filter set (`--file` or FIGMA_AGENT_FILE) AND
- * other files connected, name the KNOB THE CALLER ACTUALLY USED and list the connected
- * files (so the user sees why routing refused); otherwise the plain "no plugin connected"
- * nudge. Naming FIGMA_AGENT_FILE for a `--file` miss would be wrong advice — the caller
- * never set that env var.
+ * The E_NO_PLUGIN message. With a routing filter set (`--instance`, `--file`, or
+ * FIGMA_AGENT_FILE) AND other files connected, name the KNOB THE CALLER ACTUALLY USED and
+ * list the connected files (so the user sees why routing refused); otherwise the plain "no
+ * plugin connected" nudge. Naming FIGMA_AGENT_FILE for a `--file` miss would be wrong advice
+ * — the caller never set that env var.
+ *
+ * `kind:'instance'` gets its OWN message shape rather than the connected-files list: an
+ * instanceId that matches nothing means that specific instance disconnected — "connected
+ * files: [...]" would invite the wrong fix (a name is not the missing key here, the
+ * instanceId is), so the message points at `status` for the current live instanceIds instead.
  */
 export function noPluginMessage(registry: PluginRegistry<RegistrySocket>, filter?: RouteFilter | null): string {
   const f = filter?.value?.trim();
+  if (filter?.kind === 'instance' && f) {
+    return `--instance "${f}" matches no connected plugin — it may have disconnected; run \`status\` for live instanceIds.`;
+  }
   const live = registry.statusList();
   if (f && live.length > 0) {
     const names = live.map((p) => p.fileName ?? '(unnamed)').join(', ');

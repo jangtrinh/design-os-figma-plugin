@@ -98,6 +98,14 @@ export interface RequestMsg {
    */
   expectedFile?: string;
   /**
+   * The exact plugin instance this command is FOR (`--instance <id>`), spec 260801-1050. Envelope-
+   * level, exactly like `expectedFile`, so the broker routes on it without parsing `params`.
+   * Mutually exclusive with `expectedFile` at the CLI boundary (refused before a request is ever
+   * built) — the broker only ever sees one of the two set. Omitted entirely when unset, same
+   * byte-identical-frame contract as `expectedFile`.
+   */
+  expectedInstance?: string;
+  /**
    * Absolute project root of the CALLER (its cwd, or --dir). The broker records
    * fileIdentity → projectDir from this, so panel/idle sync can apply into the right project
    * instead of the daemon's spawn cwd. Omitted only by a pre-binding CLI.
@@ -350,10 +358,12 @@ export function makeRequestFrame(
   expectedFile?: string,
   projectDir?: string,
   readOnly?: boolean,
+  expectedInstance?: string,
 ): RequestMsg {
   const frame: RequestMsg = { id, cmd, params, v: PROTOCOL_VERSION };
   if (typeof activity === 'string' && activity.trim() !== '') frame.activity = activity;
   if (typeof expectedFile === 'string' && expectedFile.trim() !== '') frame.expectedFile = expectedFile;
+  if (typeof expectedInstance === 'string' && expectedInstance.trim() !== '') frame.expectedInstance = expectedInstance;
   if (typeof projectDir === 'string' && projectDir.trim() !== '') frame.projectDir = projectDir;
   // Concurrency & jobs — omitted (never `readOnly: false`) when unset, exactly like the
   // other optional envelope fields above: an unguarded frame must serialize

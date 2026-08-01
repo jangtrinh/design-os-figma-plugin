@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { runBrokerDaemon } from './transport/broker-daemon.ts';
 import { parseArgs, type CommandArgs } from './arg-parse.ts';
 import { CliError } from './transport/protocol-helpers.ts';
-import { getLastFileContext, setExpectedFile, setProjectDir, setReadOnly } from './transport/broker-client.ts';
+import { getLastFileContext, setExpectedFile, setExpectedInstance, setProjectDir, setReadOnly } from './transport/broker-client.ts';
 import { printErrorJson, printJson, withFileContext } from './util/json-out.ts';
 import * as batch from './commands/batch.ts';
 import * as changes from './commands/changes.ts';
@@ -120,6 +120,12 @@ Commands:
 Global: --file "<exact file name>"   route to that file's plugin AND refuse to run anywhere else
                                      (exact, case-insensitive; beats FIGMA_AGENT_FILE; payloads
                                       >512KB route by the env pin but are still guarded)
+        --instance <instanceId>     route to that EXACT plugin instance (from \`status\`'s
+                                     instanceId column) — beats --file and FIGMA_AGENT_FILE; the
+                                     one way to target a specific instance when --file's name is
+                                     ambiguous (e.g. two unsaved files both named "Untitled").
+                                     Mutually exclusive with --file: passing both refuses with
+                                     E_INVALID_ARGS naming both, it never silently picks one.
         --dir <projectDir>          this invocation's project root (default: cwd); stamped on
                                      every request so panel/idle sync can apply into the right
                                      project once bound (\`figma-agent bind\`) — never a guess
@@ -152,7 +158,24 @@ async function main(): Promise<void> {
   if (args.bool('file') && (args.str('file') ?? '').trim() === '') {
     printErrorJson(new CliError('E_INVALID_ARGS', '--file needs a file name, e.g. --file "VSF - PCP"'));
   }
+  // Same empty-value guard as --file, for the same reason: a typo'd --instance with no value
+  // must never fall through to "unrestricted routing".
+  if (args.bool('instance') && (args.str('instance') ?? '').trim() === '') {
+    printErrorJson(new CliError('E_INVALID_ARGS', '--instance needs an instanceId, e.g. --instance p_3_1712345678'));
+  }
+  const fileFlag = (args.str('file') ?? '').trim();
+  const instanceFlag = (args.str('instance') ?? '').trim();
+  // Mutual exclusion at the CLI boundary (spec 260801-1050): both set is refused outright,
+  // never silently resolved to one — resolveRouteFilter's own instance-beats-file precedence
+  // exists for env/recency fallback, not for a caller contradicting itself in one request.
+  if (fileFlag !== '' && instanceFlag !== '') {
+    printErrorJson(new CliError(
+      'E_INVALID_ARGS',
+      `--instance "${instanceFlag}" and --file "${fileFlag}" are mutually exclusive on one request — drop one`,
+    ));
+  }
   setExpectedFile(args.str('file'));   // global flag — verified: no command reads --file today
+  setExpectedInstance(args.str('instance')); // global flag, same choke point as --file
   setProjectDir(resolve(args.str('dir') ?? process.cwd())); // registry-integrity phase 01 §1
   setReadOnly(args.bool('read-only')); // concurrency & jobs (backlog 1.1+2.6+4.3) — TRUSTED, not enforced
   try {

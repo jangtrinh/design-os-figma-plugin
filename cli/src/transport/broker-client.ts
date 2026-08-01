@@ -42,12 +42,21 @@ function sleep(ms: number): Promise<void> {
 let requestCounter = 0;
 
 let expectedFile: string | undefined;
+let expectedInstance: string | undefined;
 let lastFileContext: FileContext | undefined;
 let projectDir: string | undefined;
 let readOnlyGlobal = false;
 
 /** Set once per CLI invocation from the global --file flag; stamped on every request envelope. */
 export function setExpectedFile(name: string | undefined): void { expectedFile = name; }
+
+/**
+ * Set once per CLI invocation from the global `--instance` flag (spec 260801-1050); stamped on
+ * every request envelope the SAME choke point `setExpectedFile` uses. Mutual exclusion with
+ * `--file` is enforced at the CLI boundary before either setter runs, so the two are never both
+ * non-empty here.
+ */
+export function setExpectedInstance(id: string | undefined): void { expectedInstance = id; }
 export function getLastFileContext(): FileContext | undefined { return lastFileContext; }
 
 /**
@@ -178,7 +187,7 @@ export function exchange(
     ws.on('error', (err) => finish(() => reject(new CliError('E_NO_BROKER', `broker socket error: ${err.message}`))));
 
     try {
-      sendWireMsg(ws, makeRequestFrame(id, cmd, params, activity, expectedFile, projectDir, readOnly));
+      sendWireMsg(ws, makeRequestFrame(id, cmd, params, activity, expectedFile, projectDir, readOnly, expectedInstance));
     } catch (err) {
       finish(() => reject(new CliError('E_NO_BROKER', `failed to send request: ${(err as Error).message}`)));
     }

@@ -130,8 +130,9 @@ describe('buildBrokerHelloData — legacyMigrationDeferred (issue #7 fix round, 
 });
 
 describe('noPluginMessage', () => {
-  const envFilter = (value: string): RouteFilter => ({ value, exact: false, source: 'env' });
-  const flagFilter = (value: string): RouteFilter => ({ value, exact: true, source: 'flag' });
+  const envFilter = (value: string): RouteFilter => ({ value, exact: false, source: 'env', kind: 'name' });
+  const flagFilter = (value: string): RouteFilter => ({ value, exact: true, source: 'flag', kind: 'name' });
+  const instanceFilter = (value: string): RouteFilter => ({ value, exact: true, source: 'flag', kind: 'instance' });
 
   it('no filter → the plain nudge', () => {
     const { reg } = seed();
@@ -164,5 +165,13 @@ describe('noPluginMessage', () => {
   it('filter but nothing connected → falls back to the plain nudge', () => {
     const { reg } = seed();
     expect(noPluginMessage(reg, envFilter('vsf'))).toBe('no Figma plugin connected — open the figma-agent plugin in Figma');
+  });
+
+  it('--instance filter matching nothing → names the instanceId, points at `status`, never lists files', () => {
+    const { reg } = seed();
+    reg.register(sock(), { instanceId: 'a', fileName: 'Design system' });
+    const msg = noPluginMessage(reg, instanceFilter('p_9_999'));
+    expect(msg).toBe('--instance "p_9_999" matches no connected plugin — it may have disconnected; run `status` for live instanceIds.');
+    expect(msg).not.toContain('Design system');
   });
 });
