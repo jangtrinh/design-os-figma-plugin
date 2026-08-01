@@ -7,11 +7,19 @@ single connected session instead of four scattered PR bodies.
 
 ## Setup (once)
 
-1. In Figma Desktop → Plugins → Development → **re-import** the manifest from
-   `/Users/jang/Products/design-os-figma-plugin/plugin/manifest.json` (the plugin moved out of
-   the monorepo; the old dev entry points at the deleted path).
+Figma **hotloads** `code.js`/`ui.html` from disk — a normal rebuild propagates to the running
+plugin with no re-import. BUT `manifest.json` is read **only at plugin load**, and the
+absorption phases changed it (`editorType` widened to `["figma","figjam","slides"]`). So this
+one time you must re-register so Figma picks up the widened manifest AND its new path (the
+plugin moved out of the monorepo; the old dev entry points at the deleted location):
+
+1. Figma Desktop → Plugins → Development → **re-import** the manifest from
+   `/Users/jang/Products/design-os-figma-plugin/plugin/manifest.json`. (Only needed because the
+   manifest itself changed — code-only changes after this hotload as usual.)
 2. Confirm the panel opens and reads **"design:os by JANG"**, status shows **Connected**.
-3. `figma-agent status` from a terminal → `plugin.editorType: "figma"`, no errors.
+3. `figma-agent status` from a terminal → `plugin.editorType: "figma"`, no errors. If it still
+   reports the old manifest (no figjam/slides), Figma didn't pick up the re-import — remove the
+   dev plugin entry and add it again.
 
 ## A. Design file (regression — MUST be unchanged)
 
