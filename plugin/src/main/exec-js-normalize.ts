@@ -1,5 +1,5 @@
-// Pure EXEC_JS script normalization — split out of executor-exec-js.ts to stay under the
-// repo's 200-line module cap. No `figma` global access:
+// Pure EXEC_JS script normalization — split out of executor-exec-js.ts so the pure,
+// sandbox-free logic reads on its own. No `figma` global access:
 // expression-vs-statement compilation, node-ish result summarization, and the empty/null/
 // undefined result classification are all pure functions of their input, so a plain import
 // works without a Figma sandbox (the exec-js-normalize.test.ts suite relies on exactly this).

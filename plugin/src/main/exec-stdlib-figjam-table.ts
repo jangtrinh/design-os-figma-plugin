@@ -1,6 +1,6 @@
 // `ui.figjam.table` / `ui.figjam.codeBlock` — split out of exec-stdlib-figjam-content.ts
-// to stay under the 200-line cap (absorption phase-03). Adapted from the fork's
-// handlers (MIT; see THIRD-PARTY.md), code.js:6275-6317.
+// so table/code-block handling reads as its own surface (absorption phase-03). Adapted
+// from the fork's handlers (MIT; see THIRD-PARTY.md), code.js:6275-6317.
 import { requireEditor } from './exec-stdlib-editor';
 import { withCode } from './executor-styles';
 import { MAX_TABLE_ROWS, MAX_TABLE_COLUMNS, MAX_CODE_BLOCK_CHARS } from './exec-stdlib-figjam-types';

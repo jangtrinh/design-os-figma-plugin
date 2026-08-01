@@ -7,7 +7,7 @@
 // because a second copy of ref-resolution was the mistake to avoid): variable-name resolution
 // goes through resolveVariable, field binding through bindVariableToField, node serialization
 // through serializeNode/jsonSafe. setProps/swapInstance (INSTANCE-shaped) live in
-// exec-stdlib-instance.ts — this file crossed the repo's 200-line cap with them inline.
+// exec-stdlib-instance.ts — split out by shape so INSTANCE-specific logic isn't inlined here.
 import { resolveVariable, bindVariableToField } from './executor-variables';
 import {
   serializeNode, jsonSafe, SERIALIZED_NODE_FIELDS, type SerializedNode,
@@ -16,9 +16,9 @@ import { withCode } from './executor-styles';
 import { readBindings } from './scan-node-utils';
 import { resolvePropKey, setProps, swapInstance } from './exec-stdlib-instance';
 // Absorption phase-01 (Basket B): variable/mode CRUD and variant-matrix component-set
-// helpers, each its own split file for the same 200-line-cap reason as
+// helpers, each its own split file for the same split-by-shape reason as
 // exec-stdlib-instance.ts — `vars` and `componentSet` are namespaced sub-objects, not
-// inlined here, so this file's own cap never has to make room for them.
+// inlined here, so this file stays focused on its own surface.
 import { createExecStdlibVars, type ExecStdlibVars } from './exec-stdlib-variables';
 import { createExecStdlibComponentSet, type ComponentSetOpts, type ComponentSetResult } from './exec-stdlib-component-set';
 // Absorption phase-02: Slots + annotations, same namespaced-sub-object pattern.
