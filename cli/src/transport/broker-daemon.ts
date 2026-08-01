@@ -728,27 +728,31 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
    */
   const admitRequest = (
     from: WebSocket, id: string, rawText: string, cmd?: string, expectedFile?: string,
-    readOnly = false, projectDir?: string, activity?: string,
+    expectedInstance?: string, readOnly = false, projectDir?: string, activity?: string,
   ): void => {
-    const filter = resolveRouteFilter(expectedFile, currentFilter());
+    const filter = resolveRouteFilter(expectedFile, currentFilter(), expectedInstance);
     let targetWs = st.dispatchedTo.get(id);
     if (targetWs && targetWs.readyState !== WebSocket.OPEN) targetWs = undefined;
     if (!targetWs) {
-      const hits = st.registry.matching(filter.value, { exact: filter.exact });
+      const hits = st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind });
       // An explicit --file that matches two open files is AMBIGUOUS: same-named files are
       // indistinguishable here (fileKey is null for a non-org plugin), and guessing by recency
-      // is how a command lands in the file the caller did not name.
+      // is how a command lands in the file the caller did not name. (--instance can never hit
+      // this branch: kind:'instance' matches 0 or 1 entries by construction.)
       if (filter.source === 'flag' && hits.length > 1) {
         const ids = hits.map((e) => `${e.scene.fileName ?? '(unnamed)'}#${e.instanceId}`).join(', ');
         sendReplyErr(from, id, 'E_INVALID_ARGS',
-          `--file "${filter.value}" matches ${hits.length} connected files [${ids}] — close one panel, or rename the files apart`);
+          `--file "${filter.value}" matches ${hits.length} connected files [${ids}] — close one panel, rename the files apart, ` +
+          `or target one exactly with --instance <id> (e.g. --instance ${hits[0].instanceId})`);
         return;
       }
       const target = hits[0] ?? null;
       targetWs = target?.ws;
       // A plugin that predates the guard would ignore expectedFile and run anyway; refuse BEFORE
-      // forwarding rather than discovering it from a reply that has already mutated a file.
-      if (filter.source === 'flag' && target && !pluginSupportsFileGuard(target)) {
+      // forwarding rather than discovering it from a reply that has already mutated a file. Only
+      // meaningful for kind:'name' — `--instance` targets a specific socket directly and carries
+      // no filename guard to predate.
+      if (filter.source === 'flag' && filter.kind === 'name' && target && !pluginSupportsFileGuard(target)) {
         sendReplyErr(from, id, 'E_PLUGIN_STALE',
           `the plugin open in "${target.scene.fileName ?? '?'}" predates --file support — rebuild (npm run build) and reopen the panel`);
         return;
@@ -872,7 +876,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       sendReplyErr(from, id, 'E_CHUNK_LOST', `failed to reassemble chunked request: ${(err as Error).message}`);
       return;
     }
-    admitRequest(from, id, JSON.stringify(assembled), assembled.cmd, assembled.expectedFile, assembled.readOnly === true, assembled.projectDir, assembled.activity);
+    admitRequest(
+      from, id, JSON.stringify(assembled), assembled.cmd, assembled.expectedFile, assembled.expectedInstance,
+      assembled.readOnly === true, assembled.projectDir, assembled.activity,
+    );
   };
 
   // A plugin (re)registered → try to flush parked requests. Only admit a request once a
@@ -889,10 +896,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     let delivered = 0;
     for (const req of queued) {
       if (req.from.readyState !== WebSocket.OPEN) continue; // CLI gone — drop silently
-      if (st.registry.selectTarget(req.filter.value, { exact: req.filter.exact })) {
+      if (st.registry.selectTarget(req.filter.value, { exact: req.filter.exact, kind: req.filter.kind })) {
+        const flagValue = req.filter.source === 'flag' ? req.filter.value ?? undefined : undefined;
         admitRequest(
           req.from, req.id, req.rawText, req.cmd,
-          req.filter.source === 'flag' ? req.filter.value ?? undefined : undefined,
+          req.filter.kind === 'name' ? flagValue : undefined,
+          req.filter.kind === 'instance' ? flagValue : undefined,
           req.readOnly === true, req.projectDir, req.activity,
         );
         delivered++;
@@ -1200,7 +1209,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       else if (msg.cmd === 'JOB') handleJobCommand(ws, msg);
       // Envelope-only: cmd + readOnly decide queueing. params are never parsed — the
       // pure-relay rule (concurrency & jobs, backlog 1.1+2.6+4.3).
-      else admitRequest(ws, msg.id, text, msg.cmd, msg.expectedFile, msg.readOnly === true, msg.projectDir, msg.activity);
+      else admitRequest(ws, msg.id, text, msg.cmd, msg.expectedFile, msg.expectedInstance, msg.readOnly === true, msg.projectDir, msg.activity);
     } else if (isEventMsg(msg)) {
       if (msg.type === 'PLUGIN_HELLO') {
         // Multi-plugin: register this instance in its OWN slot — never evict another

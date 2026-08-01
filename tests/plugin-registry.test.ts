@@ -218,6 +218,48 @@ describe('matching(filter, {exact}) — exact mode + the ambiguity input', () =>
   });
 });
 
+describe('matching/selectTarget(filter, {kind:"instance"}) — instanceId targeting', () => {
+  it('a known live instanceId → the single matching entry, never a name-fuzzy list', () => {
+    const { reg, tick } = makeReg();
+    reg.register(sock(), { instanceId: 'p_1_100', fileName: 'Design' });
+    tick(5);
+    reg.register(sock(), { instanceId: 'p_2_100', fileName: 'Design' }); // duplicate name on purpose
+    const hits = reg.matching('p_1_100', { kind: 'instance' });
+    expect(hits.map((h) => h.instanceId)).toEqual(['p_1_100']); // exact instance, not the other same-named one
+    expect(reg.selectTarget('p_1_100', { kind: 'instance' })?.instanceId).toBe('p_1_100');
+  });
+
+  it('an unknown instanceId → [] / null, never falls back to a name match', () => {
+    const { reg } = makeReg();
+    reg.register(sock(), { instanceId: 'p_1_100', fileName: 'Design' });
+    expect(reg.matching('nope', { kind: 'instance' })).toEqual([]);
+    expect(reg.selectTarget('nope', { kind: 'instance' })).toBeNull();
+  });
+
+  it('a DISCONNECTED (closed-socket) instanceId → [] / null, not the stale entry', () => {
+    const { reg } = makeReg();
+    const ws = sock(false);
+    reg.register(ws, { instanceId: 'p_1_100', fileName: 'Design' });
+    ws.readyState = CLOSED;
+    expect(reg.matching('p_1_100', { kind: 'instance' })).toEqual([]);
+    expect(reg.selectTarget('p_1_100', { kind: 'instance' })).toBeNull();
+  });
+
+  it('kind:"instance" with two live entries sharing a fileName still isolates by id only', () => {
+    const { reg } = makeReg();
+    reg.register(sock(), { instanceId: 'a', fileName: 'Untitled' });
+    reg.register(sock(), { instanceId: 'b', fileName: 'Untitled' });
+    expect(reg.matching('a', { kind: 'instance' }).map((h) => h.instanceId)).toEqual(['a']);
+    expect(reg.matching('b', { kind: 'instance' }).map((h) => h.instanceId)).toEqual(['b']);
+  });
+
+  it('a blank instanceId filter with kind:"instance" → [] (never "unfiltered = everything")', () => {
+    const { reg } = makeReg();
+    reg.register(sock(), { instanceId: 'a', fileName: 'Design' });
+    expect(reg.matching('   ', { kind: 'instance' })).toEqual([]);
+  });
+});
+
 describe('park → flush decision (what the daemon keys off)', () => {
   it('filter set + only a NON-matching file → no target (park); matching file appears → target (flush)', () => {
     const { reg, tick } = makeReg();

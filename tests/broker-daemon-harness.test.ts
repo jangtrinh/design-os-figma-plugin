@@ -775,3 +775,47 @@ describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, neve
     }
   });
 });
+
+// `--instance <id>` admission. NOT run by the executor: this harness
+// spawns a real in-process broker via `runBrokerDaemon`, and per the assigned constraint on
+// this machine a live plugin session is connected and this harness pollutes its broker
+// discovery (issue #32) — written here (the one file that exercises the real `admitRequest`
+// closure) and left for the orchestrator to run post-smoke.
+describe('daemon harness — admitRequest with an `--instance` (expectedInstance) filter', () => {
+  it('an instanceId matching NO connected plugin → E_NO_PLUGIN names the instanceId, never "open the file panel"', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-live', 'FileLive');
+
+    const cli = await connectSocket(port);
+    const reqId = 'req-instance-not-connected';
+    cli.send(JSON.stringify(
+      makeRequestFrame(reqId, 'SET_TEXT', { nodeId: '1:1', text: 'x' }, undefined, undefined, undefined, undefined, 'inst-gone'),
+    ));
+    const reply = await nextFrame<ReplyErr>(cli, (m) => (m as ReplyOk | ReplyErr).id === reqId);
+    expect(reply.ok).toBe(false);
+    expect(reply.error.code).toBe('E_NO_PLUGIN');
+    expect(reply.error.message).toContain('--instance "inst-gone"');
+    expect(reply.error.message).not.toContain('panel');
+  });
+
+  it('two plugins sharing the SAME fileName ("Untitled") → --instance routes to the exact one, never the other', async () => {
+    const port = await startTestBroker();
+    const pluginA = await connectSocket(port);
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-a', 'Untitled');
+    await helloPlugin(pluginB, 'inst-b', 'Untitled');
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+
+    const cli = await connectSocket(port);
+    const reqId = 'req-instance-exact';
+    cli.send(JSON.stringify(
+      makeRequestFrame(reqId, 'SET_TEXT', { nodeId: '1:1', text: 'x' }, undefined, undefined, undefined, undefined, 'inst-b'),
+    ));
+    await nextFrame(cli, (m) => (m as EventMsg).type === 'JOB_STATE');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(framesB.frames.some((f) => (f as { id?: string }).id === reqId)).toBe(true);
+    expect(framesA.frames.some((f) => (f as { id?: string }).id === reqId)).toBe(false);
+  });
+});

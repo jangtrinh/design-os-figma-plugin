@@ -6,6 +6,7 @@
 // / cull / status contract is pure and unit-testable with fake sockets.
 import type { PluginScene, PluginStatusEntry } from '../../../shared/protocol.ts';
 import { fileMatches } from '../../../shared/file-match.ts';
+import type { FilterKind } from './route-filter.ts';
 
 /** WebSocket.OPEN — inlined so the registry needs no `ws` import (kept pure). */
 export const WS_OPEN = 1;
@@ -155,9 +156,22 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
     return this.liveEntries().length;
   }
 
-  /** Live entries whose fileName matches (unfiltered → all). Ordering: most-recently-active first. */
-  matching(filter?: string | null, opts?: { exact?: boolean }): PluginEntry<S>[] {
+  /**
+   * Live entries matching the filter. `opts.kind === 'instance'` (instance targeting)
+   * branches to `getByInstanceId` instead of name matching: an instanceId is
+   * exact and unique by construction, so the result is the single live entry or `[]` — NEVER
+   * a name-fuzzy list, even when other entries share the same fileName (the whole reason
+   * `--instance` exists: two unsaved files both named "Untitled" are otherwise indistinguishable).
+   * Default (`kind` omitted or `'name'`): live entries whose fileName matches (unfiltered →
+   * all). Ordering: most-recently-active first.
+   */
+  matching(filter?: string | null, opts?: { exact?: boolean; kind?: FilterKind }): PluginEntry<S>[] {
     const f = filter?.trim();
+    if (opts?.kind === 'instance') {
+      if (!f) return [];
+      const hit = this.getByInstanceId(f);
+      return hit && hit.ws.readyState === WS_OPEN ? [hit] : [];
+    }
     const live = this.liveEntries();
     const hits = f ? live.filter((e) => fileMatches(e.scene.fileName as string | undefined, f, opts?.exact === true)) : live;
     return [...hits].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
@@ -167,10 +181,11 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
    * The routing target: the live plugin with the most-recent `lastSeenAt` — "the
    * file the user touched last". An optional fileName filter (case-insensitive
    * substring by default, or `opts.exact` for a whole-name match — see `matching`)
-   * restricts candidates; no candidate matches → null. Ties keep the most-recent
+   * restricts candidates, or `opts.kind: 'instance'` resolves `filter` as an exact
+   * instanceId instead; no candidate matches → null. Ties keep the most-recent
    * (see `matching`'s sort).
    */
-  selectTarget(filter?: string | null, opts?: { exact?: boolean }): PluginEntry<S> | null {
+  selectTarget(filter?: string | null, opts?: { exact?: boolean; kind?: FilterKind }): PluginEntry<S> | null {
     return this.matching(filter, opts)[0] ?? null;   // unchanged semantics for existing callers
   }
 
