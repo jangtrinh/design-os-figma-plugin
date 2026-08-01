@@ -2341,7 +2341,7 @@
     if (typeof params.x === "number") node.x = params.x;
     if (typeof params.y === "number") node.y = params.y;
   }
-  function opStatus(bootSkipped2 = []) {
+  function opStatus(bootSkipped2 = [], readOnlyViolations2 = 0) {
     return {
       fileName: figma.root.name,
       page: figma.currentPage.name,
@@ -2365,7 +2365,13 @@
       // knowledge/figjam.md) — the field exists so a FUTURE editor (phase-04 Slides, or
       // a later FigJam finding) has somewhere to report one, without a payload shape
       // change.
-      ...bootSkipped2.length > 0 && { bootSkipped: [...bootSkipped2] }
+      ...bootSkipped2.length > 0 && { bootSkipped: [...bootSkipped2] },
+      // Concurrency & jobs (issue #38) — same "present only once meaningful" contract as
+      // bootSkipped just above and the broker's own senderMismatchCount: a fleet that has
+      // never seen a mis-declared `--read-only` EXEC_JS keeps this payload byte-identical
+      // to before the field existed; a non-zero count makes a real pattern visible instead
+      // of vanishing into a silently-applied mutation.
+      ...readOnlyViolations2 > 0 && { readOnlyViolations: readOnlyViolations2 }
     };
   }
   function opGetSelection(params) {
@@ -4596,6 +4602,23 @@
   var PANEL_WIDTH = 300;
   var PANEL_HEIGHT = 420;
 
+  // plugin/src/main/readonly-guard.ts
+  function createReadOnlyGuardState() {
+    return { soleActorChangeEvents: 0 };
+  }
+  function recordDocumentChangeBatch(state, activeCount2) {
+    if (activeCount2 === 1) state.soleActorChangeEvents += 1;
+  }
+  function snapshotChangeEvents(state) {
+    return state.soleActorChangeEvents;
+  }
+  function violatedSinceSnapshot(state, snapshot) {
+    return state.soleActorChangeEvents > snapshot;
+  }
+  function isReadOnlyExecJs(cmd, readOnly) {
+    return cmd === "EXEC_JS" && readOnly === true;
+  }
+
   // plugin/src/main/main.ts
   figma.showUI(__html__, {
     visible: true,
@@ -4687,6 +4710,8 @@
   function actorState() {
     return { activeCount, lastDrainAt, declared: declaredIds, lastAgentAt };
   }
+  var readOnlyGuard = createReadOnlyGuardState();
+  var readOnlyViolations = 0;
   var idleMs = DEFAULT_IDLE_MS;
   var idleTimer = null;
   var changesSinceCommit = 0;
@@ -4707,6 +4732,7 @@
   }
   function onDocumentChange(event) {
     pruneDeclaredIds(declaredIds, Date.now());
+    recordDocumentChangeBatch(readOnlyGuard, activeCount);
     const raw = [];
     const edits = [];
     for (const dc of event.documentChanges) {
@@ -4823,8 +4849,16 @@
       beginAgentMutation(targetIds);
       activeCount += 1;
       for (const id of targetIds) declaredIds.set(id, Infinity);
+      const enforceReadOnly = isReadOnlyExecJs(req.cmd, req.readOnly);
+      const readOnlySnapshot = enforceReadOnly ? snapshotChangeEvents(readOnlyGuard) : 0;
       try {
         const result = await dispatch(req.cmd, req.params ?? {});
+        if (enforceReadOnly && violatedSinceSnapshot(readOnlyGuard, readOnlySnapshot)) {
+          readOnlyViolations += 1;
+          throw withCode(new Error(
+            "EXEC_JS declared --read-only but mutated the scene \u2014 a read-only-declared script must not write; refused (the mutation already ran and was sealed into its own undo step, not the caller's previous one)"
+          ), "E_READONLY_VIOLATION");
+        }
         const changedIds = [.../* @__PURE__ */ new Set([...targetIds, ...resultMutationIds(req.cmd, result)])];
         const completedAt = Date.now();
         for (const nodeId of changedIds) {
@@ -4882,7 +4916,7 @@
   async function dispatch(cmd, params) {
     switch (cmd) {
       case "STATUS":
-        return opStatus(bootSkipped);
+        return opStatus(bootSkipped, readOnlyViolations);
       case "GET_SELECTION":
         return opGetSelection(params);
       case "SCAN_DESIGN_SYSTEM":

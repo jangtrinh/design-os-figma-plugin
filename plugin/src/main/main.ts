@@ -45,6 +45,10 @@ import {
 } from './correction-edge-store';
 import type { CorrectionEvent } from '../../../shared/supervised-memory';
 import { PANEL_WIDTH, PANEL_HEIGHT } from '../ui/panel-model';
+import {
+  createReadOnlyGuardState, isReadOnlyExecJs, recordDocumentChangeBatch,
+  snapshotChangeEvents, violatedSinceSnapshot,
+} from './readonly-guard';
 
 // Panel IA v2: one opening size — no compact/expanded split, no user-resizable
 // Details toggle left to preserve (the whole PANEL_RESIZE path is gone below).
@@ -236,6 +240,14 @@ function actorState(): ActorState {
   return { activeCount, lastDrainAt, declared: declaredIds, lastAgentAt };
 }
 
+// ─── Read-only EXEC_JS enforcement (issue #38) ──────────────────────
+// See readonly-guard.ts for the full attribution design (why `activeCount === 1` is the
+// signal, and the documented residual gap it accepts). `readOnlyViolations` follows the
+// broker's own senderMismatchCount/legacyMigrationDeferred contract: surfaced in STATUS
+// only once it is actually non-empty (executor-ops.ts's opStatus).
+const readOnlyGuard = createReadOnlyGuardState();
+let readOnlyViolations = 0;
+
 // ─── Idle-commit timer (spec 004 P4) ────────────────────────────────
 // Every captured documentchange resets a debounce; after IDLE_MS of quiet the plugin
 // posts IDLE_READY {count} to its iframe, which shows the "N changes — Sync now /
@@ -274,6 +286,10 @@ function fireIdle(): void {
 
 function onDocumentChange(event: DocumentChangeEvent): void {
   pruneDeclaredIds(declaredIds, Date.now()); // once per batch — nothing reads `declared` between batches
+  // Read-only EXEC_JS enforcement (issue #38) — once per batch, not per node: this
+  // records ATTRIBUTABILITY ("could this batch belong to the one active dispatch"),
+  // not which node changed. See readonly-guard.ts.
+  recordDocumentChangeBatch(readOnlyGuard, activeCount);
   const raw: ComponentChange[] = [];
   const edits: EditInput[] = [];
   for (const dc of event.documentChanges) {
@@ -415,7 +431,14 @@ figma.on('close', () => {
 
 type Params = Record<string, unknown>;
 
-interface UiRequest { requestId: string; cmd: CommandName; params?: Params; expectedFile?: string }
+interface UiRequest {
+  requestId: string; cmd: CommandName; params?: Params; expectedFile?: string;
+  /** Concurrency & jobs — the caller's `--read-only` declaration, carried this far by
+   *  ui-relay.ts (see its own comment). Only EXEC_JS reads it (readonly-guard.ts's
+   *  `isReadOnlyExecJs`) — every other mutating command is already refused this flag
+   *  at the CLI, before a request ever reaches the wire. */
+  readOnly?: boolean;
+}
 
 figma.ui.onmessage = async (msg: unknown) => {
   // Panel IA v2 removed the Details toggle — its PANEL_RESIZE message was the only
@@ -464,8 +487,27 @@ figma.ui.onmessage = async (msg: unknown) => {
     // another still-active dispatch's ids could be cleared alongside.
     activeCount += 1;
     for (const id of targetIds) declaredIds.set(id, Infinity);
+    // Read-only EXEC_JS enforcement (issue #38) — snapshot BEFORE `dispatch`, the same
+    // moment this dispatch starts counting as "active" above, so the window covers its
+    // entire run. See readonly-guard.ts for why `activeCount` is the attribution signal.
+    const enforceReadOnly = isReadOnlyExecJs(req.cmd, req.readOnly);
+    const readOnlySnapshot = enforceReadOnly ? snapshotChangeEvents(readOnlyGuard) : 0;
     try {
       const result = await dispatch(req.cmd, req.params ?? {});
+      if (enforceReadOnly && violatedSinceSnapshot(readOnlyGuard, readOnlySnapshot)) {
+        // The script already ran and already mutated — v1 is detect + refuse + count,
+        // never a silent apply. `commitIfMutating` below (this dispatch's `catch`, via
+        // the throw) still seals the leaked write into its OWN undo step (EXEC_JS is in
+        // MUTATING_COMMANDS), same as any other exec-js failure — a designer can revert
+        // it with a single ⌘Z. Auto-rollback beyond that is deliberately out of scope
+        // for v1 (see the PR description's open-question note).
+        readOnlyViolations += 1;
+        throw withCode(new Error(
+          'EXEC_JS declared --read-only but mutated the scene — a read-only-declared '
+          + 'script must not write; refused (the mutation already ran and was sealed '
+          + 'into its own undo step, not the caller\'s previous one)',
+        ), 'E_READONLY_VIOLATION');
+      }
       const changedIds = [...new Set([...targetIds, ...resultMutationIds(req.cmd as CommandName, result)])];
       const completedAt = Date.now();
       for (const nodeId of changedIds) {
@@ -534,7 +576,7 @@ function mutationTargetIds(cmd: CommandName, params: Params): string[] {
 
 async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
   switch (cmd) {
-    case 'STATUS': return opStatus(bootSkipped);
+    case 'STATUS': return opStatus(bootSkipped, readOnlyViolations);
     case 'GET_SELECTION': return opGetSelection(params);
     case 'SCAN_DESIGN_SYSTEM': return serializeDesignSystem();
     case 'AUDIT_DS': return auditDs();

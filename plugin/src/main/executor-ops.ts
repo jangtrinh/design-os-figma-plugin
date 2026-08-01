@@ -84,7 +84,7 @@ async function appendToParent(node: SceneNode, params: Params): Promise<void> {
   if (typeof params.y === 'number') node.y = params.y;
 }
 
-export function opStatus(bootSkipped: readonly string[] = []): Record<string, unknown> {
+export function opStatus(bootSkipped: readonly string[] = [], readOnlyViolations = 0): Record<string, unknown> {
   return {
     fileName: figma.root.name,
     page: figma.currentPage.name,
@@ -109,6 +109,12 @@ export function opStatus(bootSkipped: readonly string[] = []): Record<string, un
     // a later FigJam finding) has somewhere to report one, without a payload shape
     // change.
     ...(bootSkipped.length > 0 && { bootSkipped: [...bootSkipped] }),
+    // Concurrency & jobs (issue #38) — same "present only once meaningful" contract as
+    // bootSkipped just above and the broker's own senderMismatchCount: a fleet that has
+    // never seen a mis-declared `--read-only` EXEC_JS keeps this payload byte-identical
+    // to before the field existed; a non-zero count makes a real pattern visible instead
+    // of vanishing into a silently-applied mutation.
+    ...(readOnlyViolations > 0 && { readOnlyViolations }),
   };
 }
 

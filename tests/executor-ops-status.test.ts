@@ -41,3 +41,20 @@ describe('opStatus — bootSkipped (issue #3, absorption phase-03)', () => {
     expect(result.bootSkipped).toEqual(['variables']); // the reply is unaffected
   });
 });
+
+describe('opStatus — readOnlyViolations (issue #38)', () => {
+  it('no argument → the key is OMITTED, keeping the payload byte-identical to before this field existed', () => {
+    installMockFigma();
+    expect('readOnlyViolations' in opStatus()).toBe(false);
+  });
+
+  it('zero → the key is still OMITTED, same "present only once meaningful" contract as bootSkipped/senderMismatchCount', () => {
+    installMockFigma();
+    expect('readOnlyViolations' in opStatus([], 0)).toBe(false);
+  });
+
+  it('a non-zero count surfaces verbatim', () => {
+    installMockFigma();
+    expect(opStatus([], 3).readOnlyViolations).toBe(3);
+  });
+});
