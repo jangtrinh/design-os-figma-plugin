@@ -16,6 +16,7 @@ import {
   type BrokerAdvertisement,
 } from '../../../shared/protocol.ts';
 import { CliError, envMs } from './protocol-helpers.ts';
+import { safeCleanup } from '../../../shared/safe-cleanup.ts';
 
 // Mirrors broker-daemon.ts's own `HEARTBEAT_MS` override (same env var, same
 // fallback) — see envMs's doc for why this must be the ONE shared reader, not a
@@ -105,8 +106,10 @@ function writeFileAtomic(path: string, contents: string): void {
     writeFileSync(tmpPath, contents);
     renameSync(tmpPath, path);
   } catch (err) {
-    try { unlinkSync(tmpPath); } catch { /* best-effort */ }
-    throw err;
+    // Best-effort temp-file removal on failure (issue #24: routed through the
+    // shared `safeCleanup` so the original write/rename error always propagates,
+    // never masked by an unlink failure).
+    safeCleanup(err, () => unlinkSync(tmpPath));
   }
 }
 
