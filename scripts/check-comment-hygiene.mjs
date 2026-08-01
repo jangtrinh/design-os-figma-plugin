@@ -1,9 +1,15 @@
 #!/usr/bin/env node
-// Fails when a tracked source/test file states an invariant by pointing at a plan
-// artifact instead of explaining it: an issue/PR number, a spec or plan-dir slug, a
-// phase label, or a roadmap/backlog number. Those labels drift the moment the doc
-// they point at is renumbered or deleted; the line should say WHAT is true and WHY,
-// not WHERE that fact was once written down.
+// Fails when a tracked source/test file cites an EPHEMERAL work-tracking ref instead of
+// stating the invariant directly: an issue/PR number, a dated plan-dir slug, or a bare
+// finding/audit label. Those rot the moment the tracker item is closed or renumbered.
+//
+// It deliberately ALLOWS this repo's durable design-doc narrative — references to a
+// committed spec directory (`spec 005`, `spec-005`), a roadmap wave or backlog section
+// (`wave 4.4`, `backlog 2.10`), a review round (`RI-P1`), or a phase name — because those
+// point at documents that live in the repo's own history, not at an external tracker that
+// can vanish out from under the comment. When a form is ambiguous between the two, this
+// scanner is written to ALLOW it: a missed ephemeral ref is cheaper than a false fail on
+// legitimate narrative.
 //
 // Modes:
 //   node scripts/check-comment-hygiene.mjs                 gate: fail on any new citation
@@ -28,31 +34,42 @@ const PATTERNS = [
     normalize: (m) => m.toLowerCase().replace(/\s+/g, ' '),
   },
   {
-    name: 'spec number',
-    re: /\bspec[-\s]\d{3,6}\b/gi,
-    normalize: (m) => m.toLowerCase().replace(/\s+/g, '-'),
-  },
-  {
-    name: 'plan-dir slug',
+    // Dated plan-dir slugs (e.g. `260801-1050-taste-transfer`) point at a directory in an
+    // external monorepo's `plans/` — gitignored there, gone the moment the branch merges.
+    name: 'dated plan-dir slug',
     re: /\b\d{6}-\d{4}-/g,
     normalize: (m) => m,
   },
   {
-    name: 'phase label',
-    re: /\bphase[-\s]?\d+\b/gi,
+    // `spec 260801` / `spec-260801` — the DATED plan-doc form (6 digits, YYMMDD). This is
+    // distinct from this repo's own committed `spec-005` / `spec 005` (3-digit) convention,
+    // which is durable narrative and intentionally NOT matched here.
+    name: 'dated spec number',
+    re: /\bspec[-\s]\d{6}\b/gi,
     normalize: (m) => m.toLowerCase().replace(/\s+/g, '-'),
   },
   {
-    // The parenthesized "(P6)" / "(P9,P14)" / "(P7/P8)" citation style — always in
-    // parens in this codebase's history, which is what keeps it from matching a
-    // priority label like "P1" used as a bare identifier elsewhere.
-    name: 'phase-P label',
+    // The parenthesized "(P6)" / "(P9,P14)" / "(P7/P8)" citation style — a bare finding
+    // label pointing at an audit round's numbering, which renumbers when a finding is
+    // added or dropped. Parens-only, so a priority label like "P1" used as a bare
+    // identifier elsewhere in code never matches.
+    name: 'parenthesized finding label',
     re: /\(P\d{1,2}(?:\s?[/,]\s?P?\d{1,2})*\)/g,
     normalize: (m) => m.toLowerCase().replace(/[()\s]/g, ''),
   },
   {
-    name: 'roadmap/backlog label',
-    re: /\b(?:backlog|wave)[-\s]?\d+(?:\.\d+)?\b|\bri-p\d+\b|\bcodex\s+p\d+\b/gi,
+    // `finding 4`, `finding-1` — a bare numbered-finding label from a review pass; the
+    // number is only meaningful relative to a findings list that can be renumbered.
+    name: 'finding number',
+    re: /\bfinding[-\s]?\d+\b/gi,
+    normalize: (m) => m.toLowerCase().replace(/\s+/g, '-'),
+  },
+  {
+    // `audit 5`, `audit #5`, `audit F3` — audit used as a label prefix for a bare code.
+    // Deliberately narrow: ordinary English use ("audit log", "audit ledger", "audit
+    // signal", "audit backlog 2.10") never matches because it isn't followed by a code.
+    name: 'audit label',
+    re: /\baudit\s+(?:#\d+|\d+\b|[a-z]\d{1,2}\b)/gi,
     normalize: (m) => m.toLowerCase().replace(/\s+/g, '-'),
   },
 ];
@@ -193,7 +210,7 @@ function runGate() {
 
   if (violations.length > 0) {
     console.error(`comment-hygiene: ${violations.length} citation(s) not covered by the baseline.\n`);
-    console.error('State the invariant directly instead of citing a plan id, issue number, phase label, or finding code:\n');
+    console.error('State the invariant directly instead of citing an issue/PR number, a dated plan-dir slug, or a bare finding/audit label:\n');
     for (const v of violations) {
       console.error(`  ${v.file}:${v.line}: [${v.category}] ${v.lineText}`);
     }
@@ -205,19 +222,30 @@ function runGate() {
 
 function selfTest() {
   const cases = [
-    { label: 'issue citation in a comment', text: '// leftover context (issue #42)', expectMatch: true },
-    { label: 'clean equivalent of the above', text: '// leftover: still throws under dynamic-page access', expectMatch: false },
-    { label: 'issue citation in a describe() name', text: "describe('refuses cleanly (issue #42)', () => {});", expectMatch: true },
-    { label: 'clean describe() name', text: "describe('refuses cleanly when the guard trips', () => {});", expectMatch: false },
+    // -- ephemeral tracking refs: must FAIL --
+    { label: 'issue citation in a comment', text: '// leftover context (issue #999)', expectMatch: true },
+    { label: 'issue citation in a describe() name', text: "describe('refuses cleanly (issue #999)', () => {});", expectMatch: true },
     { label: 'fixes # shorthand', text: '// fixes #7 by rejecting empty names', expectMatch: true },
-    { label: 'spec number citation', text: '// see spec 260801-1050 for the original ruling', expectMatch: true },
-    { label: 'plan-dir slug citation', text: '// lives at 260801-1050-taste-transfer/phase-02.md', expectMatch: true },
-    { label: 'phase label citation', text: '// deferred to phase 2 of the rollout', expectMatch: true },
-    { label: 'parenthesized P-label citation', text: '// the walker will not bind it (P9)', expectMatch: true },
-    { label: 'roadmap label citation', text: '// folded into wave 4.4 P2 of the backlog', expectMatch: true },
+    { label: 'dated plan-dir slug citation', text: '// lives at 260801-9999-taste-transfer/notes.md', expectMatch: true },
+    { label: 'dated spec-number citation', text: '// see spec 260801-9999 for the original ruling', expectMatch: true },
+    { label: 'parenthesized finding-label citation', text: '// the walker will not bind it (P9)', expectMatch: true },
+    { label: 'bare finding-number citation', text: '// finding 4 — this got fixed by rejecting empty names', expectMatch: true },
+    { label: 'audit-code label citation', text: '// audit F3 flagged this getter as unsafe', expectMatch: true },
+
+    // -- durable design-doc narrative: must PASS (not flagged) --
+    { label: 'clean equivalent of an issue comment', text: '// leftover: still throws under dynamic-page access', expectMatch: false },
+    { label: 'clean describe() name', text: "describe('refuses cleanly when the guard trips', () => {});", expectMatch: false },
+    { label: 'committed 3-digit spec citation (space form)', text: '// spec 005 P3 — the mirror linter pairs SET-shaped arrays by NAME', expectMatch: false },
+    { label: 'committed 3-digit spec citation (dash form)', text: '// see spec-005 for the offline proof', expectMatch: false },
+    { label: 'roadmap wave citation', text: '// folded into wave 4.4 of the backlog', expectMatch: false },
+    { label: 'backlog section citation', text: '// Audit backlog 2.10, phase 2 rollout', expectMatch: false },
+    { label: 'review-round citation', text: '// was DEFERRED at RI-P1, fixed here', expectMatch: false },
+    { label: 'bare phase label (no tracker number)', text: '// deferred to phase 2 of the rollout', expectMatch: false },
     { label: 'hex color is not an issue number', text: "el.style.background = '#ff3e00';", expectMatch: false },
     { label: 'numeric hex color stays clean without an issue word', text: "const swatch = '#123456';", expectMatch: false },
     { label: 'the word issue near an unrelated hex code stays clean', text: "// not an issue: background is #123456 by design", expectMatch: false },
+    { label: 'ordinary "audit log" usage stays clean', text: '// appends to the audit log on every write', expectMatch: false },
+    { label: 'ordinary "audit ledger" usage stays clean', text: '// audit ledger entry per change', expectMatch: false },
   ];
 
   let failures = 0;
