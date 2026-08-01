@@ -2,7 +2,16 @@
 // logic: unwrapping a finished job's stored reply, formatting a poll, and the `--wait`
 // cadence/timeout composition (injected poll/wait so no live broker is needed).
 import { describe, expect, it, vi } from 'vitest';
-import { formatPoll, isTerminal, unwrapResult, waitForJob, type PollReply } from '../cli/src/commands/job.ts';
+
+// `runCommand` (the broker round trip) is mocked for the `--force-release`/`--force`
+// wiring tests below — everything under test there is `run()`'s own param/opts
+// composition, not the transport. The rest of this file never calls the real
+// implementation either (`waitForJob`'s tests inject their own poll/wait).
+vi.mock('../cli/src/transport/broker-client.ts', () => ({ runCommand: vi.fn() }));
+
+import { formatPoll, isTerminal, run, unwrapResult, waitForJob, type PollReply } from '../cli/src/commands/job.ts';
+import { runCommand } from '../cli/src/transport/broker-client.ts';
+import { parseArgs } from '../cli/src/arg-parse.ts';
 import { CliError } from '../cli/src/transport/protocol-helpers.ts';
 import type { JobInfo } from '../shared/protocol.ts';
 
@@ -158,5 +167,40 @@ describe('waitForJob — cadence + timeout composition (injected poll/wait, no l
     } finally {
       Date.now = realNow;
     }
+  });
+});
+
+describe('run — `--force-release` wiring (guard override + audit activity)', () => {
+  it('a bare `--force-release` sends override:false, never omitting the flag', async () => {
+    const mocked = vi.mocked(runCommand);
+    mocked.mockClear();
+    mocked.mockResolvedValue({ ok: true });
+    await run(parseArgs(['j_1_1', '--force-release']));
+    expect(mocked).toHaveBeenCalledWith(
+      'JOB',
+      { mode: 'force-release', jobId: 'j_1_1', override: false },
+      { activity: 'Force-release · j_1_1' },
+    );
+  });
+
+  it('`--force-release --force` sends override:true — the healthy-job guard override', async () => {
+    const mocked = vi.mocked(runCommand);
+    mocked.mockClear();
+    mocked.mockResolvedValue({ ok: true });
+    await run(parseArgs(['j_1_1', '--force-release', '--force']));
+    expect(mocked).toHaveBeenCalledWith(
+      'JOB',
+      { mode: 'force-release', jobId: 'j_1_1', override: true },
+      { activity: 'Force-release · j_1_1' },
+    );
+  });
+
+  it('the audit activity names the jobId, never a generic unlabeled call', async () => {
+    const mocked = vi.mocked(runCommand);
+    mocked.mockClear();
+    mocked.mockResolvedValue({ ok: true });
+    await run(parseArgs(['j_9_9', '--force-release']));
+    const [, , opts] = mocked.mock.calls[0]!;
+    expect((opts as { activity?: string }).activity).toBe('Force-release · j_9_9');
   });
 });

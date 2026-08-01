@@ -41,7 +41,7 @@ import {
   resolveProjectDir, writeBindCache, writeBindMarker, type Binding,
 } from './project-bind.ts';
 import {
-  JobTable, isFinishedState, isReplyFromDispatchedInstance, toJobInfo, type JobRecord,
+  JobTable, isFinishedState, isHealthyRunningJob, isReplyFromDispatchedInstance, toJobInfo, type JobRecord,
 } from './job-table.ts';
 import {
   completeSkippingStale, emptyQueue, enqueue as enqueueJob, queuePosition, remove as removeFromQueue,
@@ -221,6 +221,20 @@ function sendReplyOk(ws: WebSocket, id: string, result: unknown): void {
   try {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(reply));
   } catch { /* client already gone */ }
+}
+
+/**
+ * The audit line for every force-release (allowed-wedged or `--force` override) — pure
+ * string construction, exported so the "audit log names the requester" invariant is
+ * unit-testable without a live broker. Never silent: `activity` is the label the JOB
+ * command's own request carried, falling back to an explicit "unlabeled request" rather
+ * than omitting the requester entirely when a caller didn't set one.
+ */
+export function buildForceReleaseAuditLine(
+  jobId: string, cmd: string, fileSlug: string, override: boolean, activity: string | undefined,
+): string {
+  const requester = activity ?? 'unlabeled request';
+  return `job ${jobId} (${cmd}) force-released${override ? ' via --force override' : ''} — requested by "${requester}" — "${fileSlug}"'s mutation slot freed; any later reply from that script is discarded`;
 }
 
 /**
@@ -987,7 +1001,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
    * it RELAYS; a request addressed TO the broker is not a request being relayed.
    */
   const handleJobCommand = (ws: WebSocket, msg: RequestMsg): void => {
-    const params = msg.params as { mode?: unknown; jobId?: unknown; file?: unknown } | null;
+    const params = msg.params as { mode?: unknown; jobId?: unknown; file?: unknown; override?: unknown } | null;
     const mode = typeof params?.mode === 'string' ? params.mode : 'poll';
     const jobId = typeof params?.jobId === 'string' ? params.jobId : undefined;
 
@@ -1029,6 +1043,22 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         sendReplyOk(ws, msg.id, { ok: false, reason: `job '${jobId}' is not the one blocking "${rec.fileSlug}"'s mutation slot` });
         return;
       }
+      // A healthy still-running job (the watchdog has not declared it wedged) is refused
+      // unless the requester passes `--force`: freeing its slot while its script may still
+      // be mid-mutation lets the NEXT queued mutation dispatch into the same file while the
+      // first is still executing — genuinely concurrent writes. A watchdog-wedged job
+      // (`state !== 'running'`, because the watchdog already called `finish()`) is not
+      // healthy and keeps unwedging with a bare `--force-release`, exactly as before.
+      const now = Date.now();
+      const override = params?.override === true;
+      if (isHealthyRunningJob(rec, now, WATCHDOG_TIMEOUT_MS) && !override) {
+        const elapsedS = Math.floor((now - (rec.startedAt ?? now)) / 1000);
+        sendReplyOk(ws, msg.id, {
+          ok: false,
+          reason: `job '${jobId}' is still running (${elapsedS}s, watchdog fires at ${Math.floor(WATCHDOG_TIMEOUT_MS / 1000)}s) — its script may be mid-mutation. Wait for the watchdog to declare it wedged, or re-run with --force to override (its result will be discarded, unverified).`,
+        });
+        return;
+      }
       // The audited exit from a BLOCKED slot (phase 01's watchdog leaves it held on
       // purpose): record the override on the job, finish it for reporting if it was
       // still `running` (the watchdog may not have fired yet), then advance the queue —
@@ -1046,7 +1076,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       st.pending.delete(rec.requestId);
       st.dispatchedTo.delete(rec.requestId);
       advanceQueue(rec);
-      log(`job ${jobId} (${rec.cmd}) force-released — "${rec.fileSlug}"'s mutation slot freed; any later reply from that script is discarded`);
+      // Audited: every force-release (allowed-wedged or `--force` override) logs WHO asked
+      // and WHY, never silently — the requester's own `activity` label on this request.
+      log(buildForceReleaseAuditLine(jobId, rec.cmd, rec.fileSlug, override, msg.activity));
       sendReplyOk(ws, msg.id, { ok: true });
       return;
     }

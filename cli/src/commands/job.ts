@@ -8,6 +8,8 @@
 //   figma-agent job --list [--file <name>]
 //   figma-agent job <jobId> --cancel            (queued only)
 //   figma-agent job <jobId> --force-release     (unblock a file a wedged script still holds)
+//   figma-agent job <jobId> --force-release --force  (override a HEALTHY still-running job;
+//                                                      discards its result, unverified)
 import type { CommandArgs } from '../figma-agent.ts';
 import type { JobInfo } from '../../../shared/protocol.ts';
 import { CliError, ChunkAssembler, isChunkMsg, parseWireMsg } from '../transport/protocol-helpers.ts';
@@ -148,9 +150,18 @@ export async function run(args: CommandArgs): Promise<unknown> {
   // broker's own refusal reason states that plainly rather than promising a future flag.
   if (args.bool('cancel')) return runCommand('JOB', { mode: 'cancel', jobId });
 
-  // The audited exit from a BLOCKED mutation slot (phase 01's watchdog leaves it held on
-  // purpose) — never automatic.
-  if (args.bool('force-release')) return runCommand('JOB', { mode: 'force-release', jobId });
+  // The audited exit from a BLOCKED mutation slot (the watchdog leaves it held on
+  // purpose) — never automatic. A HEALTHY still-running job is refused unless `--force`
+  // is also passed (the daemon discards its result, unverified); a watchdog-wedged job
+  // keeps unwedging with a bare `--force-release`, no `--force` needed. `activity` labels
+  // this request in the daemon's audit log — who force-released what, and why.
+  if (args.bool('force-release')) {
+    return runCommand(
+      'JOB',
+      { mode: 'force-release', jobId, override: args.bool('force') },
+      { activity: `Force-release · ${jobId}` },
+    );
+  }
 
   if (args.bool('wait')) {
     const waitTimeoutMs = args.num('wait-timeout') ?? DEFAULT_WAIT_TIMEOUT_MS;

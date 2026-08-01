@@ -819,3 +819,104 @@ describe('daemon harness — admitRequest with an `--instance` (expectedInstance
     expect(framesA.frames.some((f) => (f as { id?: string }).id === reqId)).toBe(false);
   });
 });
+
+// `job --force-release` guard (a HEALTHY still-running job is refused unless `--force`
+// overrides it; a watchdog-wedged job keeps unwedging with a bare `--force-release`). NOT
+// run by the executor: this harness spawns a real in-process broker via `runBrokerDaemon`,
+// and per the assigned constraint on this machine a live plugin session is connected and
+// this harness pollutes its broker discovery (issue #32) — written here (the one file that
+// exercises the real `handleJobCommand`/`advanceQueue` closures) and left for the
+// orchestrator to run post-smoke.
+describe('daemon harness — force-release refuses a HEALTHY running job, allows `--force`, never regresses the wedged-unwedge path', () => {
+  it('a bare `--force-release` on a job still `running` inside the watchdog window is REFUSED — the slot stays held, nothing advances', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-fr1', 'FFR1');
+    const pluginFrames = collectFrames(plugin);
+
+    const cliA = await connectSocket(port);
+    const jobA = await sendMutatingJob(cliA, 'req-fr1-a'); // dispatched immediately — RUNNING
+    await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr1-a'));
+
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'req-fr1-b'); // QUEUED behind job A — plugin still busy
+
+    cliA.send(JSON.stringify(makeRequestFrame('req-fr1-release', 'JOB', { mode: 'force-release', jobId: jobA })));
+    const reply = await nextFrame<ReplyOk>(cliA, (m) => (m as ReplyOk).id === 'req-fr1-release');
+    expect(reply.ok).toBe(true); // the ENVELOPE always replies ok — the refusal is IN the result
+    const result = reply.result as { ok: boolean; reason?: string };
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('still running');
+    expect(result.reason).toContain('--force');
+
+    // The slot was never freed — job A is still `running`, job B is still `queued`
+    // (never dispatched), and the plugin received exactly ONE request frame (job A's).
+    const polledA = await pollJob(cliA, jobA, 'req-fr1-poll-a');
+    expect(polledA.job.state).toBe('running');
+    const polledB = await pollJob(cliB, jobB, 'req-fr1-poll-b');
+    expect(polledB.job.state).toBe('queued');
+    const requestFrames = pluginFrames.frames.filter((f) => 'cmd' in (f as Record<string, unknown>));
+    expect(requestFrames).toHaveLength(1);
+    expect((requestFrames[0] as { id: string }).id).toBe('req-fr1-a');
+  });
+
+  it('`--force-release` + `override:true` (the CLI\'s `--force`) overrides the guard — the slot frees, the queued job advances, its result is discarded', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-fr2', 'FFR2');
+    const pluginFrames = collectFrames(plugin);
+
+    const cliA = await connectSocket(port);
+    const jobA = await sendMutatingJob(cliA, 'req-fr2-a');
+    await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr2-a'));
+
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'req-fr2-b'); // QUEUED behind job A
+
+    cliA.send(JSON.stringify(
+      makeRequestFrame('req-fr2-release', 'JOB', { mode: 'force-release', jobId: jobA, override: true }, 'Force-release · override'),
+    ));
+    const reply = await nextFrame<ReplyOk>(cliA, (m) => (m as ReplyOk).id === 'req-fr2-release');
+    expect(reply.ok).toBe(true);
+    expect((reply.result as { ok: boolean }).ok).toBe(true);
+
+    // Job A's own outcome is now terminal (its running result is discarded/unverified),
+    // and job B — previously queued — was dispatched to the plugin.
+    const polledA = await pollJob(cliA, jobA, 'req-fr2-poll-a');
+    expect(polledA.job.state).toBe('failed');
+    await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr2-b'));
+    const polledB = await pollJob(cliB, jobB, 'req-fr2-poll-b');
+    expect(polledB.job.state).toBe('running');
+  });
+
+  it('regression: a watchdog-wedged job (state !== "running") still force-releases with a BARE `--force-release`, no `--force` needed', async () => {
+    const port = await startTestBroker({ [WATCHDOG_MS_KEY]: '150' }); // real watchdog, shrunk
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-fr3', 'FFR3');
+    const pluginFrames = collectFrames(plugin);
+
+    const cliA = await connectSocket(port);
+    const jobA = await sendMutatingJob(cliA, 'req-fr3-a');
+    await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr3-a'));
+    // Plugin stays silent — the watchdog (min cadence 1s regardless of how small
+    // WATCHDOG_TIMEOUT_MS is set) declares job A wedged, `state` flips to 'failed', but
+    // the slot stays held on purpose (broker-daemon.ts's own watchdog comment).
+    let seq = 0;
+    await waitFor(async () => {
+      const p = await pollJob(cliA, jobA, `req-fr3-poll-${seq++}`);
+      return p.job.state === 'failed';
+    }, 5_000, 150);
+
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'req-fr3-b'); // QUEUED — slot still held by wedged job A
+
+    cliA.send(JSON.stringify(makeRequestFrame('req-fr3-release', 'JOB', { mode: 'force-release', jobId: jobA })));
+    const reply = await nextFrame<ReplyOk>(cliA, (m) => (m as ReplyOk).id === 'req-fr3-release');
+    expect(reply.ok).toBe(true);
+    expect((reply.result as { ok: boolean }).ok).toBe(true); // allowed WITHOUT --force — the legitimate unwedge path, unregressed
+
+    await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr3-b'));
+    const polledB = await pollJob(cliB, jobB, 'req-fr3-poll-b');
+    expect(polledB.job.state).toBe('running');
+  });
+});
