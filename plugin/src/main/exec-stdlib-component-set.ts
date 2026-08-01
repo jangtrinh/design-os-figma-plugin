@@ -14,6 +14,7 @@
 import { withCode } from './executor-styles';
 import { WARN_ABOVE, parseComboName, sameAxisMap } from './exec-stdlib-component-matrix';
 import { buildModeA, buildModeB } from './exec-stdlib-component-build';
+import { safeCleanup } from '../../../shared/safe-cleanup';
 
 export interface ComponentSetOpts {
   base?: string;
@@ -117,15 +118,9 @@ async function componentSet(opts: ComponentSetOpts): Promise<ComponentSetResult>
     // best-effort basis over live Figma state (removing a clone, restoring a name),
     // and can itself throw (a locked node, a clone something else already removed).
     // A throwing cleanup must never replace the failure that triggered it (stage-4
-    // follow-up, issue #11 item 1); it is appended for visibility, never swapped in.
-    try {
-      build.cleanup();
-    } catch (cleanupErr) {
-      if (err && typeof err === 'object') {
-        (err as { cleanupError?: unknown }).cleanupError = cleanupErr;
-      }
-    }
-    throw err;
+    // follow-up, issue #11 item 1); centralized in `safeCleanup` (issue #24) so this
+    // guarantee lives in one place instead of being re-derived per call site.
+    safeCleanup(err, () => build.cleanup());
   }
 }
 

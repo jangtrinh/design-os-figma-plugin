@@ -2813,6 +2813,28 @@
     };
   }
 
+  // shared/safe-cleanup.ts
+  function safeCleanup(originalError, cleanupFn) {
+    try {
+      cleanupFn();
+    } catch (cleanupError) {
+      attachCleanupError(originalError, cleanupError);
+    }
+    throw originalError;
+  }
+  function attachCleanupError(originalError, cleanupError) {
+    const canAttach = originalError !== null && typeof originalError === "object" && Object.isExtensible(originalError);
+    if (!canAttach) {
+      console.error("safeCleanup: cleanup failed and originalError is not extensible, logging instead of attaching:", cleanupError);
+      return;
+    }
+    try {
+      originalError.cleanupError = cleanupError;
+    } catch (attachError) {
+      console.error("safeCleanup: failed to attach cleanupError despite isExtensible check:", cleanupError, attachError);
+    }
+  }
+
   // plugin/src/main/exec-stdlib-component-set.ts
   var VALID_PARENT_TYPES = /* @__PURE__ */ new Set(["PAGE", "FRAME", "SECTION", "GROUP"]);
   async function resolveParent(ref) {
@@ -2863,14 +2885,7 @@
         ...build.warnings.length ? { warnings: build.warnings } : {}
       };
     } catch (err) {
-      try {
-        build.cleanup();
-      } catch (cleanupErr) {
-        if (err && typeof err === "object") {
-          err.cleanupError = cleanupErr;
-        }
-      }
-      throw err;
+      safeCleanup(err, () => build.cleanup());
     }
   }
   function createExecStdlibComponentSet() {
