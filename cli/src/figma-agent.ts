@@ -9,6 +9,7 @@ import { getLastFileContext, setExpectedFile, setExpectedInstance, setProjectDir
 import { printErrorJson, printJson, withFileContext } from './util/json-out.ts';
 import * as batch from './commands/batch.ts';
 import * as changes from './commands/changes.ts';
+import * as contention from './commands/contention.ts';
 import * as errors from './commands/errors.ts';
 import * as bind from './commands/bind.ts';
 import * as bindVariable from './commands/bind-variable.ts';
@@ -68,6 +69,7 @@ const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<unknown>
   batch,
   changes,
   errors,
+  contention,
 };
 
 const HELP = `figma-agent — CLI bridge to the Figma plugin (via a local WS broker)
@@ -119,6 +121,10 @@ Commands:
   errors               [--since ts|iso --file name --limit 50]  read the broker's error log
                        (backlog 4.6) — full untruncated message + cmd/activity/code/fileName,
                        for an agent to read-and-fix; --file filters by the entry's own fileName
+  contention           [--file name --since days]  read the durable per-file/per-day
+                       queued-time counter — total ms a mutation waited in the FIFO before
+                       dispatch, plus jobCount, per UTC day; --file filters by fileSlug,
+                       --since limits to the last N days; pure fs, works with the plugin closed
 
 Global: --file "<exact file name>"   route to that file's plugin AND refuse to run anywhere else
                                      (exact, case-insensitive; beats FIGMA_AGENT_FILE; payloads

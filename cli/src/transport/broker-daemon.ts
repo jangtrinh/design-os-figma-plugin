@@ -34,6 +34,7 @@ import {
   appendEditFrames, editFeedPathForIdentity, migrateLegacyUnboundEdits, safeSlug, unboundEditStagingPath,
 } from './edit-feed-log.ts';
 import { appendErrorFrame, buildErrorLogFrame, errorLogPathFor, unboundErrorStagingPath } from './error-log.ts';
+import { addQueued as addQueuedContention, contentionLogPath, contentionLogPathFor } from './contention-log.ts';
 import { readIdleMs, readIdleMsFor } from './figma-sync-config.ts';
 import { spawnReconcileApply } from './figma-sync-apply.ts';
 import {
@@ -308,6 +309,30 @@ function appendErrorLog(errorsPath: string, reply: ReplyErr, fallbackFileName: s
   } catch (err) {
     errorLogAppendFailures += 1;
     log(`ERROR_LOG append failed (${errorLogAppendFailures} total): ${(err as Error).message}`);
+  }
+}
+
+/** Count of `appendContentionLog` failures since the broker started — same shape as
+ *  `errorLogAppendFailures`, logged alongside every failure so a repeatedly-failing write
+ *  is visible as a trend, not a single easy-to-miss line. */
+let contentionLogAppendFailures = 0;
+
+/**
+ * Write-through one finished job's `queuedMs` into its file's durable contention counter
+ * (contention-log.ts) — best-effort, same contract as appendErrorLog/appendEditFeed: a
+ * log failure must never disrupt the relay. `job-table.ts` only stamps `queuedMs` in
+ * `markRunning` (a mutating job that actually got dispatched) and `cancelQueued` (one
+ * cancelled while still queued); a job that fails straight out of the queue without
+ * either (its pinned plugin vanished before it ever ran) carries no `queuedMs` at all —
+ * `undefined` here means exactly that, nothing to add, never a bug to paper over.
+ */
+function appendContentionLog(path: string, fileSlug: string, queuedMs: number | undefined, now: number): void {
+  if (queuedMs === undefined) return;
+  try {
+    addQueuedContention(path, fileSlug, queuedMs, now);
+  } catch (err) {
+    contentionLogAppendFailures += 1;
+    log(`CONTENTION_LOG append failed (${contentionLogAppendFailures} total): ${(err as Error).message}`);
   }
 }
 
@@ -667,6 +692,22 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const errReplyFrame = (id: string, code: ErrorCode, message: string): string =>
     JSON.stringify({ id, ok: false, error: { code, message } } satisfies ReplyErr);
 
+  /**
+   * Write-through a finished job's `queuedMs` into its durable contention counter — the
+   * ONE seam every `st.jobs.finish`/`cancelQueued` call site below routes through, right
+   * after the job table itself has finalized the record, so the durable counter and the
+   * in-memory job table can never disagree. Path resolution mirrors the SAME
+   * fileIdentity→resolveProjectDir shape DOC_CHANGE/EDIT_FEED/the error log already use:
+   * a bound file's counter lives in its own project, an unbound one falls back to the
+   * broker's own cwd default (there is nowhere else to durably route it before a bind
+   * exists — same accepted limitation `PLUGIN_HELLO`'s own idle-window fallback states).
+   */
+  const recordContention = (rec: Pick<JobRecord, 'fileSlug' | 'queuedMs'>): void => {
+    const bound = resolveProjectDir(rec.fileSlug, st.bindIndex);
+    const path = bound ? contentionLogPathFor(bound) : contentionLogPath();
+    appendContentionLog(path, rec.fileSlug, rec.queuedMs, Date.now());
+  };
+
   /** Send every held frame, in order, to the resolved target — one call for a normal
    *  request, N in sequence for a chunked one (the frames are already the full, ordered
    *  wire payload; the broker never reassembles or re-derives them). */
@@ -680,6 +721,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     } catch (err) {
       const msg = `relay to plugin failed: ${(err as Error).message}`;
       st.jobs.finish(job.jobId, false, [errReplyFrame(job.requestId, 'E_PLUGIN_ERROR', msg)]);
+      recordContention(job);
       if (job.from && job.from.readyState === WebSocket.OPEN) sendReplyErr(job.from, job.requestId, 'E_PLUGIN_ERROR', msg);
       st.pending.delete(job.requestId);
       st.dispatchedTo.delete(job.requestId);
@@ -719,6 +761,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       const msg = 'Figma plugin disconnected while this job was queued';
       const frame = errReplyFrame(nextJob.requestId, 'E_NO_PLUGIN', msg);
       st.jobs.finish(nextJob.jobId, false, [frame]);
+      recordContention(nextJob);
       if (nextJob.from && nextJob.from.readyState === WebSocket.OPEN) {
         try { nextJob.from.send(frame); } catch { /* requester vanished */ }
       }
@@ -976,6 +1019,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // (`handleClose`'s CLI branch used to drop `pending` before the reply could land).
         const ok = replyOk(job.replyFrames);
         st.jobs.finish(job.jobId, ok, job.replyFrames);
+        recordContention(job);
         advanceQueue(job);
       }
     }
@@ -1028,6 +1072,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         if (rec !== 'unknown' && rec !== 'expired') {
           const q = st.queues.get(rec.fileSlug);
           if (q) st.queues.set(rec.fileSlug, removeFromQueue(q, jobId));
+          recordContention(rec); // cancelQueued stamps queuedMs itself — this IS its finalization
         }
       }
       sendReplyOk(ws, msg.id, result);
@@ -1067,6 +1112,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (rec.state === 'running') {
         st.jobs.finish(jobId, false, [errReplyFrame(rec.requestId, 'E_TIMEOUT',
           'force-released — the script may still be running; its result (if any) is discarded and unverified')]);
+        recordContention(rec);
       }
       // Stage-4 fix round (M4, ruling Q1) — "discarded means discarded": if the wedged
       // script DOES eventually reply, `routeFromPlugin` must not forward it to a CLI that
@@ -1152,6 +1198,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       const job = st.jobs.byRequestId(id);
       if (job) {
         st.jobs.finish(job.jobId, false, [errReplyFrame(id, 'E_NO_PLUGIN', msg)]);
+        recordContention(job);
         const q = st.queues.get(job.fileSlug);
         if (q && q.running === job.jobId) {
           advanceQueue(job);
@@ -1469,6 +1516,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       const msg = `no reply within ${WATCHDOG_TIMEOUT_MS}ms — the script may still be running; ` +
         `this file's mutation slot stays blocked until 'figma-agent job ${job.jobId} --force-release'`;
       st.jobs.finish(job.jobId, false, [errReplyFrame(job.requestId, 'E_TIMEOUT', msg)]);
+      recordContention(job);
       log(`watchdog: job ${job.jobId} (${job.cmd}) timed out — slot for "${job.fileSlug}" stays blocked`);
       // Deliberately NO advanceQueue(job) here — see the comment above.
     }

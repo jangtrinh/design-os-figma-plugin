@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import WebSocket from 'ws';
 import { makeRequestFrame } from '../shared/protocol.ts';
 import type { EventMsg, JobInfo, ReplyErr, ReplyOk, WireMsg } from '../shared/protocol.ts';
+import type { ContentionStore } from '../cli/src/transport/contention-log.ts';
 
 type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts');
 
@@ -918,5 +919,95 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr3-b'));
     const polledB = await pollJob(cliB, jobB, 'req-fr3-poll-b');
     expect(polledB.job.state).toBe('running');
+  });
+});
+
+describe('daemon harness — a finished job\'s queuedMs write-throughs into the durable contention counter', () => {
+  it('an UNBOUND file\'s queued time lands at the broker cwd default, keyed by its own fileSlug', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-cont-1', 'Contention File');
+    const pluginFrames = collectFrames(plugin);
+
+    const cli = await connectSocket(port);
+    const jobId = await sendMutatingJob(cli, 'req-cont-1');
+    await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-cont-1'));
+    plugin.send(JSON.stringify({ id: 'req-cont-1', ok: true, result: {} } satisfies ReplyOk));
+    await pollJob(cli, jobId, 'req-cont-1-poll'); // the job is terminal by the time this resolves
+
+    // No PROJECT_BIND ever happened for this identity — the broker's own cwd default
+    // (FIGMA_AGENT_CHANGES_DIR, same base changeLogDir()/errorLogPath() use).
+    const path = join(scratchDir, 'figma-contention.json');
+    await waitFor(() => existsSync(path));
+    const store = JSON.parse(readFileSync(path, 'utf8')) as ContentionStore;
+    const slug = 'contention-file'; // safeSlug('Contention File') — no fileKey, so fileIdentity falls back to the name slug
+    const days = store[slug];
+    expect(days).toBeDefined();
+    const totals = Object.values(days!)[0]!;
+    expect(totals.jobCount).toBe(1);
+    expect(totals.totalQueuedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('a BOUND file\'s queued time lands in its OWN project, never the broker cwd default', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-cont-2', 'Bound Contention File');
+
+    const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-bound-contention-'));
+    try {
+      const cliBind = await connectSocket(port);
+      await bindProject(cliBind, 'Bound Contention File', boundProjectDir, 'req-cont-bind');
+
+      const cli = await connectSocket(port);
+      const pluginFrames = collectFrames(plugin);
+      const jobId = await sendMutatingJob(cli, 'req-cont-2');
+      await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-cont-2'));
+      plugin.send(JSON.stringify({ id: 'req-cont-2', ok: true, result: {} } satisfies ReplyOk));
+      await pollJob(cli, jobId, 'req-cont-2-poll');
+
+      const boundPath = join(boundProjectDir, 'design', 'figma-contention.json');
+      const cwdDefaultPath = join(scratchDir, 'figma-contention.json');
+      await waitFor(() => existsSync(boundPath));
+      const store = JSON.parse(readFileSync(boundPath, 'utf8')) as ContentionStore;
+      const slug = 'bound-contention-file';
+      expect(store[slug]).toBeDefined();
+      expect(Object.values(store[slug]!)[0]!.jobCount).toBe(1);
+      // Never ALSO written to the broker's own cwd default for this identity.
+      if (existsSync(cwdDefaultPath)) {
+        const cwdStore = JSON.parse(readFileSync(cwdDefaultPath, 'utf8')) as ContentionStore;
+        expect(cwdStore[slug]).toBeUndefined();
+      }
+    } finally {
+      rmSync(boundProjectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a job cancelled while still QUEUED also write-throughs its own queuedMs (cancelQueued stamps it, not markRunning)', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-cont-3', 'Cancel Contention File');
+    const pluginFrames = collectFrames(plugin);
+
+    const cliA = await connectSocket(port);
+    await sendMutatingJob(cliA, 'req-cont-3a'); // dispatched immediately — occupies the file's slot
+    await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-cont-3a'));
+
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'req-cont-3b'); // QUEUED behind job A
+
+    cliB.send(JSON.stringify(makeRequestFrame('req-cont-3-cancel', 'JOB', { mode: 'cancel', jobId: jobB })));
+    const cancelReply = await nextFrame<ReplyOk>(cliB, (m) => (m as ReplyOk).id === 'req-cont-3-cancel');
+    expect((cancelReply.result as { ok: boolean }).ok).toBe(true);
+
+    const path = join(scratchDir, 'figma-contention.json');
+    const slug = 'cancel-contention-file';
+    await waitFor(() => {
+      if (!existsSync(path)) return false;
+      const store = JSON.parse(readFileSync(path, 'utf8')) as ContentionStore;
+      return store[slug] !== undefined;
+    });
+    const store = JSON.parse(readFileSync(path, 'utf8')) as ContentionStore;
+    // Job A is still running (unfinished) — only job B's cancelled queuedMs is recorded so far.
+    expect(Object.values(store[slug]!)[0]!.jobCount).toBe(1);
   });
 });
