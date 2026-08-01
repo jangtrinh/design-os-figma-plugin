@@ -1,5 +1,5 @@
-// INSTANCE-shaped ui.* helpers, split out of exec-stdlib.ts to stay under the repo's
-// 200-line module cap (backlog 3.1/3.2). Reuse, do not re-implement: component-ref
+// INSTANCE-shaped ui.* helpers, split out of exec-stdlib.ts so INSTANCE-specific logic
+// reads as its own surface (backlog 3.1/3.2). Reuse, do not re-implement: component-ref
 // resolution goes through resolveMainComponent (resolve-main-component.ts:1-10) — a
 // second copy of ref-resolution here would be the mistake that module exists to avoid.
 import { resolveMainComponent } from './resolve-main-component';

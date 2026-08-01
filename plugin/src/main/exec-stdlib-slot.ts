@@ -3,9 +3,9 @@
 // code.js:409-486 (list/target resolution). `addProperty`'s merge pattern is adapted
 // from slot-tools.ts:291-377.
 //
-// Split across four files (this one plus -types/-resolve/-content/-property) to stay
-// under the 200-line cap once verification + the fork's absorbed refusals were all
-// written out — the same split-by-shape convention as exec-stdlib-instance.ts.
+// Split across four files (this one plus -types/-resolve/-content/-property) once
+// verification + the fork's absorbed refusals were all written out, so each concern
+// reads on its own — the same split-by-shape convention as exec-stdlib-instance.ts.
 //
 // Absorbed facts THIS file enforces (phase-02 spec §5; append/reset's facts are
 // documented in exec-stdlib-slot-content.ts):
