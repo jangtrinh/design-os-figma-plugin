@@ -52,6 +52,13 @@ import type { ComponentChange } from '../../../shared/figma-changes.ts';
 import type { EditInput, EditSource } from '../../../shared/edit-feed.ts';
 
 const LOG_FILE = '/tmp/figma-agent-broker.log';
+// Resolved once at `runBrokerDaemon` startup (default: the constant above, unchanged
+// production behavior) — the log path is injectable so a test broker never appends to
+// the shared /tmp log a live dev session reads. `log()` reads this mutable binding
+// rather than the constant directly; safe as module state because each daemon run
+// resolves it exactly once, before any request handling (and therefore any `log()`
+// call) can occur.
+let activeLogFile: string = LOG_FILE;
 
 // envMs (protocol-helpers.ts) lets manual acceptance shrink the idle-shutdown /
 // heartbeat / plugin-wait knobs to seconds — shared with broker-discovery.ts so
@@ -162,7 +169,7 @@ interface BrokerState {
 
 function log(line: string): void {
   try {
-    appendFileSync(LOG_FILE, `${new Date().toISOString()} [${process.pid}] ${line}\n`);
+    appendFileSync(activeLogFile, `${new Date().toISOString()} [${process.pid}] ${line}\n`);
   } catch { /* logging is best-effort */ }
 }
 
@@ -338,17 +345,20 @@ function appendContentionLog(path: string, fileSlug: string, queuedMs: number | 
 
 /**
  * Closing round (daemon harness ruling) — every field defaults to today's real behaviour
- * (the shared /tmp advertisement file, the real 9410-9419 port range, `process.exit`).
- * The ONLY caller that ever overrides these is the in-process daemon harness
- * (tests/broker-daemon-harness.test.ts): a tmpdir advertisement path, `ports: [0]` (an
- * OS-assigned ephemeral bind, so a test broker never fights over — or clobbers — a real
- * one), and an `exit` stub that throws a sentinel instead of killing the test runner.
- * Production callers (figma-agent.ts's `__broker` entry) pass no options at all.
+ * (the shared /tmp advertisement file, the real 9410-9419 port range, `process.exit`, the
+ * shared /tmp log file). The ONLY caller that ever overrides these is the in-process
+ * daemon harness (tests/broker-daemon-harness.test.ts): a tmpdir advertisement path,
+ * `ports: [0]` (an OS-assigned ephemeral bind, so a test broker never fights over — or
+ * clobbers — a real one), an `exit` stub that throws a sentinel instead of killing the
+ * test runner, and a scratch `logFile` so a test broker never appends to the real
+ * /tmp/figma-agent-broker.log a live dev session shares. Production callers
+ * (figma-agent.ts's `__broker` entry) pass no options at all.
  */
 export interface BrokerDaemonOptions {
   advertisePath?: string;
   ports?: readonly number[];
   exit?: (code: number) => never;
+  logFile?: string;
 }
 
 function defaultPortRange(): number[] {
@@ -361,6 +371,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const advertisePath = options?.advertisePath ?? BROKER_FILE;
   const ports = options?.ports ?? defaultPortRange();
   const exit: (code: number) => never = options?.exit ?? ((code: number): never => process.exit(code));
+  // Resolved BEFORE any `log()` call below — a harness-spawned broker must never
+  // append to the real /tmp log a live dev session shares.
+  activeLogFile = options?.logFile ?? LOG_FILE;
 
   // Refuse to double-start when a live same-or-newer broker already advertises.
   const existing = readAdvertisement(advertisePath);
