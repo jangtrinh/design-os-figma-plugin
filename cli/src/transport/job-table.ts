@@ -29,6 +29,22 @@ export function isFinishedState(state: JobInfo['state']): boolean {
 }
 
 /**
+ * Whether a job is a HEALTHY, still-running slot holder — the watchdog has not (yet)
+ * declared it wedged. A job the watchdog already timed out has `state !== 'running'`
+ * (the watchdog calls `finish()`) even though it may still hold its file's mutation
+ * slot; that job is NOT healthy, and force-releasing it is the legitimate unwedge path.
+ * Only a job still genuinely `running`, with a `startedAt` inside the watchdog window,
+ * counts as healthy — the one case `job --force-release` (without `--force`) must refuse.
+ */
+export function isHealthyRunningJob(
+  job: Pick<JobRecord, 'state' | 'startedAt'>,
+  now: number,
+  watchdogTimeoutMs: number,
+): boolean {
+  return job.state === 'running' && job.startedAt !== undefined && now - job.startedAt < watchdogTimeoutMs;
+}
+
+/**
  * Sender verification (backlog 2.10) — whether a reply frame's ACTUAL sender is the
  * plugin instance a job was dispatched to. `routeFromPlugin` (broker-daemon.ts) used to
  * accept a reply keyed on `id` alone: it never checked which socket sent it against

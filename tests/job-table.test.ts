@@ -3,7 +3,7 @@
 // without a socket or a real timer.
 import { describe, expect, it } from 'vitest';
 import {
-  JobTable, JOB_TTL_MS, JOB_FINISHED_CAP, JOB_FRAME_BYTES_CAP,
+  JobTable, JOB_TTL_MS, JOB_FINISHED_CAP, JOB_FRAME_BYTES_CAP, isHealthyRunningJob,
   type CreateJobInput,
 } from '../cli/src/transport/job-table.ts';
 
@@ -323,5 +323,27 @@ describe('JobTable — list (`figma-agent job --list`, phase 02 §2)', () => {
     const t = new JobTable();
     t.create(input({ requestId: 'a' }));
     for (const job of t.list()) expect('from' in job).toBe(false);
+  });
+});
+
+describe('isHealthyRunningJob — the force-release guard predicate', () => {
+  const WATCHDOG_TIMEOUT_MS = 1_000;
+
+  it('a running job started just now, inside the watchdog window, is healthy', () => {
+    expect(isHealthyRunningJob({ state: 'running', startedAt: 500 }, 500, WATCHDOG_TIMEOUT_MS)).toBe(true);
+    expect(isHealthyRunningJob({ state: 'running', startedAt: 500 }, 999, WATCHDOG_TIMEOUT_MS)).toBe(true);
+  });
+
+  it('a running job at/past the watchdog window is NOT healthy — the watchdog is about to (or already did) fire', () => {
+    expect(isHealthyRunningJob({ state: 'running', startedAt: 500 }, 1500, WATCHDOG_TIMEOUT_MS)).toBe(false);
+  });
+
+  it('a watchdog-wedged job (state !== "running") is NOT healthy even with a recent startedAt — the legitimate unwedge target', () => {
+    expect(isHealthyRunningJob({ state: 'failed', startedAt: 500 }, 600, WATCHDOG_TIMEOUT_MS)).toBe(false);
+    expect(isHealthyRunningJob({ state: 'queued', startedAt: undefined }, 600, WATCHDOG_TIMEOUT_MS)).toBe(false);
+  });
+
+  it('a "running" job with no startedAt is NOT healthy — nothing to measure elapsed time against', () => {
+    expect(isHealthyRunningJob({ state: 'running', startedAt: undefined }, 600, WATCHDOG_TIMEOUT_MS)).toBe(false);
   });
 });
