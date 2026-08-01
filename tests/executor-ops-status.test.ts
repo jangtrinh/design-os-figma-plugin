@@ -42,7 +42,7 @@ describe('opStatus — bootSkipped (issue #3, absorption phase-03)', () => {
   });
 });
 
-describe('opStatus — readOnlyViolations (issue #38)', () => {
+describe('opStatus — readOnlyViolations', () => {
   it('no argument → the key is OMITTED, keeping the payload byte-identical to before this field existed', () => {
     installMockFigma();
     expect('readOnlyViolations' in opStatus()).toBe(false);

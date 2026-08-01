@@ -1,4 +1,4 @@
-// Read-only EXEC_JS enforcement (issue #38) — attribution unit tests. Pure state, no
+// Read-only EXEC_JS enforcement — attribution unit tests. Pure state, no
 // `figma`: main.ts cannot be imported outside a live plugin sandbox (it calls
 // `figma.showUI` at module load — see shared/mutating-commands.ts's own comment), so
 // the load-bearing guarantee below is proven at the level that IS importable: the

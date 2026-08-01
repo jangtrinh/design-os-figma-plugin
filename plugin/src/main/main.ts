@@ -240,7 +240,7 @@ function actorState(): ActorState {
   return { activeCount, lastDrainAt, declared: declaredIds, lastAgentAt };
 }
 
-// ─── Read-only EXEC_JS enforcement (issue #38) ──────────────────────
+// ─── Read-only EXEC_JS enforcement ──────────────────────
 // See readonly-guard.ts for the full attribution design (why `activeCount === 1` is the
 // signal, and the documented residual gap it accepts). `readOnlyViolations` follows the
 // broker's own senderMismatchCount/legacyMigrationDeferred contract: surfaced in STATUS
@@ -286,7 +286,7 @@ function fireIdle(): void {
 
 function onDocumentChange(event: DocumentChangeEvent): void {
   pruneDeclaredIds(declaredIds, Date.now()); // once per batch — nothing reads `declared` between batches
-  // Read-only EXEC_JS enforcement (issue #38) — once per batch, not per node: this
+  // Read-only EXEC_JS enforcement — once per batch, not per node: this
   // records ATTRIBUTABILITY ("could this batch belong to the one active dispatch"),
   // not which node changed. See readonly-guard.ts.
   recordDocumentChangeBatch(readOnlyGuard, activeCount);
@@ -487,7 +487,7 @@ figma.ui.onmessage = async (msg: unknown) => {
     // another still-active dispatch's ids could be cleared alongside.
     activeCount += 1;
     for (const id of targetIds) declaredIds.set(id, Infinity);
-    // Read-only EXEC_JS enforcement (issue #38) — snapshot BEFORE `dispatch`, the same
+    // Read-only EXEC_JS enforcement — snapshot BEFORE `dispatch`, the same
     // moment this dispatch starts counting as "active" above, so the window covers its
     // entire run. See readonly-guard.ts for why `activeCount` is the attribution signal.
     const enforceReadOnly = isReadOnlyExecJs(req.cmd, req.readOnly);

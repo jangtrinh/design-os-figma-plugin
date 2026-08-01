@@ -1,4 +1,4 @@
-// Read-only EXEC_JS enforcement (issue #38) — the SAME wiring main.ts's `onmessage` uses
+// Read-only EXEC_JS enforcement — the SAME wiring main.ts's `onmessage` uses
 // (readonly-guard.ts's snapshot/record/violated trio), driven against REAL `opExecJs`
 // runs instead of synthetic counters, so a genuinely mutating script and a genuinely
 // read-only one are exercised end to end.

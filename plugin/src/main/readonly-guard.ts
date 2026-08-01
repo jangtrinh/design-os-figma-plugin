@@ -1,4 +1,4 @@
-// Read-only EXEC_JS enforcement (issue #38) — attribution for the one command whose
+// Read-only EXEC_JS enforcement — attribution for the one command whose
 // target nodes are never known ahead of time. Pure over injected state, no `figma`, no
 // clock read inside — same shape as edit-actor.ts, and for the same reason: main.ts
 // cannot be imported outside a live plugin sandbox (it calls `figma.showUI` at module

@@ -301,7 +301,7 @@ export type ErrorCode =
   | 'E_JOB_UNKNOWN'
   | 'E_JOB_EXPIRED'
   // Concurrency & jobs — a `--read-only` EXEC_JS detected to have mutated the scene
-  // anyway (issue #38). `readOnly` on the envelope is TRUSTED, NOT ENFORCED at the wire
+  // anyway. `readOnly` on the envelope is TRUSTED, NOT ENFORCED at the wire
   // layer (see `RequestMsg.readOnly`'s own comment): the plugin is the one place that
   // can actually observe whether the script wrote anything, so this is where the
   // mis-declaration turns from a silent breach into a refusal.

@@ -253,7 +253,7 @@ async function handleRequest(req: RequestMsg): Promise<void> {
     } else {
       // Everything else is a main-thread op — forward unchanged. `readOnly` is carried
       // through here (never forwarded before this — main.ts never saw it regardless of
-      // what its own `onmessage` read off `msg`, see issue #38) so main can enforce it
+      // what its own `onmessage` read off `msg`) so main can enforce it
       // for EXEC_JS; omitted entirely when unset, the same byte-identical-frame contract
       // every other optional envelope field on `RequestMsg` already follows.
       parent.postMessage({

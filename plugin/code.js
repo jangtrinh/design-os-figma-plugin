@@ -2366,7 +2366,7 @@
       // a later FigJam finding) has somewhere to report one, without a payload shape
       // change.
       ...bootSkipped2.length > 0 && { bootSkipped: [...bootSkipped2] },
-      // Concurrency & jobs (issue #38) — same "present only once meaningful" contract as
+      // Concurrency & jobs — same "present only once meaningful" contract as
       // bootSkipped just above and the broker's own senderMismatchCount: a fleet that has
       // never seen a mis-declared `--read-only` EXEC_JS keeps this payload byte-identical
       // to before the field existed; a non-zero count makes a real pattern visible instead
