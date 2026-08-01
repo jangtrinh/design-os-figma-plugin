@@ -1207,3 +1207,72 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     expect(clearedB.data).toMatchObject({ isActiveTarget: true, pinned: false });
   });
 });
+
+// Broker-restart reconnect visibility (last-plugins.json) — the owner's actual live
+// symptom: a fresh broker's registry starts EMPTY, so a backgrounded editor that hasn't
+// reconnected yet (Figma throttles it) is invisible after a restart. These tests exercise
+// the REAL `runBrokerDaemon` end to end across TWO daemon instances sharing the SAME
+// scratch advertisement path (the harness's own stand-in for "the same machine, a
+// restarted broker process") — never a live plugin session's real /tmp files.
+interface AwaitingReconnectHelloData {
+  plugins?: unknown[];
+  awaitingReconnect?: { fileName: string | null; lastSeenBeforeShutdown: number }[];
+}
+
+describe('daemon harness — broker-restart reconnect visibility (last-plugins.json)', () => {
+  it('a recently-seen plugin survives a broker restart as awaitingReconnect — never inside plugins[] — and clears the moment it re-HELLOs (by fileName, a fresh instanceId)', async () => {
+    const lastPluginsPath = join(scratchDir, 'last-plugins.json');
+
+    const port1 = await startTestBroker({ FIGMA_AGENT_LAST_PLUGINS_DEBOUNCE_MS: '30' });
+    const plugin1 = await connectSocket(port1);
+    await helloPlugin(plugin1, 'inst-restart-old', 'Restart File');
+    await waitFor(() => existsSync(lastPluginsPath) && readFileSync(lastPluginsPath, 'utf8').includes('inst-restart-old'));
+
+    // The old advertisement no longer describes a live broker (what a genuine process
+    // restart leaves behind) — the persisted last-plugins.json is untouched by this,
+    // exactly the point: it survives independently of the advertisement file's lifecycle.
+    rmSync(advertisePath, { force: true });
+
+    const port2 = await startTestBroker({ FIGMA_AGENT_LAST_PLUGINS_DEBOUNCE_MS: '30' });
+    const { hello: helloBeforeReconnect } = await connectAndAwaitBrokerHello(port2);
+    const dataBefore = helloBeforeReconnect.data as AwaitingReconnectHelloData;
+    expect(dataBefore.plugins).toEqual([]); // the fresh registry is genuinely empty
+    expect(dataBefore.awaitingReconnect).toEqual([
+      { fileName: 'Restart File', lastSeenBeforeShutdown: expect.any(Number) as number },
+    ]);
+
+    // Reconnect against the NEW broker — a fresh iframe load mints a NEW instanceId (the
+    // exact reason the clear falls back to fileName), same fileName as before the restart.
+    const plugin2 = await connectSocket(port2);
+    await helloPlugin(plugin2, 'inst-restart-new', 'Restart File');
+
+    const { hello: helloAfterReconnect } = await connectAndAwaitBrokerHello(port2);
+    const dataAfter = helloAfterReconnect.data as AwaitingReconnectHelloData;
+    expect(dataAfter.awaitingReconnect).toBeUndefined(); // cleared — present-only-when-non-empty
+    expect(dataAfter.plugins).toHaveLength(1);
+    expect((dataAfter.plugins![0] as { fileName?: string }).fileName).toBe('Restart File');
+  });
+
+  it('awaitingReconnect goes empty once this broker has been up past the expiry window, even though nothing ever reconnected', async () => {
+    const lastPluginsPath = join(scratchDir, 'last-plugins.json');
+
+    const port1 = await startTestBroker({ FIGMA_AGENT_LAST_PLUGINS_DEBOUNCE_MS: '30' });
+    const plugin1 = await connectSocket(port1);
+    await helloPlugin(plugin1, 'inst-expire-old', 'Expire File');
+    await waitFor(() => existsSync(lastPluginsPath) && readFileSync(lastPluginsPath, 'utf8').includes('inst-expire-old'));
+    rmSync(advertisePath, { force: true });
+
+    const port2 = await startTestBroker({
+      FIGMA_AGENT_LAST_PLUGINS_DEBOUNCE_MS: '30',
+      FIGMA_AGENT_AWAITING_RECONNECT_EXPIRY_MS: '150',
+    });
+    const { hello: helloEarly } = await connectAndAwaitBrokerHello(port2);
+    expect((helloEarly.data as AwaitingReconnectHelloData).awaitingReconnect).toEqual([
+      { fileName: 'Expire File', lastSeenBeforeShutdown: expect.any(Number) as number },
+    ]);
+
+    await new Promise((resolve) => setTimeout(resolve, 250)); // past the shrunk 150ms expiry window
+    const { hello: helloLate } = await connectAndAwaitBrokerHello(port2);
+    expect((helloLate.data as AwaitingReconnectHelloData).awaitingReconnect).toBeUndefined();
+  });
+});

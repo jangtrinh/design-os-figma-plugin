@@ -88,5 +88,11 @@ export async function run(args: CommandArgs): Promise<unknown> {
   return {
     broker, plugins, activePlugin, plugin, protocolVersion: broker.protocolVersion,
     ...(wanted ? { pluginsAll: all } : {}),
+    // Broker-restart reconnect visibility — a HINT from last-known state, never a live
+    // plugin (it must never appear in `plugins`/`pluginsAll` above); present only when
+    // the broker actually has one to report, same mirror-only-when-non-empty contract
+    // as `senderMismatchCount`/`legacyMigrationDeferred` on `broker` above.
+    ...(Array.isArray(hello.awaitingReconnect) && hello.awaitingReconnect.length > 0
+      && { awaitingReconnect: hello.awaitingReconnect }),
   };
 }

@@ -25,6 +25,10 @@ import {
 } from './protocol-helpers.ts';
 import { PluginRegistry, suspectedZombie, type PluginEntry } from './plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage } from './broker-status.ts';
+import {
+  clearReconnected, filterAwaitingReconnect, lastPluginsPathFor, readLastPlugins,
+  toAwaitingReconnectStatus, writeLastPluginsAtomic, type AwaitingReconnectEntry, type LastPluginRecord,
+} from './last-plugins-log.ts';
 import { pinDisconnected, resolveRouteFilter, type RouteFilter } from './route-filter.ts';
 import {
   appendChangeFrames, changeLogPathFor, migrateLegacyUnboundChanges, migrateStagedChanges,
@@ -97,6 +101,13 @@ const IMPLICIT_READ_ONLY = new Set(['STATUS', 'GET_SELECTION', 'EXPORT_PNG', 'SC
 const WATCHDOG_MARGIN_MS = 5_000;
 const WATCHDOG_TIMEOUT_MS = envMs('FIGMA_AGENT_WATCHDOG_MS', EXEC_JS_MAX_TIMEOUT_MS + WATCHDOG_MARGIN_MS);
 
+// Broker-restart reconnect visibility (last-plugins.json) — env-overridable via the
+// same envMs knob pattern as every other cadence constant above, so a test can shrink
+// all three windows to observe a real fire in bounded seconds rather than real minutes.
+const LAST_PLUGINS_DEBOUNCE_MS = envMs('FIGMA_AGENT_LAST_PLUGINS_DEBOUNCE_MS', 1_500);
+const AWAITING_RECONNECT_WINDOW_MS = envMs('FIGMA_AGENT_AWAITING_RECONNECT_WINDOW_MS', 10 * 60_000);
+const AWAITING_RECONNECT_EXPIRY_MS = envMs('FIGMA_AGENT_AWAITING_RECONNECT_EXPIRY_MS', 30 * 60_000);
+
 /** Optional routing pin: only route to a plugin whose fileName matches (case-
  *  insensitive substring). Read per-call so it reflects the broker's env. */
 function currentFilter(): string | null {
@@ -165,6 +176,12 @@ interface BrokerState {
   // frames forever — the park sweeper drops an entry whose last frame is older than one
   // sweep period, reusing the SAME interval rather than a new timer.
   pendingChunks: ChunkBuffers<WebSocket>;
+  // Broker-restart reconnect visibility — recently-seen-but-not-yet-reconnected plugins,
+  // seeded at startup from last-plugins.json, cleared per-entry on RE-HELLO (by
+  // instanceId or fileName), expired wholesale once this broker has been up
+  // AWAITING_RECONNECT_EXPIRY_MS. NEVER exposed in `plugins[]` — see last-plugins-log.ts's
+  // own Law 1 doc for why this stays a separate top-level `status` field.
+  awaitingReconnect: AwaitingReconnectEntry[];
 }
 
 function log(line: string): void {
@@ -446,11 +463,21 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     }
   }
 
+  // Broker-restart reconnect visibility — same dir as the advertisement file (broker-
+  // instance state, cwd-independent, never a project's `design/` dir). Seeded once, at
+  // startup, from whatever the PREVIOUS broker incarnation last persisted; a missing or
+  // corrupt file degrades to "nothing awaiting" (readLastPlugins's own contract).
+  const lastPluginsPath = lastPluginsPathFor(advertisePath);
+  const initialAwaitingReconnect = filterAwaitingReconnect(
+    readLastPlugins(lastPluginsPath), startedAt, AWAITING_RECONNECT_WINDOW_MS,
+  );
+
   const st: BrokerState = {
     registry: new PluginRegistry<WebSocket>(), cliClients: new Set(), pending: new Map(),
     dispatchedTo: new Map(), waiting: [], lastBusyAt: Date.now(),
     bindIndex, knownProjectDirs: new Set(usableDirs),
     jobs: new JobTable(), queues: new Map(), pendingChunks: new Map(),
+    awaitingReconnect: initialAwaitingReconnect,
   };
   // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
   // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
@@ -494,6 +521,38 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const sendEvent = (ws: WebSocket, type: EventMsg['type'], data: Record<string, unknown>): void => {
     try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, data } satisfies EventMsg)); }
     catch { /* socket already gone */ }
+  };
+
+  // Broker-restart reconnect visibility — how many `writeLastPluginsAtomic` failures
+  // since this broker started, same "discarded thing gets a machine-readable counter"
+  // contract as errorLogAppendFailures/contentionLogAppendFailures above.
+  let lastPluginsAppendFailures = 0;
+  let lastPluginsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Debounced write of the CURRENT live plugin set (register / disconnect / scene
+   * update all call this) — never on a shutdown hook, since the broker can be SIGKILL'd
+   * before any hook runs. Resetting the timer on every call (standard debounce) is what
+   * keeps the on-disk snapshot at most one `LAST_PLUGINS_DEBOUNCE_MS` window stale, per
+   * the spec's own flush requirement. Best-effort: a write failure is counted and
+   * logged, never a silent drop, and never disrupts the relay.
+   */
+  const schedulePluginSetPersist = (): void => {
+    if (lastPluginsDebounceTimer) clearTimeout(lastPluginsDebounceTimer);
+    lastPluginsDebounceTimer = setTimeout(() => {
+      lastPluginsDebounceTimer = null;
+      const records: LastPluginRecord[] = st.registry.liveEntries().map((e) => ({
+        instanceId: e.instanceId,
+        fileName: (e.scene.fileName as string | undefined) ?? null,
+        lastSeenAt: e.lastSeenAt,
+      }));
+      try {
+        writeLastPluginsAtomic(lastPluginsPath, records);
+      } catch (err) {
+        lastPluginsAppendFailures += 1;
+        log(`LAST_PLUGINS write failed (${lastPluginsAppendFailures} total): ${(err as Error).message}`);
+      }
+    }, LAST_PLUGINS_DEBOUNCE_MS);
   };
 
   // PEERS (panel IA v2): the target is RECENCY-based, so registration and disconnection
@@ -566,6 +625,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // ticks are reachable) must see `ownsAdvertisement === false` and skip re-writing
     // the file this call is about to deliberately remove.
     ownsAdvertisement = false;
+    // A clean exit does not flush a pending debounced persist — an abrupt SIGKILL never
+    // could either, and the whole design tolerates losing at most one debounce window
+    // (see schedulePluginSetPersist's own doc); this only stops the timer from keeping a
+    // test's `exit` stub (which throws rather than truly halting) reachable afterward.
+    if (lastPluginsDebounceTimer) { clearTimeout(lastPluginsDebounceTimer); lastPluginsDebounceTimer = null; }
     try {
       // Only remove the advertisement if it is still ours (a newer broker may own it).
       const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as BrokerAdvertisement;
@@ -1265,6 +1329,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // still-connected file must not be told the bridge is gone.
       if (remaining === 0) broadcastToClients(JSON.stringify({ type: 'PLUGIN_GONE', data: {} } satisfies EventMsg));
       broadcastPeers(); // a surviving panel's peer count/target may have just changed (no-op if none left)
+      schedulePluginSetPersist(); // broker-restart reconnect visibility — live set shrank
       return;
     }
     // A CLI client.
@@ -1361,6 +1426,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // broker's own cwd default — there is nowhere else to read it from.
         const helloScene = st.registry.getByWs(ws)?.scene;
         const helloFileName = (helloScene?.fileName as string | undefined) ?? null;
+        // Broker-restart reconnect visibility — a RE-HELLO (by instanceId, or by
+        // fileName as the fallback key: a fresh iframe load mints a NEW instanceId
+        // across a restart) clears any held awaitingReconnect entry immediately; the
+        // live set changed either way, so the debounced snapshot is rescheduled too.
+        st.awaitingReconnect = clearReconnected(st.awaitingReconnect, instanceId, helloFileName);
+        schedulePluginSetPersist();
         const helloFileKey = (helloScene?.fileKey as string | null | undefined) ?? null;
         const helloBound = resolveProjectDir(fileIdentity(helloFileKey, helloFileName), st.bindIndex);
         sendEvent(ws, 'SYNC_CONFIG', { idleMs: helloBound ? readIdleMsFor(helloBound) : idleMs });
@@ -1380,6 +1451,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           broadcastToClients(text);
           broadcastPeers();
           promotePendingBind(ws); // registry-integrity phase 01 §2 — fill a pending fileKey on first sight
+          schedulePluginSetPersist(); // broker-restart reconnect visibility — scene changed
         }
       } else if (msg.type === 'DOC_CHANGE') {
         // Live-sync capture: append the plugin's coalesced batch to the change log.
@@ -1501,19 +1573,32 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     return { runningJob: running, queueDepth };
   };
 
-  const brokerHello = (): EventMsg => ({
-    type: 'BROKER_HELLO',
-    data: buildBrokerHelloData(
-      st.registry,
-      {
-        port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(),
-        uptimeMs: Date.now() - startedAt, senderMismatchCount, legacyMigrationDeferred,
+  const brokerHello = (): EventMsg => {
+    // Broker-restart reconnect visibility — present only once there's something to
+    // hold (same "byte-identical when the common case is empty" contract as
+    // senderMismatchCount/legacyMigrationDeferred just below); expires wholesale via
+    // `toAwaitingReconnectStatus` once this broker has been up AWAITING_RECONNECT_EXPIRY_MS,
+    // recomputed fresh on every call rather than mutating `st.awaitingReconnect` itself.
+    const awaitingReconnect = toAwaitingReconnectStatus(
+      st.awaitingReconnect, Date.now() - startedAt, AWAITING_RECONNECT_EXPIRY_MS,
+    );
+    return {
+      type: 'BROKER_HELLO',
+      data: {
+        ...buildBrokerHelloData(
+          st.registry,
+          {
+            port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(),
+            uptimeMs: Date.now() - startedAt, senderMismatchCount, legacyMigrationDeferred,
+          },
+          currentFilter(),
+          Date.now,
+          jobStatusFor,
+        ),
+        ...(awaitingReconnect.length > 0 && { awaitingReconnect }),
       },
-      currentFilter(),
-      Date.now,
-      jobStatusFor,
-    ),
-  });
+    };
+  };
 
   const onConnection = (ws: WebSocket, req: import('node:http').IncomingMessage): void => {
     const tracked = ws as TrackedWs;
