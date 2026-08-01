@@ -11,6 +11,7 @@
 //    claims this but its code never actually checks it; enforced here for real, by
 //    walking the frame's ancestors up to (not including) the component/set.
 import { withCode } from './executor-styles';
+import { requireDesignFile } from './exec-stdlib-editor';
 
 function isNestedInsideAnotherSlot(frame: SceneNode, stopAt: BaseNode): boolean {
   let n: BaseNode | null = frame.parent;
@@ -27,6 +28,10 @@ export async function addSlotProperty(
   frameNodeId: string,
   opts: { description?: string; preferredValues?: { type: 'COMPONENT' | 'COMPONENT_SET'; key: string }[] } = {},
 ): Promise<{ propertyKey: string; frameId: string; frameName: string }> {
+  // Design-file-only capability: `addComponentProperty` only exists on a
+  // COMPONENT/COMPONENT_SET, neither of which any FigJam board or Slides deck
+  // can ever contain — refuse before either node lookup.
+  requireDesignFile('ui.slot.addProperty');
   const component = await figma.getNodeByIdAsync(componentId);
   if (!component || (component.type !== 'COMPONENT' && component.type !== 'COMPONENT_SET')) {
     throw withCode(new Error(`componentId must be a COMPONENT or COMPONENT_SET, got ${component?.type ?? 'not found'}: ${componentId}`), 'E_INVALID_ARGS');

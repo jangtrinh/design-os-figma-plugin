@@ -20,3 +20,16 @@ export function requireEditor(capability: string, required: readonly EditorType[
   const message = editorRefusal({ capability, required, found });
   if (message !== null) throw withCode(new Error(message), 'E_INVALID_ARGS');
 }
+
+/**
+ * The reverse of the per-editor guards above: a capability that depends on a Figma
+ * design-file concept (components, variants, instances, variables, slots,
+ * annotations) must refuse cleanly outside the Figma design editor, BEFORE any arg
+ * validation or node lookup — the same "capability, found, required, next action"
+ * message shape as `requireEditor`, never a downstream "node not found" once the
+ * caller is already in the wrong editor. One helper so every design-file-only site
+ * shares this classification instead of each re-deriving `['figma']` on its own.
+ */
+export function requireDesignFile(capability: string): void {
+  requireEditor(capability, ['figma']);
+}

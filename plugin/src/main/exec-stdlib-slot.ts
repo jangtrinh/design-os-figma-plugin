@@ -22,12 +22,17 @@ import type { SlotAppendContent, SlotCreateOpts, SlotInfo, SlotTarget } from './
 import { resolveSlot, serializeSlotsFromNode } from './exec-stdlib-slot-resolve';
 import { append, reset } from './exec-stdlib-slot-content';
 import { addSlotProperty } from './exec-stdlib-slot-property';
+import { requireDesignFile } from './exec-stdlib-editor';
 
 const CREATE_LAYOUT_MODES = new Set(['NONE', 'HORIZONTAL', 'VERTICAL']);
 
 async function create(componentId: string, opts: SlotCreateOpts = {}): Promise<{
   id: string; name: string; type: 'SLOT'; propertyKey: string | null; width: number; height: number; layoutMode: string;
 }> {
+  // Design-file-only capability: a Figma Slot only exists on a COMPONENT node,
+  // which no FigJam board or Slides deck can ever contain — refuse before the
+  // node lookup, not after.
+  requireDesignFile('ui.slot.create');
   const node = await figma.getNodeByIdAsync(componentId);
   if (!node || node.type !== 'COMPONENT') {
     throw withCode(new Error(`componentId must be a COMPONENT node id (standalone or a variant inside a COMPONENT_SET — call once per variant), got ${node?.type ?? 'not found'}: ${componentId}`), 'E_INVALID_ARGS');
@@ -68,6 +73,10 @@ async function create(componentId: string, opts: SlotCreateOpts = {}): Promise<{
 }
 
 async function list(nodeId: string): Promise<{ nodeId: string; nodeType: string; slots: SlotInfo[]; count: number }> {
+  // Design-file-only capability: same reasoning as `create` — a SLOT only lives
+  // under a COMPONENT/COMPONENT_SET/INSTANCE, none of which exist outside Figma
+  // design files.
+  requireDesignFile('ui.slot.list');
   const node = await figma.getNodeByIdAsync(nodeId);
   if (!node || (node.type !== 'COMPONENT' && node.type !== 'INSTANCE' && node.type !== 'COMPONENT_SET')) {
     throw withCode(new Error(`nodeId must be a COMPONENT, COMPONENT_SET, or INSTANCE, got ${node?.type ?? 'not found'}: ${nodeId}`), 'E_INVALID_ARGS');

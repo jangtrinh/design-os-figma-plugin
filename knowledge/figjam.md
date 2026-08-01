@@ -41,30 +41,49 @@ Audited, not assumed: the bar is "would raw-throw a confusing platform error, or
 fabricate/mutate wrongly" — a helper that already refuses cleanly via its own
 existing type check does NOT need a new guard.
 
-- **`ui.componentSet` / `ui.slot.*` — already safe.** `figma.createComponent()` /
-  `figma.combineAsVariants()` ARE documented `"Note: This API is only available in
-  Figma Design"` in the typings, but every call site (`exec-stdlib-component-build.ts`,
-  `exec-stdlib-slot.ts`) checks `node.type !== 'COMPONENT'` on every input BEFORE
-  reaching those APIs — since no FigJam node can ever be type `COMPONENT`, that check
-  always fires first, with an already-clear message. The raw Figma-Design-only API is
-  never reached with a bad type.
-- **`ui.setProps` — already safe.** Explicit `inst.type !== 'INSTANCE'` check before
-  any INSTANCE-only call.
-- **`ui.swapInstance` — the one real gap, fixed generally, not with an editor guard.**
-  Had NO type check on `inst` at all — a caller passing any non-INSTANCE node hit a
-  raw, uncoded platform error (`in swapComponent: node is not an instance`). This
-  pre-dates FigJam (already reachable in a design file with e.g. a FRAME); FigJam just
-  makes it far more likely. Fixed with the same `inst.type !== 'INSTANCE'` check
-  `setProps` already had — a general fix, not an editor guard, since an editor guard
-  would leave the same hole open for a wrong-type node in Figma itself.
-- **`ui.annotate.*` — already safe.** `get`/`set` gate via `requireAnnotatable`'s
-  `'annotations' in node` check first; `categories()`'s only call to the file-level
-  `figma.annotations.getAnnotationCategoriesAsync()` is already wrapped in try/catch →
-  clean `E_EVAL` (issue #2's own BLOCKER 1 fix). Whether annotations are actually
-  available in FigJam at all is `[re-verify]` — no editor-type note found in the
-  typings either way.
-- **`ui.vars.*` — likely already safe, `[re-verify]`.** Variable CRUD operates
-  entirely through `figma.variables.*` (document-level, not node-type-dependent) — no
+**Update — a second pass front-loaded a clean refusal ahead of the type checks
+below.** "Already safe" (below) meant non-crashing, not clean: a caller in FigJam
+still saw a raw `not found: X` once a bogus id failed the type check, which reads
+like a bad id rather than "wrong editor". `ui.componentSet`, `ui.slot.*` (create/
+list/append/reset/addProperty), `ui.setProps`, and `ui.swapInstance` now each call
+`requireDesignFile(capability)` (`exec-stdlib-editor.ts`) as their FIRST line —
+before any arg validation or node lookup — so the refusal names the capability, the
+wrong editor, and the fix, the same shape `ui.figjam.*`'s own forward guard uses.
+The type checks below are unchanged and still guard the orthogonal bug they always
+did (a wrong-type node passed IN Figma itself, where the new gate is a no-op).
+
+- **`ui.componentSet` / `ui.slot.*` — gated, on top of the existing type checks.**
+  `figma.createComponent()` / `figma.combineAsVariants()` ARE documented `"Note:
+  This API is only available in Figma Design"` in the typings, but every call site
+  (`exec-stdlib-component-build.ts`, `exec-stdlib-slot.ts`) also checks
+  `node.type !== 'COMPONENT'` on every input BEFORE reaching those APIs — since no
+  FigJam node can ever be type `COMPONENT`, that check always fires, with an
+  already-clear message. Both checks now run: the design-file gate first, the type
+  check as a second line of defense.
+- **`ui.setProps` — gated, on top of the existing type check.** Explicit
+  `inst.type !== 'INSTANCE'` check still runs before any INSTANCE-only call.
+- **`ui.swapInstance` — gated, on top of the general fix.** Had NO type check on
+  `inst` at all — a caller passing any non-INSTANCE node hit a raw, uncoded platform
+  error (`in swapComponent: node is not an instance`). This pre-dates FigJam
+  (already reachable in a design file with e.g. a FRAME); FigJam just makes it far
+  more likely. Fixed with the same `inst.type !== 'INSTANCE'` check `setProps`
+  already had — a general fix, not an editor guard, since an editor guard alone
+  would leave the same hole open for a wrong-type node in Figma itself. The new
+  design-file gate is additive, not a replacement for that fix.
+- **`ui.annotate.*` — deliberately left ungated.** `get`/`set` gate via
+  `requireAnnotatable`'s `'annotations' in node` check first; `categories()`'s only
+  call to the file-level `figma.annotations.getAnnotationCategoriesAsync()` is
+  already wrapped in try/catch → clean `E_EVAL`. Checked again for the design-file
+  gate specifically: `AnnotationsMixin` (per `@figma/plugin-typings`) is implemented
+  by base shape/text node types (`RECTANGLE`, `TEXT`, `VECTOR`, …) that also exist
+  in FigJam, and neither `AnnotationsAPI` nor `setBoundVariable`-adjacent APIs carry
+  a "Figma Design only" note anywhere in the typings (unlike `createComponent`/
+  `combineAsVariants`, which do). Gating this would risk refusing a legitimate FigJam
+  annotation read/write — an over-gating regression, not a fix. Still `[re-verify]`
+  on a live canvas either way.
+- **`ui.vars.*` — deliberately left ungated, same reasoning as `ui.annotate.*`.**
+  Variable CRUD operates entirely through `figma.variables.*` (document-level, not
+  node-type-dependent) — no
   "wrong node type" risk applies. No editor-scoping note found in `VariablesAPI`'s
   typings either.
 

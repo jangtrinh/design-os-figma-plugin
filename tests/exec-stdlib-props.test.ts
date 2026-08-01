@@ -3,7 +3,7 @@
 // component KEY (not just a node id) and is verified through the mock's STRICT
 // setProperties (mock-figma.ts:442-470) — never a permissive stub.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { installMockFigma, setMockComponents, makeMockComponent, FakeNode } from './helpers/mock-figma.ts';
+import { installMockFigma, setMockComponents, setMockEditorType, makeMockComponent, FakeNode } from './helpers/mock-figma.ts';
 import { resolvePropKey, setProps } from '../plugin/src/main/exec-stdlib-instance.ts';
 
 describe('resolvePropKey (pure)', () => {
@@ -26,7 +26,7 @@ describe('resolvePropKey (pure)', () => {
 });
 
 describe('setProps — INSTANCE_SWAP by component key (integration, strict mock)', () => {
-  beforeEach(() => { installMockFigma(); });
+  beforeEach(() => { installMockFigma(); setMockEditorType('figma'); });
 
   it('resolves a component KEY to the target main\'s id via importComponentByKeyAsync', async () => {
     const iconStar = makeMockComponent('Icon Star', 'KEY-ICON-STAR');

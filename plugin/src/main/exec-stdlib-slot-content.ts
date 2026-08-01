@@ -18,6 +18,7 @@
 import { withCode } from './executor-styles';
 import type { SlotAppendContent, SlotTarget } from './exec-stdlib-slot-types';
 import { resolveSlot } from './exec-stdlib-slot-resolve';
+import { requireDesignFile } from './exec-stdlib-editor';
 
 async function createSlotContentNode(nodeType: string, props: Record<string, string | number>): Promise<SceneNode> {
   let node: SceneNode;
@@ -49,6 +50,9 @@ export async function append(
   content: SlotAppendContent,
   opts: { clearExisting?: boolean } = {},
 ): Promise<{ slot: { id: string; name: string }; appended: { id: string; name: string; type: string; width: number; height: number } }> {
+  // Design-file-only capability: a SLOT node only exists on a COMPONENT, never
+  // in FigJam or Slides — refuse before resolving the target.
+  requireDesignFile('ui.slot.append');
   const slotNode = await resolveSlot(target);
 
   // Prepare content FIRST — a validation failure must not leave the slot
@@ -95,6 +99,8 @@ export async function append(
 }
 
 export async function reset(target: SlotTarget): Promise<{ slot: { id: string; name: string; childCount: number } }> {
+  // Design-file-only capability: same reasoning as `append`.
+  requireDesignFile('ui.slot.reset');
   const slotNode = await resolveSlot(target);
   const typed = slotNode as SlotNode & { resetSlot?: () => void };
   if (typeof typed.resetSlot !== 'function') {

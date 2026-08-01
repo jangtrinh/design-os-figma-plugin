@@ -4,7 +4,7 @@
 // stricter-than-the-fork ambiguous-slot-name rule.
 import { describe, it, expect } from 'vitest';
 import {
-  installMockFigma, setMockComponents, type FakeNode,
+  installMockFigma, setMockComponents, setMockEditorType, type FakeNode,
 } from './helpers/mock-figma.ts';
 import { createExecStdlibSlot } from '../plugin/src/main/exec-stdlib-slot.ts';
 
@@ -20,6 +20,7 @@ function makeComponent(name: string): FakeNode {
 describe('ui.slot.create', () => {
   it('creates a slot, verifies its own state, and never synthesises a propertyKey', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
 
@@ -33,6 +34,7 @@ describe('ui.slot.create', () => {
 
   it('resizes when width/height are given', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const result = await createExecStdlibSlot().create(base.id, { width: 200, height: 80 });
@@ -42,6 +44,7 @@ describe('ui.slot.create', () => {
 
   it('rejects GRID layoutMode BEFORE creating anything (fact 4)', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
 
@@ -52,6 +55,7 @@ describe('ui.slot.create', () => {
 
   it('rejects a non-COMPONENT node', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const figma = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma;
     const frame = figma.createFrame();
     await expect(createExecStdlibSlot().create(frame.id, {})).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
@@ -59,6 +63,7 @@ describe('ui.slot.create', () => {
 
   it('rejects when createSlot() is unavailable (host too old, fact 3) — even though Slots is GA', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     (base as unknown as { createSlot?: unknown }).createSlot = undefined;
@@ -71,6 +76,7 @@ describe('ui.slot.create', () => {
 describe('ui.slot.list', () => {
   it('lists slots on a COMPONENT directly', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     await createExecStdlibSlot().create(base.id, { name: 'Content' });
@@ -82,6 +88,7 @@ describe('ui.slot.list', () => {
 
   it('groups a COMPONENT_SET\'s slots by variant (fact 6)', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const v1 = makeComponent('State=default');
     const v2 = makeComponent('State=hover');
     setMockComponents([v1, v2]);
@@ -96,6 +103,7 @@ describe('ui.slot.list', () => {
 
   it('rejects a node type that cannot hold slots', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const figma = (globalThis as unknown as { figma: { createRectangle(): FakeNode } }).figma;
     const rect = figma.createRectangle();
     await expect(createExecStdlibSlot().list(rect.id)).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
@@ -105,6 +113,7 @@ describe('ui.slot.list', () => {
 describe('ui.slot.append', () => {
   it('clones an existing node into the slot and verifies it landed', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -119,6 +128,7 @@ describe('ui.slot.append', () => {
 
   it('moves (does not clone) when clone:false', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -130,6 +140,7 @@ describe('ui.slot.append', () => {
 
   it('rejects a raw COMPONENT as source BEFORE cloning (fact 7) — no orphan component is left', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     const other = makeComponent('Icon');
     setMockComponents([base, other]);
@@ -148,6 +159,7 @@ describe('ui.slot.append', () => {
 
   it('creates new content via nodeType when no sourceNodeId is given', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -158,6 +170,7 @@ describe('ui.slot.append', () => {
 
   it('rejects an unsupported nodeType, naming the supported ones', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -167,6 +180,7 @@ describe('ui.slot.append', () => {
 
   it('clearExisting runs ONLY after content resolves — a bad sourceNodeId leaves existing children untouched (fact 8)', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -182,6 +196,7 @@ describe('ui.slot.append', () => {
 
   it('snaps a cloned node to 0,0 in a NONE-layout slot (fact 9)', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -198,6 +213,7 @@ describe('ui.slot.append', () => {
 describe('ui.slot.reset', () => {
   it('clears the slot\'s children', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -211,6 +227,7 @@ describe('ui.slot.reset', () => {
 
   it('throws when resetSlot() is unavailable on the node', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     const slot = await createExecStdlibSlot().create(base.id, {});
@@ -226,6 +243,7 @@ describe('ui.slot.reset', () => {
 describe('ui.slot target resolution — stricter than the fork (fact 10)', () => {
   it('resolves by instanceId + slotName when exactly one direct match exists', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     await createExecStdlibSlot().create(base.id, { name: 'Content' });
@@ -237,6 +255,7 @@ describe('ui.slot target resolution — stricter than the fork (fact 10)', () =>
 
   it('throws ambiguous when TWO direct children share the slot name — never silently takes [0]', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     await createExecStdlibSlot().create(base.id, { name: 'Content' });
@@ -249,6 +268,7 @@ describe('ui.slot target resolution — stricter than the fork (fact 10)', () =>
 
   it('lists the available slot names when none match', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Card');
     setMockComponents([base]);
     await createExecStdlibSlot().create(base.id, { name: 'Content' });
@@ -262,6 +282,7 @@ describe('ui.slot target resolution — stricter than the fork (fact 10)', () =>
 describe('ui.slot.addProperty', () => {
   it('binds a direct-child frame and merges componentPropertyReferences (never wipes an existing binding)', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const component = makeComponent('Card');
     setMockComponents([component]);
     const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();
@@ -277,6 +298,7 @@ describe('ui.slot.addProperty', () => {
 
   it('rejects a frame not a direct child of the component', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const component = makeComponent('Card');
     const other = makeComponent('Unrelated');
     setMockComponents([component, other]);
@@ -289,6 +311,7 @@ describe('ui.slot.addProperty', () => {
 
   it('rejects a GRID-layout frame', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const component = makeComponent('Card');
     setMockComponents([component]);
     const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();
@@ -301,6 +324,7 @@ describe('ui.slot.addProperty', () => {
 
   it('rejects a frame nested inside another slot', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const component = makeComponent('Card');
     setMockComponents([component]);
     const outerSlot = await createExecStdlibSlot().create(component.id, {});
@@ -314,6 +338,7 @@ describe('ui.slot.addProperty', () => {
 
   it('accepts a frame that is a direct child of a COMPONENT_SET\'s variant', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const v1 = makeComponent('State=default');
     setMockComponents([v1]);
     const frame = figma.createFrame();
@@ -326,6 +351,7 @@ describe('ui.slot.addProperty', () => {
 
   it('rejects when addComponentProperty() is unavailable (host too old, stage-4 minor m1)', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const component = makeComponent('Card');
     setMockComponents([component]);
     const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();
@@ -338,6 +364,7 @@ describe('ui.slot.addProperty', () => {
 
   it('deletes the freshly-minted property when the post-mint verify fails (stage-4 BLOCKER 2)', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const component = makeComponent('Card');
     setMockComponents([component]);
     const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();
@@ -361,6 +388,7 @@ describe('ui.slot.addProperty', () => {
 
   it('names the leftover property in the error when the rollback deletion itself fails (stage-4 BLOCKER 2 fallback)', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const component = makeComponent('Card');
     setMockComponents([component]);
     const frame = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma.createFrame();

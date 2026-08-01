@@ -3,7 +3,7 @@
 // throw, bad-input throws, cartesian-order determinism, `=`/`,` rejection, and the
 // over-cap rejection (plan §8 Definition of Done).
 import { describe, it, expect } from 'vitest';
-import { installMockFigma, setMockComponents, FakeNode } from './helpers/mock-figma.ts';
+import { installMockFigma, setMockComponents, setMockEditorType, FakeNode } from './helpers/mock-figma.ts';
 import { createExecStdlibComponentSet } from '../plugin/src/main/exec-stdlib-component-set.ts';
 import {
   cartesianProduct, comboName, assertCleanToken, parseComboName, sameAxisMap,
@@ -21,18 +21,21 @@ function makeComponent(name: string): FakeNode {
 describe('componentSet — mode selection', () => {
   it('throws E_INVALID_ARGS when neither base nor components is given', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     await expect(createExecStdlibComponentSet().componentSet({}))
       .rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
   });
 
   it('throws E_INVALID_ARGS when both base and components are given', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     await expect(createExecStdlibComponentSet().componentSet({ base: '1:1', components: ['1:2'] }))
       .rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
   });
 
   it('throws E_INVALID_ARGS when base is given without axes', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     setMockComponents([base]);
     await expect(createExecStdlibComponentSet().componentSet({ base: base.id }))
@@ -43,6 +46,7 @@ describe('componentSet — mode selection', () => {
 describe('componentSet — mode 1 (base + axes)', () => {
   it('builds the cartesian product, keeps the base id as the first variant, and reads back propertyDefinitions', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     setMockComponents([base]);
 
@@ -66,6 +70,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('rejects a base already inside a COMPONENT_SET', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     const other = makeComponent('State=default');
     setMockComponents([base, other]);
@@ -78,6 +83,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('rejects an axis or value containing "=" or ","', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     setMockComponents([base]);
     await expect(createExecStdlibComponentSet().componentSet({ base: base.id, axes: { 'Sta=te': ['default'] } }))
@@ -88,6 +94,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('rejects a matrix over the 100-combination cap', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     setMockComponents([base]);
     const many = Array.from({ length: 11 }, (_, i) => `v${i}`); // 11 * 11 = 121 > 100
@@ -97,6 +104,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('carries a sizeWarning above 40 variants, without rejecting', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     setMockComponents([base]);
     const values = Array.from({ length: 41 }, (_, i) => `v${i}`);
@@ -107,6 +115,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('throws E_EVAL when the combined set disagrees with what we intended, AND self-cleans up: base name restored, its own clone removed', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     setMockComponents([base]);
     const originalCombine = figma.combineAsVariants.bind(figma);
@@ -131,6 +140,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('restores the base name AND removes its own clone when the failure is UNRELATED to verification (e.g. combineAsVariants itself throws) — ruled independently of issue 2', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const frame = figma.createFrame(); // a real parent, so clone() actually attaches — proves removal
     const base = makeComponent('Base');
     frame.appendChild(base);
@@ -148,6 +158,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('surfaces the ORIGINAL error even when cleanup() itself throws — a throwing cleanup must never mask the failure that triggered it (issue #11 item 1)', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     setMockComponents([base]);
     const originalCombine = figma.combineAsVariants.bind(figma);
@@ -175,6 +186,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 
   it('rejects a parent that cannot sensibly hold a component set (a COMPONENT, not PAGE/FRAME/SECTION/GROUP)', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const base = makeComponent('Base');
     const notAContainer = makeComponent('NotAContainer');
     setMockComponents([base, notAContainer]);
@@ -188,6 +200,7 @@ describe('componentSet — mode 1 (base + axes)', () => {
 describe('componentSet — mode 2 (combine existing components)', () => {
   it('renames each component via variantProps before combining', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const a = makeComponent('CompA');
     const b = makeComponent('CompB');
     setMockComponents([a, b]);
@@ -203,6 +216,7 @@ describe('componentSet — mode 2 (combine existing components)', () => {
 
   it('warns (never rejects) when a component name lacks "=" and no variantProps is given', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const a = makeComponent('Plain Name');
     setMockComponents([a]);
 
@@ -212,6 +226,7 @@ describe('componentSet — mode 2 (combine existing components)', () => {
 
   it('rejects a component already inside a COMPONENT_SET', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const a = makeComponent('State=default');
     setMockComponents([a]);
     figma.combineAsVariants([a], figma.currentPage);
@@ -222,6 +237,7 @@ describe('componentSet — mode 2 (combine existing components)', () => {
 
   it('rejects a variantProps length mismatch', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const a = makeComponent('CompA');
     setMockComponents([a]);
     await expect(createExecStdlibComponentSet().componentSet({ components: [a.id], variantProps: [] }))
@@ -230,6 +246,7 @@ describe('componentSet — mode 2 (combine existing components)', () => {
 
   it('validates ALL inputs before renaming ANY of them — a later validation failure must not leave an earlier component renamed with no closure (issue #11 item 3)', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const a = makeComponent('CompA');
     const b = makeComponent('CompB');
     setMockComponents([a, b]);
@@ -247,6 +264,7 @@ describe('componentSet — mode 2 (combine existing components)', () => {
 
   it('restores each component\'s original name when a later step throws — mode 2\'s own rollback', async () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const a = makeComponent('CompA');
     const b = makeComponent('CompB');
     setMockComponents([a, b]);
@@ -295,17 +313,20 @@ describe('exec-stdlib-component-matrix — pure helpers', () => {
 describe('mock-figma — figma.combineAsVariants refusals', () => {
   it('refuses an empty node list', () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     expect(() => figma.combineAsVariants([], figma.currentPage)).toThrow(/at least one node/);
   });
 
   it('refuses a non-COMPONENT node', () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const frame = figma.createFrame();
     expect(() => figma.combineAsVariants([frame], figma.currentPage)).toThrow(/not a COMPONENT/);
   });
 
   it('refuses a component already inside a COMPONENT_SET', () => {
     const figma = installMockFigma();
+    setMockEditorType('figma');
     const a = makeComponent('State=default');
     figma.combineAsVariants([a], figma.currentPage);
     const b = makeComponent('State=hover');
