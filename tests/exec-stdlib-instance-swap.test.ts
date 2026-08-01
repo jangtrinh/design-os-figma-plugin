@@ -9,7 +9,7 @@
 // (never an editor guard — the same hole would stay open for a wrong-type node IN
 // Figma itself).
 import { describe, it, expect } from 'vitest';
-import { installMockFigma, setMockComponents, type FakeNode } from './helpers/mock-figma.ts';
+import { installMockFigma, setMockComponents, setMockEditorType, type FakeNode } from './helpers/mock-figma.ts';
 import { swapInstance } from '../plugin/src/main/exec-stdlib-instance.ts';
 
 let keySeq = 0;
@@ -24,6 +24,7 @@ function makeComponent(name: string): FakeNode {
 describe('ui.swapInstance', () => {
   it('rejects a non-INSTANCE node with a clear message naming expected vs. found — never a raw "swapComponent is not a function"', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const target = makeComponent('Target');
     setMockComponents([target]);
     const figma = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma;
@@ -38,6 +39,7 @@ describe('ui.swapInstance', () => {
 
   it('the rejection names the ACTUAL type found, not a generic message', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const target = makeComponent('Target');
     setMockComponents([target]);
     const figma = (globalThis as unknown as { figma: { createRectangle(): FakeNode } }).figma;
@@ -49,6 +51,7 @@ describe('ui.swapInstance', () => {
 
   it('never reaches swapComponent for a wrong-type node — the type check runs BEFORE ref resolution', async () => {
     installMockFigma();
+    setMockEditorType('figma');
     const figma = (globalThis as unknown as { figma: { createFrame(): FakeNode } }).figma;
     const frame = figma.createFrame();
     // A ref that would ALSO fail resolution (no components registered at all) — if the

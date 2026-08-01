@@ -57,15 +57,28 @@ The bar: a helper needs a Slides refusal if it would raw-throw a confusing platf
 error or fabricate/mutate wrongly in a Slides deck; one that already refuses cleanly
 via its own type check does not need a new guard.
 
-- **`ui.componentSet` / `ui.slot.*` / `ui.setProps` / `ui.swapInstance` — already
-  safe, same reasoning as FigJam.** No `SLIDE` node is ever type `COMPONENT` or
-  `INSTANCE`, so the existing type-checks (not editor-specific, just type-specific)
-  fire first regardless of which non-design editor is open.
-- **`ui.annotate.*` / `ui.vars.*` — `[re-verify]`, checked fresh for Slides, not
-  assumed identical to FigJam.** Searched official docs and typings-adjacent sources
-  specifically for Slides + annotations/variables availability — found nothing
-  confirming or denying either way. Same unverified status as FigJam; do not assert
-  availability that was not confirmed.
+**Update — the same front-loaded design-file gate FigJam got also covers Slides.**
+`requireDesignFile(capability)` (`exec-stdlib-editor.ts`) checks for `'figma'`
+specifically, so it refuses in EITHER non-design editor with the same message shape,
+not one gate per editor. "Already safe" below still means non-crashing, not clean —
+the gate now front-loads a message that names the capability and the wrong editor
+before the type checks ever run.
+
+- **`ui.componentSet` / `ui.slot.*` / `ui.setProps` / `ui.swapInstance` — gated, on
+  top of the existing type checks, same reasoning as FigJam.** No `SLIDE` node is
+  ever type `COMPONENT` or `INSTANCE`, so the existing type-checks (not
+  editor-specific, just type-specific) still fire second, as a general-correctness
+  backstop for a wrong-type node passed IN Figma itself.
+- **`ui.annotate.*` / `ui.vars.*` — deliberately left ungated, checked fresh for
+  Slides, not assumed identical to FigJam.** Searched official docs and
+  typings-adjacent sources specifically for Slides + annotations/variables
+  availability — found nothing confirming or denying either way, and (same as the
+  FigJam finding) `AnnotationsMixin`/`VariablesAPI` carry no "Figma Design only" note
+  anywhere in the typings, unlike `combineAsVariants`/`createComponent`, which do.
+  Gating an API with no documented restriction would risk refusing a legitimate
+  Slides read — an over-gating regression. Same unverified-availability status as
+  FigJam; do not assert availability that was not confirmed, and do not gate on an
+  unconfirmed guess either.
 
 ## `ui.slides.*` reference
 

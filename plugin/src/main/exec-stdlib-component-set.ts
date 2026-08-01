@@ -15,6 +15,7 @@ import { withCode } from './executor-styles';
 import { WARN_ABOVE, parseComboName, sameAxisMap } from './exec-stdlib-component-matrix';
 import { buildModeA, buildModeB } from './exec-stdlib-component-build';
 import { safeCleanup } from '../../../shared/safe-cleanup';
+import { requireDesignFile } from './exec-stdlib-editor';
 
 export interface ComponentSetOpts {
   base?: string;
@@ -58,6 +59,11 @@ async function resolveParent(ref: string | undefined): Promise<BaseNode & Childr
 }
 
 async function componentSet(opts: ComponentSetOpts): Promise<ComponentSetResult> {
+  // Design-file-only capability: refuse outside the Figma design editor before
+  // touching a node — `figma.combineAsVariants` only exists there, and a caller
+  // that opened the wrong editor deserves that answer before its args are even
+  // validated, not a downstream "not found" once a node lookup already ran.
+  requireDesignFile('ui.componentSet');
   const hasBase = typeof opts.base === 'string';
   const hasComponents = Array.isArray(opts.components) && opts.components.length > 0;
   if (hasBase === hasComponents) {

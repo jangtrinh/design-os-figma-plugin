@@ -2483,6 +2483,40 @@
     };
   }
 
+  // shared/editor-surface.ts
+  var EDITOR_LABEL = {
+    figma: "a Figma design file",
+    figjam: "a FigJam board",
+    slides: "a Figma Slides deck",
+    dev: "Dev Mode"
+  };
+  var NEXT_ACTION = {
+    figma: "open this file in Figma (design mode) and re-run",
+    figjam: "open this board in FigJam and re-run",
+    slides: "open this deck in Figma Slides and re-run",
+    dev: "switch to Dev Mode and re-run"
+  };
+  function editorRefusal(opts) {
+    const { capability, required, found } = opts;
+    if (found !== null && required.includes(found)) return null;
+    const foundLabel = found === null ? "the host did not report an editor type" : EDITOR_LABEL[found];
+    const requiredLabels = required.filter((r) => r !== null).map((r) => EDITOR_LABEL[r]);
+    const requiredList = requiredLabels.length === 1 ? requiredLabels[0] : `one of: ${requiredLabels.join(", ")}`;
+    const firstRequired = required.find((r) => r !== null);
+    const nextAction = firstRequired ? NEXT_ACTION[firstRequired] : "reopen the file the capability needs";
+    return `${capability} needs ${requiredList}, but ${foundLabel} is open \u2014 ${nextAction}.`;
+  }
+
+  // plugin/src/main/exec-stdlib-editor.ts
+  function requireEditor(capability, required) {
+    const found = figma.editorType ?? null;
+    const message = editorRefusal({ capability, required, found });
+    if (message !== null) throw withCode(new Error(message), "E_INVALID_ARGS");
+  }
+  function requireDesignFile(capability) {
+    requireEditor(capability, ["figma"]);
+  }
+
   // plugin/src/main/exec-stdlib-instance.ts
   function resolvePropKey(keys, name) {
     if (keys.includes(name)) return name;
@@ -2496,6 +2530,7 @@
     return matches[0];
   }
   async function setProps(inst, props) {
+    requireDesignFile("ui.setProps");
     if (inst.type !== "INSTANCE") {
       throw withCode(new Error(`setProps expects an INSTANCE, got ${inst.type}`), "E_EVAL");
     }
@@ -2540,6 +2575,7 @@
     return out;
   }
   async function swapInstance(inst, ref) {
+    requireDesignFile("ui.swapInstance");
     if (inst.type !== "INSTANCE") {
       throw withCode(new Error(`swapInstance expects an INSTANCE, got ${inst.type}`), "E_EVAL");
     }
@@ -2852,6 +2888,7 @@
     return node;
   }
   async function componentSet(opts) {
+    requireDesignFile("ui.componentSet");
     const hasBase = typeof opts.base === "string";
     const hasComponents = Array.isArray(opts.components) && opts.components.length > 0;
     if (hasBase === hasComponents) {
@@ -2987,6 +3024,7 @@
     return node;
   }
   async function append(target, content2, opts = {}) {
+    requireDesignFile("ui.slot.append");
     const slotNode = await resolveSlot(target);
     let appendedNode;
     if (content2.sourceNodeId) {
@@ -3027,6 +3065,7 @@
     };
   }
   async function reset(target) {
+    requireDesignFile("ui.slot.reset");
     const slotNode = await resolveSlot(target);
     const typed = slotNode;
     if (typeof typed.resetSlot !== "function") {
@@ -3046,6 +3085,7 @@
     return false;
   }
   async function addSlotProperty(componentId, propertyName, frameNodeId, opts = {}) {
+    requireDesignFile("ui.slot.addProperty");
     const component = await figma.getNodeByIdAsync(componentId);
     if (!component || component.type !== "COMPONENT" && component.type !== "COMPONENT_SET") {
       throw withCode(new Error(`componentId must be a COMPONENT or COMPONENT_SET, got ${component?.type ?? "not found"}: ${componentId}`), "E_INVALID_ARGS");
@@ -3108,6 +3148,7 @@
   // plugin/src/main/exec-stdlib-slot.ts
   var CREATE_LAYOUT_MODES = /* @__PURE__ */ new Set(["NONE", "HORIZONTAL", "VERTICAL"]);
   async function create(componentId, opts = {}) {
+    requireDesignFile("ui.slot.create");
     const node = await figma.getNodeByIdAsync(componentId);
     if (!node || node.type !== "COMPONENT") {
       throw withCode(new Error(`componentId must be a COMPONENT node id (standalone or a variant inside a COMPONENT_SET \u2014 call once per variant), got ${node?.type ?? "not found"}: ${componentId}`), "E_INVALID_ARGS");
@@ -3144,6 +3185,7 @@
     };
   }
   async function list(nodeId) {
+    requireDesignFile("ui.slot.list");
     const node = await figma.getNodeByIdAsync(nodeId);
     if (!node || node.type !== "COMPONENT" && node.type !== "INSTANCE" && node.type !== "COMPONENT_SET") {
       throw withCode(new Error(`nodeId must be a COMPONENT, COMPONENT_SET, or INSTANCE, got ${node?.type ?? "not found"}: ${nodeId}`), "E_INVALID_ARGS");
@@ -3316,37 +3358,6 @@
   }
   function createExecStdlibAnnotate() {
     return { get, set, categories };
-  }
-
-  // shared/editor-surface.ts
-  var EDITOR_LABEL = {
-    figma: "a Figma design file",
-    figjam: "a FigJam board",
-    slides: "a Figma Slides deck",
-    dev: "Dev Mode"
-  };
-  var NEXT_ACTION = {
-    figma: "open this file in Figma (design mode) and re-run",
-    figjam: "open this board in FigJam and re-run",
-    slides: "open this deck in Figma Slides and re-run",
-    dev: "switch to Dev Mode and re-run"
-  };
-  function editorRefusal(opts) {
-    const { capability, required, found } = opts;
-    if (found !== null && required.includes(found)) return null;
-    const foundLabel = found === null ? "the host did not report an editor type" : EDITOR_LABEL[found];
-    const requiredLabels = required.filter((r) => r !== null).map((r) => EDITOR_LABEL[r]);
-    const requiredList = requiredLabels.length === 1 ? requiredLabels[0] : `one of: ${requiredLabels.join(", ")}`;
-    const firstRequired = required.find((r) => r !== null);
-    const nextAction = firstRequired ? NEXT_ACTION[firstRequired] : "reopen the file the capability needs";
-    return `${capability} needs ${requiredList}, but ${foundLabel} is open \u2014 ${nextAction}.`;
-  }
-
-  // plugin/src/main/exec-stdlib-editor.ts
-  function requireEditor(capability, required) {
-    const found = figma.editorType ?? null;
-    const message = editorRefusal({ capability, required, found });
-    if (message !== null) throw withCode(new Error(message), "E_INVALID_ARGS");
   }
 
   // plugin/src/main/exec-stdlib-figjam-types.ts

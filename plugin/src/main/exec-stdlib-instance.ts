@@ -4,6 +4,7 @@
 // second copy of ref-resolution here would be the mistake that module exists to avoid.
 import { resolveMainComponent } from './resolve-main-component';
 import { withCode } from './executor-styles';
+import { requireDesignFile } from './exec-stdlib-editor';
 
 /**
  * PURE — exported for unit tests: base name → the instance's actual `Name#12:34` key.
@@ -26,6 +27,10 @@ export async function setProps(
   inst: InstanceNode,
   props: Record<string, string | boolean>,
 ): Promise<Record<string, unknown>> {
+  // Design-file-only capability: refuse outside the Figma design editor before
+  // the type check below — an INSTANCE never exists in FigJam or Slides, so a
+  // caller there deserves the editor-named refusal, not a generic type error.
+  requireDesignFile('ui.setProps');
   if (inst.type !== 'INSTANCE') {
     throw withCode(new Error(`setProps expects an INSTANCE, got ${inst.type}`), 'E_EVAL');
   }
@@ -86,6 +91,12 @@ export async function swapInstance(
   inst: InstanceNode,
   ref: string,
 ): Promise<{ id: string; mainComponent: { id: string; name: string } }> {
+  // Design-file-only capability: refuse outside the Figma design editor FIRST, so a
+  // caller there gets the editor-named refusal instead of the general wrong-type
+  // message below. This does not replace the type check that follows — that check
+  // guards a DIFFERENT bug (a wrong-type node passed inside Figma itself, where this
+  // gate is a no-op).
+  requireDesignFile('ui.swapInstance');
   // Phase-03 (FigJam) reverse-guard audit finding: this had NO runtime check at all —
   // only the TS type `InstanceNode`, zero protection once a caller (an exec-js script,
   // or any wrong-type node reference) hands it a real non-instance node. Pre-dates
