@@ -12,6 +12,7 @@ export const MAX_TEXT_CHARS = 5_000;
 export const MAX_CODE_BLOCK_CHARS = 50_000;
 export const MAX_ARRANGE_NODES = 500;
 export const MAX_BOARD_READ_NODES = 1_000;
+export const MAX_CONNECTORS_READ = 1_000;
 
 /** Absorbed fact 2 — sticky colour is a FILL, not an enum property. The fork's own
  * `__stickyColors` map (code.js:78-88), labelled a WORKAROUND, not the API: `[re-verify]`

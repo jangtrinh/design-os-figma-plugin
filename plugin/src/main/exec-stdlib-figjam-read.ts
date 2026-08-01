@@ -3,7 +3,7 @@
 // THIRD-PARTY.md), code.js:6361-6501.
 import { requireEditor } from './exec-stdlib-editor';
 import { figmaColorToHex } from './executor-styles';
-import { MAX_BOARD_READ_NODES, type BoardOpts } from './exec-stdlib-figjam-types';
+import { MAX_BOARD_READ_NODES, MAX_CONNECTORS_READ, type BoardOpts } from './exec-stdlib-figjam-types';
 
 const TABLE_READ_ROW_CAP = 10;
 
@@ -92,34 +92,54 @@ export async function board(opts: BoardOpts = {}): Promise<{
 
 interface EndpointResult { nodeId: string | null; unresolved: boolean; position: { x: number; y: number } | null }
 
-async function resolveEndpoint(ep: ConnectorEndpoint): Promise<EndpointResult> {
+/** `resolveEndpoint`'s internal result — carries the already-fetched node alongside
+ * the serializable `EndpointResult` so the caller below can reuse it instead of
+ * calling `getNodeByIdAsync` a second time for the same id. Never returned as-is
+ * from `connections()` (see `toEndpointResult`) — a live Figma node isn't
+ * serializable across the plugin/UI boundary anyway. */
+interface ResolvedEndpoint extends EndpointResult { node: BaseNode | null }
+
+function toEndpointResult(ep: ResolvedEndpoint): EndpointResult {
+  return { nodeId: ep.nodeId, unresolved: ep.unresolved, position: ep.position };
+}
+
+async function resolveEndpoint(ep: ConnectorEndpoint): Promise<ResolvedEndpoint> {
   if (!('endpointNodeId' in ep)) {
-    return { nodeId: null, unresolved: false, position: 'position' in ep ? ep.position : null };
+    return { nodeId: null, unresolved: false, position: 'position' in ep ? ep.position : null, node: null };
   }
   const node = await figma.getNodeByIdAsync(ep.endpointNodeId);
   // Absorbed fact 11: an endpoint whose node cannot be resolved appears as
   // `unresolved: true`, never dropped — a dropped edge silently changes the graph.
-  return { nodeId: ep.endpointNodeId, unresolved: !node, position: null };
+  return { nodeId: ep.endpointNodeId, unresolved: !node, position: null, node };
 }
 
 export async function connections(): Promise<{
   edges: { id: string; label: string | null; start: EndpointResult; end: EndpointResult }[];
   connectedNodes: Record<string, { id: string; type: string; name: string; text: string | null }>;
-  totalConnectors: number; totalConnectedNodes: number;
+  totalConnectors: number; totalConnectedNodes: number; truncated: boolean;
 }> {
   requireEditor('ui.figjam.connections', ['figjam']);
-  // Absorbed fact 11: findAll(type === 'CONNECTOR').
-  const connectors = figma.currentPage.findAll((n) => n.type === 'CONNECTOR') as ConnectorNode[];
+  // Absorbed fact 11: findAll(type === 'CONNECTOR') — connectors can nest, unlike
+  // board()'s top-level-only read, so the deep walk stays. Only the RESULT is
+  // capped (same truncated-flag pattern as board()'s MAX_BOARD_READ_NODES) so a
+  // page with an unbounded number of connectors can't force an unbounded async
+  // fetch loop below; nothing past the cap is silently merged into what IS read.
+  const allConnectors = figma.currentPage.findAll((n) => n.type === 'CONNECTOR') as ConnectorNode[];
+  const truncated = allConnectors.length > MAX_CONNECTORS_READ;
+  const connectors = allConnectors.slice(0, MAX_CONNECTORS_READ);
   const connectedNodes: Record<string, { id: string; type: string; name: string; text: string | null }> = {};
   const edges: { id: string; label: string | null; start: EndpointResult; end: EndpointResult }[] = [];
 
   for (const conn of connectors) {
     const start = await resolveEndpoint(conn.connectorStart);
     const end = await resolveEndpoint(conn.connectorEnd);
-    edges.push({ id: conn.id, label: conn.text.characters || null, start, end });
+    edges.push({ id: conn.id, label: conn.text.characters || null, start: toEndpointResult(start), end: toEndpointResult(end) });
+    // Reuse the node `resolveEndpoint` already fetched above — the loop used to
+    // call `getNodeByIdAsync` a second time for the same id here (4 fetches per
+    // connector where 2 suffice).
     for (const ep of [start, end]) {
       if (!ep.nodeId || ep.unresolved || connectedNodes[ep.nodeId]) continue;
-      const node = await figma.getNodeByIdAsync(ep.nodeId);
+      const node = ep.node;
       if (!node) continue;
       const asText = 'characters' in node ? (node as { characters?: unknown }).characters : undefined;
       connectedNodes[ep.nodeId] = {
@@ -128,5 +148,8 @@ export async function connections(): Promise<{
       };
     }
   }
-  return { edges, connectedNodes, totalConnectors: connectors.length, totalConnectedNodes: Object.keys(connectedNodes).length };
+  return {
+    edges, connectedNodes, totalConnectors: allConnectors.length,
+    totalConnectedNodes: Object.keys(connectedNodes).length, truncated,
+  };
 }

@@ -3368,6 +3368,7 @@
   var MAX_CODE_BLOCK_CHARS = 5e4;
   var MAX_ARRANGE_NODES = 500;
   var MAX_BOARD_READ_NODES = 1e3;
+  var MAX_CONNECTORS_READ = 1e3;
   var STICKY_COLORS = {
     YELLOW: { r: 1, g: 0.85, b: 0.4 },
     BLUE: { r: 0.53, g: 0.78, b: 1 },
@@ -3682,25 +3683,30 @@
     const nodes = matching.slice(0, maxNodes).map(extractBoardNode);
     return { nodes, totalFound: matching.length, truncated, page: figma.currentPage.name, scope: "page-top-level" };
   }
+  function toEndpointResult(ep) {
+    return { nodeId: ep.nodeId, unresolved: ep.unresolved, position: ep.position };
+  }
   async function resolveEndpoint(ep) {
     if (!("endpointNodeId" in ep)) {
-      return { nodeId: null, unresolved: false, position: "position" in ep ? ep.position : null };
+      return { nodeId: null, unresolved: false, position: "position" in ep ? ep.position : null, node: null };
     }
     const node = await figma.getNodeByIdAsync(ep.endpointNodeId);
-    return { nodeId: ep.endpointNodeId, unresolved: !node, position: null };
+    return { nodeId: ep.endpointNodeId, unresolved: !node, position: null, node };
   }
   async function connections() {
     requireEditor("ui.figjam.connections", ["figjam"]);
-    const connectors = figma.currentPage.findAll((n) => n.type === "CONNECTOR");
+    const allConnectors = figma.currentPage.findAll((n) => n.type === "CONNECTOR");
+    const truncated = allConnectors.length > MAX_CONNECTORS_READ;
+    const connectors = allConnectors.slice(0, MAX_CONNECTORS_READ);
     const connectedNodes = {};
     const edges = [];
     for (const conn of connectors) {
       const start = await resolveEndpoint(conn.connectorStart);
       const end = await resolveEndpoint(conn.connectorEnd);
-      edges.push({ id: conn.id, label: conn.text.characters || null, start, end });
+      edges.push({ id: conn.id, label: conn.text.characters || null, start: toEndpointResult(start), end: toEndpointResult(end) });
       for (const ep of [start, end]) {
         if (!ep.nodeId || ep.unresolved || connectedNodes[ep.nodeId]) continue;
-        const node = await figma.getNodeByIdAsync(ep.nodeId);
+        const node = ep.node;
         if (!node) continue;
         const asText = "characters" in node ? node.characters : void 0;
         connectedNodes[ep.nodeId] = {
@@ -3711,7 +3717,13 @@
         };
       }
     }
-    return { edges, connectedNodes, totalConnectors: connectors.length, totalConnectedNodes: Object.keys(connectedNodes).length };
+    return {
+      edges,
+      connectedNodes,
+      totalConnectors: allConnectors.length,
+      totalConnectedNodes: Object.keys(connectedNodes).length,
+      truncated
+    };
   }
 
   // plugin/src/main/exec-stdlib-figjam.ts
