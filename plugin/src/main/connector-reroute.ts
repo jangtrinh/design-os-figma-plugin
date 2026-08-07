@@ -97,15 +97,23 @@ export async function rerouteConnections(ids?: readonly string[]): Promise<Rerou
     }
 
     const points = route({ source: sourceBox, target: targetBox, intent: record.intent });
-    if (samePoints(points, record.routePoints)) {
+    const vectorNode = await figma.getNodeByIdAsync(record.vectorNodeId);
+
+    // Matching the endpoints is not enough to call a connector correct: the DRAWING can be
+    // dragged away while the record still agrees with both ends. The live hook deliberately
+    // ignores changes to our own nodes (or it would fight the designer on every nudge), so
+    // this explicit repair is the only thing that can put a displaced line back.
+    const drawnAtRoute = vectorNode && vectorNode.type === 'VECTOR'
+      && Math.abs(vectorNode.x - Math.min(...points.map((p) => p.x))) <= 0.5
+      && Math.abs(vectorNode.y - Math.min(...points.map((p) => p.y))) <= 0.5;
+
+    if (samePoints(points, record.routePoints) && drawnAtRoute) {
       outcomes.push({ connectionId: record.id, status: 'unchanged' });
       continue;
     }
 
     const page = pageOf(source as SceneNode);
     if (!page) { outcomes.push({ connectionId: record.id, status: 'orphan' }); continue; }
-
-    const vectorNode = await figma.getNodeByIdAsync(record.vectorNodeId);
     const labelNode = record.labelNodeId ? await figma.getNodeByIdAsync(record.labelNodeId) : null;
     const rendered = await renderConnector({
       connectionId: record.id,

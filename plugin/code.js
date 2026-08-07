@@ -4916,7 +4916,9 @@
         continue;
       }
       const points = route({ source: sourceBox, target: targetBox, intent: record.intent });
-      if (samePoints(points, record.routePoints)) {
+      const vectorNode = await figma.getNodeByIdAsync(record.vectorNodeId);
+      const drawnAtRoute = vectorNode && vectorNode.type === "VECTOR" && Math.abs(vectorNode.x - Math.min(...points.map((p) => p.x))) <= 0.5 && Math.abs(vectorNode.y - Math.min(...points.map((p) => p.y))) <= 0.5;
+      if (samePoints(points, record.routePoints) && drawnAtRoute) {
         outcomes.push({ connectionId: record.id, status: "unchanged" });
         continue;
       }
@@ -4925,7 +4927,6 @@
         outcomes.push({ connectionId: record.id, status: "orphan" });
         continue;
       }
-      const vectorNode = await figma.getNodeByIdAsync(record.vectorNodeId);
       const labelNode = record.labelNodeId ? await figma.getNodeByIdAsync(record.labelNodeId) : null;
       const rendered = await renderConnector({
         connectionId: record.id,
