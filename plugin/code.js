@@ -4596,8 +4596,14 @@
 
   // plugin/src/main/connector-render.ts
   var LABEL_SIZE = 11;
-  var STROKE = { type: "SOLID", color: { r: 0.42, g: 0.42, b: 0.45 } };
-  var LABEL_FILL = { type: "SOLID", color: { r: 0.42, g: 0.42, b: 0.45 } };
+  var ELECTRIC_BLUE = { r: 37 / 255, g: 71 / 255, b: 255 / 255 };
+  var STROKE = { type: "SOLID", color: ELECTRIC_BLUE };
+  var PILL_FILL = { type: "SOLID", color: ELECTRIC_BLUE };
+  var PILL_TEXT = { type: "SOLID", color: { r: 1, g: 1, b: 1 } };
+  var STROKE_WEIGHT = 2;
+  var PILL_PADDING_X = 8;
+  var PILL_PADDING_Y = 3;
+  var PILL_RADIUS = 4;
   function pageOf(node) {
     let current = node;
     while (current) {
@@ -4627,7 +4633,7 @@
       segments: network.segments.map((s) => ({ start: s.start, end: s.end }))
     });
     vector.strokes = [STROKE];
-    vector.strokeWeight = 1.5;
+    vector.strokeWeight = STROKE_WEIGHT;
     vector.x = network.origin.x;
     vector.y = network.origin.y;
   }
@@ -4641,19 +4647,29 @@
     let labelNodeId = null;
     if (input.label) {
       const font = await loadBestFont("Inter", 400);
-      const text = input.existingLabel ?? figma.createText();
-      if (!input.existingLabel) input.page.appendChild(text);
+      const pill = input.existingLabel ?? figma.createFrame();
+      if (!input.existingLabel) input.page.appendChild(pill);
+      pill.name = `${input.label} \u2014 connector label`;
+      pill.layoutMode = "HORIZONTAL";
+      pill.primaryAxisSizingMode = "AUTO";
+      pill.counterAxisSizingMode = "AUTO";
+      pill.paddingLeft = pill.paddingRight = PILL_PADDING_X;
+      pill.paddingTop = pill.paddingBottom = PILL_PADDING_Y;
+      pill.cornerRadius = PILL_RADIUS;
+      pill.fills = [PILL_FILL];
+      pill.clipsContent = false;
+      const text = pill.children[0] && pill.children[0].type === "TEXT" ? pill.children[0] : figma.createText();
+      if (text.parent !== pill) pill.appendChild(text);
       text.fontName = font;
       text.fontSize = LABEL_SIZE;
       text.characters = input.label;
-      text.fills = [LABEL_FILL];
+      text.fills = [PILL_TEXT];
       text.textAutoResize = "WIDTH_AND_HEIGHT";
-      text.name = `${input.label} \u2014 connector label`;
       const anchor = labelAnchor(input.points);
-      text.x = Math.round(anchor.x - text.width / 2);
-      text.y = Math.round(anchor.y - text.height - 4);
-      stampNodeConnectionId(text, input.connectionId);
-      labelNodeId = text.id;
+      pill.x = Math.round(anchor.x - pill.width / 2);
+      pill.y = Math.round(anchor.y - pill.height - 4);
+      stampNodeConnectionId(pill, input.connectionId);
+      labelNodeId = pill.id;
     } else if (input.existingLabel) {
       input.existingLabel.remove();
     }
@@ -4935,7 +4951,7 @@
         intent: record.intent,
         label: record.label,
         existingVector: vectorNode && vectorNode.type === "VECTOR" ? vectorNode : null,
-        existingLabel: labelNode && labelNode.type === "TEXT" ? labelNode : null
+        existingLabel: labelNode && labelNode.type === "FRAME" ? labelNode : null
       });
       beginAgentMutation([rendered.vectorNodeId, ...rendered.labelNodeId ? [rendered.labelNodeId] : []]);
       const next = {
@@ -5138,7 +5154,7 @@
       intent,
       label,
       existingVector: await existingNode(existing?.vectorNodeId ?? null, "VECTOR"),
-      existingLabel: await existingNode(existing?.labelNodeId ?? null, "TEXT")
+      existingLabel: await existingNode(existing?.labelNodeId ?? null, "FRAME")
     });
     const record = {
       id: connectionId,
@@ -5166,9 +5182,9 @@
     const record = id ? findConnection(id) : fromId && toId ? findConnectionByEndpoints(fromId, toId) : null;
     if (!record) throw withCode(new Error("DISCONNECT requires params.id, or both params.from and params.to"), "E_INVALID_ARGS");
     const vector = await existingNode(record.vectorNodeId, "VECTOR");
-    const text = await existingNode(record.labelNodeId, "TEXT");
+    const text = record.labelNodeId ? await figma.getNodeByIdAsync(record.labelNodeId) : null;
     if (vector) vector.remove();
-    if (text) text.remove();
+    if (text && !text.removed) text.remove();
     removeConnection(record.id);
     invalidateConnectorIndex();
     return { connectionId: record.id, removedVector: vector !== null, removedLabel: text !== null };

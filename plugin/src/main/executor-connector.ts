@@ -129,7 +129,7 @@ export async function opConnect(params: Params): Promise<Record<string, unknown>
     intent,
     label,
     existingVector: await existingNode<VectorNode>(existing?.vectorNodeId ?? null, 'VECTOR'),
-    existingLabel: await existingNode<TextNode>(existing?.labelNodeId ?? null, 'TEXT'),
+    existingLabel: await existingNode<FrameNode>(existing?.labelNodeId ?? null, 'FRAME'),
   });
 
   const record: ConnectionRecord = {
@@ -166,9 +166,9 @@ export async function opDisconnect(params: Params): Promise<Record<string, unkno
   if (!record) throw withCode(new Error('DISCONNECT requires params.id, or both params.from and params.to'), 'E_INVALID_ARGS');
 
   const vector = await existingNode<VectorNode>(record.vectorNodeId, 'VECTOR');
-  const text = await existingNode<TextNode>(record.labelNodeId, 'TEXT');
+  const text = record.labelNodeId ? await figma.getNodeByIdAsync(record.labelNodeId) : null;
   if (vector) vector.remove();
-  if (text) text.remove();
+  if (text && !text.removed) (text as SceneNode).remove();
   removeConnection(record.id);
   invalidateConnectorIndex();
 

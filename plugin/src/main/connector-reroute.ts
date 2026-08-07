@@ -122,7 +122,7 @@ export async function rerouteConnections(ids?: readonly string[]): Promise<Rerou
       intent: record.intent,
       label: record.label,
       existingVector: vectorNode && vectorNode.type === 'VECTOR' ? vectorNode : null,
-      existingLabel: labelNode && labelNode.type === 'TEXT' ? labelNode : null,
+      existingLabel: labelNode && labelNode.type === 'FRAME' ? labelNode : null,
     });
 
     // Arm AFTER the writes, for the same reason the dispatch path arms post-dispatch: the
