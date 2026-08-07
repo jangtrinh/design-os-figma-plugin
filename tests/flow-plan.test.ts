@@ -22,10 +22,10 @@ describe('reading a flow into canvas edges', () => {
     expect(plan.edges.map((e) => e.transitionId)).toEqual(['t1', 't3']);
   });
 
-  it('strips a state suffix — a state has no frame of its own', () => {
+  it('falls back to the screen frame when a state declares none', () => {
     const plan = planFlow(CHECKOUT, 'fallback');
     const t3 = plan.edges.find((e) => e.transitionId === 't3');
-    expect(t3).toMatchObject({ fromScreen: 'checkout', toScreen: 'confirm', trigger: 'AFTER_DELAY' });
+    expect(t3).toMatchObject({ fromScreen: 'checkout', toScreen: 'confirm', fromRef: 'checkout.loading', trigger: 'AFTER_DELAY' });
   });
 
   it('labels with the trigger and leaves the guard off the canvas', () => {
@@ -35,7 +35,7 @@ describe('reading a flow into canvas edges', () => {
 });
 
 describe('nothing is dropped without a reason', () => {
-  it('records a self-transition as skipped rather than omitting it', () => {
+  it('records a transition that lands on one frame as skipped rather than omitting it', () => {
     const plan = planFlow(CHECKOUT, 'fallback');
     expect(plan.skipped).toHaveLength(1);
     expect(plan.skipped[0].transitionId).toBe('t2');
@@ -85,5 +85,60 @@ describe('route comparison tolerates float noise but not real movement', () => {
 
   it('does not silently pass an empty route against a real one', () => {
     expect(routesMatch(route, [])).toBe(false);
+  });
+});
+
+// Real files do not name their frames after screen ids. One page of the file this was built
+// against uses kebab-case ids (`quota-profile-list`), another names frames for humans
+// (`LLM Gateway · Consumer (Filter drawer)`), and a third encodes the data state in the frame
+// name itself (`… — 1 · Mặc định`). Guessing a mapping from separators would attach edges to
+// the wrong frame in silence, so the mapping is declared.
+describe('frame mapping — the file being drawn into decides the names', () => {
+  const MAPPED = {
+    name: 'consumer',
+    screens: [
+      { id: 'list', frame: 'quota-profile-list' },
+      {
+        id: 'consumer',
+        frame: 'LLM Gateway · Consumer',
+        stateFrames: { filtering: 'LLM Gateway · Consumer (Filter drawer)' },
+      },
+    ],
+    transitions: [
+      { id: 't1', from: 'list', to: 'consumer', trigger: 'ON_CLICK' },
+      { id: 't2', from: 'consumer.default', to: 'consumer.filtering', trigger: 'ON_CLICK' },
+    ],
+  };
+
+  it('uses the declared frame name instead of the screen id', () => {
+    const plan = planFlow(MAPPED, 'fallback');
+    const t1 = plan.edges.find((e) => e.transitionId === 't1');
+    expect(t1).toMatchObject({ fromScreen: 'quota-profile-list', toScreen: 'LLM Gateway · Consumer' });
+  });
+
+  it('draws a state-to-state transition when the states are separate frames', () => {
+    const plan = planFlow(MAPPED, 'fallback');
+    const t2 = plan.edges.find((e) => e.transitionId === 't2');
+    expect(t2).toMatchObject({
+      fromScreen: 'LLM Gateway · Consumer',
+      toScreen: 'LLM Gateway · Consumer (Filter drawer)',
+      fromRef: 'consumer.default',
+      toRef: 'consumer.filtering',
+    });
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it('still skips when both states fall back to the one frame', () => {
+    const plan = planFlow({
+      screens: [{ id: 'consumer', frame: 'LLM Gateway · Consumer' }],
+      transitions: [{ id: 'tx', from: 'consumer.default', to: 'consumer.loading' }],
+    }, 'fallback');
+    expect(plan.edges).toEqual([]);
+    expect(plan.skipped[0].reason).toContain('LLM Gateway · Consumer');
+  });
+
+  it('a screen id with no declared frame is still its own frame name', () => {
+    const plan = planFlow({ transitions: [{ id: 't', from: 'cart', to: 'checkout' }] }, 'fallback');
+    expect(plan.edges[0]).toMatchObject({ fromScreen: 'cart', toScreen: 'checkout' });
   });
 });
