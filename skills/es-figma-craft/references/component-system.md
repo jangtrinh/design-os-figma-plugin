@@ -17,6 +17,12 @@ Icons: always real instances from the icon library — never text glyphs (`×`, 
 
 **Hard prohibitions:** no inline look-alikes; no second component overlapping an existing one; no "new enhanced" duplicates — enhance the original in place. Every create-new in a build report must state WHY rungs 1–3 failed.
 
+**PRIMITIVES-THEN-VARIANT (owner mindset):** when a same-named component exists but doesn't fit the need, classify FIRST: **DEFECT** (fix the master) · **MISSING TYPE** (build/extend the family's PRIMITIVE atoms, then construct a NEW VARIANT in the existing set from those primitives) · **DIFFERENT NATURE** (rare — a declared composition, must be proven). Never dodge, never compose per-screen, never fork the family.
+
+**BUILD-FOR-REUSE:** before building a group of screens/states, list every block appearing in ≥2 page-contents (header, meta row, summary, timeline item, list row, form…) → build the primitive → build the composite from primitives → every page-content uses instances. Different states → variants/props/hidden-blocks on ONE component, never N copies. One form component can serve 8 modal states; one list page-content can serve 4 screens via hidden rows.
+
+**LEVERAGE-FIRST:** learn how the kit builds before building. Building blocks (cells, rows, chips, list items) live INSIDE the kit's existing component systems — a missing kind = add a variant there (backup-edit protocol); screen-scoped component names are ONLY for page-content wrappers, never for building blocks.
+
 **Owner approval gate:** any plan that mints/changes a SHARED component (anatomy, props, rewiring) is presented to the owner BEFORE execution. Small fixes within an approved scope are fine.
 
 ## 3. Extraction heuristics (composite vs inline)

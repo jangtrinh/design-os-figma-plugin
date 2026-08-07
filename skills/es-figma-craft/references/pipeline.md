@@ -10,6 +10,7 @@ Five phases plus preflight. Do them in order; don't skip RECON because the scree
 - [ ] If the file carries machine-readable markers (AI manifest, `status` plugin-data: `canonical`/`deprecated`/`legacy-unstandardized`), read them before cloning ANY design-system node.
 - [ ] If the user says they changed the file → reconcile FIRST via [knowledge-sync.md](knowledge-sync.md).
 - [ ] Every mutation script opens with the file guard: `if (figma.root.name !== '<expected>') throw new Error('wrong file')`.
+- [ ] Version checkpoint before a task's first mutation: `saveVersionHistoryAsync('pre-{task}')` (or the bridge's checkpoint).
 - [ ] Persist all scripts to the project's `plans/{plan}/scripts/` from the start (never scratchpad-first); verification PNGs to `verify-pngs/`.
 
 ## Phase 1 — RECON
@@ -61,6 +62,7 @@ Three layers, in order — full protocol in [verification-protocol.md](verificat
 - Registry rows for new components added **in the same change**.
 - 1-line summary: components reused (count + names), new composites, registry rows touched, call count. No per-screen report files unless asked.
 - Distill **at most one** durable lesson → project patterns/gotchas file or memory; wrong-tool frictions → the tool's improvement backlog (backlog ≠ patterns: "tool must fix" vs "how to avoid").
+- If the project keeps a derived design cache: tool change-logs may NOT capture script mutations — after hand-build waves run the full re-scan chain with explicit `--out` flags, verify by exact registry-count delta ([campaign-orchestration.md](campaign-orchestration.md) §Closing a wave).
 
 ## Call budget
 

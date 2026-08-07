@@ -72,6 +72,8 @@ Full thinking layer (8 operating gates + rationale): [operating-gates.md](refere
 | [verification-protocol.md](references/verification-protocol.md) | Closing any batch — the 3-layer verify, false-green catalog, sweep disciplines |
 | [build-script-standard.md](references/build-script-standard.md) | Writing any mutation script — the canonical script anatomy (guards → idempotency → spec constants → mutate → assert → structured return) + anti-pattern table |
 | [script-helpers.md](references/script-helpers.md) | Writing any mutation script — copy the fail-loud helper block + ordering laws |
+| [quality-gate-system.md](references/quality-gate-system.md) | Setting up or evolving quality gates — executable gate suite, "no defect escapes twice", 4 catch layers, gate honesty rules, convention-DNA extraction |
+| [campaign-orchestration.md](references/campaign-orchestration.md) | Multi-screen campaigns with agents — 1-agent-1-job, batch-by-budget, study-first, backup-edit, canvas organization, wave close |
 | [knowledge-sync.md](references/knowledge-sync.md) | User says they changed the file, or your docs picture may be stale — URL-drop protocol, drift channels, reconcile triggers |
 | [project-adapter-template.md](references/project-adapter-template.md) | Onboarding this discipline to a new project |
 
