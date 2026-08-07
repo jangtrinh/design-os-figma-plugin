@@ -11,14 +11,20 @@ import { pageOf, renderConnector } from './connector-render';
 import { invalidateConnectorIndex, rerouteConnections } from './connector-reroute';
 import { verifyConnections } from './connector-verify';
 import {
-  findConnection, findConnectionByEndpoints, listConnections, removeConnection, upsertConnection,
+  findConnection, findConnectionByEndpoints, listConnections, removeConnection,
+  resetConnectionCache, upsertConnection,
 } from './connector-store';
 
 type Params = Record<string, unknown>;
 
 let connectionSequence = 0;
 
+/**
+ * Every connector command opens here: the editor guard, plus dropping the store cache so this
+ * command reads the document as it stands rather than as this plugin instance last left it.
+ */
 function requireDesignFile(capability: string): void {
+  resetConnectionCache();
   const refusal = editorRefusal({
     capability,
     required: ['figma'],
@@ -198,10 +204,12 @@ export async function opReroute(params: Params): Promise<Record<string, unknown>
 }
 
 export async function opVerifyConnections(): Promise<Record<string, unknown>> {
+  resetConnectionCache();
   return verifyConnections();
 }
 
 export function opListConnections(): Record<string, unknown> {
+  resetConnectionCache();
   const connections = listConnections();
   return { count: connections.length, connections };
 }

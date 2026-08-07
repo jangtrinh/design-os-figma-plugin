@@ -4593,6 +4593,9 @@
   function readNodeConnectionId(node) {
     return node.getSharedPluginData(NAMESPACE, "connection_id");
   }
+  function resetConnectionCache() {
+    cache = null;
+  }
 
   // plugin/src/main/connector-render.ts
   var LABEL_SIZE = 11;
@@ -5070,6 +5073,7 @@
   // plugin/src/main/executor-connector.ts
   var connectionSequence = 0;
   function requireDesignFile2(capability) {
+    resetConnectionCache();
     const refusal = editorRefusal({
       capability,
       required: ["figma"],
@@ -5200,9 +5204,11 @@
     return { checked: outcomes.length, ...counts, outcomes };
   }
   async function opVerifyConnections() {
+    resetConnectionCache();
     return verifyConnections();
   }
   function opListConnections() {
+    resetConnectionCache();
     const connections2 = listConnections();
     return { count: connections2.length, connections: connections2 };
   }

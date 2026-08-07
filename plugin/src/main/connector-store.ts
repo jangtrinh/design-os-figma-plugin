@@ -1,10 +1,16 @@
 // Where connectors are remembered, so a redraw or a check can find them again.
 //
-// The in-memory copy is AUTHORITATIVE. main.ts's message handler is async, so two commands
-// in flight to this plugin interleave at every await — a read-modify-write of the root's
-// plugin data that spans an await is a lost update, and the loser vanishes with no error.
-// So: parse once, mutate in memory, and write through synchronously in the same stretch.
-// Nothing here re-reads the stored blob mid-command.
+// The in-memory copy is authoritative FOR THE LENGTH OF ONE COMMAND, and no longer.
+//
+// Within a command it must not be re-read: main.ts's message handler is async, so two
+// commands in flight interleave at every await, and a read-modify-write of the root's plugin
+// data that spans an await is a lost update that vanishes with no error.
+//
+// BETWEEN commands it must not be trusted: a second Figma tab, another plugin instance, or a
+// direct edit to the stored blob all change the document underneath us, and a cache held
+// across commands would flush stale records back over them — resurrecting connections that
+// were deleted. Measured, not theorised: a store emptied out-of-band came back on the next
+// write. So each connector command opens by dropping the cache.
 
 import type { ConnectionRecord } from '../../../shared/connector-types';
 
