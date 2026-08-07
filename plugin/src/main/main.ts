@@ -35,7 +35,7 @@ import {
 import { opExecJs } from './executor-exec-js';
 import { opCloneTraits } from './executor-clone-traits';
 import { MUTATING_COMMANDS } from '../../../shared/mutating-commands';
-import { opConnect, opDisconnect, opListConnections, opReroute } from './executor-connector';
+import { opConnect, opDisconnect, opListConnections, opReroute, opVerifyConnections } from './executor-connector';
 import { noteChangedNodes } from './connector-reroute';
 import {
   beginAgentMutation,
@@ -596,6 +596,7 @@ async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
     case 'DISCONNECT': return opDisconnect(params);
     case 'LIST_CONNECTIONS': return opListConnections();
     case 'REROUTE': return opReroute(params);
+    case 'VERIFY_CONNECTIONS': return opVerifyConnections();
     case 'CREATE_INSTANCE': return opCreateInstance(params);
     case 'SET_VARIANT': return opSetVariant(params);
     case 'CREATE_VARIABLE': return opCreateVariable(params);

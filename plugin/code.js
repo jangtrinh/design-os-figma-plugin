@@ -4590,6 +4590,9 @@
   function stampNodeConnectionId(node, connectionId) {
     node.setSharedPluginData(NAMESPACE, "connection_id", connectionId);
   }
+  function readNodeConnectionId(node) {
+    return node.getSharedPluginData(NAMESPACE, "connection_id");
+  }
 
   // plugin/src/main/connector-render.ts
   var LABEL_SIZE = 11;
@@ -4975,6 +4978,78 @@
     }, DEBOUNCE_MS);
   }
 
+  // shared/flow-plan.ts
+  function routesMatch(a, b, epsilon = 0.5) {
+    if (a.length !== b.length) return false;
+    return a.every((point, i) => Math.abs(point.x - b[i].x) <= epsilon && Math.abs(point.y - b[i].y) <= epsilon);
+  }
+
+  // plugin/src/main/connector-verify.ts
+  var EPSILON = 0.5;
+  function boxOf2(node) {
+    if (!node || !("absoluteBoundingBox" in node)) return null;
+    const box = node.absoluteBoundingBox;
+    return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+  }
+  async function verifyConnections() {
+    const reports = [];
+    const counts = { orphan: 0, desync: 0, stale: 0, drift: 0 };
+    for (const record of listConnections()) {
+      const findings = [];
+      const detail = [];
+      const source = await figma.getNodeByIdAsync(record.from);
+      const target = await figma.getNodeByIdAsync(record.to);
+      const sourceBox = boxOf2(source);
+      const targetBox = boxOf2(target);
+      if (!sourceBox || !targetBox) {
+        findings.push("orphan");
+        detail.push(`endpoint gone: ${!sourceBox ? record.from : record.to}`);
+      }
+      const vector = await figma.getNodeByIdAsync(record.vectorNodeId);
+      if (!vector || vector.type !== "VECTOR") {
+        findings.push("desync");
+        detail.push(`no vector node at ${record.vectorNodeId}`);
+      } else if (readNodeConnectionId(vector) !== record.id) {
+        findings.push("desync");
+        detail.push(`node ${vector.id} claims a different connection id`);
+      }
+      if (record.routerVersion !== ROUTER_VERSION) {
+        findings.push("stale");
+        detail.push(`drawn by router v${record.routerVersion}, current is v${ROUTER_VERSION}`);
+      }
+      if (sourceBox && targetBox) {
+        const fresh = route({ source: sourceBox, target: targetBox, intent: record.intent });
+        if (!routesMatch(record.routePoints, fresh, EPSILON)) {
+          findings.push("drift");
+          detail.push("the stored route no longer matches the endpoints");
+        } else if (vector && vector.type === "VECTOR") {
+          const drawn = boxOf2(vector);
+          const minX = Math.min(...fresh.map((p) => p.x));
+          const minY = Math.min(...fresh.map((p) => p.y));
+          if (drawn && (Math.abs(drawn.x - minX) > EPSILON || Math.abs(drawn.y - minY) > EPSILON)) {
+            findings.push("drift");
+            detail.push(`drawn at ${drawn.x},${drawn.y} but the route starts at ${minX},${minY}`);
+          }
+        }
+      }
+      for (const finding of findings) counts[finding] += 1;
+      reports.push({
+        connectionId: record.id,
+        from: record.from,
+        to: record.to,
+        flow: record.flow,
+        findings,
+        detail
+      });
+    }
+    return {
+      checked: reports.length,
+      ok: reports.filter((r) => r.findings.length === 0).length,
+      findings: counts,
+      reports
+    };
+  }
+
   // plugin/src/main/executor-connector.ts
   var connectionSequence = 0;
   function requireDesignFile2(capability) {
@@ -4992,6 +5067,25 @@
     }
     return null;
   }
+  var ATTACHABLE = ["FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE", "GROUP", "SECTION", "RECTANGLE", "TEXT"];
+  async function resolveByName(name, pageName, role) {
+    let page = figma.currentPage;
+    if (pageName) {
+      page = figma.root.children.find((p) => p.name === pageName) ?? null;
+      if (!page) throw withCode(new Error(`page not found: ${pageName}`), "E_INVALID_ARGS");
+    }
+    await page.loadAsync();
+    const matches = page.findAll((n) => n.name === name && ATTACHABLE.indexOf(n.type) !== -1);
+    if (matches.length === 0) {
+      throw withCode(new Error(`${role} node named "${name}" not found on page "${page.name}"`), "E_INVALID_ARGS");
+    }
+    if (matches.length > 1) {
+      throw withCode(new Error(
+        `${role} name "${name}" is ambiguous on page "${page.name}" \u2014 ${matches.length} nodes match (${matches.slice(0, 4).map((n) => n.id).join(", ")})`
+      ), "E_INVALID_ARGS");
+    }
+    return matches[0];
+  }
   async function resolveEndpoint2(id, role) {
     const node = await figma.getNodeByIdAsync(id);
     if (!node) throw withCode(new Error(`${role} node not found: ${id}`), "E_INVALID_ARGS");
@@ -5000,7 +5094,7 @@
     }
     return node;
   }
-  function boxOf2(node, role) {
+  function boxOf3(node, role) {
     const box = node.absoluteBoundingBox;
     if (!box) throw withCode(new Error(`${role} node ${node.id} reports no bounding box`), "E_INVALID_ARGS");
     return { x: box.x, y: box.y, width: box.width, height: box.height };
@@ -5012,9 +5106,14 @@
   }
   async function opConnect(params) {
     requireDesignFile2("drawing a connector");
-    const fromId = str(params, "from", "source");
-    const toId = str(params, "to", "target");
-    if (!fromId || !toId) throw withCode(new Error("CONNECT requires params.from and params.to"), "E_INVALID_ARGS");
+    const fromName = str(params, "fromName");
+    const toName = str(params, "toName");
+    const pageName = str(params, "page");
+    let fromId = str(params, "from", "source");
+    let toId = str(params, "to", "target");
+    if (fromName) fromId = (await resolveByName(fromName, pageName, "source")).id;
+    if (toName) toId = (await resolveByName(toName, pageName, "target")).id;
+    if (!fromId || !toId) throw withCode(new Error("CONNECT requires params.from/params.to (ids) or params.fromName/params.toName"), "E_INVALID_ARGS");
     if (fromId === toId) throw withCode(new Error("CONNECT needs two different nodes"), "E_INVALID_ARGS");
     const intent = str(params, "intent") === "annotation" ? "annotation" : "flow";
     const label = str(params, "label");
@@ -5027,7 +5126,7 @@
     if (!page || pageOf(target) !== page) {
       throw withCode(new Error("CONNECT needs both nodes on the same page"), "E_INVALID_ARGS");
     }
-    const points = route({ source: boxOf2(source, "source"), target: boxOf2(target, "target"), intent, clearance });
+    const points = route({ source: boxOf3(source, "source"), target: boxOf3(target, "target"), intent, clearance });
     const existing = findConnectionByEndpoints(fromId, toId);
     connectionSequence += 1;
     const connectionId = existing?.id ?? `conn-${Date.now()}-${connectionSequence}`;
@@ -5082,6 +5181,9 @@
     const counts = { redrawn: 0, unchanged: 0, orphan: 0 };
     for (const outcome of outcomes) counts[outcome.status] += 1;
     return { checked: outcomes.length, ...counts, outcomes };
+  }
+  async function opVerifyConnections() {
+    return verifyConnections();
   }
   function opListConnections() {
     const connections2 = listConnections();
@@ -5425,6 +5527,8 @@
         return opListConnections();
       case "REROUTE":
         return opReroute(params);
+      case "VERIFY_CONNECTIONS":
+        return opVerifyConnections();
       case "CREATE_INSTANCE":
         return opCreateInstance(params);
       case "SET_VARIANT":

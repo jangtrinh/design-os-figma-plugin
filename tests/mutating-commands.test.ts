@@ -22,7 +22,7 @@ import { MUTATING_COMMANDS } from '../shared/mutating-commands.ts';
 const READ_ONLY_COMMANDS: readonly CommandName[] = [
   'STATUS', 'GET_SELECTION', 'SCAN_DESIGN_SYSTEM', 'AUDIT_DS',
   'GET_CORRECTION_MEMORY', 'EXPORT_PNG', 'HTML_TO_FIGMA', 'BATCH', 'PROJECT_BIND', 'JOB',
-  'LIST_CONNECTIONS',
+  'LIST_CONNECTIONS', 'VERIFY_CONNECTIONS',
 ];
 
 describe('command classification — every COMMANDS entry is MUTATING xor READ_ONLY', () => {

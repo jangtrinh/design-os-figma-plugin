@@ -9,6 +9,7 @@ import { ROUTER_VERSION, type ConnectionRecord, type ConnectorIntent, type Rect 
 import { withCode } from './executor-styles';
 import { pageOf, renderConnector } from './connector-render';
 import { invalidateConnectorIndex, rerouteConnections } from './connector-reroute';
+import { verifyConnections } from './connector-verify';
 import {
   findConnection, findConnectionByEndpoints, listConnections, removeConnection, upsertConnection,
 } from './connector-store';
@@ -32,6 +33,36 @@ function str(params: Params, ...keys: string[]): string | null {
     if (typeof value === 'string' && value.trim() !== '') return value.trim();
   }
   return null;
+}
+
+/** Node types a flow edge may attach to — a screen, a component, or a wrapper around one. */
+const ATTACHABLE = ['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'GROUP', 'SECTION', 'RECTANGLE', 'TEXT'];
+
+/**
+ * Find one node by NAME on a named page (the current page when none is given).
+ *
+ * Ids drift between sessions — a flow authored today and redrawn next week has to find its
+ * screens by the only thing an author controls. Two matches is an error, not a coin flip:
+ * silently drawing to whichever came first in document order is how an edge ends up
+ * pointing at the wrong screen while every report still reads clean.
+ */
+async function resolveByName(name: string, pageName: string | null, role: string): Promise<SceneNode> {
+  let page: PageNode | null = figma.currentPage;
+  if (pageName) {
+    page = figma.root.children.find((p) => p.name === pageName) ?? null;
+    if (!page) throw withCode(new Error(`page not found: ${pageName}`), 'E_INVALID_ARGS');
+  }
+  await page.loadAsync();
+  const matches = page.findAll((n) => n.name === name && ATTACHABLE.indexOf(n.type) !== -1);
+  if (matches.length === 0) {
+    throw withCode(new Error(`${role} node named "${name}" not found on page "${page.name}"`), 'E_INVALID_ARGS');
+  }
+  if (matches.length > 1) {
+    throw withCode(new Error(
+      `${role} name "${name}" is ambiguous on page "${page.name}" — ${matches.length} nodes match (${matches.slice(0, 4).map((n) => n.id).join(', ')})`,
+    ), 'E_INVALID_ARGS');
+  }
+  return matches[0];
 }
 
 async function resolveEndpoint(id: string, role: string): Promise<SceneNode> {
@@ -59,9 +90,14 @@ async function existingNode<T extends SceneNode>(id: string | null, type: T['typ
 export async function opConnect(params: Params): Promise<Record<string, unknown>> {
   requireDesignFile('drawing a connector');
 
-  const fromId = str(params, 'from', 'source');
-  const toId = str(params, 'to', 'target');
-  if (!fromId || !toId) throw withCode(new Error('CONNECT requires params.from and params.to'), 'E_INVALID_ARGS');
+  const fromName = str(params, 'fromName');
+  const toName = str(params, 'toName');
+  const pageName = str(params, 'page');
+  let fromId = str(params, 'from', 'source');
+  let toId = str(params, 'to', 'target');
+  if (fromName) fromId = (await resolveByName(fromName, pageName, 'source')).id;
+  if (toName) toId = (await resolveByName(toName, pageName, 'target')).id;
+  if (!fromId || !toId) throw withCode(new Error('CONNECT requires params.from/params.to (ids) or params.fromName/params.toName'), 'E_INVALID_ARGS');
   if (fromId === toId) throw withCode(new Error('CONNECT needs two different nodes'), 'E_INVALID_ARGS');
 
   const intent: ConnectorIntent = str(params, 'intent') === 'annotation' ? 'annotation' : 'flow';
@@ -159,6 +195,10 @@ export async function opReroute(params: Params): Promise<Record<string, unknown>
   const counts = { redrawn: 0, unchanged: 0, orphan: 0 };
   for (const outcome of outcomes) counts[outcome.status] += 1;
   return { checked: outcomes.length, ...counts, outcomes };
+}
+
+export async function opVerifyConnections(): Promise<Record<string, unknown>> {
+  return verifyConnections();
 }
 
 export function opListConnections(): Record<string, unknown> {
