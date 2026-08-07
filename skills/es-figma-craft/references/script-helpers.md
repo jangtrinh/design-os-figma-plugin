@@ -72,6 +72,34 @@ function cleanStuckProps(set, prefixes) {
     if (prefixes.some(p => key.startsWith(p))) { try { set.deleteComponentProperty(key); } catch (e) {} }
 }
 
+// ===== SAFE WRAPPERS — make the top runtime-error classes impossible =====
+// Harvested from the plugin error log; use these INSTEAD of the raw API.
+
+// combineAsVariants throws "Grouped nodes must be in the same page as the parent"
+// → appendChild every variant into the container FIRST, then combine.
+function combineVariantsSafe(variants, container) {
+  for (const v of variants) container.appendChild(v);
+  const set = figma.combineAsVariants(variants, container);
+  return set;   // still verify child count + names in a FRESH call (Class B)
+}
+
+// set fontName throws "Cannot use unloaded font" → always load first.
+async function setFont(node, family, style) {
+  await figma.loadFontAsync({ family, style });
+  node.fontName = { family, style };
+}
+
+// layoutSizing FILL throws "can only be set on children of auto-layout frames"
+// → assert placement BEFORE setting; enforces the reparent→resize→sizing order.
+function sizing(node, { h, v }) {
+  const p = node.parent;
+  const inAuto = p && 'layoutMode' in p && p.layoutMode !== 'NONE';
+  if ((h === 'FILL' || v === 'FILL') && !inAuto)
+    throw new Error(`sizing FILL on "${node.name}": parent "${p && p.name}" is not auto-layout — reparent FIRST`);
+  if (h) node.layoutSizingHorizontal = h;
+  if (v) node.layoutSizingVertical = v;
+}
+
 // ... work ...
 // return STRUCTURED data — the agent sees only what you return:
 // return { created: [...ids], counts: {...}, errors };

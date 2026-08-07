@@ -64,6 +64,10 @@ return {
 2. **Fresh PNG, read by eye** — the arbiter. 1 PNG + 1 assert pass per batch (SLA 1–3 min/screen).
 3. On timeout/disconnect/error: **inventory first** (sweep for orphans, half-applied swaps, duplicates by tag/name), rerun second.
 
+## Prefer safe wrappers over raw API calls
+
+The top recurring runtime errors (same-page combineAsVariants, unloaded font, FILL outside auto-layout) each have a wrapper in [script-helpers.md](script-helpers.md) (`combineVariantsSafe`, `setFont`, `sizing`) that makes the error impossible by construction. A script calling the raw API where a wrapper exists must justify it. New recurring runtime errors → harvest into new wrappers per [quality-gate-system.md](quality-gate-system.md) §Error-harvest loop.
+
 ## Batching rules
 
 - Batch a section's mutations into ONE script (SLA); split a screen into sequential section-scripts.

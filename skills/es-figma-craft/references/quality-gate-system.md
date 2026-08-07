@@ -40,6 +40,19 @@ Build agents that hit an ungated defect class mid-build: **record it in the gate
 | Reuse audit | A block repeated in ≥2 page-contents that is not componentized; every create-new declared + justified |
 | Construction lints | Spacer frames, raw frames vs auto-layout, detached styles, off-grid spacing/radius |
 
+## Error-harvest loop — runtime errors are FREE defect reports
+
+The bridge logs every script runtime error (design:os: `design/figma-errors.jsonl` — ts, cmd, offending script path, full message). Each entry is a defect report that cost nothing to file. Harvest it:
+
+1. **At wave close (and whenever a session hits ≥2 runtime errors):** read entries since the last harvest cursor; group by error message class.
+2. **Classify each class:**
+   - **Already documented as a rule but still occurring** → prose failed; add/strengthen a SAFE WRAPPER in script-helpers.md that makes the error *impossible* (e.g. `combineVariantsSafe` appends-then-combines; `setFont` loads-then-sets; `sizing` asserts auto-layout parent before FILL). A rule that keeps firing as a runtime error is an enforcement gap, not a knowledge gap.
+   - **New class** → new gotcha entry (right class A–F) + decide: wrapper, checklist item, or gate.
+3. **Apply "no defect escapes twice" to the log itself:** the same error class recurring AFTER its wrapper/rule shipped = the wrapper isn't being used — fix the skeleton/checklist so scripts can't skip it, don't re-explain the rule.
+4. Record the harvest (classes seen, wrappers added) in the wave report — the log is also the honest measure of how often scripts fail on first run (target: trending to 0 per wave).
+
+Trade-off to keep: a thrown runtime error is STILL better than a silent no-op — never wrap these in try-catch to "reduce errors"; reduce them by construction.
+
 ## Convention-DNA extraction (measure the house style — don't dump the file)
 
 Periodically extract the project's *applied* grammar from real built screens: % auto-layout, % token-bound fills, spacing-grid adherence, radius-scale usage, font strays, deprecated-component usage, most-used components per domain. Output = a measured DO/DON'T conventions doc (a per-domain "% bound" table shames the weak areas into priority).
