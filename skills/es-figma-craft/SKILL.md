@@ -70,6 +70,7 @@ Full thinking layer (8 operating gates + rationale): [operating-gates.md](refere
 | [plugin-api-gotchas.md](references/plugin-api-gotchas.md) | Before writing ANY exec-js / use_figma script — 6 classes of API failure modes with fixes |
 | [component-system.md](references/component-system.md) | Any componentize / variant / table / shell decision — ladder, extraction heuristics, column-first tables, shell+slot, template-first |
 | [verification-protocol.md](references/verification-protocol.md) | Closing any batch — the 3-layer verify, false-green catalog, sweep disciplines |
+| [build-script-standard.md](references/build-script-standard.md) | Writing any mutation script — the canonical script anatomy (guards → idempotency → spec constants → mutate → assert → structured return) + anti-pattern table |
 | [script-helpers.md](references/script-helpers.md) | Writing any mutation script — copy the fail-loud helper block + ordering laws |
 | [knowledge-sync.md](references/knowledge-sync.md) | User says they changed the file, or your docs picture may be stale — URL-drop protocol, drift channels, reconcile triggers |
 | [project-adapter-template.md](references/project-adapter-template.md) | Onboarding this discipline to a new project |
