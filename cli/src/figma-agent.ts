@@ -19,6 +19,7 @@ import * as createFrame from './commands/create-frame.ts';
 import * as connect from './commands/connect.ts';
 import * as disconnect from './commands/disconnect.ts';
 import * as listConnections from './commands/list-connections.ts';
+import * as reroute from './commands/reroute.ts';
 import * as createInstance from './commands/create-instance.ts';
 import * as createVariable from './commands/create-variable.ts';
 import * as execJs from './commands/exec-js.ts';
@@ -59,6 +60,7 @@ const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<unknown>
   connect,
   disconnect,
   'list-connections': listConnections,
+  reroute,
   'create-instance': createInstance,
   'set-variant': setVariant,
   'create-variable': createVariable,
@@ -104,6 +106,7 @@ Commands:
   connect              --from id --to id [--label t --intent flow|annotation --flow n --transition id]
   disconnect           --id conn-id | --from id --to id
   list-connections
+  reroute              [--id conn-id | --flow name]
   create-instance      --component <key|id> [--parent id]
   set-variant          --node id --props k=v,k2=v2
   create-variable      --collection c --name n --type COLOR|FLOAT|STRING|BOOLEAN --value v [--mode m]

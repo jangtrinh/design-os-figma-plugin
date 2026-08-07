@@ -4420,7 +4420,8 @@
     "EXEC_JS",
     "IMPORT_PAYLOAD",
     "CONNECT",
-    "DISCONNECT"
+    "DISCONNECT",
+    "REROUTE"
   ];
 
   // shared/connector-anchor.ts
@@ -4656,107 +4657,6 @@
     return { vectorNodeId: vector.id, labelNodeId };
   }
 
-  // plugin/src/main/executor-connector.ts
-  var connectionSequence = 0;
-  function requireDesignFile2(capability) {
-    const refusal = editorRefusal({
-      capability,
-      required: ["figma"],
-      found: figma.editorType ?? null
-    });
-    if (refusal) throw withCode(new Error(refusal), "E_WRONG_EDITOR");
-  }
-  function str(params, ...keys) {
-    for (const key of keys) {
-      const value = params[key];
-      if (typeof value === "string" && value.trim() !== "") return value.trim();
-    }
-    return null;
-  }
-  async function resolveEndpoint2(id, role) {
-    const node = await figma.getNodeByIdAsync(id);
-    if (!node) throw withCode(new Error(`${role} node not found: ${id}`), "E_INVALID_ARGS");
-    if (!("absoluteBoundingBox" in node)) {
-      throw withCode(new Error(`${role} node ${id} has no geometry (${node.type})`), "E_INVALID_ARGS");
-    }
-    return node;
-  }
-  function boxOf(node, role) {
-    const box = node.absoluteBoundingBox;
-    if (!box) throw withCode(new Error(`${role} node ${node.id} reports no bounding box`), "E_INVALID_ARGS");
-    return { x: box.x, y: box.y, width: box.width, height: box.height };
-  }
-  async function existingNode(id, type) {
-    if (!id) return null;
-    const node = await figma.getNodeByIdAsync(id);
-    return node && node.type === type ? node : null;
-  }
-  async function opConnect(params) {
-    requireDesignFile2("drawing a connector");
-    const fromId = str(params, "from", "source");
-    const toId = str(params, "to", "target");
-    if (!fromId || !toId) throw withCode(new Error("CONNECT requires params.from and params.to"), "E_INVALID_ARGS");
-    if (fromId === toId) throw withCode(new Error("CONNECT needs two different nodes"), "E_INVALID_ARGS");
-    const intent = str(params, "intent") === "annotation" ? "annotation" : "flow";
-    const label = str(params, "label");
-    const flowName = str(params, "flow", "flowName");
-    const transitionId = str(params, "transition", "transitionId");
-    const clearance = typeof params.clearance === "number" ? params.clearance : void 0;
-    const source = await resolveEndpoint2(fromId, "source");
-    const target = await resolveEndpoint2(toId, "target");
-    const page = pageOf(source);
-    if (!page || pageOf(target) !== page) {
-      throw withCode(new Error("CONNECT needs both nodes on the same page"), "E_INVALID_ARGS");
-    }
-    const points = route({ source: boxOf(source, "source"), target: boxOf(target, "target"), intent, clearance });
-    const existing = findConnectionByEndpoints(fromId, toId);
-    connectionSequence += 1;
-    const connectionId = existing?.id ?? `conn-${Date.now()}-${connectionSequence}`;
-    const rendered = await renderConnector({
-      connectionId,
-      page,
-      points,
-      intent,
-      label,
-      existingVector: await existingNode(existing?.vectorNodeId ?? null, "VECTOR"),
-      existingLabel: await existingNode(existing?.labelNodeId ?? null, "TEXT")
-    });
-    const record = {
-      id: connectionId,
-      from: fromId,
-      to: toId,
-      intent,
-      // Provenance is what makes the canvas a projection of the linted graph rather than a
-      // second graph: an edge that cannot name its transition can be measured but not checked.
-      flow: flowName && transitionId ? { name: flowName, transitionId } : null,
-      label,
-      vectorNodeId: rendered.vectorNodeId,
-      labelNodeId: rendered.labelNodeId,
-      routePoints: points,
-      routerVersion: ROUTER_VERSION
-    };
-    upsertConnection(record);
-    return { id: rendered.vectorNodeId, connectionId, redrawn: existing !== null, points, record };
-  }
-  async function opDisconnect(params) {
-    requireDesignFile2("removing a connector");
-    const id = str(params, "id", "connectionId");
-    const fromId = str(params, "from");
-    const toId = str(params, "to");
-    const record = id ? findConnection(id) : fromId && toId ? findConnectionByEndpoints(fromId, toId) : null;
-    if (!record) throw withCode(new Error("DISCONNECT requires params.id, or both params.from and params.to"), "E_INVALID_ARGS");
-    const vector = await existingNode(record.vectorNodeId, "VECTOR");
-    const text = await existingNode(record.labelNodeId, "TEXT");
-    if (vector) vector.remove();
-    if (text) text.remove();
-    removeConnection(record.id);
-    return { connectionId: record.id, removedVector: vector !== null, removedLabel: text !== null };
-  }
-  function opListConnections() {
-    const connections2 = listConnections();
-    return { count: connections2.length, connections: connections2 };
-  }
-
   // shared/supervised-memory.ts
   var CORRECTION_SCHEMA_VERSION = 1;
   var EDGE_RAW_LIMIT = 250;
@@ -4961,6 +4861,233 @@
     return event;
   }
 
+  // plugin/src/main/connector-reroute.ts
+  var DEBOUNCE_MS = 120;
+  var watchIndex = null;
+  var ownNodes = /* @__PURE__ */ new Set();
+  var pendingConnections = /* @__PURE__ */ new Set();
+  var debounce = null;
+  function addWatch(map, nodeId, connectionId) {
+    const existing = map.get(nodeId);
+    if (existing) existing.add(connectionId);
+    else map.set(nodeId, /* @__PURE__ */ new Set([connectionId]));
+  }
+  async function buildIndex() {
+    const map = /* @__PURE__ */ new Map();
+    const own = /* @__PURE__ */ new Set();
+    for (const record of listConnections()) {
+      own.add(record.vectorNodeId);
+      if (record.labelNodeId) own.add(record.labelNodeId);
+      for (const endpoint of [record.from, record.to]) {
+        let node = await figma.getNodeByIdAsync(endpoint);
+        while (node) {
+          addWatch(map, node.id, record.id);
+          node = node.parent;
+        }
+      }
+    }
+    ownNodes = own;
+    return map;
+  }
+  function invalidateConnectorIndex() {
+    watchIndex = null;
+  }
+  function boxOf(node) {
+    const box = node.absoluteBoundingBox;
+    return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+  }
+  function samePoints(a, b) {
+    return a.length === b.length && a.every((point, i) => point.x === b[i].x && point.y === b[i].y);
+  }
+  async function rerouteConnections(ids) {
+    const wanted = ids ? new Set(ids) : null;
+    const outcomes = [];
+    for (const record of listConnections()) {
+      if (wanted && !wanted.has(record.id)) continue;
+      const source = await figma.getNodeByIdAsync(record.from);
+      const target = await figma.getNodeByIdAsync(record.to);
+      const sourceBox = source && "absoluteBoundingBox" in source ? boxOf(source) : null;
+      const targetBox = target && "absoluteBoundingBox" in target ? boxOf(target) : null;
+      if (!sourceBox || !targetBox) {
+        outcomes.push({ connectionId: record.id, status: "orphan" });
+        continue;
+      }
+      const points = route({ source: sourceBox, target: targetBox, intent: record.intent });
+      if (samePoints(points, record.routePoints)) {
+        outcomes.push({ connectionId: record.id, status: "unchanged" });
+        continue;
+      }
+      const page = pageOf(source);
+      if (!page) {
+        outcomes.push({ connectionId: record.id, status: "orphan" });
+        continue;
+      }
+      const vectorNode = await figma.getNodeByIdAsync(record.vectorNodeId);
+      const labelNode = record.labelNodeId ? await figma.getNodeByIdAsync(record.labelNodeId) : null;
+      const rendered = await renderConnector({
+        connectionId: record.id,
+        page,
+        points,
+        intent: record.intent,
+        label: record.label,
+        existingVector: vectorNode && vectorNode.type === "VECTOR" ? vectorNode : null,
+        existingLabel: labelNode && labelNode.type === "TEXT" ? labelNode : null
+      });
+      beginAgentMutation([rendered.vectorNodeId, ...rendered.labelNodeId ? [rendered.labelNodeId] : []]);
+      const next = {
+        ...record,
+        vectorNodeId: rendered.vectorNodeId,
+        labelNodeId: rendered.labelNodeId,
+        routePoints: points,
+        routerVersion: ROUTER_VERSION
+      };
+      upsertConnection(next);
+      outcomes.push({ connectionId: record.id, status: "redrawn" });
+    }
+    invalidateConnectorIndex();
+    return outcomes;
+  }
+  async function flushPending() {
+    debounce = null;
+    const ids = [...pendingConnections];
+    pendingConnections.clear();
+    if (ids.length === 0) return;
+    try {
+      await rerouteConnections(ids);
+    } catch {
+    }
+  }
+  async function noteChangedNodes(nodeIds) {
+    if (listConnections().length === 0) return;
+    if (watchIndex === null) watchIndex = await buildIndex();
+    let queued = false;
+    for (const nodeId of nodeIds) {
+      if (ownNodes.has(nodeId)) continue;
+      const affected = watchIndex.get(nodeId);
+      if (!affected) continue;
+      for (const connectionId of affected) pendingConnections.add(connectionId);
+      queued = true;
+    }
+    if (!queued) return;
+    if (debounce !== null) clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      void flushPending();
+    }, DEBOUNCE_MS);
+  }
+
+  // plugin/src/main/executor-connector.ts
+  var connectionSequence = 0;
+  function requireDesignFile2(capability) {
+    const refusal = editorRefusal({
+      capability,
+      required: ["figma"],
+      found: figma.editorType ?? null
+    });
+    if (refusal) throw withCode(new Error(refusal), "E_WRONG_EDITOR");
+  }
+  function str(params, ...keys) {
+    for (const key of keys) {
+      const value = params[key];
+      if (typeof value === "string" && value.trim() !== "") return value.trim();
+    }
+    return null;
+  }
+  async function resolveEndpoint2(id, role) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) throw withCode(new Error(`${role} node not found: ${id}`), "E_INVALID_ARGS");
+    if (!("absoluteBoundingBox" in node)) {
+      throw withCode(new Error(`${role} node ${id} has no geometry (${node.type})`), "E_INVALID_ARGS");
+    }
+    return node;
+  }
+  function boxOf2(node, role) {
+    const box = node.absoluteBoundingBox;
+    if (!box) throw withCode(new Error(`${role} node ${node.id} reports no bounding box`), "E_INVALID_ARGS");
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+  }
+  async function existingNode(id, type) {
+    if (!id) return null;
+    const node = await figma.getNodeByIdAsync(id);
+    return node && node.type === type ? node : null;
+  }
+  async function opConnect(params) {
+    requireDesignFile2("drawing a connector");
+    const fromId = str(params, "from", "source");
+    const toId = str(params, "to", "target");
+    if (!fromId || !toId) throw withCode(new Error("CONNECT requires params.from and params.to"), "E_INVALID_ARGS");
+    if (fromId === toId) throw withCode(new Error("CONNECT needs two different nodes"), "E_INVALID_ARGS");
+    const intent = str(params, "intent") === "annotation" ? "annotation" : "flow";
+    const label = str(params, "label");
+    const flowName = str(params, "flow", "flowName");
+    const transitionId = str(params, "transition", "transitionId");
+    const clearance = typeof params.clearance === "number" ? params.clearance : void 0;
+    const source = await resolveEndpoint2(fromId, "source");
+    const target = await resolveEndpoint2(toId, "target");
+    const page = pageOf(source);
+    if (!page || pageOf(target) !== page) {
+      throw withCode(new Error("CONNECT needs both nodes on the same page"), "E_INVALID_ARGS");
+    }
+    const points = route({ source: boxOf2(source, "source"), target: boxOf2(target, "target"), intent, clearance });
+    const existing = findConnectionByEndpoints(fromId, toId);
+    connectionSequence += 1;
+    const connectionId = existing?.id ?? `conn-${Date.now()}-${connectionSequence}`;
+    const rendered = await renderConnector({
+      connectionId,
+      page,
+      points,
+      intent,
+      label,
+      existingVector: await existingNode(existing?.vectorNodeId ?? null, "VECTOR"),
+      existingLabel: await existingNode(existing?.labelNodeId ?? null, "TEXT")
+    });
+    const record = {
+      id: connectionId,
+      from: fromId,
+      to: toId,
+      intent,
+      // Provenance is what makes the canvas a projection of the linted graph rather than a
+      // second graph: an edge that cannot name its transition can be measured but not checked.
+      flow: flowName && transitionId ? { name: flowName, transitionId } : null,
+      label,
+      vectorNodeId: rendered.vectorNodeId,
+      labelNodeId: rendered.labelNodeId,
+      routePoints: points,
+      routerVersion: ROUTER_VERSION
+    };
+    upsertConnection(record);
+    invalidateConnectorIndex();
+    return { id: rendered.vectorNodeId, connectionId, redrawn: existing !== null, points, record };
+  }
+  async function opDisconnect(params) {
+    requireDesignFile2("removing a connector");
+    const id = str(params, "id", "connectionId");
+    const fromId = str(params, "from");
+    const toId = str(params, "to");
+    const record = id ? findConnection(id) : fromId && toId ? findConnectionByEndpoints(fromId, toId) : null;
+    if (!record) throw withCode(new Error("DISCONNECT requires params.id, or both params.from and params.to"), "E_INVALID_ARGS");
+    const vector = await existingNode(record.vectorNodeId, "VECTOR");
+    const text = await existingNode(record.labelNodeId, "TEXT");
+    if (vector) vector.remove();
+    if (text) text.remove();
+    removeConnection(record.id);
+    invalidateConnectorIndex();
+    return { connectionId: record.id, removedVector: vector !== null, removedLabel: text !== null };
+  }
+  async function opReroute(params) {
+    requireDesignFile2("rerouting connectors");
+    const id = str(params, "id", "connectionId");
+    const flowName = str(params, "flow", "flowName");
+    const scoped = id ? [id] : flowName ? listConnections().filter((r) => r.flow?.name === flowName).map((r) => r.id) : void 0;
+    const outcomes = await rerouteConnections(scoped);
+    const counts = { redrawn: 0, unchanged: 0, orphan: 0 };
+    for (const outcome of outcomes) counts[outcome.status] += 1;
+    return { checked: outcomes.length, ...counts, outcomes };
+  }
+  function opListConnections() {
+    const connections2 = listConnections();
+    return { count: connections2.length, connections: connections2 };
+  }
+
   // plugin/src/ui/panel-model.ts
   var PANEL_WIDTH = 300;
   var PANEL_HEIGHT = 420;
@@ -5094,6 +5221,7 @@
     changesSinceCommit = 0;
   }
   function onDocumentChange(event) {
+    const connectorTouched = [];
     pruneDeclaredIds(declaredIds, Date.now());
     recordDocumentChangeBatch(readOnlyGuard, activeCount);
     const raw = [];
@@ -5110,6 +5238,7 @@
         });
       }
       const changedProps = dc.type === "PROPERTY_CHANGE" ? [...dc.properties] : [];
+      connectorTouched.push(node.id);
       const identity = resolveComponentIdentity(node);
       if (identity) {
         raw.push({
@@ -5138,6 +5267,7 @@
       });
       if (!removed) rememberIdentity(node.id, { name: node.name, type: node.type, parentName, page });
     }
+    if (connectorTouched.length > 0) void noteChangedNodes(connectorTouched);
     const changes = coalesceChanges(raw);
     if (changes.length > 0) {
       figma.ui.postMessage({
@@ -5293,6 +5423,8 @@
         return opDisconnect(params);
       case "LIST_CONNECTIONS":
         return opListConnections();
+      case "REROUTE":
+        return opReroute(params);
       case "CREATE_INSTANCE":
         return opCreateInstance(params);
       case "SET_VARIANT":

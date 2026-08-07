@@ -8,6 +8,7 @@ import { route } from '../../../shared/connector-route';
 import { ROUTER_VERSION, type ConnectionRecord, type ConnectorIntent, type Rect } from '../../../shared/connector-types';
 import { withCode } from './executor-styles';
 import { pageOf, renderConnector } from './connector-render';
+import { invalidateConnectorIndex, rerouteConnections } from './connector-reroute';
 import {
   findConnection, findConnectionByEndpoints, listConnections, removeConnection, upsertConnection,
 } from './connector-store';
@@ -110,6 +111,7 @@ export async function opConnect(params: Params): Promise<Record<string, unknown>
     routerVersion: ROUTER_VERSION,
   };
   upsertConnection(record);
+  invalidateConnectorIndex();
 
   // `id` is the created node — main.ts reads it to record this dispatch's provenance and
   // arm the fresh node's suppression window.
@@ -132,9 +134,31 @@ export async function opDisconnect(params: Params): Promise<Record<string, unkno
   if (vector) vector.remove();
   if (text) text.remove();
   removeConnection(record.id);
+  invalidateConnectorIndex();
 
   // A node already gone is reported, not silently counted as removed.
   return { connectionId: record.id, removedVector: vector !== null, removedLabel: text !== null };
+}
+
+/**
+ * Recompute every connector (or the named ones) against the canvas as it stands now.
+ *
+ * This is the deliberate repair door. The live hook redraws on its own, but a connector can
+ * still fall behind it — a geometry read taken while an auto-layout parent had not settled
+ * yet returns pre-layout numbers, and nothing fires afterwards to say so.
+ */
+export async function opReroute(params: Params): Promise<Record<string, unknown>> {
+  requireDesignFile('rerouting connectors');
+  const id = str(params, 'id', 'connectionId');
+  const flowName = str(params, 'flow', 'flowName');
+  const scoped = id
+    ? [id]
+    : (flowName ? listConnections().filter((r) => r.flow?.name === flowName).map((r) => r.id) : undefined);
+
+  const outcomes = await rerouteConnections(scoped);
+  const counts = { redrawn: 0, unchanged: 0, orphan: 0 };
+  for (const outcome of outcomes) counts[outcome.status] += 1;
+  return { checked: outcomes.length, ...counts, outcomes };
 }
 
 export function opListConnections(): Record<string, unknown> {

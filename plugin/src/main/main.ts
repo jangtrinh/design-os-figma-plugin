@@ -35,7 +35,8 @@ import {
 import { opExecJs } from './executor-exec-js';
 import { opCloneTraits } from './executor-clone-traits';
 import { MUTATING_COMMANDS } from '../../../shared/mutating-commands';
-import { opConnect, opDisconnect, opListConnections } from './executor-connector';
+import { opConnect, opDisconnect, opListConnections, opReroute } from './executor-connector';
+import { noteChangedNodes } from './connector-reroute';
 import {
   beginAgentMutation,
   readEdgeCorrections,
@@ -286,6 +287,7 @@ function fireIdle(): void {
 }
 
 function onDocumentChange(event: DocumentChangeEvent): void {
+  const connectorTouched: string[] = [];
   pruneDeclaredIds(declaredIds, Date.now()); // once per batch — nothing reads `declared` between batches
   // Read-only EXEC_JS enforcement — once per batch, not per node: this
   // records ATTRIBUTABILITY ("could this batch belong to the one active dispatch"),
@@ -311,6 +313,9 @@ function onDocumentChange(event: DocumentChangeEvent): void {
       });
     }
     const changedProps = dc.type === 'PROPERTY_CHANGE' ? [...dc.properties] : [];
+    // Every touched id, for the connector index — a connector's endpoint may be nested far
+    // below whatever actually moved, and only the ancestor chain can bridge that.
+    connectorTouched.push(node.id);
 
     // ── Component-scoped capture (unchanged behaviour — figma.changes.jsonl, spec A6) ──
     const identity = resolveComponentIdentity(node);
@@ -346,6 +351,8 @@ function onDocumentChange(event: DocumentChangeEvent): void {
     });
     if (!removed) rememberIdentity(node.id, { name: node.name, type: node.type, parentName, page });
   }
+
+  if (connectorTouched.length > 0) void noteChangedNodes(connectorTouched);
 
   const changes = coalesceChanges(raw);
   if (changes.length > 0) {
@@ -588,6 +595,7 @@ async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
     case 'CONNECT': return opConnect(params);
     case 'DISCONNECT': return opDisconnect(params);
     case 'LIST_CONNECTIONS': return opListConnections();
+    case 'REROUTE': return opReroute(params);
     case 'CREATE_INSTANCE': return opCreateInstance(params);
     case 'SET_VARIANT': return opSetVariant(params);
     case 'CREATE_VARIABLE': return opCreateVariable(params);

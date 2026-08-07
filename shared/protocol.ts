@@ -74,6 +74,7 @@ export const COMMANDS = [
   'CONNECT',
   'DISCONNECT',
   'LIST_CONNECTIONS',
+  'REROUTE',
 ] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
