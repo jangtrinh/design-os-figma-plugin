@@ -39,7 +39,7 @@ import {
   beginAgentMutation,
   readEdgeCorrections,
   readEvictedUnresolvedCount,
-  recordAgentMutation,
+  recordAgentMutationBatch,
   recordDesignerCorrection,
   writeEdgeCorrections,
 } from './correction-edge-store';
@@ -508,12 +508,15 @@ figma.ui.onmessage = async (msg: unknown) => {
           + 'into its own undo step, not the caller\'s previous one)',
         ), 'E_READONLY_VIOLATION');
       }
+      // A creating command's target id only exists in `result` — `targetIds` (armed
+      // before dispatch) cannot have carried it. `recordAgentMutationBatch` arms the
+      // suppression window for every id in `changedIds` at the SAME moment it records
+      // their provenance, so a freshly created node's own writes are covered too (see
+      // correction-edge-store.ts's own doc comment for why the window must be armed here).
       const changedIds = [...new Set([...targetIds, ...resultMutationIds(req.cmd as CommandName, result)])];
+      recordAgentMutationBatch(changedIds, { command: req.cmd });
       const completedAt = Date.now();
-      for (const nodeId of changedIds) {
-        recordAgentMutation(nodeId, { command: req.cmd });
-        lastAgentAt.set(nodeId, completedAt);
-      }
+      for (const nodeId of changedIds) lastAgentAt.set(nodeId, completedAt);
       pruneLastAgentAt(lastAgentAt, completedAt);
       commitIfMutating(req.cmd as CommandName);
       figma.ui.postMessage({ requestId: req.requestId, ok: true, result, fileContext: ctx });

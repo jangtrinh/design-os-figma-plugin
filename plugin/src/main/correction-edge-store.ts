@@ -229,6 +229,23 @@ export function recordAgentMutation(nodeId: string, traits: Record<string, unkno
   return event;
 }
 
+/**
+ * Record a dispatch's mutated node ids as agent-authored provenance AND arm their
+ * trailing suppression window in the SAME call — the single post-dispatch call every
+ * mutating and creating command's bookkeeping goes through. A node whose id is only
+ * known from the dispatch RESULT (a freshly created frame/instance/imported subtree)
+ * has never had its window armed by the pre-dispatch call, because that id could not
+ * be known yet. The `documentchange` batch for the write that created it is delivered
+ * asynchronously, strictly after this call returns, so the window has to be armed here
+ * — from every id whose provenance is being recorded, not only the ones already known
+ * before dispatch — or that node's own create-time writes pass every check downstream
+ * and land as though a human had corrected the agent.
+ */
+export function recordAgentMutationBatch(nodeIds: readonly string[], traits: Record<string, unknown>): CorrectionEvent[] {
+  beginAgentMutation(nodeIds);
+  return nodeIds.map((nodeId) => recordAgentMutation(nodeId, traits));
+}
+
 export function recordDesignerCorrection(
   nodeId: string,
   traits: Record<string, unknown>,

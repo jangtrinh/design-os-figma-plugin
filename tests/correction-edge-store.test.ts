@@ -1,5 +1,8 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import { isDesignerCorrectionCandidate, readEdgeCorrections, readEvictedUnresolvedCount, writeEdgeCorrections } from '../plugin/src/main/correction-edge-store';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import {
+  isDesignerCorrectionCandidate, readEdgeCorrections, readEvictedUnresolvedCount, writeEdgeCorrections,
+  recordAgentMutationBatch, recordDesignerCorrection,
+} from '../plugin/src/main/correction-edge-store';
 import { buildCorrectionEvent, type CorrectionEvent } from '../shared/supervised-memory';
 
 describe('designer correction classification', () => {
@@ -178,5 +181,68 @@ describe('the byte-cap safety net — never wedges on a value it cannot store', 
     const normal = event('normal2', recentIso(1));
     writeEdgeCorrections([oldestOversized, normal]);
     expect(readEvictedUnresolvedCount()).toBe(11); // 10 (prior) + 1 (this byte-cap drop)
+  });
+});
+
+// A node created through a typed creating command (frame, instance, imported subtree)
+// has no id until the dispatch that creates it returns — the id exists only in the
+// RESULT, never before. `recordAgentMutationBatch` is the single call every creating
+// command's post-dispatch bookkeeping goes through: it must record that result id's
+// provenance AND arm its trailing suppression window in the same call, because the
+// node's own create-time property writes have not been observed yet — the
+// `documentchange` batch for them is always delivered asynchronously, strictly after
+// the dispatch promise has already resolved. Arming suppression only from ids known
+// BEFORE dispatch started (an id a fresh create cannot have) leaves that async batch
+// unsuppressed, so it would pass every check downstream and be recorded as though a
+// human had corrected the agent's own write.
+describe('recordAgentMutationBatch — provenance + suppression for ids only known after dispatch', () => {
+  it('suppresses the fresh node\'s own create-time writes, delivered asynchronously after dispatch', async () => {
+    const freshNodeId = 'fresh-node-1';
+
+    recordAgentMutationBatch([freshNodeId], { command: 'CREATE_FRAME' });
+
+    // The documentchange batch for a create arrives strictly after the dispatch that
+    // created the node has already returned — modelled here as real microtask
+    // boundaries, never a same-tick call.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const correction = recordDesignerCorrection(freshNodeId, {
+      changeType: 'PROPERTY_CHANGE',
+      properties: ['name', 'width', 'height'],
+    });
+    expect(correction).toBeNull();
+
+    const stored = readEdgeCorrections().filter((e) => e.nodeId === freshNodeId);
+    expect(stored.filter((e) => e.kind === 'agent-operation')).toHaveLength(1);
+    expect(stored.filter((e) => e.kind === 'designer-correction')).toHaveLength(0);
+  });
+
+  it('covers every id in the batch, matching a payload import that creates several nodes at once', async () => {
+    const idA = 'fresh-node-a';
+    const idB = 'fresh-node-b';
+
+    recordAgentMutationBatch([idA, idB], { command: 'IMPORT_PAYLOAD' });
+    await Promise.resolve();
+
+    expect(recordDesignerCorrection(idA, { changeType: 'PROPERTY_CHANGE', properties: ['width'] })).toBeNull();
+    expect(recordDesignerCorrection(idB, { changeType: 'PROPERTY_CHANGE', properties: ['height'] })).toBeNull();
+  });
+
+  it('does not silence a GENUINE designer edit made after the trailing window has elapsed', () => {
+    const freshNodeId = 'fresh-node-2';
+    vi.useFakeTimers();
+    try {
+      recordAgentMutationBatch([freshNodeId], { command: 'CREATE_FRAME' });
+      vi.advanceTimersByTime(2_001); // past the trailing suppression window
+      const correction = recordDesignerCorrection(freshNodeId, {
+        changeType: 'PROPERTY_CHANGE',
+        properties: ['fills'],
+      });
+      expect(correction).not.toBeNull();
+      expect(correction?.kind).toBe('designer-correction');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

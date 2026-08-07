@@ -4598,6 +4598,10 @@
     writeEdgeCorrections([...readEdgeCorrections(), event]);
     return event;
   }
+  function recordAgentMutationBatch(nodeIds, traits) {
+    beginAgentMutation(nodeIds);
+    return nodeIds.map((nodeId) => recordAgentMutation(nodeId, traits));
+  }
   function recordDesignerCorrection(nodeId, traits) {
     const changeType = typeof traits.changeType === "string" ? traits.changeType : "";
     const properties = Array.isArray(traits.properties) ? traits.properties.filter((value) => typeof value === "string") : [];
@@ -4883,11 +4887,9 @@
           ), "E_READONLY_VIOLATION");
         }
         const changedIds = [.../* @__PURE__ */ new Set([...targetIds, ...resultMutationIds(req.cmd, result)])];
+        recordAgentMutationBatch(changedIds, { command: req.cmd });
         const completedAt = Date.now();
-        for (const nodeId of changedIds) {
-          recordAgentMutation(nodeId, { command: req.cmd });
-          lastAgentAt.set(nodeId, completedAt);
-        }
+        for (const nodeId of changedIds) lastAgentAt.set(nodeId, completedAt);
         pruneLastAgentAt(lastAgentAt, completedAt);
         commitIfMutating(req.cmd);
         figma.ui.postMessage({ requestId: req.requestId, ok: true, result, fileContext: ctx });
