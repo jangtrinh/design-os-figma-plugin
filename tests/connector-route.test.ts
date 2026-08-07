@@ -1,7 +1,7 @@
 // The route is chosen by INTENT, never by a caller-supplied mode: a flow edge is an
-// orthogonal elbow, an annotation pointer is a straight line. Both are deterministic and
-// obstacle-free by design — these flows sit on an even grid, and routing around obstacles is
-// explicitly out of scope for this version. Pure, no `figma` global.
+// orthogonal elbow, an annotation pointer is a straight line. There is no obstacle search —
+// with one structural exception, a return edge, which gets a rule instead (see the last
+// block). Pure, no `figma` global.
 import { describe, it, expect } from 'vitest';
 import { route, DEFAULT_CLEARANCE } from '../shared/connector-route.ts';
 import type { Rect } from '../shared/connector-types.ts';
@@ -107,5 +107,51 @@ describe('determinism — the linter downstream compares against a stored route'
       expect(Math.round(p.x * 10) / 10).toBe(p.x);
       expect(Math.round(p.y * 10) / 10).toBe(p.y);
     }
+  });
+});
+
+// A flow laid out in reading order always has return edges — "back to the cart", "cancel",
+// "start over". Drawn straight, a return edge runs clean through every screen between its two
+// ends and lands an arrowhead on top of the forward edge's. Measured on a real three-screen
+// flow before this rule existed: three edges collapsed onto one horizontal line.
+describe('return edges bow below the row instead of crossing it', () => {
+  const row = (x: number): Rect => ({ x, y: 0, width: 200, height: 300 });
+  const first = row(0);
+  const last = row(900);
+
+  it('leaves and arrives at the bottom edge of each box', () => {
+    const points = route({ source: last, target: first, intent: 'flow' });
+    expect(points[0]).toEqual({ x: 1000, y: 300 });
+    expect(points[points.length - 1]).toEqual({ x: 100, y: 300 });
+  });
+
+  it('runs entirely below both boxes', () => {
+    const points = route({ source: last, target: first, intent: 'flow' });
+    const deepest = Math.max(...points.map((p) => p.y));
+    expect(deepest).toBeGreaterThan(300);
+    // the long horizontal run — the part that would have crossed the row — sits under it
+    const run = points.filter((p) => p.y === deepest);
+    expect(run.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('never re-enters the band the screens occupy', () => {
+    const points = route({ source: last, target: first, intent: 'flow' });
+    const inside = points.filter((p) => p.y > 0 && p.y < 300);
+    expect(inside).toEqual([]);
+  });
+
+  it('leaves a forward edge alone', () => {
+    const points = route({ source: first, target: last, intent: 'flow' });
+    expect(points.every((p) => p.y === 150)).toBe(true);
+  });
+
+  it('does not bow when the boxes are on separate rows — the straight line is clear there', () => {
+    const above: Rect = { x: 900, y: -600, width: 200, height: 300 };
+    const points = route({ source: above, target: first, intent: 'flow' });
+    expect(Math.max(...points.map((p) => p.y))).toBeLessThan(300 + 48);
+  });
+
+  it('leaves an annotation pointer straight, whichever way it points', () => {
+    expect(route({ source: last, target: first, intent: 'annotation' })).toHaveLength(2);
   });
 });

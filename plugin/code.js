@@ -4493,6 +4493,25 @@
     const midpoint = (from + to) / 2;
     return direction >= 0 ? Math.max(midpoint, from) : Math.min(midpoint, from);
   }
+  function centre2(rect) {
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  }
+  function isBackEdge(source, target, intent) {
+    if (intent !== "flow") return false;
+    const from = centre2(source);
+    const to = centre2(target);
+    if (Math.abs(to.x - from.x) < Math.abs(to.y - from.y)) return false;
+    if (to.x - from.x >= 0) return false;
+    const overlapTop = Math.max(source.y, target.y);
+    const overlapBottom = Math.min(source.y + source.height, target.y + target.height);
+    return overlapTop < overlapBottom;
+  }
+  function backEdge(source, target, clearance) {
+    const exit = { x: source.x + source.width / 2, y: source.y + source.height };
+    const entry = { x: target.x + target.width / 2, y: target.y + target.height };
+    const depth = Math.max(exit.y, entry.y) + clearance * 2;
+    return [exit, { x: exit.x, y: depth }, { x: entry.x, y: depth }, entry];
+  }
   function orthogonal(source, target, clearance) {
     const exit = {
       x: source.point.x + source.normal.x * clearance,
@@ -4512,7 +4531,14 @@
   function route(input) {
     const anchors = resolveAnchors(input.source, input.target);
     const clearance = input.clearance ?? DEFAULT_CLEARANCE;
-    const raw = input.intent === "annotation" ? [anchors.source.point, anchors.target.point] : orthogonal(anchors.source, anchors.target, clearance);
+    let raw;
+    if (input.intent === "annotation") {
+      raw = [anchors.source.point, anchors.target.point];
+    } else if (isBackEdge(input.source, input.target, input.intent)) {
+      raw = backEdge(input.source, input.target, clearance);
+    } else {
+      raw = orthogonal(anchors.source, anchors.target, clearance);
+    }
     const simplified = simplify(raw.map(roundPoint));
     return simplified.length >= 2 ? simplified : [roundPoint(anchors.source.point), roundPoint(anchors.target.point)];
   }

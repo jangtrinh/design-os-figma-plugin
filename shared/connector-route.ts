@@ -1,9 +1,10 @@
 // The polyline a connector follows, chosen by INTENT. Pure — no `figma` access.
 //
-// No obstacle avoidance, deliberately: the flows this renders are laid out on an even grid
-// (the user-flow recipe puts each screen in its own column), so the obstacle count on real
-// input is expected to be zero. Routing around obstacles is a search problem with its own
-// failure modes, and buying it before anything has measured a need is the wrong trade.
+// No general obstacle avoidance: that is a search problem with its own failure modes, and
+// nothing has measured a need for it. But ONE obstacle case is not incidental, it is
+// structural — a flow laid out in reading order always has return edges, and a return edge
+// drawn as a straight line runs through every screen between its two ends. That case gets a
+// rule, not a search: it bows below the row, which is what a flow diagram does anyway.
 
 import { resolveAnchors } from './connector-anchor';
 import type { Anchor, ConnectorIntent, Point, Rect } from './connector-types';
@@ -69,6 +70,43 @@ function turnCoordinate(from: number, to: number, direction: number): number {
   return direction >= 0 ? Math.max(midpoint, from) : Math.min(midpoint, from);
 }
 
+function centre(rect: Rect): Point {
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+}
+
+/**
+ * Is this edge travelling against the reading order of a row of screens?
+ *
+ * Left-to-right is forward in every flow layout this draws into; an edge going the other way
+ * is a return path. It only matters when the two boxes share vertical space — that is exactly
+ * when a straight line between them would pass through whatever sits in the row between.
+ * Two boxes on separate rows have clear space, and a straight line there is correct.
+ */
+function isBackEdge(source: Rect, target: Rect, intent: ConnectorIntent): boolean {
+  if (intent !== 'flow') return false;
+  const from = centre(source);
+  const to = centre(target);
+  if (Math.abs(to.x - from.x) < Math.abs(to.y - from.y)) return false; // a column, not a row
+  if (to.x - from.x >= 0) return false; // forward
+  const overlapTop = Math.max(source.y, target.y);
+  const overlapBottom = Math.min(source.y + source.height, target.y + target.height);
+  return overlapTop < overlapBottom;
+}
+
+/**
+ * A return edge, bowed below both boxes.
+ *
+ * Both ends leave downward and meet on one horizontal run under the row, which reads as
+ * "back to the start" at a glance and, more importantly, does not cross the screens in
+ * between. The depth clears the LOWER of the two boxes, so the run stays clear of both.
+ */
+function backEdge(source: Rect, target: Rect, clearance: number): Point[] {
+  const exit: Point = { x: source.x + source.width / 2, y: source.y + source.height };
+  const entry: Point = { x: target.x + target.width / 2, y: target.y + target.height };
+  const depth = Math.max(exit.y, entry.y) + clearance * 2;
+  return [exit, { x: exit.x, y: depth }, { x: entry.x, y: depth }, entry];
+}
+
 function orthogonal(source: Anchor, target: Anchor, clearance: number): Point[] {
   const exit: Point = {
     x: source.point.x + source.normal.x * clearance,
@@ -106,9 +144,14 @@ export interface RouteInput {
 export function route(input: RouteInput): Point[] {
   const anchors = resolveAnchors(input.source, input.target);
   const clearance = input.clearance ?? DEFAULT_CLEARANCE;
-  const raw = input.intent === 'annotation'
-    ? [anchors.source.point, anchors.target.point]
-    : orthogonal(anchors.source, anchors.target, clearance);
+  let raw: Point[];
+  if (input.intent === 'annotation') {
+    raw = [anchors.source.point, anchors.target.point];
+  } else if (isBackEdge(input.source, input.target, input.intent)) {
+    raw = backEdge(input.source, input.target, clearance);
+  } else {
+    raw = orthogonal(anchors.source, anchors.target, clearance);
+  }
   const simplified = simplify(raw.map(roundPoint));
   // Two coincident anchors (boxes sharing a centre and a size) would simplify to one point;
   // a connector needs two ends, so keep the pair rather than returning something no
