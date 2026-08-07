@@ -100,6 +100,29 @@ function sizing(node, { h, v }) {
   if (v) node.layoutSizingVertical = v;
 }
 
+// #1 error family in the harvest (21 hits): sync APIs under documentAccess: dynamic-page.
+// NEVER call: figma.getNodeById · node.mainComponent · figma.getLocalTextStyles/PaintStyles ·
+// figma.currentPage= · node.textStyleId= — always the Async variants (see pre-dispatch lint).
+async function getNode(id) {
+  const n = await figma.getNodeByIdAsync(id);
+  if (!n) throw new Error('node not found (stale id?): ' + id + ' — re-locate by name/tag');
+  return n;
+}
+
+// #2 family (~20 hits): null-deref on find results ("cannot read property of null").
+// Never chain off a bare findOne — name the target so the failure names itself.
+function mustFind(scope, pred, label) {
+  const n = scope.findOne(pred);
+  if (!n) throw new Error('mustFind failed: ' + label + ' in ' + (scope.name || scope.type));
+  return n;
+}
+
+// Structural ops inside an INSTANCE throw/rollback (insertChild/remove/appendChild).
+function assertNotInInstance(node, op) {
+  for (let p = node.parent; p; p = p.parent)
+    if (p.type === 'INSTANCE') throw new Error(op + ' on "' + node.name + '": inside instance "' + p.name + '" — use visible=false / variant swap / wrapper frame');
+}
+
 // ... work ...
 // return STRUCTURED data — the agent sees only what you return:
 // return { created: [...ids], counts: {...}, errors };
