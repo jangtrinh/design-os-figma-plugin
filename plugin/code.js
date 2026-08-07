@@ -4418,8 +4418,344 @@
     "CLONE_TRAITS",
     "SET_CORRECTION_MEMORY",
     "EXEC_JS",
-    "IMPORT_PAYLOAD"
+    "IMPORT_PAYLOAD",
+    "CONNECT",
+    "DISCONNECT"
   ];
+
+  // shared/connector-anchor.ts
+  var OPPOSITE = { TOP: "BOTTOM", BOTTOM: "TOP", LEFT: "RIGHT", RIGHT: "LEFT" };
+  var NORMAL = {
+    TOP: { x: 0, y: -1 },
+    BOTTOM: { x: 0, y: 1 },
+    LEFT: { x: -1, y: 0 },
+    RIGHT: { x: 1, y: 0 }
+  };
+  function centre(rect) {
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  }
+  function sideMidpoint(rect, side) {
+    switch (side) {
+      case "TOP":
+        return { x: rect.x + rect.width / 2, y: rect.y };
+      case "BOTTOM":
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height };
+      case "LEFT":
+        return { x: rect.x, y: rect.y + rect.height / 2 };
+      case "RIGHT":
+        return { x: rect.x + rect.width, y: rect.y + rect.height / 2 };
+    }
+  }
+  function anchorOn(rect, side) {
+    return { side, point: sideMidpoint(rect, side), normal: NORMAL[side] };
+  }
+  function resolveAnchors(source, target) {
+    const from = centre(source);
+    const to = centre(target);
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const horizontal = Math.abs(dx) >= Math.abs(dy);
+    const sourceSide = horizontal ? dx >= 0 ? "RIGHT" : "LEFT" : dy >= 0 ? "BOTTOM" : "TOP";
+    return { source: anchorOn(source, sourceSide), target: anchorOn(target, OPPOSITE[sourceSide]) };
+  }
+
+  // shared/connector-route.ts
+  var DEFAULT_CLEARANCE = 24;
+  function round(value) {
+    const rounded = Math.round(value * 10) / 10;
+    return rounded === 0 ? 0 : rounded;
+  }
+  function roundPoint(point) {
+    return { x: round(point.x), y: round(point.y) };
+  }
+  function samePoint(a, b) {
+    return a.x === b.x && a.y === b.y;
+  }
+  function isRedundant(previous, current, next) {
+    const sharedX = previous.x === current.x && current.x === next.x;
+    const sharedY = previous.y === current.y && current.y === next.y;
+    return sharedX || sharedY;
+  }
+  function simplify(points) {
+    const deduped = [];
+    for (const point of points) {
+      if (deduped.length === 0 || !samePoint(deduped[deduped.length - 1], point)) deduped.push(point);
+    }
+    const kept = [];
+    for (let i = 0; i < deduped.length; i += 1) {
+      const isEnd = i === 0 || i === deduped.length - 1;
+      if (isEnd || !isRedundant(deduped[i - 1], deduped[i], deduped[i + 1])) kept.push(deduped[i]);
+    }
+    return kept;
+  }
+  function turnCoordinate(from, to, direction) {
+    const midpoint = (from + to) / 2;
+    return direction >= 0 ? Math.max(midpoint, from) : Math.min(midpoint, from);
+  }
+  function orthogonal(source, target, clearance) {
+    const exit = {
+      x: source.point.x + source.normal.x * clearance,
+      y: source.point.y + source.normal.y * clearance
+    };
+    const entry = {
+      x: target.point.x + target.normal.x * clearance,
+      y: target.point.y + target.normal.y * clearance
+    };
+    if (source.normal.x !== 0) {
+      const x = turnCoordinate(exit.x, entry.x, source.normal.x);
+      return [source.point, exit, { x, y: exit.y }, { x, y: entry.y }, entry, target.point];
+    }
+    const y = turnCoordinate(exit.y, entry.y, source.normal.y);
+    return [source.point, exit, { x: exit.x, y }, { x: entry.x, y }, entry, target.point];
+  }
+  function route(input) {
+    const anchors = resolveAnchors(input.source, input.target);
+    const clearance = input.clearance ?? DEFAULT_CLEARANCE;
+    const raw = input.intent === "annotation" ? [anchors.source.point, anchors.target.point] : orthogonal(anchors.source, anchors.target, clearance);
+    const simplified = simplify(raw.map(roundPoint));
+    return simplified.length >= 2 ? simplified : [roundPoint(anchors.source.point), roundPoint(anchors.target.point)];
+  }
+
+  // shared/connector-types.ts
+  var ROUTER_VERSION = 1;
+
+  // shared/connector-geometry.ts
+  function round2(value) {
+    const rounded = Math.round(value * 10) / 10;
+    return rounded === 0 ? 0 : rounded;
+  }
+  function pointsToVectorNetwork(points, options) {
+    if (points.length < 2) {
+      throw new Error(`a connector needs at least two points, got ${points.length}`);
+    }
+    const origin = {
+      x: round2(Math.min(...points.map((p) => p.x))),
+      y: round2(Math.min(...points.map((p) => p.y)))
+    };
+    const lastIndex = points.length - 1;
+    const vertices = points.map((point, index) => ({
+      x: round2(point.x - origin.x),
+      y: round2(point.y - origin.y),
+      // The arrow marks the END of the edge and nothing else. Setting the node-level
+      // strokeCap instead would cap BOTH open ends — the network reads `figma.mixed` once
+      // vertices disagree, which is the tell that per-vertex is the real control.
+      strokeCap: options.arrowAtEnd && index === lastIndex ? "ARROW_LINES" : "NONE"
+    }));
+    const segments = points.slice(1).map((_, index) => ({ start: index, end: index + 1 }));
+    return { vertices, segments, origin };
+  }
+
+  // plugin/src/main/connector-store.ts
+  var NAMESPACE = "ease_design";
+  var KEY = "connections-v1";
+  var cache = null;
+  function parse(raw) {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  function load() {
+    if (cache === null) cache = parse(figma.root.getSharedPluginData(NAMESPACE, KEY));
+    return cache;
+  }
+  function flush(next) {
+    cache = next;
+    figma.root.setSharedPluginData(NAMESPACE, KEY, JSON.stringify(next));
+  }
+  function listConnections() {
+    return [...load()];
+  }
+  function findConnection(id) {
+    return load().find((record) => record.id === id) ?? null;
+  }
+  function findConnectionByEndpoints(from, to) {
+    return load().find((record) => record.from === from && record.to === to) ?? null;
+  }
+  function upsertConnection(record) {
+    const next = load().filter((existing) => existing.id !== record.id);
+    next.push(record);
+    flush(next);
+  }
+  function removeConnection(id) {
+    const record = findConnection(id);
+    if (!record) return null;
+    flush(load().filter((existing) => existing.id !== id));
+    return record;
+  }
+  function stampNodeConnectionId(node, connectionId) {
+    node.setSharedPluginData(NAMESPACE, "connection_id", connectionId);
+  }
+
+  // plugin/src/main/connector-render.ts
+  var LABEL_SIZE = 11;
+  var STROKE = { type: "SOLID", color: { r: 0.42, g: 0.42, b: 0.45 } };
+  var LABEL_FILL = { type: "SOLID", color: { r: 0.42, g: 0.42, b: 0.45 } };
+  function pageOf(node) {
+    let current = node;
+    while (current) {
+      if (current.type === "PAGE") return current;
+      current = current.parent;
+    }
+    return null;
+  }
+  function labelAnchor(points) {
+    let best = 0;
+    let bestLength = -1;
+    for (let i = 1; i < points.length; i += 1) {
+      const length = Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
+      if (length > bestLength) {
+        bestLength = length;
+        best = i;
+      }
+    }
+    return {
+      x: (points[best].x + points[best - 1].x) / 2,
+      y: (points[best].y + points[best - 1].y) / 2
+    };
+  }
+  async function applyNetwork(vector, network) {
+    await vector.setVectorNetworkAsync({
+      vertices: network.vertices.map((v) => ({ x: v.x, y: v.y, strokeCap: v.strokeCap })),
+      segments: network.segments.map((s) => ({ start: s.start, end: s.end }))
+    });
+    vector.strokes = [STROKE];
+    vector.strokeWeight = 1.5;
+    vector.x = network.origin.x;
+    vector.y = network.origin.y;
+  }
+  async function renderConnector(input) {
+    const network = pointsToVectorNetwork(input.points, { arrowAtEnd: true });
+    const vector = input.existingVector ?? figma.createVector();
+    if (!input.existingVector) input.page.appendChild(vector);
+    vector.name = input.intent === "flow" ? "Flow connector" : "Annotation pointer";
+    await applyNetwork(vector, network);
+    stampNodeConnectionId(vector, input.connectionId);
+    let labelNodeId = null;
+    if (input.label) {
+      const font = await loadBestFont("Inter", 400);
+      const text = input.existingLabel ?? figma.createText();
+      if (!input.existingLabel) input.page.appendChild(text);
+      text.fontName = font;
+      text.fontSize = LABEL_SIZE;
+      text.characters = input.label;
+      text.fills = [LABEL_FILL];
+      text.textAutoResize = "WIDTH_AND_HEIGHT";
+      text.name = `${input.label} \u2014 connector label`;
+      const anchor = labelAnchor(input.points);
+      text.x = Math.round(anchor.x - text.width / 2);
+      text.y = Math.round(anchor.y - text.height - 4);
+      stampNodeConnectionId(text, input.connectionId);
+      labelNodeId = text.id;
+    } else if (input.existingLabel) {
+      input.existingLabel.remove();
+    }
+    return { vectorNodeId: vector.id, labelNodeId };
+  }
+
+  // plugin/src/main/executor-connector.ts
+  var connectionSequence = 0;
+  function requireDesignFile2(capability) {
+    const refusal = editorRefusal({
+      capability,
+      required: ["figma"],
+      found: figma.editorType ?? null
+    });
+    if (refusal) throw withCode(new Error(refusal), "E_WRONG_EDITOR");
+  }
+  function str(params, ...keys) {
+    for (const key of keys) {
+      const value = params[key];
+      if (typeof value === "string" && value.trim() !== "") return value.trim();
+    }
+    return null;
+  }
+  async function resolveEndpoint2(id, role) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) throw withCode(new Error(`${role} node not found: ${id}`), "E_INVALID_ARGS");
+    if (!("absoluteBoundingBox" in node)) {
+      throw withCode(new Error(`${role} node ${id} has no geometry (${node.type})`), "E_INVALID_ARGS");
+    }
+    return node;
+  }
+  function boxOf(node, role) {
+    const box = node.absoluteBoundingBox;
+    if (!box) throw withCode(new Error(`${role} node ${node.id} reports no bounding box`), "E_INVALID_ARGS");
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+  }
+  async function existingNode(id, type) {
+    if (!id) return null;
+    const node = await figma.getNodeByIdAsync(id);
+    return node && node.type === type ? node : null;
+  }
+  async function opConnect(params) {
+    requireDesignFile2("drawing a connector");
+    const fromId = str(params, "from", "source");
+    const toId = str(params, "to", "target");
+    if (!fromId || !toId) throw withCode(new Error("CONNECT requires params.from and params.to"), "E_INVALID_ARGS");
+    if (fromId === toId) throw withCode(new Error("CONNECT needs two different nodes"), "E_INVALID_ARGS");
+    const intent = str(params, "intent") === "annotation" ? "annotation" : "flow";
+    const label = str(params, "label");
+    const flowName = str(params, "flow", "flowName");
+    const transitionId = str(params, "transition", "transitionId");
+    const clearance = typeof params.clearance === "number" ? params.clearance : void 0;
+    const source = await resolveEndpoint2(fromId, "source");
+    const target = await resolveEndpoint2(toId, "target");
+    const page = pageOf(source);
+    if (!page || pageOf(target) !== page) {
+      throw withCode(new Error("CONNECT needs both nodes on the same page"), "E_INVALID_ARGS");
+    }
+    const points = route({ source: boxOf(source, "source"), target: boxOf(target, "target"), intent, clearance });
+    const existing = findConnectionByEndpoints(fromId, toId);
+    connectionSequence += 1;
+    const connectionId = existing?.id ?? `conn-${Date.now()}-${connectionSequence}`;
+    const rendered = await renderConnector({
+      connectionId,
+      page,
+      points,
+      intent,
+      label,
+      existingVector: await existingNode(existing?.vectorNodeId ?? null, "VECTOR"),
+      existingLabel: await existingNode(existing?.labelNodeId ?? null, "TEXT")
+    });
+    const record = {
+      id: connectionId,
+      from: fromId,
+      to: toId,
+      intent,
+      // Provenance is what makes the canvas a projection of the linted graph rather than a
+      // second graph: an edge that cannot name its transition can be measured but not checked.
+      flow: flowName && transitionId ? { name: flowName, transitionId } : null,
+      label,
+      vectorNodeId: rendered.vectorNodeId,
+      labelNodeId: rendered.labelNodeId,
+      routePoints: points,
+      routerVersion: ROUTER_VERSION
+    };
+    upsertConnection(record);
+    return { id: rendered.vectorNodeId, connectionId, redrawn: existing !== null, points, record };
+  }
+  async function opDisconnect(params) {
+    requireDesignFile2("removing a connector");
+    const id = str(params, "id", "connectionId");
+    const fromId = str(params, "from");
+    const toId = str(params, "to");
+    const record = id ? findConnection(id) : fromId && toId ? findConnectionByEndpoints(fromId, toId) : null;
+    if (!record) throw withCode(new Error("DISCONNECT requires params.id, or both params.from and params.to"), "E_INVALID_ARGS");
+    const vector = await existingNode(record.vectorNodeId, "VECTOR");
+    const text = await existingNode(record.labelNodeId, "TEXT");
+    if (vector) vector.remove();
+    if (text) text.remove();
+    removeConnection(record.id);
+    return { connectionId: record.id, removedVector: vector !== null, removedLabel: text !== null };
+  }
+  function opListConnections() {
+    const connections2 = listConnections();
+    return { count: connections2.length, connections: connections2 };
+  }
 
   // shared/supervised-memory.ts
   var CORRECTION_SCHEMA_VERSION = 1;
@@ -4464,7 +4800,7 @@
   }
 
   // plugin/src/main/correction-edge-store.ts
-  var NAMESPACE = "ease_design";
+  var NAMESPACE2 = "ease_design";
   var KEY_V1 = "figma-corrections-v1";
   var MANIFEST_KEY = "figma-corrections-v2-manifest";
   var CHUNK_PREFIX = "figma-corrections-v2-";
@@ -4481,10 +4817,10 @@
       return [];
     }
   }
-  function utf8ByteLength2(str) {
+  function utf8ByteLength2(str2) {
     let bytes = 0;
-    for (let i = 0; i < str.length; i++) {
-      const code = str.charCodeAt(i);
+    for (let i = 0; i < str2.length; i++) {
+      const code = str2.charCodeAt(i);
       if (code < 128) bytes += 1;
       else if (code < 2048) bytes += 2;
       else if (code >= 55296 && code <= 56319) {
@@ -4498,7 +4834,7 @@
     return `${CHUNK_PREFIX}${i}`;
   }
   function readManifest2() {
-    const raw = figma.root.getSharedPluginData(NAMESPACE, MANIFEST_KEY);
+    const raw = figma.root.getSharedPluginData(NAMESPACE2, MANIFEST_KEY);
     if (!raw) return void 0;
     try {
       const parsed = JSON.parse(raw);
@@ -4536,17 +4872,17 @@
   function readChunked(manifest) {
     const events = [];
     for (let i = 0; i < manifest.chunks; i++) {
-      events.push(...parseEvents(figma.root.getSharedPluginData(NAMESPACE, chunkKey2(i))));
+      events.push(...parseEvents(figma.root.getSharedPluginData(NAMESPACE2, chunkKey2(i))));
     }
     return events;
   }
   function clearChunkRange(startInclusive, endExclusive) {
-    for (let i = startInclusive; i < endExclusive; i++) figma.root.setSharedPluginData(NAMESPACE, chunkKey2(i), "");
+    for (let i = startInclusive; i < endExclusive; i++) figma.root.setSharedPluginData(NAMESPACE2, chunkKey2(i), "");
   }
   function readEdgeCorrections() {
     const manifest = readManifest2();
     if (manifest !== void 0) return readChunked(manifest);
-    return parseEvents(figma.root.getSharedPluginData(NAMESPACE, KEY_V1));
+    return parseEvents(figma.root.getSharedPluginData(NAMESPACE2, KEY_V1));
   }
   function writeEdgeCorrections(events) {
     const priorManifest = readManifest2();
@@ -4558,18 +4894,18 @@
       kept = kept.slice(1);
       chunks = splitIntoChunks(kept);
     }
-    for (let i = 0; i < chunks.length; i++) figma.root.setSharedPluginData(NAMESPACE, chunkKey2(i), chunks[i]);
+    for (let i = 0; i < chunks.length; i++) figma.root.setSharedPluginData(NAMESPACE2, chunkKey2(i), chunks[i]);
     if (priorManifest !== void 0 && priorManifest.chunks > chunks.length) {
       clearChunkRange(chunks.length, priorManifest.chunks);
     }
     const totalEvictedUnresolved = (priorManifest?.evictedUnresolved ?? 0) + evictedUnresolved.length + byteCapEvictedUnresolved;
     figma.root.setSharedPluginData(
-      NAMESPACE,
+      NAMESPACE2,
       MANIFEST_KEY,
       JSON.stringify({ v: 2, chunks: chunks.length, evictedUnresolved: totalEvictedUnresolved })
     );
-    if (figma.root.getSharedPluginData(NAMESPACE, KEY_V1) !== "") {
-      figma.root.setSharedPluginData(NAMESPACE, KEY_V1, "");
+    if (figma.root.getSharedPluginData(NAMESPACE2, KEY_V1) !== "") {
+      figma.root.setSharedPluginData(NAMESPACE2, KEY_V1, "");
     }
     return kept;
   }
@@ -4919,7 +5255,8 @@
       "CREATE_FRAME",
       "CREATE_INSTANCE",
       "IMPORT_PAYLOAD",
-      "HTML_TO_FIGMA"
+      "HTML_TO_FIGMA",
+      "CONNECT"
     ];
     if (!creating.includes(cmd) || !result || typeof result !== "object") return [];
     const id = result.id;
@@ -4950,6 +5287,12 @@
         return auditDs();
       case "CREATE_FRAME":
         return opCreateFrame(params);
+      case "CONNECT":
+        return opConnect(params);
+      case "DISCONNECT":
+        return opDisconnect(params);
+      case "LIST_CONNECTIONS":
+        return opListConnections();
       case "CREATE_INSTANCE":
         return opCreateInstance(params);
       case "SET_VARIANT":

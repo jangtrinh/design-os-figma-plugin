@@ -35,6 +35,7 @@ import {
 import { opExecJs } from './executor-exec-js';
 import { opCloneTraits } from './executor-clone-traits';
 import { MUTATING_COMMANDS } from '../../../shared/mutating-commands';
+import { opConnect, opDisconnect, opListConnections } from './executor-connector';
 import {
   beginAgentMutation,
   readEdgeCorrections,
@@ -560,7 +561,7 @@ function shapeError(err: unknown): WireError {
 
 function resultMutationIds(cmd: CommandName, result: unknown): string[] {
   const creating: readonly CommandName[] = [
-    'CREATE_FRAME', 'CREATE_INSTANCE', 'IMPORT_PAYLOAD', 'HTML_TO_FIGMA',
+    'CREATE_FRAME', 'CREATE_INSTANCE', 'IMPORT_PAYLOAD', 'HTML_TO_FIGMA', 'CONNECT',
   ];
   if (!creating.includes(cmd) || !result || typeof result !== 'object') return [];
   const id = (result as { id?: unknown }).id;
@@ -584,6 +585,9 @@ async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
     case 'SCAN_DESIGN_SYSTEM': return serializeDesignSystem();
     case 'AUDIT_DS': return auditDs();
     case 'CREATE_FRAME': return opCreateFrame(params);
+    case 'CONNECT': return opConnect(params);
+    case 'DISCONNECT': return opDisconnect(params);
+    case 'LIST_CONNECTIONS': return opListConnections();
     case 'CREATE_INSTANCE': return opCreateInstance(params);
     case 'SET_VARIANT': return opSetVariant(params);
     case 'CREATE_VARIABLE': return opCreateVariable(params);

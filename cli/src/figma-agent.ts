@@ -16,6 +16,9 @@ import * as bindVariable from './commands/bind-variable.ts';
 import * as capture from './commands/capture.ts';
 import * as cloneTraits from './commands/clone-traits.ts';
 import * as createFrame from './commands/create-frame.ts';
+import * as connect from './commands/connect.ts';
+import * as disconnect from './commands/disconnect.ts';
+import * as listConnections from './commands/list-connections.ts';
 import * as createInstance from './commands/create-instance.ts';
 import * as createVariable from './commands/create-variable.ts';
 import * as execJs from './commands/exec-js.ts';
@@ -53,6 +56,9 @@ const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<unknown>
   'scan-conventions': scanConventions,
   'audit-ds': auditDs,
   'create-frame': createFrame,
+  connect,
+  disconnect,
+  'list-connections': listConnections,
   'create-instance': createInstance,
   'set-variant': setVariant,
   'create-variable': createVariable,
@@ -95,6 +101,9 @@ Commands:
   scan-conventions     Convention-DNA walk over sections → usage-dna.json [<sectionId...> --out file.json --budget 14000 --timeout ms]
   audit-ds             DS-hygiene audit of the open file's component library [--out file.json --sections "01 A,02 B" --facts raw.json --from-facts raw.json --timeout ms]
   create-frame         --name n --w 400 --h 300 [--parent id --x 0 --y 0]
+  connect              --from id --to id [--label t --intent flow|annotation --flow n --transition id]
+  disconnect           --id conn-id | --from id --to id
+  list-connections
   create-instance      --component <key|id> [--parent id]
   set-variant          --node id --props k=v,k2=v2
   create-variable      --collection c --name n --type COLOR|FLOAT|STRING|BOOLEAN --value v [--mode m]

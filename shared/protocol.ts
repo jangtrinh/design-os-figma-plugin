@@ -68,6 +68,12 @@ export const COMMANDS = [
   // comment for why that does not violate the pure-relay rule (a request ADDRESSED TO the
   // broker is not a request being RELAYED).
   'JOB',
+  // Connectors (Design files only — the editor guard refuses FigJam/Slides). CONNECT is a
+  // REDRAW for an endpoint pair that already has one, so re-running a flow converges on one
+  // edge per transition instead of stacking duplicates.
+  'CONNECT',
+  'DISCONNECT',
+  'LIST_CONNECTIONS',
 ] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
