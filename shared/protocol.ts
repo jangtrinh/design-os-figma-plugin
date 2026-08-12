@@ -303,6 +303,16 @@ export interface PluginStatusEntry {
    * `suspectedZombie`.
    */
   zombieReason?: string;
+  /**
+   * auto-connect slice 1 — the plugin bundle's own version/protocol, carried in every
+   * PLUGIN_HELLO (`pluginVersion`, `protocolV`) and retained here instead of stripped
+   * (`plugin-registry.ts`'s `extractScene` still strips both from `scene`; this is a
+   * SEPARATE, additive pair). Present only when the connecting plugin actually sent
+   * them — absent (not `false`) on an older bundle that never did, so `status --peek`
+   * can tell "mismatched" apart from "unknown" instead of guessing.
+   */
+  pluginVersion?: string;
+  protocolV?: number;
 }
 
 // Chunked transport for payloads > CHUNK_LIMIT (both directions).
