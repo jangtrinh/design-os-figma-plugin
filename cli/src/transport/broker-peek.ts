@@ -19,7 +19,10 @@ export interface PeekPluginEntry {
 }
 
 export interface PeekResult {
-  connected: boolean;
+  // `null` means "unknown" — the broker exists (a live advertisement said so) but
+  // didn't answer in time, or refused; that is NOT the same fact as `false` (no
+  // broker at all / a plugin genuinely absent). See the `idle`/`degraded` branches.
+  connected: boolean | null;
   idle?: true;
   reason?: string;
   degraded?: string;
@@ -35,14 +38,45 @@ function matchOrNull(actual: string | number | undefined, expected: string | num
   return actual === undefined ? null : actual === expected;
 }
 
-/** Race a promise against a plain deadline. The loser is never awaited again —
- *  its `.catch` here means a late rejection from the timed-out call can never
- *  surface as an unhandled rejection after this function has already returned. */
-function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'> {
-  return Promise.race([
-    promise.catch(() => 'timeout' as const),
-    new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), ms)),
-  ]);
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+type QueryOutcome<T> = { kind: 'ok'; value: T } | { kind: 'timeout' } | { kind: 'refused'; error: unknown };
+
+/**
+ * Race a promise against a plain deadline, WITHOUT collapsing a refusal and an
+ * actual timeout into the same outcome — a closed-port ECONNREFUSED and a
+ * silent-but-accepting listener are different facts and must produce different
+ * messages (a caller that reads `degraded` and believes "did not answer within
+ * Nms" for an instant refusal is told something false). The loser is never
+ * awaited again after this resolves; a late settle from the losing side is
+ * silently dropped (the `settled` guard), so it can never surface as an
+ * unhandled rejection.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<QueryOutcome<T>> {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolvePromise({ kind: 'timeout' });
+    }, ms);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolvePromise({ kind: 'ok', value });
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolvePromise({ kind: 'refused', error });
+      },
+    );
+  });
 }
 
 /**
@@ -58,15 +92,22 @@ export async function peek(opts?: { path?: string; queryMs?: number }): Promise<
   }
 
   const queryMs = opts?.queryMs ?? envMs('FIGMA_AGENT_PEEK_MS', 150);
-  const hello = await withDeadline(fetchBrokerHello(ad.port), queryMs);
-  if (hello === 'timeout') {
+  const outcome = await withDeadline(fetchBrokerHello(ad.port), queryMs);
+  if (outcome.kind !== 'ok') {
+    const degraded = outcome.kind === 'timeout'
+      ? `broker did not answer within ${queryMs}ms`
+      : `broker refused the connection: ${describeError(outcome.error)}`;
     return {
-      connected: false,
+      // Unknown, not "not connected" — a broker that is merely slow or that
+      // refused this one query is a different fact from no broker existing at
+      // all (the `idle` branch above, where `false` really is known).
+      connected: null,
       broker: { port: ad.port, pid: ad.pid },
-      degraded: `broker did not answer within ${queryMs}ms`,
+      degraded,
       cliVersion: CLI_VERSION,
     };
   }
+  const hello = outcome.value;
 
   const rawPlugins = Array.isArray(hello.plugins) ? (hello.plugins as PluginStatusEntry[]) : [];
   const plugins: PeekPluginEntry[] = rawPlugins.map((p) => ({

@@ -8,11 +8,26 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { peek } from '../cli/src/transport/broker-peek.ts';
+
+/** Accepts a TCP connection and then says nothing, forever — the ONLY way to
+ *  actually exercise the deadline-timer branch of peek()'s race (a closed port
+ *  refuses instantly and never reaches it). */
+function startSilentListener(): Promise<{ server: Server; port: number }> {
+  return new Promise((resolvePromise) => {
+    const server = createServer(() => { /* accept, then never speak */ });
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      resolvePromise({ server, port });
+    });
+  });
+}
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CLI_DIST = join(ROOT, 'cli', 'dist', 'figma-agent.js');
@@ -130,13 +145,34 @@ describe('peek() — in-process, real broker + fake plugin', () => {
     expect(result).toMatchObject({ connected: false, idle: true });
   });
 
-  it('a live pid that refuses to answer within the deadline reports degraded, not connected', async () => {
-    // A live pid (this test process) advertised on a port nothing is listening on.
+  it('a closed port refuses INSTANTLY — reports the real refusal reason, never a fabricated timeout label', async () => {
+    // A live pid (this test process) advertised on a port nothing is listening on:
+    // the WS connect fails with a real refusal, well before any deadline could fire.
     writeFileSync(advertisePath, JSON.stringify({ port: 65530, pid: process.pid, protocolV: 1, buildMtime: 0, startedAt: Date.now(), lastSeen: Date.now() }));
+    const started = Date.now();
     const result = await peek({ path: advertisePath, queryMs: 200 });
-    expect(result.connected).toBe(false);
+    const elapsed = Date.now() - started;
+    expect(result.connected).toBeNull(); // unknown, not a fabricated "not connected"
     expect(result.degraded).toBeDefined();
+    expect(result.degraded).not.toMatch(/did not answer within 200ms/); // must not relabel a refusal as a timeout
+    expect(elapsed).toBeLessThan(150); // refused well short of the 200ms deadline
     expect(result.broker).toMatchObject({ port: 65530, pid: process.pid });
+  });
+
+  it('a broker that accepts the socket and then goes silent hits the REAL deadline — connected:null, degraded names the timeout', async () => {
+    const { server, port } = await startSilentListener();
+    try {
+      writeFileSync(advertisePath, JSON.stringify({ port, pid: process.pid, protocolV: 1, buildMtime: 0, startedAt: Date.now(), lastSeen: Date.now() }));
+      const started = Date.now();
+      const result = await peek({ path: advertisePath, queryMs: 200 });
+      const elapsed = Date.now() - started;
+      expect(result.connected).toBeNull();
+      expect(result.degraded).toMatch(/did not answer within 200ms/);
+      expect(elapsed).toBeGreaterThanOrEqual(190); // actually waited out the deadline, not an instant refusal
+      expect(result.broker).toMatchObject({ port, pid: process.pid });
+    } finally {
+      server.close();
+    }
   });
 });
 

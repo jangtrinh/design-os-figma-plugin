@@ -20,9 +20,10 @@ export const SKILL_CONNECT_PROTOCOL = `## Connect protocol
    question. Idle (no broker, or the plugin not open) is a normal, non-error answer.
 2. Only run a real command (\`status\`, \`connect\`, \`create-frame\`, ...) once you need to
    act — those DO start a broker on demand if none is running.
-3. \`status\`'s \`versionMatch\`/\`protocolMatch\` fields tell you whether the connected
-   plugin build matches this CLI. \`null\` means the plugin didn't report a version (an
-   older bundle) — treat that as unknown, not as a mismatch.
+3. \`status --peek\`'s \`versionMatch\`/\`protocolMatch\` fields tell you whether the
+   connected plugin build matches this CLI. \`null\` means the plugin didn't report a
+   version (an older bundle) — treat that as unknown, not as a mismatch. Plain \`status\`
+   does not compute these fields itself — read them from \`--peek\`.
 4. If nothing is connected, the human's remaining step is opening the plugin panel in
    Figma desktop — this CLI cannot do that for them.`;
 

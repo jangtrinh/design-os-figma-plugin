@@ -5,7 +5,7 @@
 // binary that installed it.
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import type { CommandArgs } from '../figma-agent.ts';
@@ -43,9 +43,55 @@ async function confirm(question: string): Promise<boolean> {
   }
 }
 
-/** This bundled CLI's own repo root — es-figma-craft ships alongside cli/dist/. */
+/**
+ * This install's own repo root — es-figma-craft ships alongside it, wherever
+ * "it" is. Counting a fixed number of `..` from `import.meta.url` is wrong on
+ * one of the two shapes this module ever runs as: three levels up is correct
+ * from source (`cli/src/commands/install-skill.ts`) but one level too many from
+ * the bundled entrypoint (`cli/dist/figma-agent.js`), landing ABOVE the repo.
+ * `package.json` is the one anchor present at the root in both shapes (source
+ * checkout and built/installed package alike) — walk up until it's found,
+ * instead of hardcoding how deep this file sits.
+ */
 function repoRoot(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, 'package.json'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break; // reached the filesystem root without finding one
+    dir = parent;
+  }
+  // A plain Error, not CliError — printErrorJson maps any non-CliError to E_INTERNAL,
+  // and this really is an internal-consistency failure (a broken install), not a
+  // caller mistake with a code an agent should branch on.
+  throw new Error(`could not locate this install's own package.json while walking up from ${import.meta.url}`);
+}
+
+/**
+ * Copy `craftSrc` (skills/es-figma-craft) into `craftDest`, with the same
+ * never-overwrite-silently protection `run()` gives SKILL.md — an entire
+ * bundled skill folder has no single version field to compare, so this
+ * compares its anchor file's (SKILL.md) content instead: identical → no-op,
+ * different → confirm (or `--yes`) before clobbering a user's local edits.
+ */
+async function installCraftFolder(
+  craftSrc: string,
+  craftDest: string,
+  yes: boolean,
+): Promise<{ installed: boolean; reason: string }> {
+  if (existsSync(craftDest)) {
+    const srcSkill = join(craftSrc, 'SKILL.md');
+    const destSkill = join(craftDest, 'SKILL.md');
+    const identical = existsSync(destSkill) && existsSync(srcSkill)
+      && readFileSync(srcSkill, 'utf8') === readFileSync(destSkill, 'utf8');
+    if (identical) return { installed: false, reason: 'unchanged (already installed)' };
+    if (!yes) {
+      const ok = await confirm(`overwrite the existing ${CRAFT_SKILL_DIR} folder at ${craftDest}?`);
+      if (!ok) return { installed: false, reason: 'declined overwrite of existing install' };
+    }
+  }
+  cpSync(craftSrc, craftDest, { recursive: true });
+  return { installed: true, reason: '' };
 }
 
 export async function run(args: CommandArgs): Promise<InstallSkillResult> {
@@ -96,12 +142,19 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
 
   if (bundleCraft) {
     const craftSrc = join(repoRoot(), 'skills', CRAFT_SKILL_DIR);
-    if (existsSync(craftSrc)) {
-      cpSync(craftSrc, craftDest, { recursive: true });
-      installed.push(craftDest);
-    } else {
-      skipped.push({ path: craftDest, reason: `source skill not found at ${craftSrc} — this install may not bundle it` });
+    if (!existsSync(craftSrc)) {
+      // The caller explicitly asked for this (a flag, or a "yes" to the prompt) —
+      // an unsatisfiable explicit request must not report success. A non-zero exit
+      // is the one signal a script driving this CLI can't miss; the `skipped: []`
+      // paths above stay soft because there the caller never asked in the first place.
+      throw new CliError(
+        'E_INVALID_ARGS',
+        `--with-craft was requested but its source skill was not found at ${craftSrc} — this install does not bundle it`,
+      );
     }
+    const craftResult = await installCraftFolder(craftSrc, craftDest, yes);
+    if (craftResult.installed) installed.push(craftDest);
+    else skipped.push({ path: craftDest, reason: craftResult.reason });
   } else {
     skipped.push({ path: craftDest, reason: skipReason });
   }
