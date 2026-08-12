@@ -107,7 +107,7 @@ describe('targetButtonLabel — the "Target this plugin" toggle (#35 P2)', () =>
     expect(targetButtonLabel(false)).toBe('Target this plugin');
   });
   it('pinned → confirms state, doubles as the clear-it toggle', () => {
-    expect(targetButtonLabel(true)).toBe('Targeted ✓');
+    expect(targetButtonLabel(true)).toBe('Targeted');
     expect(targetButtonLabel(true)).not.toBe(targetButtonLabel(false));
   });
 });

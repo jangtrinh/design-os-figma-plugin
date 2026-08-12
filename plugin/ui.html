@@ -235,7 +235,7 @@
    font override above re-points the families the iframe cannot fetch. Owner decision
    2026-07-29: for THIS surface the reference wins over the brand accent.
 
-   Provenance: pixel-sampled from references/Reference.png (1168×992, 2026-07-29) — the value next
+   Provenance: pixel-sampled from references/Reference.png (1168x992, 2026-07-29) — the value next
    to each token is the coordinate it was read at. Every one is a var() the chrome reads; no hex
    below this block.
 
@@ -393,7 +393,7 @@ html.figma-light {
    debug cells are gone entirely (debug lives in `figma-agent status`); the
    onboarding card is priority-1 content and stays, re-parented under the status
    sentence. One font family throughout (`--font-family-body`, declared ONCE on
-   `body` and inherited); every text glyph that used to be `✗`/`✓` is now an
+   `body` and inherited); every text glyph that used to be cross/check is now an
    inline Phosphor-style SVG (panel-ui.ts's `ICONS` map). ──────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 img, svg { max-width: 100%; }
@@ -421,8 +421,8 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow-y: auto;                 /* long content scrolls vertically… */
-  overflow-x: hidden;               /* …and NEVER horizontally */
+  overflow-y: auto;                 /* long content scrolls vertically... */
+  overflow-x: hidden;               /* ...and NEVER horizontally */
   background: var(--fga-body);
   /* Scrollbar (§6) — thin, quiet, thumb from the border family. No layout shift. */
   scrollbar-width: thin;
@@ -450,7 +450,7 @@ body {
 .fga-row { display: flex; align-items: flex-start; gap: var(--space-1); }
 /* Optical centring on the FIRST line box rather than the flex box: a 14px icon
    beside a 13px/1.5-line-height line sits high if you centre on the box. line
-   box = 13 × 1.5 = 19.5px, so (19.5 − 14)/2 = 2.75px — derived, not eyeballed,
+   box = 13 * 1.5 = 19.5px, so (19.5 - 14)/2 = 2.75px — derived, not eyeballed,
    and it stays correct if the size token moves. */
 .fga-icon { width: 14px; height: 14px; flex: 0 0 auto; }
 .fga-row > .fga-icon { margin-top: calc((1.5em - 14px) / 2); }
@@ -484,7 +484,7 @@ body {
   position: relative;
   /* Sits beside the TITLE line (14px / --fga-lh-title), not the body line the
      shared .fga-icon formula assumes — derived against its own context rather
-     than reused blind: (14px × 1.35 − 8px) / 2. */
+     than reused blind: (14px * 1.35 - 8px) / 2. */
   margin-top: calc((var(--fga-font-title) * var(--fga-lh-title) - 8px) / 2);
   background: var(--fga-tone-muted);
   /* Motion (§4): tone crossfades instead of jumping. Named properties only. */
@@ -760,7 +760,7 @@ code {
   white-space: nowrap;
 }
 /* Owner-observed (live screenshot, concurrency & jobs addendum): a FAILED row's reason
-   ("The script stopped: runtime error: …") was clipped by the single-line ellipsis
+   ("The script stopped: runtime error: ...") was clipped by the single-line ellipsis
    above — Activity is the one surface exempt from the terse-truncate rule, and a
    failure reason must be readable without hovering the row for its `title`. Only
    `.log-label--wrap` (panel-ui.ts, failed rows only) overrides to full wrapping; ok/
@@ -919,7 +919,7 @@ code {
     </dl>
     <!-- #35 P2: pins the daemon's routing target to THIS plugin instance (a runtime-only,
          human-set pin — see broker-daemon.ts's `targetInstancePin`). Toggles between
-         "Target this plugin" and "Targeted ✓" — panel-ui.ts wires the click, panel-model.ts
+         "Target this plugin" and "Targeted" — panel-ui.ts wires the click, panel-model.ts
          owns the label text. -->
     <button class="sync-btn" id="fga-target-btn" type="button">Target this plugin</button>
   </section>
@@ -1019,7 +1019,7 @@ code {
     return pinned ? `pinned target \xB7 ${others} other ${files}` : `command target \xB7 ${others} other ${files}`;
   }
   function targetButtonLabel(pinned) {
-    return pinned ? "Targeted \u2713" : "Target this plugin";
+    return pinned ? "Targeted" : "Target this plugin";
   }
   function syncPromptLabel(count) {
     const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 1;

@@ -92,11 +92,12 @@ export function fileNote(count: number, isActiveTarget: boolean, pinned = false)
 }
 
 // ─── Target pin (#35 P2) — the "Target this plugin" button's own label ──────
-// A toggle: pinned → "Targeted ✓" (click clears it); unpinned → "Target this plugin"
-// (click sets it). Kept as a pure mapping so the DOM glue (panel-ui.ts) never composes
-// this string itself.
+// A toggle: pinned → "Targeted" (click clears it, no check-mark glyph — this
+// button has no icon, so the label TEXT alone carries the pinned/unpinned
+// state); unpinned → "Target this plugin" (click sets it). Kept as a pure
+// mapping so the DOM glue (panel-ui.ts) never composes this string itself.
 export function targetButtonLabel(pinned: boolean): string {
-  return pinned ? 'Targeted ✓' : 'Target this plugin';
+  return pinned ? 'Targeted' : 'Target this plugin';
 }
 
 // ─── Idle-commit sync prompt (spec 004 P4) ────────────────────────────────────
