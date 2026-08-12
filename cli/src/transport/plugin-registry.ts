@@ -51,6 +51,15 @@ export interface PluginEntry<S extends RegistrySocket = RegistrySocket> {
   connectedAt: number; // first HELLO for this instance (survives same-instance re-HELLO)
   lastSeenAt: number; // any inbound frame/pong — LIVENESS only (heartbeat cull)
   lastActiveAt: number; // real interaction (HELLO/FILE_INFO/command traffic) — drives ROUTING recency
+  // Monotonic tie-break for `lastActiveAt`, bumped alongside it on every write (register,
+  // updateScene, touchActive). `Date.now()` is millisecond-resolution — two HELLOs on the
+  // same fast loopback connection routinely land in the SAME tick, and a bare
+  // `lastActiveAt` comparison then falls through to `Array.prototype.sort`'s stability,
+  // silently favoring whichever entry was inserted into the Map FIRST instead of whichever
+  // one actually happened last. That is backwards from the documented "most recently
+  // active" routing contract. `activitySeq` never ties (each write takes the next integer),
+  // so it always resolves the real order even when the wall clock can't tell the two apart.
+  activitySeq: number;
   // Zombie-watchdog observability — bumped ONLY by `touchApp`/`register` (real
   // JS-originated frames), NEVER by the transport-only `touch` a raw WS pong uses.
   // This one split is the whole design: it is what lets a frozen-but-still-
@@ -124,6 +133,10 @@ function zombieReason<S extends RegistrySocket>(e: PluginEntry<S>, now: number, 
 export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
   private readonly plugins = new Map<string, PluginEntry<S>>();
   private counter = 0;
+  // Separate from `counter` (which only advances when `mint()` coins a fresh instanceId,
+  // i.e. NOT on a carried-instanceId re-HELLO) — this one advances on every `lastActiveAt`
+  // write, so it is a reliable total order over ALL activity, not just first-time registers.
+  private activitySeqCounter = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -163,6 +176,7 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
       connectedAt: existing ? existing.connectedAt : now,
       lastSeenAt: now,
       lastActiveAt: now,
+      activitySeq: ++this.activitySeqCounter,
       lastAppFrameAt: now, // a HELLO is itself an app frame — real JS just spoke
       reHelloCount,
       sameSceneStreak,
@@ -188,6 +202,7 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
     entry.scene = merged;
     entry.lastSeenAt = this.now();
     entry.lastActiveAt = entry.lastSeenAt;
+    entry.activitySeq = ++this.activitySeqCounter;
     if (changed) entry.sameSceneStreak = 0;
     return true;
   }
@@ -226,6 +241,7 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
     if (!entry) return false;
     entry.lastSeenAt = this.now();
     entry.lastActiveAt = entry.lastSeenAt;
+    entry.activitySeq = ++this.activitySeqCounter;
     entry.sameSceneStreak = 0;
     return true;
   }
@@ -313,10 +329,13 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
       const now = this.now();
       return [...hits].sort((a, b) => {
         const zombieRank = Number(suspectedZombie(a, now)) - Number(suspectedZombie(b, now));
-        return zombieRank !== 0 ? zombieRank : b.lastActiveAt - a.lastActiveAt;
+        if (zombieRank !== 0) return zombieRank;
+        // `activitySeq` breaks a `lastActiveAt` millisecond tie with the TRUE order —
+        // see the field's own doc comment on `PluginEntry`.
+        return b.lastActiveAt - a.lastActiveAt || b.activitySeq - a.activitySeq;
       });
     }
-    return [...hits].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    return [...hits].sort((a, b) => b.lastActiveAt - a.lastActiveAt || b.activitySeq - a.activitySeq);
   }
 
   /**

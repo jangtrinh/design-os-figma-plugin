@@ -28,6 +28,12 @@ import WebSocket from 'ws';
 import { makeRequestFrame } from '../shared/protocol.ts';
 import type { EventMsg, JobInfo, ReplyErr, ReplyOk, WireMsg } from '../shared/protocol.ts';
 import type { ContentionStore } from '../cli/src/transport/contention-log.ts';
+import { envMs } from '../cli/src/transport/protocol-helpers.ts';
+
+// Scoped to THIS file only (vitest's own default 5_000ms stays the ceiling everywhere
+// else, so a hung test in another file still fails fast) — the real-socket waits below
+// legitimately need more room than the suite's fast pure-function tests do.
+vi.setConfig({ testTimeout: 30_000 });
 
 type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts');
 
@@ -36,6 +42,27 @@ const PLUGIN_WAIT_MS_KEY = 'FIGMA_AGENT_PLUGIN_WAIT_MS';
 const CHANGES_DIR_KEY = 'FIGMA_AGENT_CHANGES_DIR';
 const BINDS_FILE_KEY = 'FIGMA_AGENT_BINDS_FILE';
 const UNBOUND_DIR_KEY = 'FIGMA_AGENT_UNBOUND_DIR';
+
+// `waitFor`'s deadline/step were a hardcoded 3_000/50, honest only when this worker's
+// event loop runs uncontended. Under real machine load (sibling vitest workers
+// competing for CPU — this harness makes a real broker, real sockets, real wire frames;
+// nothing here is simulated), the SAME callbacks that normally land in low tens of ms
+// can land past a fixed 3s deadline for reasons that have nothing to do with the broker
+// logic under test. One shared env-driven reader (the SAME `envMs` doctrine every
+// daemon timing knob already uses) scales BOTH numbers together instead of two
+// independently-hardcoded copies that could drift.
+// Default measured, not guessed: this machine (shared with several other concurrent
+// agent sessions + headless Chrome renderers, observed load average ~9) reproducibly
+// pushed a full run of this file's tests to 17-25s wall-clock, against ~9s uncontended —
+// a single frame this harness waits on can plausibly be delayed several seconds by a
+// real event-loop stall, not a broker bug. 20s is the shrink-to-fit ceiling that
+// survived that measured worst case with headroom, not an arbitrary pad.
+const HARNESS_WAIT_TIMEOUT_MS = envMs('FIGMA_AGENT_HARNESS_WAIT_MS', 20_000);
+const HARNESS_WAIT_STEP_MS = envMs('FIGMA_AGENT_HARNESS_STEP_MS', 50);
+// The handful of fixed "let the broker settle" delays sprinkled through this file (no
+// frame to `waitFor` on — e.g. a refused SET_TARGET sends no ack) share the SAME
+// env-driven reader rather than their own separate hardcoded literal.
+const HARNESS_SETTLE_MS = envMs('FIGMA_AGENT_HARNESS_SETTLE_MS', 250);
 
 let scratchDir: string;
 let advertisePath: string;
@@ -71,7 +98,19 @@ async function startTestBroker(env: Record<string, string> = {}): Promise<number
   // `logFile` keeps this in-process broker's own log traffic in the scratch dir —
   // the default `/tmp/figma-agent-broker.log` is shared with a live dev session.
   await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit(), logFile: scratchLogFile });
-  const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number };
+  const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number; pid: number };
+  // Hard isolation assertion, applied to EVERY test in this file (not just target-pin):
+  // the broker this test just spawned runs IN-PROCESS, so its advertised `pid` must be
+  // this vitest worker's own `process.pid`. If it ever isn't, the advertisement being
+  // read back belongs to a DIFFERENT process — a real machine-wide broker (this host
+  // runs one on port 9410) or a stale leftover — and every assertion downstream would be
+  // silently checking the wrong broker's state instead of failing loudly right here.
+  if (ad.pid !== process.pid) {
+    throw new Error(
+      `startTestBroker: advertisement at ${advertisePath} reports pid ${ad.pid}, but this worker is pid ${process.pid} — ` +
+      `reading a broker this test did not spawn (port ${ad.port}).`,
+    );
+  }
   return ad.port;
 }
 
@@ -126,7 +165,11 @@ function collectFrames(ws: WebSocket): { frames: WireMsg[] } {
   return state;
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 3_000, stepMs = 50): Promise<void> {
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = HARNESS_WAIT_TIMEOUT_MS,
+  stepMs = HARNESS_WAIT_STEP_MS,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await predicate()) return;
@@ -1126,7 +1169,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     await helloPlugin(pluginA, 'inst-pin-a2', 'PinFileA2');
     const pluginB = await connectSocket(port);
     await helloPlugin(pluginB, 'inst-pin-b2', 'PinFileB2');
-    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS)); // drain the HELLO-triggered PEERS broadcast(s)
     const framesA = collectFrames(pluginA);
     const framesB = collectFrames(pluginB);
 
@@ -1148,7 +1191,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     await helloPlugin(pluginA, 'inst-pin-a3', 'PinFileA3');
     const pluginB = await connectSocket(port);
     await helloPlugin(pluginB, 'inst-pin-b3', 'PinFileB3'); // recency-favored once unpinned
-    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS)); // drain the HELLO-triggered PEERS broadcast(s)
     const framesA = collectFrames(pluginA);
     const framesB = collectFrames(pluginB);
 
@@ -1172,7 +1215,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     await helloPlugin(pluginA, 'inst-pin-a4', 'PinFileA4');
     const pluginB = await connectSocket(port);
     await helloPlugin(pluginB, 'inst-pin-b4', 'PinFileB4');
-    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS)); // drain the HELLO-triggered PEERS broadcast(s)
     const framesA = collectFrames(pluginA);
 
     setTarget(pluginA, 'inst-pin-a4');
@@ -1201,12 +1244,12 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     await helloPlugin(pluginA, 'inst-pin-a5', 'PinFileA5');
     const pluginB = await connectSocket(port);
     await helloPlugin(pluginB, 'inst-pin-b5', 'PinFileB5'); // recency-favored — proves the pin never took
-    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS)); // drain the HELLO-triggered PEERS broadcast(s)
     const framesA = collectFrames(pluginA);
     const framesB = collectFrames(pluginB);
 
     setTarget(pluginA, 'inst-pin-b5'); // A claims to be B — must be refused
-    await new Promise((resolve) => setTimeout(resolve, 100)); // let the broker process it (no ack frame to await)
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS)); // let the broker process it (no ack frame to await)
 
     const cli = await connectSocket(port);
     sendReadOnlyRequest(cli, 'req-pin-5');
@@ -1223,7 +1266,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     await helloPlugin(pluginA, 'inst-pin-a6', 'PinFileA6');
     const pluginB = await connectSocket(port);
     await helloPlugin(pluginB, 'inst-pin-b6', 'PinFileB6'); // recency-favored while unpinned
-    await new Promise((resolve) => setTimeout(resolve, 50)); // drain the HELLO-triggered PEERS broadcast(s)
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS)); // drain the HELLO-triggered PEERS broadcast(s)
 
     const peersAAfterPin = nextFrame<EventMsg>(pluginA, (m) => (m as EventMsg).type === 'PEERS');
     const peersBAfterPin = nextFrame<EventMsg>(pluginB, (m) => (m as EventMsg).type === 'PEERS');
