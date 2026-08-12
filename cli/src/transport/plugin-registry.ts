@@ -70,7 +70,8 @@ export interface PluginEntry<S extends RegistrySocket = RegistrySocket> {
   // auto-connect slice 1 — retained (not stripped like the rest of PROTOCOL_KEYS)
   // so `statusList()` can surface what build/protocol this instance is actually
   // running. `undefined` (never sent — an older plugin bundle) is distinct from
-  // any real value; see `statusList()`'s versionMatch/protocolMatch contract.
+  // any real value; `statusList()` itself only surfaces these raw fields — the
+  // computed versionMatch/protocolMatch comparison lives in broker-peek.ts.
   pluginVersion?: string;
   protocolV?: number;
 }
