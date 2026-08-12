@@ -759,6 +759,12 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* auto-connect slice 2 — which harness sent this request ("claude · Created frame
+   ..."), muted so the sentence itself (the important part) still reads first. Own
+   span (panel-ui.ts), never folded into the sentence string. */
+.log-agent {
+  color: var(--fga-text-muted);
+}
 /* Owner-observed (live screenshot, concurrency & jobs addendum): a FAILED row's reason
    ("The script stopped: runtime error: ...") was clipped by the single-line ellipsis
    above — Activity is the one surface exempt from the terse-truncate rule, and a
@@ -1069,6 +1075,7 @@ code {
       at
     };
     if (typeof d.label === "string" && d.label.trim() !== "") rec.label = d.label.trim();
+    if (typeof d.agent === "string" && d.agent.trim() !== "") rec.agent = d.agent.trim();
     return rec;
   }
   function toActivityResult(detail) {
@@ -1254,7 +1261,10 @@ code {
       pending: r.pending,
       ok: r.ok
     });
-    text.textContent = line;
+    const agentSpan = document.createElement("span");
+    agentSpan.className = "log-agent";
+    agentSpan.textContent = `${r.agent ?? "cli"} \xB7 `;
+    text.append(agentSpan, document.createTextNode(line));
     text.title = line;
     const caption = document.createElement("div");
     caption.className = "log-meta";
@@ -1435,7 +1445,7 @@ code {
     } catch {
     }
   });
-  versionEl.textContent = `v0.1.0 \xB7 ${true ? "8840474" : "dev"}`;
+  versionEl.textContent = `v0.1.0 \xB7 ${true ? "9e76a4b" : "dev"}`;
   setInterval(render, 1e3);
   render();
 
@@ -2902,7 +2912,7 @@ code {
   function startActivity(req) {
     const at = Date.now();
     activityStart.set(req.id, { cmd: req.cmd, label: req.activity, at });
-    dispatchActivity({ phase: "start", id: req.id, tool: req.cmd, label: req.activity, at });
+    dispatchActivity({ phase: "start", id: req.id, tool: req.cmd, label: req.activity, at, agent: req.agent });
   }
   function replyNodeName(payload2) {
     const name = payload2?.name;

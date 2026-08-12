@@ -46,6 +46,7 @@ let expectedInstance: string | undefined;
 let lastFileContext: FileContext | undefined;
 let projectDir: string | undefined;
 let readOnlyGlobal = false;
+let agentId: string | undefined;
 
 /** Set once per CLI invocation from the global --file flag; stamped on every request envelope. */
 export function setExpectedFile(name: string | undefined): void { expectedFile = name; }
@@ -74,6 +75,13 @@ export function setProjectDir(dir: string | undefined): void { projectDir = dir;
  * wins over this global — see `runCommand`'s own `opts?.readOnly ?? readOnlyGlobal`.
  */
 export function setReadOnly(v: boolean): void { readOnlyGlobal = v; }
+
+/**
+ * Set once per CLI invocation from the global `--agent`/`FIGMA_AGENT_ID` value; stamped
+ * on every request envelope the SAME choke point `setExpectedFile` uses (auto-connect
+ * slice 2). `undefined` (the default) leaves the frame byte-identical to a pre-flag CLI's.
+ */
+export function setAgent(id: string | undefined): void { agentId = id; }
 
 /**
  * Stage-4 fix round (minor 8, ruling Q4) — `--read-only` is a PARTIAL hardening, not a
@@ -187,7 +195,7 @@ export function exchange(
     ws.on('error', (err) => finish(() => reject(new CliError('E_NO_BROKER', `broker socket error: ${err.message}`))));
 
     try {
-      sendWireMsg(ws, makeRequestFrame(id, cmd, params, activity, expectedFile, projectDir, readOnly, expectedInstance));
+      sendWireMsg(ws, makeRequestFrame(id, cmd, params, activity, expectedFile, projectDir, readOnly, expectedInstance, agentId));
     } catch (err) {
       finish(() => reject(new CliError('E_NO_BROKER', `failed to send request: ${(err as Error).message}`)));
     }

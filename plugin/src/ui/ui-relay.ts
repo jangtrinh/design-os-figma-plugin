@@ -64,7 +64,10 @@ function dispatchActivity(detail: Record<string, unknown>): void {
 function startActivity(req: RequestMsg): void {
   const at = Date.now();
   activityStart.set(req.id, { cmd: req.cmd, label: req.activity, at });
-  dispatchActivity({ phase: 'start', id: req.id, tool: req.cmd, label: req.activity, at });
+  // `agent` (auto-connect slice 2) is start-only, like `label` — never echoed back on
+  // the done-event, so it needs no entry in the `activityStart` map above, only the
+  // dispatch here.
+  dispatchActivity({ phase: 'start', id: req.id, tool: req.cmd, label: req.activity, at, agent: req.agent });
 }
 
 /** A reply's own `name`, when it carried one (CREATE_FRAME/CREATE_INSTANCE/SET_TEXT/

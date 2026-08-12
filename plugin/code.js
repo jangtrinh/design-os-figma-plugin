@@ -5268,6 +5268,11 @@
     title: "design:os by JANG",
     themeColors: true
   });
+  try {
+    figma.root.setRelaunchData({ open: "Reconnect figma-agent" });
+  } catch (err) {
+    console.warn("setRelaunchData refused:", err);
+  }
   var bootSkipped = [];
   function selectionSummary() {
     const sel = figma.currentPage.selection;

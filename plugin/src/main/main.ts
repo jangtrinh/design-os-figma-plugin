@@ -70,6 +70,18 @@ figma.showUI(__html__, {
   visible: true, width: PANEL_WIDTH, height: PANEL_HEIGHT, title: 'design:os by JANG', themeColors: true,
 });
 
+// auto-connect slice 2 — offer a "Reconnect figma-agent" entry in Figma's own
+// relaunch button/menu once this plugin has run on the file. UNVERIFIED here (zero
+// prior `setRelaunchData` use in this repo): it writes to the document, may mark it
+// dirty, may be refused on a file the user cannot edit, and the button itself only
+// appears after this call has actually landed once — see the phase's live-test items.
+// Gated so a refusal here can never break plugin startup; logged, not swallowed.
+try {
+  figma.root.setRelaunchData({ open: 'Reconnect figma-agent' });
+} catch (err) {
+  console.warn('setRelaunchData refused:', err);
+}
+
 // Absorption phase-03 (FigJam) — which design-only boot capabilities this session
 // consciously skipped, surfaced via STATUS's `bootSkipped` (same present-only-when-
 // non-empty contract as the broker's senderMismatchCount/legacyMigrationDeferred).
