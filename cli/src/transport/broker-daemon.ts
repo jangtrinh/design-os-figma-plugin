@@ -630,6 +630,22 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // (see schedulePluginSetPersist's own doc); this only stops the timer from keeping a
     // test's `exit` stub (which throws rather than truly halting) reachable afterward.
     if (lastPluginsDebounceTimer) { clearTimeout(lastPluginsDebounceTimer); lastPluginsDebounceTimer = null; }
+    // The 5 daemon-lifetime setInterval timers below (heartbeat/zombie-watchdog,
+    // park-sweep, job watchdog, advertise-refresh, idle-check) used to outlive
+    // `shutdown()` in every environment where `exit()` doesn't truly halt the process: a
+    // real `node <bin> __broker` normally dies via `process.exit()`, which kills every
+    // timer anyway, so this was invisible in production. The test harness's `exit` stub
+    // THROWS instead (so the vitest worker survives), which is exactly the environment
+    // where these clears matter — a whole file's worth of tests each starting a broker
+    // left every earlier test's intervals ticking in the SAME process, degrading
+    // event-loop timing for every later test.
+    // A no-op either way in real production use, since `process.exit()` immediately
+    // after would have cleared them anyway.
+    clearInterval(heartbeatInterval);
+    clearInterval(parkSweepInterval);
+    clearInterval(watchdogInterval);
+    clearInterval(advertiseRefreshInterval);
+    clearInterval(idleCheckInterval);
     try {
       // Only remove the advertisement if it is still ours (a newer broker may own it).
       const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as BrokerAdvertisement;
@@ -1635,7 +1651,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // Heartbeat: WS-ping on the heartbeat cadence; drop sockets that missed the
   // previous pong (broker→client liveness; browsers auto-pong at the WS layer).
   // Piggybacks the zombie-watchdog flip check onto this SAME tick — no new interval.
-  setInterval(() => {
+  const heartbeatInterval = setInterval(() => {
     const allClients = [...wss!.clients, ...(wss6 ? wss6.clients : [])];
     for (const ws of allClients) {
       const tracked = ws as TrackedWs;
@@ -1669,7 +1685,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // job in the first place (it fails here, directly), so there is nothing to reconcile
   // between the two sweeps.
   const PARK_SWEEP_INTERVAL_MS = Math.min(500, Math.max(100, Math.floor(PLUGIN_WAIT_TIMEOUT_MS / 8)));
-  setInterval(() => {
+  const parkSweepInterval = setInterval(() => {
     const now = Date.now();
     // Stage-4 fix round (M3) — these two MUST run every tick, unconditionally: my first
     // draft put them after `if (st.waiting.length === 0) return;`, which is true on
@@ -1704,7 +1720,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // prevent. The only exit is the audited `figma-agent job <id> --force-release`
   // (phase 02) — `status` (phase 02 §3) surfaces the blocked slot + the offending job's
   // age from `st.queues`, not from this job's (now `failed`) state alone.
-  setInterval(() => {
+  const watchdogInterval = setInterval(() => {
     const now = Date.now();
     for (const job of st.jobs.runningJobs()) {
       if (job.startedAt === undefined || now - job.startedAt < WATCHDOG_TIMEOUT_MS) continue;
@@ -1724,7 +1740,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // the file's presence — if it vanished while we're still alive, this write brings it
   // back — but `ownsAdvertisement` (false once `shutdown()` has run) stops a cleanly-
   // exited broker's own interval from resurrecting the file it just removed.
-  setInterval(() => {
+  const advertiseRefreshInterval = setInterval(() => {
     if (!ownsAdvertisement) return;
     const ad = readAdvertisement(advertisePath);
     if (ad && ad.pid !== process.pid && isPidAlive(ad.pid)) { shutdown(0, `replaced by broker pid ${ad.pid}`); return; }
@@ -1732,7 +1748,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   }, HEARTBEAT_MS);
 
   // Idle shutdown: no plugin AND no CLI clients for the idle window (env-overridable).
-  setInterval(() => {
+  const idleCheckInterval = setInterval(() => {
     if (st.registry.size() > 0 || st.cliClients.size > 0) st.lastBusyAt = Date.now();
     else if (Date.now() - st.lastBusyAt > IDLE_SHUTDOWN_MS) shutdown(0, `idle for ${IDLE_SHUTDOWN_MS}ms`);
   }, IDLE_CHECK_MS);
