@@ -406,6 +406,13 @@ export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   COWORK: DEFAULT_COWORK_TIMEOUT_SECONDS * 1_000 + 5_000,
 };
 export const EXEC_JS_MAX_TIMEOUT_MS = 120_000;
+// A cowork waiter holds a live broker-side slot (registry entry + quiet-timer state)
+// for its entire `timeoutMs` — unlike EXEC_JS, which just runs a script and returns,
+// an unbounded `--timeout` here is a standing resource hold, not a one-shot call. Same
+// "CLI --timeout may raise, capped" shape as EXEC_JS_MAX_TIMEOUT_MS, sized to comfortably
+// clear the 600s default (a caller waiting for a genuinely slow design session) while
+// still bounding how long one runaway `--timeout` can pin a waiter slot.
+export const COWORK_MAX_TIMEOUT_MS = 1_800_000; // 30 minutes
 
 // Broker lifecycle
 export const HEARTBEAT_INTERVAL_MS = 30_000; // broker WS-ping + advertisement refresh

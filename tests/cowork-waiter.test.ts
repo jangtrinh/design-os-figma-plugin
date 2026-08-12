@@ -41,7 +41,7 @@ describe('createWaiter / onEdits — arming', () => {
     expect(w.edits).toHaveLength(2);
   });
 
-  it('an agent-only batch never arms (issue #54 class of bug: the agent must never trigger its own cycle)', () => {
+  it('an agent-only batch never arms — the agent must never trigger its own cycle', () => {
     const w = createWaiter(3_000, 100_000);
     onEdits(w, liveBatch([agentEdit('1:1')]), 1_000);
     expect(w.armedAt).toBeNull();

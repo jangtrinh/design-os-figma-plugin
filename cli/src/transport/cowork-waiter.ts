@@ -28,8 +28,9 @@ export function createWaiter(quietMs: number, deadline: number): CoworkWaiterSta
  * Only LIVE, OWNER-actor edits arm/re-arm the quiet timer:
  * - `source: 'gapfill'` is a replay of edits made while the plugin was closed, never
  *   live typing — ignored outright, regardless of actor.
- * - `actor: 'agent'` edits never arm the timer — the exact class of bug issue #54 fixed
- *   (an agent's own writes must never look like the designer stopping to think).
+ * - `actor: 'agent'` edits never arm the timer — an agent's own writes must never look
+ *   like the designer stopping to think, since that would fire the quiet-window cycle
+ *   on the agent's own traffic instead of on real owner silence.
  * - `actor: 'ambiguous'` edits are counted (never vanish silently) but do not arm
  *   either — a refusal to guess is not the same fact as a confirmed owner edit.
  */

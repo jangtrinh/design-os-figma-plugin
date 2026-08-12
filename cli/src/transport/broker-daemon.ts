@@ -11,8 +11,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeF
 import { join } from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
-  BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS, LOOPBACK_HOST, PLUGIN_WAIT_MS,
-  PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
+  BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, COWORK_MAX_TIMEOUT_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS,
+  LOOPBACK_HOST, PLUGIN_WAIT_MS, PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
   type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type ReplyErr, type ReplyOk, type RequestMsg,
   type WireMsg,
 } from '../../../shared/protocol.ts';
@@ -1343,7 +1343,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const handleCowork = (ws: WebSocket, msg: RequestMsg): void => {
     const params = msg.params as { waitMs?: unknown; timeoutMs?: unknown } | null;
     const waitMs = typeof params?.waitMs === 'number' && params.waitMs > 0 ? params.waitMs : 3_000;
-    const timeoutMs = typeof params?.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 600_000;
+    // Same "CLI --timeout may raise, capped" shape as EXEC_JS_MAX_TIMEOUT_MS — a caller-
+    // supplied value pins a live waiter slot for its whole duration, so it needs a
+    // ceiling here (COWORK_MAX_TIMEOUT_MS), not just a floor.
+    const requestedTimeoutMs = typeof params?.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 600_000;
+    const timeoutMs = Math.min(requestedTimeoutMs, COWORK_MAX_TIMEOUT_MS);
 
     const pin = targetInstancePin;
     const pinLive = pin !== null && st.registry.getByInstanceId(pin)?.ws.readyState === WebSocket.OPEN;

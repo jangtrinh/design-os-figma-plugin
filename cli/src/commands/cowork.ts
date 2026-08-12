@@ -10,6 +10,7 @@ import { editSentence } from '../../../shared/edit-vocabulary.ts';
 import type { EditInput } from '../../../shared/edit-feed.ts';
 import { DEFAULT_COWORK_TIMEOUT_SECONDS, DEFAULT_COWORK_WAIT_SECONDS } from '../../../shared/protocol.ts';
 import type { CorrectionEvent } from '../../../shared/supervised-memory.ts';
+import { CliError } from '../transport/protocol-helpers.ts';
 
 interface CoworkWireResult {
   cycles: number;
@@ -87,7 +88,16 @@ export async function run(args: CommandArgs): Promise<unknown> {
     const editNodeIds = new Set(edits.map((e) => e.nodeId));
     const corrections = events.filter((e) => isPendingForCycle(e, editNodeIds, byEventId));
     return { ...base, corrections };
-  } catch {
-    return { ...base, corrections: null, correctionsReason: 'plugin disconnected before the ledger could be read' };
+  } catch (err) {
+    // `corrections: null` is the honest "unknown" — never an empty array standing in
+    // for a read that didn't happen. The REASON must name what actually went wrong,
+    // not a single hardcoded guess: a wire timeout, a plugin that dropped mid-cycle
+    // (E_NO_PLUGIN), a broker that vanished (E_NO_BROKER), or a plugin build old
+    // enough to not answer GET_CORRECTION_MEMORY at all are all distinct failures a
+    // caller may want to react to differently.
+    const correctionsReason = err instanceof CliError
+      ? `${err.code}: ${err.message}`
+      : `unexpected error reading corrections: ${err instanceof Error ? err.message : String(err)}`;
+    return { ...base, corrections: null, correctionsReason };
   }
 }

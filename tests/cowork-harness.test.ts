@@ -182,7 +182,7 @@ describe('cowork — the zero-edit timeout is a normal answer, never an error', 
   });
 });
 
-describe('cowork — agent-only traffic never fires a cycle (issue #54 class of bug)', () => {
+describe('cowork — agent-only traffic never fires a cycle (an agent must never trigger its own quiet-window)', () => {
   it('agent-actor edits alone never arm the wait — it runs out the full timeout as cycles:0', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
