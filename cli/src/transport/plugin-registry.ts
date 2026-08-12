@@ -67,6 +67,13 @@ export interface PluginEntry<S extends RegistrySocket = RegistrySocket> {
   // When the last reconnect (superseded same-instance register) happened, or
   // null before the first one — the anchor `sameSceneStreak` windows against.
   lastReHelloAt: number | null;
+  // auto-connect slice 1 — retained (not stripped like the rest of PROTOCOL_KEYS)
+  // so `statusList()` can surface what build/protocol this instance is actually
+  // running. `undefined` (never sent — an older plugin bundle) is distinct from
+  // any real value; `statusList()` itself only surfaces these raw fields — the
+  // computed versionMatch/protocolMatch comparison lives in broker-peek.ts.
+  pluginVersion?: string;
+  protocolV?: number;
 }
 
 // HELLO payload keys that are protocol plumbing, not scene identity.
@@ -160,6 +167,11 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
       reHelloCount,
       sameSceneStreak,
       lastReHelloAt,
+      // auto-connect slice 1 — read straight off THIS HELLO's data, not carried over
+      // from `existing`: a reconnect after a plugin rebuild must report the NEW build's
+      // version, never a stale one left over from the superseded socket.
+      pluginVersion: typeof data.pluginVersion === 'string' ? data.pluginVersion : undefined,
+      protocolV: typeof data.protocolV === 'number' ? data.protocolV : undefined,
     });
     return { instanceId: id, replaced: existing !== undefined, superseded };
   }
@@ -342,6 +354,11 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
           appSilenceMs: now - e.lastAppFrameAt,
           ...(e.reHelloCount > 0 && { reHelloCount: e.reHelloCount }),
           ...(reason !== null && { suspectedZombie: true as const, zombieReason: reason }),
+          // auto-connect slice 1 — present only when the HELLO actually carried it (an
+          // older plugin bundle omits both), same "common case stays byte-identical"
+          // contract as reHelloCount/suspectedZombie above.
+          ...(e.pluginVersion !== undefined && { pluginVersion: e.pluginVersion }),
+          ...(e.protocolV !== undefined && { protocolV: e.protocolV }),
         };
       });
   }

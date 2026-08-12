@@ -17,6 +17,7 @@
     "build:cli": "node scripts/build.mjs cli",
     "build:plugin-main": "node scripts/build.mjs plugin-main",
     "build:plugin-ui": "node scripts/build.mjs plugin-ui",
+    "emit:skill": "npm run build:cli --silent && node cli/dist/figma-agent.js __emit-skill > skills/figma-agent/SKILL.md",
     "typecheck": "tsc -p cli --noEmit && tsc -p plugin --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "lint:comments": "node scripts/check-comment-hygiene.mjs",
