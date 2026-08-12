@@ -68,6 +68,13 @@ export const COMMANDS = [
   // comment for why that does not violate the pure-relay rule (a request ADDRESSED TO the
   // broker is not a request being RELAYED).
   'JOB',
+  // auto-connect slice 3: BROKER-TERMINAL, same precedent as PROJECT_BIND/JOB —
+  // intercepted before `admitRequest`/`forwardToPlugin`, never reaches a plugin. Waits
+  // for one designer change-cycle (the broker already watches every EDIT_FEED batch,
+  // actor-labelled — zero plugin change). The broker DOES read `params` here (quiet
+  // seconds, overall timeout, optional file/instance filter) for the same reason JOB
+  // does: a request ADDRESSED TO the broker is not a request being RELAYED.
+  'COWORK',
   // Connectors (Design files only — the editor guard refuses FigJam/Slides). CONNECT is a
   // REDRAW for an endpoint pair that already has one, so re-running a flow converges on one
   // edge per transition instead of stacking duplicates.
@@ -380,6 +387,12 @@ export type ErrorCode =
 
 // ── Timeouts (ms) ───────────────────────────────────────────────────
 export const DEFAULT_TIMEOUT_MS = 15_000;
+// auto-connect slice 3 — `cowork`'s own defaults, in SECONDS (the CLI flags read
+// seconds, matching `status --wait`'s own precedent — every OTHER `--timeout` in this
+// CLI is ms). A 600s wait needs its own COMMAND_TIMEOUTS entry below rather than
+// raising DEFAULT_TIMEOUT_MS, which every other command's wire round-trip still uses.
+export const DEFAULT_COWORK_WAIT_SECONDS = 3;
+export const DEFAULT_COWORK_TIMEOUT_SECONDS = 600;
 export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   HTML_TO_FIGMA: 60_000,
   IMPORT_PAYLOAD: 60_000,
@@ -387,8 +400,19 @@ export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   AUDIT_DS: 120_000, // usage scan traverses EVERY page's instances — heavier than the DS scan
   EXEC_JS: 30_000, // CLI --timeout may raise, capped at 120s
   BATCH: 60_000,
+  // Fallback only — cowork.ts always passes an explicit timeoutMs derived from the
+  // caller's OWN --timeout (which can exceed this default), same "hop buffer past the
+  // requested budget" shape as batch.ts's own scaled timeout.
+  COWORK: DEFAULT_COWORK_TIMEOUT_SECONDS * 1_000 + 5_000,
 };
 export const EXEC_JS_MAX_TIMEOUT_MS = 120_000;
+// A cowork waiter holds a live broker-side slot (registry entry + quiet-timer state)
+// for its entire `timeoutMs` — unlike EXEC_JS, which just runs a script and returns,
+// an unbounded `--timeout` here is a standing resource hold, not a one-shot call. Same
+// "CLI --timeout may raise, capped" shape as EXEC_JS_MAX_TIMEOUT_MS, sized to comfortably
+// clear the 600s default (a caller waiting for a genuinely slow design session) while
+// still bounding how long one runaway `--timeout` can pin a waiter slot.
+export const COWORK_MAX_TIMEOUT_MS = 1_800_000; // 30 minutes
 
 // Broker lifecycle
 export const HEARTBEAT_INTERVAL_MS = 30_000; // broker WS-ping + advertisement refresh

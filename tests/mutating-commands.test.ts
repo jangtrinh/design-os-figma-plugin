@@ -13,7 +13,9 @@ import { MUTATING_COMMANDS } from '../shared/mutating-commands.ts';
 // PROJECT_BIND is BROKER-LOCAL (registry-integrity fix round) — broker-daemon.ts intercepts it
 // before `forwardToPlugin`, so it never reaches main.ts / a Figma tab at all. JOB
 // (concurrency & jobs, backlog 1.1+2.6+4.3) is the same shape — broker-terminal, never
-// reaches a plugin. Note this list is the UNDO-commit classification (does the command
+// reaches a plugin. COWORK (auto-connect slice 3) is the same shape again — the broker
+// answers it from EDIT_FEED batches it already receives, never forwarding it to main.ts.
+// Note this list is the UNDO-commit classification (does the command
 // need its own undo step?), a DIFFERENT axis from the concurrency wave's queueing
 // classification: AUDIT_DS is read-only here (nothing to undo — it writes no scene
 // content) but MUTATING for queueing purposes (it moves `figma.currentPage` per page
@@ -21,7 +23,7 @@ import { MUTATING_COMMANDS } from '../shared/mutating-commands.ts';
 // IMPLICIT_READ_ONLY set in broker-daemon.ts for that deliberate asymmetry.
 const READ_ONLY_COMMANDS: readonly CommandName[] = [
   'STATUS', 'GET_SELECTION', 'SCAN_DESIGN_SYSTEM', 'AUDIT_DS',
-  'GET_CORRECTION_MEMORY', 'EXPORT_PNG', 'HTML_TO_FIGMA', 'BATCH', 'PROJECT_BIND', 'JOB',
+  'GET_CORRECTION_MEMORY', 'EXPORT_PNG', 'HTML_TO_FIGMA', 'BATCH', 'PROJECT_BIND', 'JOB', 'COWORK',
   'LIST_CONNECTIONS', 'VERIFY_CONNECTIONS',
 ];
 
