@@ -172,6 +172,17 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + 'runs "figma-agent status --peek" at the start of every session; confirms before writing, backs '
       + "up the file first, and aborts untouched if it can't parse the file as JSON",
   },
+  {
+    name: 'cowork',
+    description:
+      '[--wait S] [--timeout S]   wait for ONE designer change-cycle: quiescence of --wait seconds '
+      + '(default 3, floor 1) after the designer edits, or --timeout seconds (default 600, in SECONDS '
+      + 'like status --wait) with zero edits — that is a normal answer (cycles:0), not an error. Prints '
+      + "the edited nodes plus any pending agent corrections on them, read-only from the existing "
+      + 'correction ledger (never writes it). Only actor:owner edits on a LIVE batch arm the cycle — '
+      + "an agent's own writes, ambiguous-actor edits, and a gapfill replay never do. The plugin "
+      + 'disconnecting mid-wait refuses with a reconnect hint instead of hanging to the full timeout.',
+  },
 ];
 
 export const GLOBAL_FLAGS: GlobalFlagEntry[] = [

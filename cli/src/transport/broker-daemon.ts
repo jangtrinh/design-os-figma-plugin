@@ -48,6 +48,7 @@ import {
 import {
   JobTable, isFinishedState, isHealthyRunningJob, isReplyFromDispatchedInstance, toJobInfo, type JobRecord,
 } from './job-table.ts';
+import { createWaiter as createCoworkWaiter, onEdits as feedCoworkWaiter, tick as tickCoworkWaiter, type CoworkWaiterState } from './cowork-waiter.ts';
 import {
   completeSkippingStale, emptyQueue, enqueue as enqueueJob, queuePosition, remove as removeFromQueue,
   type QueueState,
@@ -145,6 +146,24 @@ interface ParkedRequest {
   activity?: string;
 }
 
+/**
+ * auto-connect slice 3 — the broker-side wrapper around the pure `CoworkWaiterState`
+ * (cowork-waiter.ts): the socket/identity bookkeeping the pure module deliberately
+ * doesn't own. `targetInstanceId` is resolved ONCE at registration (same as any other
+ * command's routing) — a cowork wait watches ONE specific plugin instance's file for
+ * its whole duration, never re-resolved mid-wait even if a different file becomes the
+ * routing target in the meantime.
+ */
+interface CoworkWaiterEntry {
+  reqId: string;
+  from: WebSocket;
+  fileIdentity: string;
+  fileName: string | null;
+  targetInstanceId: string;
+  startedAt: number;
+  state: CoworkWaiterState;
+}
+
 interface BrokerState {
   registry: PluginRegistry<WebSocket>; // one slot per connected plugin instance
   cliClients: Set<WebSocket>;
@@ -182,6 +201,10 @@ interface BrokerState {
   // AWAITING_RECONNECT_EXPIRY_MS. NEVER exposed in `plugins[]` — see last-plugins-log.ts's
   // own Law 1 doc for why this stays a separate top-level `status` field.
   awaitingReconnect: AwaitingReconnectEntry[];
+  // auto-connect slice 3 — active `cowork` waits, one entry per outstanding COWORK
+  // request. Broker-terminal (never forwarded, never queued) — same precedent as
+  // `waiting` above, but fed by EDIT_FEED batches instead of plugin availability.
+  coworkWaiters: CoworkWaiterEntry[];
 }
 
 function log(line: string): void {
@@ -478,6 +501,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     bindIndex, knownProjectDirs: new Set(usableDirs),
     jobs: new JobTable(), queues: new Map(), pendingChunks: new Map(),
     awaitingReconnect: initialAwaitingReconnect,
+    coworkWaiters: [],
   };
   // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
   // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
@@ -1308,6 +1332,57 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       : { job: info });
   };
 
+  /**
+   * auto-connect slice 3 — `figma-agent cowork`. Broker-terminal (same precedent as
+   * PROJECT_BIND/JOB): resolves a target plugin ONCE using the SAME routing filter
+   * `admitRequest` uses (envelope `expectedFile`/`expectedInstance`, the standing
+   * runtime pin), registers a waiter keyed to that instance's file identity, and
+   * returns immediately — the actual reply is sent later, from `resolveCoworkWaiters`
+   * (piggybacked on the park-sweep interval) once the wait fires or expires.
+   */
+  const handleCowork = (ws: WebSocket, msg: RequestMsg): void => {
+    const params = msg.params as { waitMs?: unknown; timeoutMs?: unknown } | null;
+    const waitMs = typeof params?.waitMs === 'number' && params.waitMs > 0 ? params.waitMs : 3_000;
+    const timeoutMs = typeof params?.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 600_000;
+
+    const pin = targetInstancePin;
+    const pinLive = pin !== null && st.registry.getByInstanceId(pin)?.ws.readyState === WebSocket.OPEN;
+    const filter = resolveRouteFilter(msg.expectedFile, currentFilter(), msg.expectedInstance, pinLive ? pin : null);
+    const hits = st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind });
+    const target = hits[0] ?? null;
+    if (!target) {
+      // No plugin to watch at all — cowork has nothing to wait ON, unlike an ordinary
+      // command (which can park for a not-yet-connected plugin). Fails fast rather than
+      // silently waiting out the full budget for a file that was never open.
+      sendReplyErr(ws, msg.id, 'E_NO_PLUGIN', noPluginMessage(st.registry, filter));
+      return;
+    }
+
+    const now = Date.now();
+    const fileName = (target.scene.fileName as string | undefined) ?? null;
+    const fileKey = (target.scene.fileKey as string | null | undefined) ?? null;
+    const entry: CoworkWaiterEntry = {
+      reqId: msg.id, from: ws, fileIdentity: fileIdentity(fileKey, fileName), fileName,
+      targetInstanceId: target.instanceId, startedAt: now,
+      state: createCoworkWaiter(waitMs, now + timeoutMs),
+    };
+    st.coworkWaiters.push(entry);
+    log(`cowork armed for "${fileName ?? '?'}" [${target.instanceId}] — quiet ${waitMs}ms, timeout ${timeoutMs}ms`);
+  };
+
+  /** Composes a COWORK reply — shared by the fire and expire outcomes below, which
+   *  differ only in `cycles`/whether `edits` is non-empty. */
+  const coworkReplyResult = (entry: CoworkWaiterEntry, now: number): Record<string, unknown> => ({
+    cycles: entry.state.edits.length > 0 ? 1 : 0,
+    quietMs: entry.state.quietMs,
+    waitedMs: now - entry.startedAt,
+    file: entry.fileName,
+    edits: entry.state.edits,
+    // Nothing vanishes silently — present only once non-zero, same contract as the
+    // broker's other diagnostic counters (senderMismatchCount, reHelloCount, ...).
+    ...(entry.state.ambiguousCount > 0 && { ambiguousCount: entry.state.ambiguousCount }),
+  });
+
   const handleClose = (ws: WebSocket): void => {
     // Fail only the in-flight requests routed to THIS socket (a plugin, or a
     // superseded orphan) — other plugins' requests are untouched.
@@ -1357,6 +1432,18 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         targetInstancePin = null;
         log(`target pin cleared — pinned instance [${removedId}] disconnected`);
       }
+      // auto-connect slice 3 — a cowork wait watches ONE specific plugin instance
+      // (resolved once, at registration); that instance disconnecting mid-wait must
+      // reply an actionable refusal immediately, never silently hang to the full
+      // timeout. Mirrors `dispatchedTo`'s own disconnect handling above, for the
+      // broker-terminal command that never enters `dispatchedTo` at all.
+      const survivingCoworkWaiters: CoworkWaiterEntry[] = [];
+      for (const waiter of st.coworkWaiters) {
+        if (waiter.targetInstanceId !== removedId) { survivingCoworkWaiters.push(waiter); continue; }
+        sendReplyErr(waiter.from, waiter.reqId, 'E_NO_PLUGIN',
+          `the plugin open in "${waiter.fileName ?? '?'}" disconnected mid-wait — reopen it (Figma backgrounding an editor tab can drop the connection), then re-run cowork`);
+      }
+      st.coworkWaiters = survivingCoworkWaiters;
       // Only announce PLUGIN_GONE when the LAST plugin leaves — a CLI waiting on a
       // still-connected file must not be told the bridge is gone.
       if (remaining === 0) broadcastToClients(JSON.stringify({ type: 'PLUGIN_GONE', data: {} } satisfies EventMsg));
@@ -1379,6 +1466,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (job) job.from = null; // the record now correctly reflects "the caller left"
     }
     st.waiting = st.waiting.filter((req) => req.from !== ws); // drop its parked requests
+    // auto-connect slice 3 — the CLI that issued `cowork` gave up (Ctrl-C, its own
+    // --timeout via the wire round-trip); nothing to reply to, just stop watching.
+    st.coworkWaiters = st.coworkWaiters.filter((waiter) => waiter.from !== ws);
   };
 
   const handleMessage = (ws: WebSocket, text: string): void => {
@@ -1434,6 +1524,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     } else if (isRequestMsg(msg)) {
       if (msg.cmd === 'PROJECT_BIND') handleProjectBind(ws, msg);
       else if (msg.cmd === 'JOB') handleJobCommand(ws, msg);
+      else if (msg.cmd === 'COWORK') handleCowork(ws, msg);
       // Envelope-only: cmd + readOnly decide queueing. params are never parsed — the
       // pure-relay rule (concurrency & jobs, backlog 1.1+2.6+4.3).
       else admitRequest(ws, msg.id, text, msg.cmd, msg.expectedFile, msg.expectedInstance, msg.readOnly === true, msg.projectDir, msg.activity);
@@ -1557,6 +1648,19 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
             // above) — same reasoning as DOC_CHANGE's own unbound staging just above.
             : unboundEditStagingPath(safeSlug(fileName ?? ''));
           appendEditFeed(path, data);
+          // auto-connect slice 3 — feed the SAME batch (and the SAME `identity` already
+          // resolved above) to any active `cowork` waiter watching this file. Zero new
+          // wire event: cowork observes exactly what the durable feed already durably
+          // recorded. Ignoring `source: 'gapfill'` / agent-only batches is
+          // cowork-waiter.ts's own job (`onEdits`), not re-checked here.
+          if (st.coworkWaiters.length > 0) {
+            const edits = Array.isArray(data.edits) ? (data.edits as EditInput[]) : [];
+            const source: EditSource = data.source === 'gapfill' ? 'gapfill' : 'live';
+            const editNow = Date.now();
+            for (const waiter of st.coworkWaiters) {
+              if (waiter.fileIdentity === identity) feedCoworkWaiter(waiter.state, { edits, source }, editNow);
+            }
+          }
         }
       } else if (msg.type === 'SYNC_REQUEST') {
         // Live-sync commit (spec 004 P4): the panel's "Sync now" click → run the
@@ -1709,6 +1813,20 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // caller; a sweep that never runs breaks it silently.
     st.jobs.sweep();
     sweepAbandonedChunks(st.pendingChunks, now, PARK_SWEEP_INTERVAL_MS);
+    // auto-connect slice 3 — same "must run every tick, unconditionally" reasoning as
+    // the two calls above: cowork waits are the UNCOMMON case, so gating this behind
+    // `st.waiting`'s own early-return would make it effectively dead code too.
+    if (st.coworkWaiters.length > 0) {
+      const survivingWaiters: CoworkWaiterEntry[] = [];
+      for (const waiter of st.coworkWaiters) {
+        if (waiter.from.readyState !== WebSocket.OPEN) continue; // CLI gone — drop silently
+        const outcome = tickCoworkWaiter(waiter.state, now);
+        if (outcome === null) { survivingWaiters.push(waiter); continue; }
+        sendReplyOk(waiter.from, waiter.reqId, coworkReplyResult(waiter, now));
+        log(`cowork ${outcome} for "${waiter.fileName ?? '?'}" [${waiter.targetInstanceId}] — ${waiter.state.edits.length} edit(s)`);
+      }
+      st.coworkWaiters = survivingWaiters;
+    }
 
     if (st.waiting.length === 0) return;
     const survivors: ParkedRequest[] = [];

@@ -4,6 +4,21 @@
   var DEFAULT_IDLE_MS = 3e5;
   var MIN_IDLE_MS = 1e3;
   var CHUNK_LIMIT = 512 * 1024;
+  var DEFAULT_COWORK_TIMEOUT_SECONDS = 600;
+  var COMMAND_TIMEOUTS = {
+    HTML_TO_FIGMA: 6e4,
+    IMPORT_PAYLOAD: 6e4,
+    SCAN_DESIGN_SYSTEM: 3e4,
+    AUDIT_DS: 12e4,
+    // usage scan traverses EVERY page's instances — heavier than the DS scan
+    EXEC_JS: 3e4,
+    // CLI --timeout may raise, capped at 120s
+    BATCH: 6e4,
+    // Fallback only — cowork.ts always passes an explicit timeoutMs derived from the
+    // caller's OWN --timeout (which can exceed this default), same "hop buffer past the
+    // requested budget" shape as batch.ts's own scaled timeout.
+    COWORK: DEFAULT_COWORK_TIMEOUT_SECONDS * 1e3 + 5e3
+  };
   var BROKER_IDLE_SHUTDOWN_MS = 30 * 6e4;
 
   // shared/file-match.ts
