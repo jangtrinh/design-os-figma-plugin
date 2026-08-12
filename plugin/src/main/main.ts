@@ -70,18 +70,6 @@ figma.showUI(__html__, {
   visible: true, width: PANEL_WIDTH, height: PANEL_HEIGHT, title: 'design:os by JANG', themeColors: true,
 });
 
-// auto-connect slice 2 — offer a "Reconnect figma-agent" entry in Figma's own
-// relaunch button/menu once this plugin has run on the file. UNVERIFIED here (zero
-// prior `setRelaunchData` use in this repo): it writes to the document, may mark it
-// dirty, may be refused on a file the user cannot edit, and the button itself only
-// appears after this call has actually landed once — see the phase's live-test items.
-// Gated so a refusal here can never break plugin startup; logged, not swallowed.
-try {
-  figma.root.setRelaunchData({ open: 'Reconnect figma-agent' });
-} catch (err) {
-  console.warn('setRelaunchData refused:', err);
-}
-
 // Absorption phase-03 (FigJam) — which design-only boot capabilities this session
 // consciously skipped, surfaced via STATUS's `bootSkipped` (same present-only-when-
 // non-empty contract as the broker's senderMismatchCount/legacyMigrationDeferred).
@@ -92,6 +80,45 @@ try {
 // as real, mutable state (not a hardcoded `[]` at the call site) so a future editor
 // surface has somewhere to push an entry without a STATUS payload shape change.
 const bootSkipped: string[] = [];
+
+// auto-connect slice 2 (fix round) — offer a "Reconnect figma-agent" entry in
+// Figma's own relaunch menu, but ONLY on a file the CLI has actually bound
+// (`figma-agent bind`) — never write into a document nobody asked this plugin to
+// manage. The plugin's main thread has no filesystem access and cannot read
+// design/figma-bind.json itself, so it waits for the broker's own answer: the
+// SAME SYNC_CONFIG event that already carries the idle window now also carries
+// `bound` (broker-daemon.ts's PLUGIN_HELLO/PROJECT_BIND handlers, same bind-index
+// lookup already done for idleMs — no new round trip). Fires at most ONCE per
+// plugin session (`relaunchAttempted`), the first time `bound` reads true —
+// still "once at startup" in spirit, just gated on the first honest answer
+// instead of firing blind before anyone could know. UNVERIFIED here (zero prior
+// `setRelaunchData` use in this repo): it writes to the document, may mark it
+// dirty, may be refused on a file the user cannot edit, and the button itself
+// only appears after this call has actually landed once — see the phase's
+// live-test items. A refusal or a deliberate skip is never a bare console-only
+// no-op: both land on `bootSkipped` so `status` and the live test have
+// something to read.
+let relaunchAttempted = false;
+let relaunchUnboundNoted = false;
+function maybeSetRelaunchData(bound: boolean): void {
+  if (relaunchAttempted) return;
+  if (!bound) {
+    // Logged once, not on every reconnect while the file stays unbound — this is the
+    // ordinary state for a fresh/unbound session, not a fault; `bootSkipped` still
+    // carries it once so a live test (or `status`) can see WHY no button appeared.
+    if (!relaunchUnboundNoted) {
+      relaunchUnboundNoted = true;
+      bootSkipped.push('relaunchData: skipped (file not bound — run `figma-agent bind`)');
+    }
+    return;
+  }
+  relaunchAttempted = true;
+  try {
+    figma.root.setRelaunchData({ open: 'Reconnect figma-agent' });
+  } catch (err) {
+    bootSkipped.push(`relaunchData: refused (${err instanceof Error ? err.message : String(err)})`);
+  }
+}
 
 /** Block 2's Selection row: the first selected node's name (if any) + the count. */
 function selectionSummary(): { selectionName: string | null; selectionCount: number } {
@@ -467,8 +494,12 @@ figma.ui.onmessage = async (msg: unknown) => {
   const chrome = msg as { type?: unknown; data?: unknown } | null;
   // Live-sync (spec 004 P4): the broker's idle window, relayed by the iframe.
   if (chrome && chrome.type === 'SYNC_CONFIG') {
-    const raw = (chrome.data as { idleMs?: unknown } | undefined)?.idleMs;
+    const data = chrome.data as { idleMs?: unknown; bound?: unknown } | undefined;
+    const raw = data?.idleMs;
     if (typeof raw === 'number' && Number.isFinite(raw)) idleMs = Math.max(MIN_IDLE_MS, Math.floor(raw));
+    // auto-connect slice 2 (fix round) — gate the relaunch button on the broker's own
+    // bind-index answer, never a bare startup guess.
+    maybeSetRelaunchData(data?.bound === true);
     return;
   }
   // The panel's sync-result listener posts this ONCE THE OUTCOME IS KNOWN (fix round,

@@ -20,4 +20,20 @@ describe('buildDeepLink — never fabricates a link', () => {
     expect(result.url).toBeNull();
     expect(result.reason).toMatch(/figma-agent bind/);
   });
+
+  it('a marker entry with fileKey MISSING (crossed a trust boundary, e.g. a hand-edited marker) never fabricates figma://file/undefined', () => {
+    // The type says `string | null`, but readBindMarker's own parse from disk cannot
+    // enforce that at runtime — reproduce the exact malformed shape a corrupt/hand-edited
+    // JSON file could produce.
+    const malformed = {} as unknown as { fileKey: string | null };
+    const result = buildDeepLink(malformed);
+    expect(result.url).toBeNull(); // never "figma://file/undefined"
+    expect(result.reason).toMatch(/Free plan/);
+  });
+
+  it('a marker entry with fileKey as an EMPTY STRING never fabricates figma://file/', () => {
+    const result = buildDeepLink({ fileKey: '' });
+    expect(result.url).toBeNull(); // never "figma://file/"
+    expect(result.reason).toMatch(/Free plan/);
+  });
 });

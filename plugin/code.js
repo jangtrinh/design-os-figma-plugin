@@ -5268,12 +5268,25 @@
     title: "design:os by JANG",
     themeColors: true
   });
-  try {
-    figma.root.setRelaunchData({ open: "Reconnect figma-agent" });
-  } catch (err) {
-    console.warn("setRelaunchData refused:", err);
-  }
   var bootSkipped = [];
+  var relaunchAttempted = false;
+  var relaunchUnboundNoted = false;
+  function maybeSetRelaunchData(bound) {
+    if (relaunchAttempted) return;
+    if (!bound) {
+      if (!relaunchUnboundNoted) {
+        relaunchUnboundNoted = true;
+        bootSkipped.push("relaunchData: skipped (file not bound \u2014 run `figma-agent bind`)");
+      }
+      return;
+    }
+    relaunchAttempted = true;
+    try {
+      figma.root.setRelaunchData({ open: "Reconnect figma-agent" });
+    } catch (err) {
+      bootSkipped.push(`relaunchData: refused (${err instanceof Error ? err.message : String(err)})`);
+    }
+  }
   function selectionSummary() {
     const sel = figma.currentPage.selection;
     return { selectionName: sel.length > 0 ? sel[0].name : null, selectionCount: sel.length };
@@ -5473,8 +5486,10 @@
   figma.ui.onmessage = async (msg) => {
     const chrome = msg;
     if (chrome && chrome.type === "SYNC_CONFIG") {
-      const raw = chrome.data?.idleMs;
+      const data = chrome.data;
+      const raw = data?.idleMs;
       if (typeof raw === "number" && Number.isFinite(raw)) idleMs = Math.max(MIN_IDLE_MS, Math.floor(raw));
+      maybeSetRelaunchData(data?.bound === true);
       return;
     }
     if (chrome && chrome.type === "SYNC_DONE") {

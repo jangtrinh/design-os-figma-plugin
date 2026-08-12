@@ -206,9 +206,10 @@ export const GLOBAL_FLAGS: GlobalFlagEntry[] = [
     flag: '--agent <id> | FIGMA_AGENT_ID',
     description:
       'which harness sent this (the flag wins over the env var) — shown in the panel activity feed '
-      + '("claude · Created frame ..."). Trimmed, control characters stripped, capped at 32 chars. '
-      + "Omitted entirely when unset — an unlabelled request's wire frame is byte-identical to a "
-      + "pre-flag CLI's; the panel's own \"cli\" default is applied at render time, never stamped "
-      + 'onto the wire.',
+      + '("claude · Created frame ..."). Trimmed, then validated against an ALLOWLIST: lowercase '
+      + 'letters, digits, ".", "_", "-" only, 1-32 characters — anything else refuses with '
+      + "E_INVALID_ARGS naming the allowed set, it is never silently sanitized. Omitted entirely "
+      + "when unset — an unlabelled request's wire frame is byte-identical to a pre-flag CLI's; the "
+      + 'panel\'s own "cli" default is applied at render time, never stamped onto the wire.',
   },
 ];

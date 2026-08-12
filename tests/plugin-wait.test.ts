@@ -41,6 +41,19 @@ describe('waitForPlugin', () => {
     expect(result.registered).toBe(false);
   });
 
+  it('fix round: --file matching uses the SAME identity normalization as the bind-lookup (figma-deep-link\'s findBoundEntry), not a plain trim+lowercase equality — so the wait and the deep link can never disagree about which file was meant', async () => {
+    const { now, sleep } = fakeClock(500);
+    // A double space vs a single space: fileIdentity/safeSlug collapses BOTH to the
+    // same "my-file" slug (matching how project-bind.ts's fileNameSlug is derived at
+    // bind time), while a plain fileMatches(..., true) trim+lowercase equality would
+    // NOT consider these the same string. This is the exact divergence the review
+    // reproduced between waitForPlugin's old fileMatches-based filter and
+    // findBoundEntry's fileIdentity-based one.
+    const fetchHello = async () => ({ plugins: [{ instanceId: 'p_1', fileName: 'My File' }] });
+    const result = await waitForPlugin({ port: 1, timeoutMs: 1_000, fileFilter: 'My  File', now, sleep, fetchHello });
+    expect(result.registered).toBe(true);
+  });
+
   it('respects --instance: matches by exact instanceId, ignoring fileFilter when both somehow set', async () => {
     const { now, sleep } = fakeClock(500);
     const fetchHello = async () => ({ plugins: [{ instanceId: 'p_2', fileName: 'Anything' }] });

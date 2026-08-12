@@ -776,7 +776,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // HELLO time, before this binding existed — its idle timer is still running on the
     // broker's cwd default (or a stale project's). Push the newly-bound project's own
     // idle window now, so it takes effect without waiting for a reconnect.
-    if (hit) sendEvent(hit.ws, 'SYNC_CONFIG', { idleMs: readIdleMsFor(projectDir) });
+    // `bound: true` — a plugin already connected when this bind lands now qualifies for
+    // the relaunch button too, same as one that connects AFTER the bind already existed.
+    if (hit) sendEvent(hit.ws, 'SYNC_CONFIG', { idleMs: readIdleMsFor(projectDir), bound: true });
     reply({ fileName, projectDir, fileKey, pendingKey: fileKey === null, migratedCount, migratedEditCount, migratedErrorCount });
   };
 
@@ -1434,7 +1436,13 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         schedulePluginSetPersist();
         const helloFileKey = (helloScene?.fileKey as string | null | undefined) ?? null;
         const helloBound = resolveProjectDir(fileIdentity(helloFileKey, helloFileName), st.bindIndex);
-        sendEvent(ws, 'SYNC_CONFIG', { idleMs: helloBound ? readIdleMsFor(helloBound) : idleMs });
+        // auto-connect slice 2 (fix round) — `bound` rides the SAME lookup already done
+        // for `idleMs` above (no second bind-index query). The plugin's own main thread
+        // has no filesystem access and cannot read design/figma-bind.json itself; this is
+        // the one place that already resolves "is this file bound" at HELLO time, so it
+        // is the cheapest correct place to also answer it — main.ts gates
+        // `setRelaunchData` on this flag instead of writing to every unbound document.
+        sendEvent(ws, 'SYNC_CONFIG', { idleMs: helloBound ? readIdleMsFor(helloBound) : idleMs, bound: Boolean(helloBound) });
         flushWaiting(); // deliver any requests parked during the reconnect gap
         broadcastPeers();
       } else if (msg.type === 'PING') {

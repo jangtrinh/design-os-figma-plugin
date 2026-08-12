@@ -78,21 +78,20 @@ describe('resolveAgent — CLI boundary guards (--agent / FIGMA_AGENT_ID)', () =
     expect(resolveAgent(fakeArgs())).toBe('from-env');
   });
 
-  it('trims whitespace', () => {
+  it('trims whitespace before validating', () => {
     delete process.env.FIGMA_AGENT_ID;
     expect(resolveAgent(fakeArgs({ agent: '  claude  ' }))).toBe('claude');
   });
 
-  it('caps at 32 characters', () => {
+  it('accepts the full allowlist: lowercase letters, digits, dot, underscore, hyphen', () => {
     delete process.env.FIGMA_AGENT_ID;
-    const long = 'a'.repeat(40);
-    expect(resolveAgent(fakeArgs({ agent: long }))?.length).toBe(32);
+    expect(resolveAgent(fakeArgs({ agent: 'claude-code_v2.1' }))).toBe('claude-code_v2.1');
   });
 
-  it('strips control characters before the value could ever reach a DOM span', () => {
+  it('accepts exactly 32 characters, the allowlist\'s own cap', () => {
     delete process.env.FIGMA_AGENT_ID;
-    const withControlChar = `claude${String.fromCharCode(7)}bell`; // BEL, 0x07
-    expect(resolveAgent(fakeArgs({ agent: withControlChar }))).toBe('claudebell');
+    const exact32 = 'a'.repeat(32);
+    expect(resolveAgent(fakeArgs({ agent: exact32 }))).toBe(exact32);
   });
 });
 
@@ -101,17 +100,51 @@ describe('--agent — subprocess, against the BUILT cli/dist bundle', () => {
     execFileSync(process.execPath, ['scripts/build.mjs', 'cli'], { cwd: ROOT });
   });
 
-  it('a bare --agent with no value refuses with E_INVALID_ARGS, exit non-zero', () => {
-    let threw: { status: number | null; stdout: string } | null = null;
+  function runAgent(agentValue: string | null): { status: number | null; stdout: string } {
+    const args = ['status', '--peek'];
+    if (agentValue !== null) args.push('--agent', agentValue);
+    else args.push('--agent'); // bare flag, no value
     try {
-      execFileSync(process.execPath, [CLI_DIST, 'status', '--peek', '--agent'], { cwd: ROOT, encoding: 'utf8' });
+      const out = execFileSync(process.execPath, [CLI_DIST, ...args], { cwd: ROOT, encoding: 'utf8' });
+      return { status: 0, stdout: out };
     } catch (err) {
       const e = err as { status: number | null; stdout: string };
-      threw = { status: e.status, stdout: e.stdout };
+      return { status: e.status, stdout: e.stdout };
     }
-    expect(threw).not.toBeNull();
-    expect(threw?.status).not.toBe(0);
-    const parsed = JSON.parse(threw?.stdout ?? '{}') as { error?: { code?: string } };
+  }
+
+  it('a bare --agent with no value refuses with E_INVALID_ARGS, exit non-zero', () => {
+    const result = runAgent(null);
+    expect(result.status).not.toBe(0);
+    const parsed = JSON.parse(result.stdout || '{}') as { error?: { code?: string } };
     expect(parsed.error?.code).toBe('E_INVALID_ARGS');
+  });
+
+  it('a value with 33 characters (over the allowlist cap) refuses with E_INVALID_ARGS', () => {
+    const result = runAgent('a'.repeat(33));
+    expect(result.status).not.toBe(0);
+    const parsed = JSON.parse(result.stdout || '{}') as { error?: { code?: string; message?: string } };
+    expect(parsed.error?.code).toBe('E_INVALID_ARGS');
+    expect(parsed.error?.message).toContain('--agent');
+  });
+
+  it('uppercase, spaces, and control/bidi characters are all rejected, never silently sanitized', () => {
+    // Built via String.fromCharCode/fromCodePoint, never as literal source characters —
+    // this source file must never carry a raw control/bidi byte itself.
+    const bell = String.fromCharCode(7); // BEL, 0x07
+    const rlo = String.fromCodePoint(0x202e); // Right-to-Left Override
+    const zwsp = String.fromCodePoint(0x200b); // Zero Width Space
+    const cases = ['Claude', 'claude code', `claude${bell}bell`, `claude${rlo}evil`, `cla${zwsp}ude`];
+    for (const bad of cases) {
+      const result = runAgent(bad);
+      expect(result.status, `expected refusal for ${JSON.stringify(bad)}`).not.toBe(0);
+      const parsed = JSON.parse(result.stdout || '{}') as { error?: { code?: string } };
+      expect(parsed.error?.code, `expected E_INVALID_ARGS for ${JSON.stringify(bad)}`).toBe('E_INVALID_ARGS');
+    }
+  });
+
+  it('a well-formed --agent value is accepted end to end (status --peek still exits 0)', () => {
+    const result = runAgent('claude-code_v2.1');
+    expect(result.status).toBe(0);
   });
 });

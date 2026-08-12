@@ -4,13 +4,18 @@
 // Injectable clock/sleep/fetch so the timeout path is unit-testable without a real
 // 500ms-stepped clock.
 import { fetchBrokerHello } from './broker-client.ts';
-import { fileMatches } from '../../../shared/file-match.ts';
+import { fileIdentity } from './project-bind.ts';
 import type { PluginStatusEntry } from '../../../shared/protocol.ts';
 
 export interface WaitOptions {
   port: number;
   timeoutMs: number;
-  /** `--file` — matched loosely (substring, case-insensitive), same as routing. */
+  /**
+   * `--file` — matched via the SAME name-identity normalization
+   * (`fileIdentity(null, name)`, i.e. `project-bind.ts`'s `safeSlug`) that
+   * `figma-deep-link.ts`'s bind-marker lookup already uses (fix round: these two
+   * halves of one `--wait` command must never disagree about which file was meant).
+   */
   fileFilter?: string | null;
   /** `--instance` — matched exactly; beats `fileFilter` when both are somehow set. */
   instanceFilter?: string | null;
@@ -35,7 +40,10 @@ function matchesFilter(
   instanceFilter?: string | null,
 ): boolean {
   if (instanceFilter) return plugins.some((p) => p.instanceId === instanceFilter);
-  if (fileFilter) return plugins.some((p) => fileMatches(p.fileName ?? undefined, fileFilter, true));
+  if (fileFilter) {
+    const wantedSlug = fileIdentity(null, fileFilter);
+    return plugins.some((p) => fileIdentity(null, p.fileName ?? null) === wantedSlug);
+  }
   return plugins.length > 0;
 }
 

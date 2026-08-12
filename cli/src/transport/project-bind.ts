@@ -114,15 +114,36 @@ export function bindMarkerPath(projectDir: string): string {
   return join(projectDir, 'design', BIND_MARKER_FILENAME);
 }
 
+/**
+ * Fix round — `bindings` being an array said nothing about what its ENTRIES look
+ * like; a hand-edited or corrupted marker could hand a caller (figma-deep-link.ts,
+ * bind.ts's `listBindings`) a `fileKey` of the wrong type, an empty/wrong-typed
+ * `fileNameSlug`, or a non-finite `boundAt` — and `figma-deep-link.ts`'s `=== null`
+ * check is a type-level guard on a value that crossed exactly this trust boundary.
+ * `fileKey: null` is legitimate (a Free-plan file, or one bound before its first
+ * connect) and passes; anything NOT `string | null` does not.
+ */
+function isValidBindMarkerEntry(value: unknown): value is BindMarkerEntry {
+  if (value === null || typeof value !== 'object') return false;
+  const e = value as Record<string, unknown>;
+  const fileKeyOk = e.fileKey === null || typeof e.fileKey === 'string';
+  const slugOk = typeof e.fileNameSlug === 'string' && e.fileNameSlug !== '';
+  const boundAtOk = typeof e.boundAt === 'number' && Number.isFinite(e.boundAt);
+  return fileKeyOk && slugOk && boundAtOk;
+}
+
 /** Read a project's own binding marker. Malformed/absent → null — never throws, so a
- *  broken marker can't crash the broker; the caller treats it as "nothing recorded here". */
+ *  broken marker can't crash the broker; the caller treats it as "nothing recorded here".
+ *  Individual malformed ENTRIES are dropped rather than failing the whole file — a single
+ *  hand-edited bad row must never hide every other project's good binding. */
 export function readBindMarker(projectDir: string): BindMarkerFile | null {
   const path = bindMarkerPath(projectDir);
   if (!existsSync(path)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
     if (parsed && typeof parsed === 'object' && Array.isArray((parsed as BindMarkerFile).bindings)) {
-      return parsed as BindMarkerFile;
+      const raw = parsed as BindMarkerFile;
+      return { ...raw, bindings: raw.bindings.filter(isValidBindMarkerEntry) };
     }
     return null;
   } catch {

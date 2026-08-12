@@ -137,6 +137,25 @@ describe('bind marker persistence — <projectDir>/design/figma-bind.json', () =
     writeFileSync(bindMarkerPath(dirA), 'not json');
     expect(readBindMarker(dirA)).toBeNull();
   });
+
+  it('fix round: a hand-edited/corrupt entry (missing fileKey, wrong-typed fileNameSlug, non-finite boundAt) is dropped, never handed to a caller — good sibling entries survive', () => {
+    mkdirSync(join(dirA, 'design'), { recursive: true });
+    const raw = {
+      v: 1,
+      bindings: [
+        { fileKey: 'good1', fileNameSlug: 'good-file', boundAt: 1 }, // valid
+        { fileNameSlug: 'missing-file-key', boundAt: 2 }, // fileKey entirely absent
+        { fileKey: 'bad-slug', fileNameSlug: 42, boundAt: 3 }, // fileNameSlug wrong type
+        { fileKey: 'bad-bound', fileNameSlug: 'bad-bound-file', boundAt: 'not-a-number' }, // boundAt wrong type
+        { fileKey: null, fileNameSlug: 'free-plan-file', boundAt: 4 }, // valid: null fileKey is legitimate (Free plan)
+      ],
+    };
+    writeFileSync(bindMarkerPath(dirA), JSON.stringify(raw));
+    const result = readBindMarker(dirA);
+    expect(result).not.toBeNull();
+    const slugs = result?.bindings.map((b) => b.fileNameSlug) ?? [];
+    expect(slugs).toEqual(['good-file', 'free-plan-file']);
+  });
 });
 
 describe('bind cache — restart-survival list of project dirs', () => {

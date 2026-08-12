@@ -27,6 +27,12 @@ const NO_FILE_KEY_REASON = 'file has no fileKey (Free plan) — open the file ma
  */
 export function buildDeepLink(entry: DeepLinkEntry | null): DeepLinkResult {
   if (entry === null) return { url: null, reason: NO_BINDING_REASON };
-  if (entry.fileKey === null) return { url: null, reason: NO_FILE_KEY_REASON };
+  // `entry.fileKey` is typed `string | null`, but the value crossed a trust boundary
+  // (JSON parsed from a file a user or another tool can hand-edit) before it got here —
+  // an `=== null` check alone is a type-level guard on a runtime value the type cannot
+  // actually promise. A missing/wrong-typed/empty fileKey must land on the SAME honest
+  // "no link" answer as the documented null case, never `figma://file/undefined` or
+  // `figma://file/`.
+  if (typeof entry.fileKey !== 'string' || entry.fileKey === '') return { url: null, reason: NO_FILE_KEY_REASON };
   return { url: `figma://file/${entry.fileKey}`, reason: null };
 }
