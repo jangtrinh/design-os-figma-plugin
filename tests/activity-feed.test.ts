@@ -71,6 +71,24 @@ describe('toActivityRecord — defensive coercion of the start-event detail', ()
     expect(r?.id).not.toBe('');
     expect(typeof r?.at).toBe('number');
   });
+
+  it('auto-connect slice 2: carries the agent label when the start-event detail has one', () => {
+    const r = toActivityRecord({ id: 'c_8', tool: 'STATUS', at: 500, agent: 'claude' });
+    expect(r?.agent).toBe('claude');
+  });
+  it('trims a whitespace-padded agent label', () => {
+    const r = toActivityRecord({ id: 'c_9', tool: 'STATUS', at: 500, agent: '  claude  ' });
+    expect(r?.agent).toBe('claude');
+  });
+  it('BACKWARD-COMPAT: a detail with no agent still opens a row, agent stays absent (never a fabricated default)', () => {
+    const r = toActivityRecord({ id: 'c_1', tool: 'STATUS', at: 500 });
+    expect(r).not.toBeNull();
+    expect('agent' in (r as object)).toBe(false);
+  });
+  it('a blank agent is treated as absent, same as a blank label', () => {
+    const r = toActivityRecord({ id: 'c_1', tool: 'STATUS', at: 500, agent: '   ' });
+    expect(r?.agent).toBeUndefined();
+  });
 });
 
 describe('toActivityResult — coercion of the done-event detail', () => {

@@ -29,9 +29,13 @@ export const COMMANDS: CommandCatalogEntry[] = [
   {
     name: 'status',
     description:
-      'Broker + plugin connection info [--peek [--json]] — --peek reads only the /tmp broker '
-      + 'advertisement plus one short broker query; it NEVER spawns a broker. --json is accepted '
-      + 'for compatibility but is a no-op: output is always the same single JSON object.',
+      'Broker + plugin connection info [--peek [--json]] [--wait [--timeout N]] — --peek reads '
+      + 'only the /tmp broker advertisement plus one short broker query; it NEVER spawns a broker. '
+      + '--json is accepted for compatibility but is a no-op: output is always the same single JSON '
+      + 'object. --wait blocks (MAY spawn a broker) until a matching plugin registers, printing a '
+      + 'figma:// deep link (when one can be built) to stderr immediately; --timeout N is in '
+      + 'SECONDS, default 60 — on timeout this exits non-zero with E_NO_PLUGIN instead of the '
+      + 'normal payload.',
   },
   { name: 'seat', description: 'Probe seat → {seat, bridge, reason} [--seat free|paid skips the probe]' },
   {
@@ -197,5 +201,15 @@ export const GLOBAL_FLAGS: GlobalFlagEntry[] = [
       'declare that this command only READS. Skips the per-file mutation queue (backlog 1.1+2.6+4.3). '
       + 'TRUSTED, NOT ENFORCED — the plugin sandbox cannot verify it, so a mis-declared mutation can '
       + "interleave with another agent's work.",
+  },
+  {
+    flag: '--agent <id> | FIGMA_AGENT_ID',
+    description:
+      'which harness sent this (the flag wins over the env var) — shown in the panel activity feed '
+      + '("claude · Created frame ..."). Trimmed, then validated against an ALLOWLIST: lowercase '
+      + 'letters, digits, ".", "_", "-" only, 1-32 characters — anything else refuses with '
+      + "E_INVALID_ARGS naming the allowed set, it is never silently sanitized. Omitted entirely "
+      + "when unset — an unlabelled request's wire frame is byte-identical to a pre-flag CLI's; the "
+      + 'panel\'s own "cli" default is applied at render time, never stamped onto the wire.',
   },
 ];

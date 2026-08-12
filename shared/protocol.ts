@@ -128,6 +128,15 @@ export interface RequestMsg {
    * serialize byte-identically to what a pre-flag CLI sent.
    */
   readOnly?: boolean;
+  /**
+   * auto-connect slice 2 — which harness sent this (`--agent <id>` / `FIGMA_AGENT_ID`),
+   * for the panel's activity feed ("claude · Created frame \"Hero card\""). Envelope-
+   * level, exactly like `activity`: the broker relays it verbatim, never parses it for
+   * routing. Omitted entirely when unset — an unguarded frame must serialize
+   * byte-identically to what every pre-flag CLI sent; the `cli` default is applied at
+   * RENDER time in the panel, never stamped here.
+   */
+  agent?: string;
 }
 
 /** Which file answered. Echoed on every reply so a caller can prove where a command landed. */
@@ -427,12 +436,19 @@ export function makeRequestFrame(
   projectDir?: string,
   readOnly?: boolean,
   expectedInstance?: string,
+  // auto-connect slice 2 — appended, never inserted, so every existing call/test that
+  // pads earlier optional positionals with `undefined` keeps addressing the SAME
+  // parameter it always did (see broker-daemon-harness.test.ts's own 8-positional
+  // precedent). A 9th positional is already a lot for this signature — the NEXT field
+  // here should be an options object instead, not a 10th slot.
+  agent?: string,
 ): RequestMsg {
   const frame: RequestMsg = { id, cmd, params, v: PROTOCOL_VERSION };
   if (typeof activity === 'string' && activity.trim() !== '') frame.activity = activity;
   if (typeof expectedFile === 'string' && expectedFile.trim() !== '') frame.expectedFile = expectedFile;
   if (typeof expectedInstance === 'string' && expectedInstance.trim() !== '') frame.expectedInstance = expectedInstance;
   if (typeof projectDir === 'string' && projectDir.trim() !== '') frame.projectDir = projectDir;
+  if (typeof agent === 'string' && agent.trim() !== '') frame.agent = agent;
   // Concurrency & jobs — omitted (never `readOnly: false`) when unset, exactly like the
   // other optional envelope fields above: an unguarded frame must serialize
   // byte-identically to what every pre-flag CLI sent.

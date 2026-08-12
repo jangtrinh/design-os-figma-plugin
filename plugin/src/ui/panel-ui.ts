@@ -158,7 +158,17 @@ function activityRow(r: ActivityRecord, now: number, stale: boolean, isNew: bool
     errorMessage: !r.ok ? r.result : undefined, nodeName: r.nodeName,
     pending: r.pending, ok: r.ok,
   });
-  text.textContent = line;
+  // auto-connect slice 2 — the agent label is its OWN span, never folded into the
+  // sentence string above (activitySentence stays deliberately label-free — see its own
+  // header comment): a separate node so the sentence text (and activitySentence's own
+  // contract) never has to know a caller can attach an agent id. The `cli` default is
+  // applied HERE, at render time — an unlabelled request never stamps a default onto
+  // the wire (RequestMsg.agent stays additive; see makeRequestFrame). U+00B7 (middle
+  // dot) separator — NOT U+2022 (bullet), which the panel's typography gate bans.
+  const agentSpan = document.createElement('span');
+  agentSpan.className = 'log-agent';
+  agentSpan.textContent = `${r.agent ?? 'cli'} · `;
+  text.append(agentSpan, document.createTextNode(line));
   text.title = line; // the row ellipsises (ok/running) — hover still tells the truth there
 
   const caption = document.createElement('div');

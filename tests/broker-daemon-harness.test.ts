@@ -781,6 +781,40 @@ describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, neve
       rmSync(otherProjectDir, { recursive: true, force: true });
     }
   });
+
+  it('SYNC_CONFIG carries `bound` (auto-connect slice 2, fix round) — false for an unbound HELLO, true after PROJECT_BIND, true on a fresh HELLO for an already-bound file', async () => {
+    const port = await startTestBroker();
+    const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-sync-bound-flag-'));
+    try {
+      mkdirSync(join(boundProjectDir, 'design'), { recursive: true });
+
+      // 1. Unbound HELLO → bound:false.
+      const plugin = await connectSocket(port);
+      const helloSyncConfig = nextFrame<EventMsg>(plugin, (m) => (m as EventMsg).type === 'SYNC_CONFIG');
+      plugin.send(JSON.stringify({
+        type: 'PLUGIN_HELLO',
+        data: { instanceId: 'plugin-bound-flag-1', fileName: 'Bound Flag File', fileKey: null, caps: ['fileGuard'] },
+      } satisfies EventMsg));
+      expect(((await helloSyncConfig).data as { bound: boolean }).bound).toBe(false);
+
+      // 2. PROJECT_BIND while still connected → the live push carries bound:true.
+      const postBindSyncConfig = nextFrame<EventMsg>(plugin, (m) => (m as EventMsg).type === 'SYNC_CONFIG');
+      const cli = await connectSocket(port);
+      await bindProject(cli, 'Bound Flag File', boundProjectDir, 'req-bind-flag-1');
+      expect(((await postBindSyncConfig).data as { bound: boolean }).bound).toBe(true);
+
+      // 3. A FRESH HELLO for the same (now-bound) file also reads bound:true.
+      const plugin2 = await connectSocket(port);
+      const reHelloSyncConfig = nextFrame<EventMsg>(plugin2, (m) => (m as EventMsg).type === 'SYNC_CONFIG');
+      plugin2.send(JSON.stringify({
+        type: 'PLUGIN_HELLO',
+        data: { instanceId: 'plugin-bound-flag-2', fileName: 'Bound Flag File', fileKey: null, caps: ['fileGuard'] },
+      } satisfies EventMsg));
+      expect(((await reHelloSyncConfig).data as { bound: boolean }).bound).toBe(true);
+    } finally {
+      rmSync(boundProjectDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // `--instance <id>` admission — exercises the real `admitRequest` closure via a real

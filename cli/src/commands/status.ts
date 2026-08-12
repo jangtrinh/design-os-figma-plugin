@@ -10,7 +10,41 @@ import type { CommandArgs } from '../figma-agent.ts';
 import { fetchBrokerHello, runCommand } from '../transport/broker-client.ts';
 import { ensureBroker } from '../transport/broker-discovery.ts';
 import { peek } from '../transport/broker-peek.ts';
+import { waitForPlugin } from '../transport/plugin-wait.ts';
+import { buildDeepLink, type DeepLinkEntry } from '../transport/figma-deep-link.ts';
+import { fileIdentity, readBindCache, readBindMarker } from '../transport/project-bind.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
+
+// auto-connect slice 2 — `--wait`'s own default, in SECONDS (not ms — every other
+// `--timeout` in this CLI is ms; this one follows the usecases.md gherkin's own
+// "--timeout 5" ⇒ "5s budget" wording, so `--help`/the skill say so explicitly).
+const DEFAULT_WAIT_SECONDS = 60;
+
+/**
+ * Find the bind-marker entry that `status --wait` should build a deep link from:
+ * an exact fileNameSlug match for `--file` when given, else the single most-
+ * recently-bound entry across every known project (an unambiguous best guess is
+ * more useful than no link at all when the caller didn't say which file). Reads
+ * the restart-survival cache + each project's own durable marker — the same
+ * source `figma-agent bind --list` reads.
+ */
+function findBoundEntry(wantedFile: string | undefined): DeepLinkEntry | null {
+  const cache = readBindCache();
+  const wantedSlug = wantedFile ? fileIdentity(null, wantedFile) : null;
+  let best: { fileKey: string | null; boundAt: number } | null = null;
+  for (const projectDir of cache.projectDirs) {
+    const marker = readBindMarker(projectDir);
+    if (!marker) continue;
+    for (const entry of marker.bindings) {
+      if (wantedSlug !== null) {
+        if (entry.fileNameSlug === wantedSlug) return { fileKey: entry.fileKey };
+        continue;
+      }
+      if (!best || entry.boundAt > best.boundAt) best = { fileKey: entry.fileKey, boundAt: entry.boundAt };
+    }
+  }
+  return wantedSlug !== null ? null : (best ? { fileKey: best.fileKey } : null);
+}
 // Concurrency & jobs (backlog 1.1+2.6+4.3), phase 02 §3 — each row now carries
 // `runningJob`/`queueDepth` (broker-status.ts's `buildBrokerHelloData`, given a
 // `jobStatusFor`). This CLI is JSON-only (no `--json` flag exists — figma-agent always
@@ -25,7 +59,37 @@ export async function run(args: CommandArgs): Promise<unknown> {
   // compatibility but is a documented no-op: this CLI always prints one JSON object.
   if (args.bool('peek')) return peek();
 
+  // auto-connect slice 2 — `--wait` MAY spawn: a plugin has nowhere to register
+  // with otherwise. Unlike `--peek`, `ensureBroker()` below runs unconditionally.
+  const waiting = args.bool('wait');
+  const wantedFile = args.str('file');
+  let waitedMs: number | undefined;
+
   const ad = await ensureBroker();
+
+  if (waiting) {
+    const timeoutMs = (args.num('timeout') ?? DEFAULT_WAIT_SECONDS) * 1_000;
+    // Computed and printed BEFORE the wait (Hick's Law, usecases.md:128) — the
+    // human's next action must be visible the instant the wait starts, not only
+    // after it fails.
+    const link = buildDeepLink(findBoundEntry(wantedFile));
+    process.stderr.write(link.url ? `${link.url}\n` : `(no deep link: ${link.reason})\n`);
+    process.stderr.write('Open the file above, then open the figma-agent plugin panel.\n');
+
+    const result = await waitForPlugin({
+      port: ad.port,
+      timeoutMs,
+      fileFilter: wantedFile,
+      instanceFilter: args.str('instance'),
+    });
+    if (!result.registered) {
+      throw new CliError(
+        'E_NO_PLUGIN',
+        `${wantedFile ?? 'no file specified'} — open Plugins > figma-agent (deep link already printed to stderr)`,
+      );
+    }
+    waitedMs = result.waitedMs;
+  }
 
   let hello: Record<string, unknown> = {};
   try {
@@ -55,15 +119,14 @@ export async function run(args: CommandArgs): Promise<unknown> {
   // FIGMA_AGENT_FILE only, while the STATUS round-trip below now carries `expectedFile`
   // (the global --file flag, set once in figma-agent.ts main()) — so filter `plugins[]`
   // and derive activePlugin/connected LOCALLY instead of trusting the broker's env-only view.
-  const wanted = args.str('file');            // status takes the same global flag
-  const plugins = wanted ? all.filter((p) => fileMatches(p.fileName, wanted, true)) : all;
-  const activePlugin = wanted
+  const plugins = wantedFile ? all.filter((p) => fileMatches(p.fileName, wantedFile, true)) : all;
+  const activePlugin = wantedFile
     ? plugins[0]?.fileName ?? null                       // the file the caller asked about
     : (hello.activePlugin as string | null | undefined) ?? null;
 
   // The ACTIVE plugin's liveness (legacy mirror source). `pluginConnected` is true
   // only when a routable target exists (respects --file / FIGMA_AGENT_FILE).
-  let connected = wanted ? plugins.length > 0 : hello.pluginConnected === true;
+  let connected = wantedFile ? plugins.length > 0 : hello.pluginConnected === true;
   let state = (hello.pluginState as string | undefined) ?? (connected ? 'connected' : 'disconnected');
   let lastHeartbeatAge = (hello.lastHeartbeatAge as number | null | undefined) ?? null;
   let scene: Record<string, unknown> | null =
@@ -94,12 +157,15 @@ export async function run(args: CommandArgs): Promise<unknown> {
   // still see what IS connected even though it doesn't match what they asked about.
   return {
     broker, plugins, activePlugin, plugin, protocolVersion: broker.protocolVersion,
-    ...(wanted ? { pluginsAll: all } : {}),
+    ...(wantedFile ? { pluginsAll: all } : {}),
     // Broker-restart reconnect visibility — a HINT from last-known state, never a live
     // plugin (it must never appear in `plugins`/`pluginsAll` above); present only when
     // the broker actually has one to report, same mirror-only-when-non-empty contract
     // as `senderMismatchCount`/`legacyMigrationDeferred` on `broker` above.
     ...(Array.isArray(hello.awaitingReconnect) && hello.awaitingReconnect.length > 0
       && { awaitingReconnect: hello.awaitingReconnect }),
+    // auto-connect slice 2 — present only when `--wait` actually waited (mirror-only-
+    // when-relevant contract, same as the fields above).
+    ...(waitedMs !== undefined && { waitedMs }),
   };
 }

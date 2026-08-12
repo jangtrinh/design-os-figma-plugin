@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { runBrokerDaemon } from './transport/broker-daemon.ts';
 import { parseArgs, type CommandArgs } from './arg-parse.ts';
 import { CliError } from './transport/protocol-helpers.ts';
-import { getLastFileContext, setExpectedFile, setExpectedInstance, setProjectDir, setReadOnly } from './transport/broker-client.ts';
+import { getLastFileContext, setAgent, setExpectedFile, setExpectedInstance, setProjectDir, setReadOnly } from './transport/broker-client.ts';
 import { printErrorJson, printJson, withFileContext } from './util/json-out.ts';
 import { HELP } from './help-text.ts';
 import { renderSkill } from './skill-emitter.ts';
@@ -100,6 +100,41 @@ export const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<u
   'install-hook': installHook,
 };
 
+// Fix round (finding: a blocklist-based filter let C1 controls, bidi override/format
+// characters, and a surrogate-splitting truncation all through). An ALLOWLIST closes
+// all three at once: lowercase ASCII letters, digits, dot, underscore, hyphen, 1-32
+// characters — nothing outside that set can carry a control/bidi/format character or
+// need mid-codepoint truncation, so no separate strip/cap step is needed at all.
+const AGENT_ALLOWLIST_RE = /^[a-z0-9._-]{1,32}$/;
+const AGENT_ALLOWLIST_DESCRIPTION = 'lowercase letters, digits, ".", "_", "-" only, 1-32 characters';
+
+/**
+ * `--agent <id>` or `FIGMA_AGENT_ID` (flag wins) — which harness the panel's activity
+ * feed should attribute this request to. Same empty-value guard shape as `--file`/
+ * `--instance` below; trimmed, then validated against `AGENT_ALLOWLIST_RE` — anything
+ * outside it refuses with `E_INVALID_ARGS` naming the allowed set, it is never
+ * silently sanitized. Returns `undefined` for "unset" so the envelope stays
+ * additive — the `cli` default is applied at RENDER time in the panel, never
+ * stamped onto the wire here.
+ */
+// Exported so tests/agent-label-envelope.test.ts can unit-test the guards (empty/
+// allowlist) directly, the same way COMMAND_MODULES is exported above — without
+// needing a live broker or a subprocess just to exercise pure validation.
+export function resolveAgent(args: CommandArgs): string | undefined {
+  if (args.bool('agent') && (args.str('agent') ?? '').trim() === '') {
+    printErrorJson(new CliError('E_INVALID_ARGS', '--agent needs a value, e.g. --agent claude'));
+  }
+  const raw = (args.str('agent') ?? process.env.FIGMA_AGENT_ID ?? '').trim();
+  if (raw === '') return undefined;
+  if (!AGENT_ALLOWLIST_RE.test(raw)) {
+    printErrorJson(new CliError(
+      'E_INVALID_ARGS',
+      `--agent value is invalid — allowed: ${AGENT_ALLOWLIST_DESCRIPTION} (got ${JSON.stringify(raw)})`,
+    ));
+  }
+  return raw;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const name = argv[0];
@@ -146,6 +181,7 @@ async function main(): Promise<void> {
   setExpectedInstance(args.str('instance')); // global flag, same choke point as --file
   setProjectDir(resolve(args.str('dir') ?? process.cwd())); // registry-integrity phase 01 §1
   setReadOnly(args.bool('read-only')); // concurrency & jobs (backlog 1.1+2.6+4.3) — TRUSTED, not enforced
+  setAgent(resolveAgent(args)); // auto-connect slice 2 — same choke point as --file/--instance
   try {
     const result = await command.run(args);
     printJson(withFileContext(result));

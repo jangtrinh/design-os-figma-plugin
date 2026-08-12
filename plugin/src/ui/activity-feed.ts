@@ -25,6 +25,13 @@ export interface ActivityRecord {
   at: number;
   /** Wire ErrorCode, present only on a failed reply — never shown raw, only mapped to a reason. */
   errorCode?: string;
+  /**
+   * auto-connect slice 2 — which harness sent this (`RequestMsg.agent`, carried through
+   * ui-relay.ts's `activityStart`). Absent ⇒ the row renders with no agent label at all
+   * (never a fabricated "cli" here — the row-level default, if any, is a RENDER-time
+   * decision in panel-ui.ts, not something this record manufactures).
+   */
+  agent?: string;
   /** The reply's own `name`, when it carried one (CREATE_FRAME/CREATE_INSTANCE/SET_TEXT/
    *  IMPORT_PAYLOAD/a scan) — lets the sentence say `Created frame "Hero card"` instead of
    *  fabricating an object no reply ever named. */
@@ -102,6 +109,7 @@ export function toActivityRecord(detail: unknown): ActivityRecord | null {
     at,
   };
   if (typeof d.label === 'string' && d.label.trim() !== '') rec.label = d.label.trim();
+  if (typeof d.agent === 'string' && d.agent.trim() !== '') rec.agent = d.agent.trim();
   return rec;
 }
 

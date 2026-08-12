@@ -759,6 +759,12 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* auto-connect slice 2 — which harness sent this request ("claude · Created frame
+   ..."), muted so the sentence itself (the important part) still reads first. Own
+   span (panel-ui.ts), never folded into the sentence string. */
+.log-agent {
+  color: var(--fga-text-muted);
+}
 /* Owner-observed (live screenshot, concurrency & jobs addendum): a FAILED row's reason
    ("The script stopped: runtime error: ...") was clipped by the single-line ellipsis
    above — Activity is the one surface exempt from the terse-truncate rule, and a
