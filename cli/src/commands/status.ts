@@ -9,6 +9,7 @@ import { fileMatches } from '../../../shared/file-match.ts';
 import type { CommandArgs } from '../figma-agent.ts';
 import { fetchBrokerHello, runCommand } from '../transport/broker-client.ts';
 import { ensureBroker } from '../transport/broker-discovery.ts';
+import { peek } from '../transport/broker-peek.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 // Concurrency & jobs (backlog 1.1+2.6+4.3), phase 02 §3 — each row now carries
 // `runningJob`/`queueDepth` (broker-status.ts's `buildBrokerHelloData`, given a
@@ -18,6 +19,12 @@ import { CliError } from '../transport/protocol-helpers.ts';
 import type { PluginStatusEntryWithJob } from '../transport/broker-status.ts';
 
 export async function run(args: CommandArgs): Promise<unknown> {
+  // auto-connect slice 1 — `--peek` short-circuits BEFORE `ensureBroker()` below, which
+  // spawns a broker on demand. A SessionStart hook calls this every session and must
+  // never be the thing that starts a broker nobody asked for. `--json` is accepted for
+  // compatibility but is a documented no-op: this CLI always prints one JSON object.
+  if (args.bool('peek')) return peek();
+
   const ad = await ensureBroker();
 
   let hello: Record<string, unknown> = {};
