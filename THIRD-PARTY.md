@@ -1,11 +1,11 @@
 # Third-party attribution
 
-This repo absorbs specific capabilities studied from a fork of an existing open-source
-Figma tool, under its MIT license. This file lists exactly what was adapted, from where,
-and how — the citations in `plugin/src/main/` doc comments and `knowledge/` point back
-here.
+This repo absorbs specific capabilities studied from existing open-source Figma tools,
+under their MIT licenses. This file lists exactly what was adapted, from where, and how —
+the citations in `plugin/src/main/` doc comments and `knowledge/` point back here. Each
+source gets its own section below.
 
-## Source
+## Source — figma-console-mcp
 
 - Project: `figma-console-mcp` (Figma Desktop Bridge)
 - Read at: `southleft/figma-console-mcp` (studied locally as
@@ -58,6 +58,53 @@ source project's analysis code** (`code.js:1318`, `code.js:1176-1197`), cited fo
 re-verifiability — so a reader can go check the claim against the source — not
 reproduced as licensed expression. The table itself is rewritten in this repo's own
 words per `knowledge/component-sets.md` §2.3.
+
+## Source — cast-to-figma (the auto-connect surface)
+
+- Project: `cast-to-figma` (a local CLI + Figma plugin workflow, distributed with its own
+  agent skill)
+- Read at: `newfiction/cast-to-figma`, npm package `@newfiction/cast-to-figma`
+- Version read: **0.2.2**
+- Read date: **2026-08-12**
+- License: MIT
+
+Verbatim MIT notice from that project's `LICENSE`:
+
+```
+MIT License
+
+Copyright (c) 2026 New Fiction
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+**No code was vendored from this project — nothing here derives from its source
+expression.** What was studied is its README/SKILL.md and its CLI's user-facing surface:
+the *shape* of four ideas, each re-designed and re-implemented against this repo's own
+broker, protocol, and ledger.
+
+| Our file | Idea studied | Nature of adaptation |
+|---|---|---|
+| `cli/src/commands/install-skill.ts`, `cli/src/skill-emitter.ts`, `cli/src/command-catalog.ts`, `skills/figma-agent/SKILL.md` | A CLI that distributes its OWN agent skill, whose frontmatter declares the CLI version it needs (`requiresCli`) | Adopted: the concept of the skill as the distribution unit, the `requiresCli`/`version`/`cliBinary` frontmatter keys as a compatibility contract, and an installer command as the delivery path. Deliberately DIVERGENT, and the reason this was worth building rather than copying: the source ships a hand-written static `SKILL.md`, so its reference can drift from its binary. Here the command-reference section is **emitted** from the same `command-catalog.ts` that renders `--help`, and `tests/skill-emitter-drift.test.ts` fails the build when the committed artifact and the emitter disagree — the repo's standing "a standard needs an emitter AND a linter" rule. The consent behaviour (version compare before overwrite, a non-interactive run that refuses to assume) is this repo's own. |
+| `cli/src/transport/broker-peek.ts`, `cli/src/commands/install-hook.ts` | A session-start status surface an agent reads before doing anything | Concept only. The implementation is entirely this repo's: a non-spawning read of our own `/tmp` broker advertisement plus one short bounded WS query, three-state honesty (`connected: true|false|null`), and `versionMatch`/`protocolMatch` computed from the `pluginVersion` our plugin already sends on `PLUGIN_HELLO`. The consent rules around writing a hook into a user's settings file (confirm, backup, abort on unparseable JSON, `--dry-run`) have no counterpart in the source. |
+| `shared/protocol.ts` (`RequestMsg.agent`), `cli/src/transport/broker-client.ts`, `plugin/src/ui/activity-feed.ts`, `plugin/src/ui/panel-ui.ts` | An `--agent <id>` label so a panel can show which harness is driving | Adopted: the flag name, the env-var fallback, and the `cli` default. Implemented against our own envelope with this repo's additive-field contract — omitted entirely when unset so an unlabelled frame stays byte-identical to a pre-flag CLI's, with the default applied at render time instead. Validation against an explicit allowlist (refusing rather than sanitizing) is this repo's own. |
+| `cli/src/commands/cowork.ts`, `cli/src/transport/cowork-waiter.ts` | A `cowork` command that waits for the designer to finish a round of edits | Concept and command name only. This repo already had an actor-labelled edit feed and a supervised-memory correction ledger, so quiescence is detected broker-side from edits that already cross the wire — no second store, no new plugin timer, no polling. The actor/source gating (only a LIVE `owner` batch arms a cycle; agent, ambiguous, and gap-fill replay never do), the `cycles: 0`-is-success contract, and the read-only ledger lookup are this repo's own design. |
 
 ## Attribution already carried in `knowledge/figma-agent-hand.md`
 
