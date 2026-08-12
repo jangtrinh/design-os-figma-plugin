@@ -30,6 +30,11 @@ import type { EventMsg, JobInfo, ReplyErr, ReplyOk, WireMsg } from '../shared/pr
 import type { ContentionStore } from '../cli/src/transport/contention-log.ts';
 import { envMs } from '../cli/src/transport/protocol-helpers.ts';
 
+// Scoped to THIS file only (vitest's own default 5_000ms stays the ceiling everywhere
+// else, so a hung test in another file still fails fast) — the real-socket waits below
+// legitimately need more room than the suite's fast pure-function tests do.
+vi.setConfig({ testTimeout: 30_000 });
+
 type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts');
 
 const WATCHDOG_MS_KEY = 'FIGMA_AGENT_WATCHDOG_MS';
@@ -58,14 +63,6 @@ const HARNESS_WAIT_STEP_MS = envMs('FIGMA_AGENT_HARNESS_STEP_MS', 50);
 // frame to `waitFor` on — e.g. a refused SET_TARGET sends no ack) share the SAME
 // env-driven reader rather than their own separate hardcoded literal.
 const HARNESS_SETTLE_MS = envMs('FIGMA_AGENT_HARNESS_SETTLE_MS', 250);
-// This block's tests exercise real sockets/timers against a real in-process broker; a
-// genuinely anomalous CPU-starvation spike on the host (verified via `uptime`/`ps`
-// during this fix: a load average past this machine's own core count, driven by other
-// processes entirely outside this repo) can still exhaust even the scaled deadline
-// above. A retry does not touch what is asserted — the SAME strict checks still have to
-// pass — it only tolerates a single transient environmental stall; a genuinely broken
-// assertion fails identically on every attempt and this cannot mask that.
-const TARGET_PIN_TEST_OPTIONS = { retry: 2 };
 
 let scratchDir: string;
 let advertisePath: string;
@@ -101,7 +98,19 @@ async function startTestBroker(env: Record<string, string> = {}): Promise<number
   // `logFile` keeps this in-process broker's own log traffic in the scratch dir —
   // the default `/tmp/figma-agent-broker.log` is shared with a live dev session.
   await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit(), logFile: scratchLogFile });
-  const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number };
+  const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number; pid: number };
+  // Hard isolation assertion, applied to EVERY test in this file (not just target-pin):
+  // the broker this test just spawned runs IN-PROCESS, so its advertised `pid` must be
+  // this vitest worker's own `process.pid`. If it ever isn't, the advertisement being
+  // read back belongs to a DIFFERENT process — a real machine-wide broker (this host
+  // runs one on port 9410) or a stale leftover — and every assertion downstream would be
+  // silently checking the wrong broker's state instead of failing loudly right here.
+  if (ad.pid !== process.pid) {
+    throw new Error(
+      `startTestBroker: advertisement at ${advertisePath} reports pid ${ad.pid}, but this worker is pid ${process.pid} — ` +
+      `reading a broker this test did not spawn (port ${ad.port}).`,
+    );
+  }
   return ad.port;
 }
 
@@ -1129,7 +1138,7 @@ function admissionOutcome(ws: WebSocket, reqId: string): Promise<'dispatched' | 
 }
 
 describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, precedence, disconnect-clears, PEERS', () => {
-  it('SET_TARGET pins routing to that instance even though a DIFFERENT plugin is more recently active', TARGET_PIN_TEST_OPTIONS, async () => {
+  it('SET_TARGET pins routing to that instance even though a DIFFERENT plugin is more recently active', async () => {
     const port = await startTestBroker();
     const pluginA = await connectSocket(port);
     await helloPlugin(pluginA, 'inst-pin-a', 'PinFileA');
@@ -1154,7 +1163,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     expect(framesB.frames.some((f) => (f as { id?: string }).id === 'req-pin-1')).toBe(false);
   });
 
-  it('a per-request --instance still overrides the pin (per-request flags always win)', TARGET_PIN_TEST_OPTIONS, async () => {
+  it('a per-request --instance still overrides the pin (per-request flags always win)', async () => {
     const port = await startTestBroker();
     const pluginA = await connectSocket(port);
     await helloPlugin(pluginA, 'inst-pin-a2', 'PinFileA2');
@@ -1176,7 +1185,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     expect(framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-2')).toBe(false);
   });
 
-  it('CLEAR_TARGET clears the pin — a later no-flag command falls back to recency', TARGET_PIN_TEST_OPTIONS, async () => {
+  it('CLEAR_TARGET clears the pin — a later no-flag command falls back to recency', async () => {
     const port = await startTestBroker();
     const pluginA = await connectSocket(port);
     await helloPlugin(pluginA, 'inst-pin-a3', 'PinFileA3');
@@ -1200,7 +1209,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     expect(framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-3')).toBe(false);
   });
 
-  it('the pinned instance disconnecting clears the pin — a later no-flag command falls through to recency, never stuck refusing', TARGET_PIN_TEST_OPTIONS, async () => {
+  it('the pinned instance disconnecting clears the pin — a later no-flag command falls through to recency, never stuck refusing', async () => {
     const port = await startTestBroker();
     const pluginA = await connectSocket(port);
     await helloPlugin(pluginA, 'inst-pin-a4', 'PinFileA4');
@@ -1229,7 +1238,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     expect(outcome).toBe('dispatched');
   });
 
-  it('SET_TARGET refuses a claimed instanceId that does not match the sender\'s OWN registered instance', TARGET_PIN_TEST_OPTIONS, async () => {
+  it('SET_TARGET refuses a claimed instanceId that does not match the sender\'s OWN registered instance', async () => {
     const port = await startTestBroker();
     const pluginA = await connectSocket(port);
     await helloPlugin(pluginA, 'inst-pin-a5', 'PinFileA5');
@@ -1251,7 +1260,7 @@ describe('daemon harness — target pin (#35 P2): SET_TARGET/CLEAR_TARGET, prece
     expect(framesA.frames.some((f) => (f as { id?: string }).id === 'req-pin-5')).toBe(false);
   });
 
-  it('PEERS reflects the pin: `pinned`/`isActiveTarget` on the pinned entry, both false elsewhere; CLEAR_TARGET reverts to recency', TARGET_PIN_TEST_OPTIONS, async () => {
+  it('PEERS reflects the pin: `pinned`/`isActiveTarget` on the pinned entry, both false elsewhere; CLEAR_TARGET reverts to recency', async () => {
     const port = await startTestBroker();
     const pluginA = await connectSocket(port);
     await helloPlugin(pluginA, 'inst-pin-a6', 'PinFileA6');
