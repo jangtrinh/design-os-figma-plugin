@@ -6,6 +6,10 @@
   "ui": "ui.html",
   "editorType": ["figma", "figjam", "slides"],
   "documentAccess": "dynamic-page",
+  "enablePrivatePluginApi": true,
+  "relaunchButtons": [
+    { "command": "open", "name": "Reconnect figma-agent" }
+  ],
   "permissions": ["currentuser"],
   "networkAccess": {
     "allowedDomains": [

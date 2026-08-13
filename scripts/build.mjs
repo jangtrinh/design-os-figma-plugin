@@ -3,9 +3,9 @@
 // Usage: node scripts/build.mjs [walker-bundle|cli|plugin-main|plugin-ui|all] [--watch]
 import * as esbuild from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { canonicalizePluginUi, computePluginBuildId } from './plugin-build-id.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const target = process.argv[2] ?? 'all';
@@ -58,7 +58,7 @@ async function buildCli() {
   });
 }
 
-async function buildPluginMain() {
+async function compilePluginMain() {
   await esbuild.build({
     ...common,
     entryPoints: [resolve(root, 'plugin/src/main/main.ts')],
@@ -69,14 +69,13 @@ async function buildPluginMain() {
 }
 
 async function buildPluginUi() {
-  // The build id the panel shows must match the code.js the user actually has
-  // loaded — rebuild it first so `plugin-ui` run standalone still hashes fresh
-  // bytes (same prerequisite pattern as buildCli/buildWalkerBundle above).
-  await buildPluginMain();
+  // Rebuild main first so a standalone plugin-ui build still fingerprints the
+  // complete plugin currently loaded by Figma, not a stale code.js.
+  await compilePluginMain();
   const codeJs = readFileSync(resolve(root, 'plugin/code.js'));
-  const buildId = createHash('sha256').update(codeJs).digest('hex').slice(0, 7);
-
-  const res = await esbuild.build({
+  const manifest = readFileSync(resolve(root, 'plugin/manifest.json'));
+  const template = readFileSync(resolve(root, 'plugin/src/ui/panel.html'), 'utf8');
+  const buildUi = (buildId) => esbuild.build({
     ...common,
     entryPoints: [resolve(root, 'plugin/src/ui/ui-relay.ts')],
     platform: 'browser',
@@ -84,16 +83,23 @@ async function buildPluginUi() {
     write: false,
     define: { __BUILD_ID__: JSON.stringify(buildId) },
   });
+  const provisional = await buildUi('pending');
+  const MARKER = '/*__FIGMA_AGENT_UI_BUNDLE__*/';
+  if (!template.includes(MARKER)) {
+    throw new Error(`plugin/src/ui/panel.html is missing the ${MARKER} bundle marker`);
+  }
+  const provisionalHtml = template.replace(MARKER, () => provisional.outputFiles[0].text);
+  const buildId = computePluginBuildId({
+    code: codeJs,
+    manifest,
+    ui: canonicalizePluginUi(provisionalHtml),
+  });
+  const res = await buildUi(buildId);
   const js = res.outputFiles[0].text;
   // The panel chrome is authored in plugin/src/ui/panel.html — the SOURCE the P2
   // 4-linter gate lints (tests/figma-plugin-panel.test.ts). The build only inlines
   // the compiled relay+panel bundle at the marker so ui.html stays one self-contained
   // file. A function replacer avoids `$`-pattern interpretation in the bundle text.
-  const MARKER = '/*__FIGMA_AGENT_UI_BUNDLE__*/';
-  const template = readFileSync(resolve(root, 'plugin/src/ui/panel.html'), 'utf8');
-  if (!template.includes(MARKER)) {
-    throw new Error(`plugin/src/ui/panel.html is missing the ${MARKER} bundle marker`);
-  }
   const html = template.replace(MARKER, () => js);
   mkdirSync(resolve(root, 'plugin'), { recursive: true });
   writeFileSync(resolve(root, 'plugin/ui.html'), html);
@@ -102,7 +108,9 @@ async function buildPluginUi() {
 const jobs = {
   'walker-bundle': buildWalkerBundle,
   cli: buildCli,
-  'plugin-main': buildPluginMain,
+  // Both public plugin targets produce one coherent loadable plugin. A partial
+  // code.js-only build would leave ui.html displaying a stale whole-plugin ID.
+  'plugin-main': buildPluginUi,
   'plugin-ui': buildPluginUi,
 };
 // `all` omits walker-bundle on purpose: buildCli regenerates it as its prerequisite.
