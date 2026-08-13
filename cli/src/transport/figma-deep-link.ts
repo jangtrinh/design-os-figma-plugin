@@ -22,7 +22,7 @@ const NO_FILE_KEY_REASON = 'file has no fileKey (Free plan) — open the file ma
 /**
  * `entry === null` → no binding at all was found for the file in question.
  * `entry.fileKey === null` → bound, but the file has never carried an org fileKey
- * (a Figma Free file, or one bound before its first connect) — a deep link cannot be
+ * (a plugin running without enablePrivatePluginApi, or a file bound before its first connect) — a deep link cannot be
  * built for it. `entry.fileKey` a string → `figma://file/<fileKey>`.
  */
 export function buildDeepLink(entry: DeepLinkEntry | null): DeepLinkResult {

@@ -153,7 +153,8 @@ $FA status --wait --timeout 60    # blocks until a plugin registers; prints the 
 ```
 
 The link comes from the file's bind record. When one can't be built — an unbound file, or a
-Figma Free file that has no `fileKey` — it says which of the two it is instead of printing a
+plugin build that never reported a `fileKey` (reading it needs `enablePrivatePluginApi` in the
+manifest, which this repo now ships) — it says which of the two it is instead of printing a
 URL that opens nothing. On timeout it exits non-zero with `E_NO_PLUGIN`.
 
 ## The deterministic kernel (reconcile)
