@@ -117,9 +117,19 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
       skipped.push({ path: skillPath, reason: `unchanged (already v${CLI_VERSION})` });
     } else if (!yes) {
       const label = frontmatterVersion(existingContent) ?? 'unknown';
-      const ok = await confirm(`overwrite v${label} with v${CLI_VERSION}?`);
+      // Same version label but different bytes (e.g. a description update under an
+      // unchanged version number) — "overwrite vX with vX" would misreport this as a
+      // version bump when nothing about the version changed.
+      const sameVersion = label === CLI_VERSION;
+      const prompt = sameVersion
+        ? `local copy of v${label} differs from the emitted skill — overwrite?`
+        : `overwrite v${label} with v${CLI_VERSION}?`;
+      const declineReason = sameVersion
+        ? `declined overwrite: local copy differs from emitted skill (both v${label})`
+        : `declined overwrite of v${label}`;
+      const ok = await confirm(prompt);
       writeSkill = ok;
-      if (!ok) skipped.push({ path: skillPath, reason: `declined overwrite of v${label}` });
+      if (!ok) skipped.push({ path: skillPath, reason: declineReason });
     }
   }
   if (writeSkill) {
