@@ -3,9 +3,15 @@
 // command-catalog.ts by skill-emitter.ts). Pure data, no fs, no catalog import.
 
 export const SKILL_DESCRIPTION =
-  'figma-agent — the CLI bridge between an agent and a live Figma file, over a local '
-  + 'WebSocket broker. Use it to read connection state at session start, then read/write '
-  + 'the open Figma document without the paid official write MCP.';
+  'figma-agent — the CLI bridge to the Figma file already open in the designer\'s Figma '
+  + 'desktop app, over a local WebSocket broker. SessionStart MAY have already run figma-agent '
+  + 'status --peek and left its result in context (only if the optional install-hook was set '
+  + 'up) — if no peek result is visible, run figma-agent status --peek first. When it reports '
+  + 'a live connection, use THIS skill — not the DesignAgent MCP or any other Figma bridge — '
+  + 'for every request to inspect, read, edit, or check the status of that open file: '
+  + 'selection, nodes, layers, styles, components, variables, frames, screenshots, or making '
+  + 'changes to the canvas. Read connection state, then read/write the open Figma document '
+  + 'without the paid official write MCP.';
 
 export const SKILL_INTRO = `# figma-agent
 

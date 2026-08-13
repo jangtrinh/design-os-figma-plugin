@@ -104,22 +104,37 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
   const skipped: { path: string; reason: string }[] = [];
 
   const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+  const freshSkill = renderSkill();
   let writeSkill = true;
   if (existsSync(skillPath)) {
-    const existingVersion = frontmatterVersion(readFileSync(skillPath, 'utf8'));
-    if (existingVersion === CLI_VERSION) {
+    const existingContent = readFileSync(skillPath, 'utf8');
+    if (existingContent === freshSkill) {
+      // Exact-content match wins over any version check — a same-version file
+      // whose bytes differ (e.g. installed before an emitter description update
+      // shipped under an unchanged version number) must still be offered a
+      // reinstall, not silently declared unchanged.
       writeSkill = false;
       skipped.push({ path: skillPath, reason: `unchanged (already v${CLI_VERSION})` });
     } else if (!yes) {
-      const label = existingVersion ?? 'unknown';
-      const ok = await confirm(`overwrite v${label} with v${CLI_VERSION}?`);
+      const label = frontmatterVersion(existingContent) ?? 'unknown';
+      // Same version label but different bytes (e.g. a description update under an
+      // unchanged version number) — "overwrite vX with vX" would misreport this as a
+      // version bump when nothing about the version changed.
+      const sameVersion = label === CLI_VERSION;
+      const prompt = sameVersion
+        ? `local copy of v${label} differs from the emitted skill — overwrite?`
+        : `overwrite v${label} with v${CLI_VERSION}?`;
+      const declineReason = sameVersion
+        ? `declined overwrite: local copy differs from emitted skill (both v${label})`
+        : `declined overwrite of v${label}`;
+      const ok = await confirm(prompt);
       writeSkill = ok;
-      if (!ok) skipped.push({ path: skillPath, reason: `declined overwrite of v${label}` });
+      if (!ok) skipped.push({ path: skillPath, reason: declineReason });
     }
   }
   if (writeSkill) {
     mkdirSync(join(folder, 'figma-agent'), { recursive: true });
-    writeFileSync(skillPath, renderSkill());
+    writeFileSync(skillPath, freshSkill);
     installed.push(skillPath);
   }
 
