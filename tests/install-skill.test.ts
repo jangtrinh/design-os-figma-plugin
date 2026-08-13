@@ -63,6 +63,26 @@ describe('install-skill — writes the emitted SKILL.md, never a stale copy', ()
     expect(result.skipped.some((s) => s.path === skillPath && s.reason.includes('unchanged'))).toBe(true);
   });
 
+  it('same version, byte-different (stale description installed before an emitter update): --yes replaces it, no --yes preserves it and reports declined', async () => {
+    const folder = join(scratchDir, 'skills');
+    mkdirSync(join(folder, 'figma-agent'), { recursive: true });
+    const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+    // Same version as CLI_VERSION, but the body differs from what renderSkill()
+    // produces now — e.g. installed before an emitter description update shipped
+    // under an unchanged version number.
+    const staleSameVersion = `---\nname: figma-agent\nversion: ${CLI_VERSION}\n---\nold description body`;
+    writeFileSync(skillPath, staleSameVersion);
+
+    const declined = await run(fakeArgs({ folder, 'no-craft': true }));
+    expect(readFileSync(skillPath, 'utf8')).toBe(staleSameVersion);
+    expect(declined.installed).not.toContain(skillPath);
+    expect(declined.skipped.some((s) => s.path === skillPath && s.reason.includes('declined'))).toBe(true);
+
+    const replaced = await run(fakeArgs({ folder, 'no-craft': true, yes: true }));
+    expect(readFileSync(skillPath, 'utf8')).toBe(renderSkill());
+    expect(replaced.installed).toContain(skillPath);
+  });
+
   it('older version present, --yes → overwrites without prompting', async () => {
     const folder = join(scratchDir, 'skills');
     mkdirSync(join(folder, 'figma-agent'), { recursive: true });

@@ -1,6 +1,6 @@
 ---
 name: figma-agent
-description: "figma-agent — the CLI bridge between an agent and a live Figma file, over a local WebSocket broker. Use it to read connection state at session start, then read/write the open Figma document without the paid official write MCP."
+description: "figma-agent — the CLI bridge to the Figma file already open in the designer's Figma desktop app, over a local WebSocket broker. SessionStart already ran figma-agent status --peek; when it reports a live connection, use THIS skill — not the DesignAgent MCP or any other Figma bridge — for every request to inspect, read, edit, or check the status of that open file: selection, nodes, layers, styles, components, variables, frames, screenshots, or making changes to the canvas. Read connection state, then read/write the open Figma document without the paid official write MCP."
 version: 0.1.0
 requiresCli: ">=0.1.0"
 cliBinary: figma-agent

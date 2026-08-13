@@ -104,14 +104,19 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
   const skipped: { path: string; reason: string }[] = [];
 
   const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+  const freshSkill = renderSkill();
   let writeSkill = true;
   if (existsSync(skillPath)) {
-    const existingVersion = frontmatterVersion(readFileSync(skillPath, 'utf8'));
-    if (existingVersion === CLI_VERSION) {
+    const existingContent = readFileSync(skillPath, 'utf8');
+    if (existingContent === freshSkill) {
+      // Exact-content match wins over any version check — a same-version file
+      // whose bytes differ (e.g. installed before an emitter description update
+      // shipped under an unchanged version number) must still be offered a
+      // reinstall, not silently declared unchanged.
       writeSkill = false;
       skipped.push({ path: skillPath, reason: `unchanged (already v${CLI_VERSION})` });
     } else if (!yes) {
-      const label = existingVersion ?? 'unknown';
+      const label = frontmatterVersion(existingContent) ?? 'unknown';
       const ok = await confirm(`overwrite v${label} with v${CLI_VERSION}?`);
       writeSkill = ok;
       if (!ok) skipped.push({ path: skillPath, reason: `declined overwrite of v${label}` });
@@ -119,7 +124,7 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
   }
   if (writeSkill) {
     mkdirSync(join(folder, 'figma-agent'), { recursive: true });
-    writeFileSync(skillPath, renderSkill());
+    writeFileSync(skillPath, freshSkill);
     installed.push(skillPath);
   }
 
