@@ -162,6 +162,9 @@ interface CoworkWaiterEntry {
   targetInstanceId: string;
   startedAt: number;
   state: CoworkWaiterState;
+  /** Set only when the caller's requested `timeoutMs` exceeded COWORK_MAX_TIMEOUT_MS —
+   *  same "nothing vanishes silently" disclosure contract as `ambiguousCount`. */
+  timeoutCappedMs?: number;
 }
 
 interface BrokerState {
@@ -1369,6 +1372,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       reqId: msg.id, from: ws, fileIdentity: fileIdentity(fileKey, fileName), fileName,
       targetInstanceId: target.instanceId, startedAt: now,
       state: createCoworkWaiter(waitMs, now + timeoutMs),
+      ...(requestedTimeoutMs > COWORK_MAX_TIMEOUT_MS && { timeoutCappedMs: COWORK_MAX_TIMEOUT_MS }),
     };
     st.coworkWaiters.push(entry);
     log(`cowork armed for "${fileName ?? '?'}" [${target.instanceId}] — quiet ${waitMs}ms, timeout ${timeoutMs}ms`);
@@ -1385,6 +1389,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // Nothing vanishes silently — present only once non-zero, same contract as the
     // broker's other diagnostic counters (senderMismatchCount, reHelloCount, ...).
     ...(entry.state.ambiguousCount > 0 && { ambiguousCount: entry.state.ambiguousCount }),
+    ...(entry.timeoutCappedMs !== undefined && { timeoutCappedMs: entry.timeoutCappedMs }),
   });
 
   const handleClose = (ws: WebSocket): void => {

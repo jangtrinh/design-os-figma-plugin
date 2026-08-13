@@ -19,6 +19,7 @@ interface CoworkWireResult {
   file: string | null;
   edits: EditInput[];
   ambiguousCount?: number;
+  timeoutCappedMs?: number;
 }
 
 interface CoworkEditOutput {
@@ -75,6 +76,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
   const base = {
     cycles: wire.cycles, quietMs: wire.quietMs, waitedMs: wire.waitedMs, file: wire.file, edits,
     ...(wire.ambiguousCount !== undefined && { ambiguousCount: wire.ambiguousCount }),
+    ...(wire.timeoutCappedMs !== undefined && { timeoutCappedMs: wire.timeoutCappedMs }),
   };
 
   // Read-only ledger round trip — never SET_CORRECTION_MEMORY, never a jsonl write.
