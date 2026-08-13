@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
-import { makeRequestFrame } from '../shared/protocol.ts';
+import { COWORK_MAX_TIMEOUT_MS, makeRequestFrame } from '../shared/protocol.ts';
 import type { EventMsg, ReplyErr, ReplyOk, WireMsg } from '../shared/protocol.ts';
 
 type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts');
@@ -234,6 +234,42 @@ describe('cowork — the plugin disconnecting mid-wait refuses with a reconnect 
     expect((reply as ReplyErr).error.code).toBe('E_NO_PLUGIN');
     expect((reply as ReplyErr).error.message).toMatch(/reopen|reconnect/i);
     expect(elapsed).toBeLessThan(2_000); // reacted to the disconnect, did not wait out the deadline
+  });
+});
+
+describe('cowork — a requested --timeout past COWORK_MAX_TIMEOUT_MS discloses the cap, never silently', () => {
+  it('requested timeoutMs > cap → the fired reply carries timeoutCappedMs: COWORK_MAX_TIMEOUT_MS', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-8', 'Cowork File G');
+    const cli = await connectSocket(port);
+
+    const replyPromise = nextFrame<ReplyOk | ReplyErr>(cli, (m) => (m as ReplyOk).id === 'req-cw-8');
+    sendCowork(cli, 'req-cw-8', { waitMs: 100, timeoutMs: COWORK_MAX_TIMEOUT_MS + 3_600_000 });
+    sendEditFeed(plugin, [ownerEdit('1:1')], { fileKey: null, fileName: 'Cowork File G' });
+
+    const reply = await replyPromise;
+    expect(reply.ok).toBe(true);
+    const result = (reply as ReplyOk).result as { cycles: number; timeoutCappedMs?: number };
+    expect(result.cycles).toBe(1);
+    expect(result.timeoutCappedMs).toBe(COWORK_MAX_TIMEOUT_MS);
+  });
+
+  it('requested timeoutMs at or below the cap → timeoutCappedMs is absent entirely', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-9', 'Cowork File H');
+    const cli = await connectSocket(port);
+
+    const replyPromise = nextFrame<ReplyOk | ReplyErr>(cli, (m) => (m as ReplyOk).id === 'req-cw-9');
+    sendCowork(cli, 'req-cw-9', { waitMs: 100, timeoutMs: 5_000 });
+    sendEditFeed(plugin, [ownerEdit('1:1')], { fileKey: null, fileName: 'Cowork File H' });
+
+    const reply = await replyPromise;
+    expect(reply.ok).toBe(true);
+    const result = (reply as ReplyOk).result as { cycles: number; timeoutCappedMs?: number };
+    expect(result.cycles).toBe(1);
+    expect('timeoutCappedMs' in result).toBe(false);
   });
 });
 
