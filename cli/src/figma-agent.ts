@@ -8,7 +8,8 @@
 // this module (e.g. for COMMAND_MODULES) without accidentally dispatching a
 // command from the TEST RUNNER's own argv.
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { runBrokerDaemon } from './transport/broker-daemon.ts';
 import { parseArgs, type CommandArgs } from './arg-parse.ts';
 import { CliError } from './transport/protocol-helpers.ts';
@@ -197,7 +198,16 @@ async function main(): Promise<void> {
 // <args>`), never on a plain `import` — the guard is what lets
 // tests/skill-emitter-drift.test.ts import COMMAND_MODULES from this module without
 // dispatching a command from the TEST RUNNER's own argv.
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+function isProcessEntrypoint(argvPath: string | undefined): boolean {
+  if (argvPath === undefined) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(argvPath);
+  } catch {
+    return false;
+  }
+}
+
+const isEntrypoint = isProcessEntrypoint(process.argv[1]);
 if (isEntrypoint) {
   main().catch((err) => printErrorJson(err));
 }
