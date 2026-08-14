@@ -10,10 +10,18 @@ import type { CommandArgs } from '../figma-agent.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 import { runCommand } from '../transport/broker-client.ts';
 import { readStdin } from '../util/read-stdin.ts';
+import { lintExecJs } from './exec-js-lint.ts';
 
 const WIRE_MARGIN_MS = 2_000; // socket timeout slightly above plugin-side timeout
 
 export async function run(args: CommandArgs): Promise<unknown> {
+  const noLintValue = args.str('no-lint');
+  if (noLintValue !== undefined && noLintValue !== 'true' && noLintValue !== 'false') {
+    throw new CliError(
+      'E_INVALID_ARGS',
+      '--no-lint does not take a file value; place --no-lint after the script file',
+    );
+  }
   const fileArg = args.positionals[0];
   let code: string;
   if (!fileArg || fileArg === '-') {
@@ -26,6 +34,22 @@ export async function run(args: CommandArgs): Promise<unknown> {
     }
   }
   if (!code.trim()) throw new CliError('E_INVALID_ARGS', 'script input is empty');
+
+  if (!args.bool('no-lint')) {
+    const findings = lintExecJs(code);
+    for (const finding of findings.filter((item) => item.severity === 'warning')) {
+      process.stderr.write(
+        `warning: [${finding.id}] line ${finding.line}: ${finding.message}; fix: ${finding.fix}\n`,
+      );
+    }
+    const errors = findings.filter((item) => item.severity === 'error');
+    if (errors.length > 0) {
+      const detail = errors
+        .map((finding) => `[${finding.id}] line ${finding.line}: ${finding.message}; fix: ${finding.fix}`)
+        .join('\n');
+      throw new CliError('E_INVALID_ARGS', `exec-js preflight failed:\n${detail}`);
+    }
+  }
 
   const requested = args.num('timeout') ?? COMMAND_TIMEOUTS.EXEC_JS ?? 30_000;
   const timeoutMs = Math.min(requested, EXEC_JS_MAX_TIMEOUT_MS);

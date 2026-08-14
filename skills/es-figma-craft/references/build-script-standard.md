@@ -60,17 +60,20 @@ return {
 
 ## Pre-dispatch lint (run BEFORE sending any script — kills the top error families)
 
-Grep the script text for banned patterns; any hit = fix before dispatch, no exceptions. This 5-second check would have prevented the two biggest families in the error-log harvest (21 sync-API hits + wrapper-preventable trio):
+`figma-agent exec-js` now runs a deterministic local lint before broker dispatch. Proven
+dynamic-page failures stop with a stable rule ID and suggested fix; receiver-ambiguous checks
+warn on stderr and still run. `--no-lint` is an explicit emergency bypass. The canonical rule
+metadata and detectors live in
+[`cli/src/commands/exec-js-lint.ts`](../../../cli/src/commands/exec-js-lint.ts); do not duplicate
+that mutable inventory here. `batch` does not pass through the `exec-js` command module and is
+not covered by this preflight.
 
-| Banned pattern | Why (all fail/rollback at runtime) |
+The CLI cannot decide the following semantic cases safely, so check them before dispatch:
+
+| Manual check | Why |
 |---|---|
-| `figma.getNodeById(` · `.mainComponent` (property) · `figma.getLocalTextStyles(` / `getLocalPaintStyles(` / `getLocalEffectStyles(` without `Async` | dynamic-page: sync APIs throw — use `*Async` |
-| `figma.currentPage =` · `.textStyleId =` · `.effectStyleId =` | sync setters: throw or SILENTLY no-op |
-| `require(` / `import ` | sandbox has neither |
 | `figma.combineAsVariants(` not via `combineVariantsSafe` | same-page throw |
-| `.fontName =` / `setRangeFontName(` without a matching `loadFontAsync` | unloaded-font throw |
 | bare `findOne(...)` result chained without null-guard (`mustFind`) | null-deref crash mid-batch |
-| `exec-js`: file not starting `(async () => {` or ending `})();` (trailing `;`) | silent no-report / silent no-run |
 | missing `figma.root.name` guard | wrong-file mutation |
 | `try {` around a mutation without rethrow/collect | swallowed failure |
 
