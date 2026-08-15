@@ -77,6 +77,47 @@ would leave a user unable to tell an offline machine from an unsupported one.
 **Nothing vanishes silently:** the bake never falls back to a blank or placeholder image. An
 empty fill would land on the canvas looking like a deliberate design choice.
 
+## Verifying it works
+
+Two checks, answering two different questions. Neither substitutes for the other.
+
+**Can this build render at all?** — `node scripts/verify-gradient-render.mjs`
+
+Runs the real `renderGradientToPng` in a headless Chromium, through the actual iframe,
+message plumbing, PNG decode, and teardown, and fails on a non-PNG, an implausibly small
+(blank) capture, or a leaked iframe. Not a CI gate: it needs the network and a Chromium
+build. **Run it whenever the renderer pin, its dependency pins, or the import block change** —
+the two defects that made the first release un-renderable both lived inside the generated
+document, where no static check could see them.
+
+**Can THIS Figma client bake?** — `figma-agent shader-gradient --self-test`
+
+The script above cannot answer this: Figma's plugin iframe is its own sandbox and is not
+reproducible outside the app. The self-test renders a 64x64 throwaway field through the real
+path and reports the outcome. It is **read-only** — no node is selected, no fill is written,
+nothing is added to the undo stack — which matters, because the only other way to learn
+whether an environment can bake is to bake onto somebody's real file and look.
+
+A failure reports rather than throws, and names the stage:
+
+| `code` | Meaning |
+|---|---|
+| `E_NO_WEBGL` | this client's plugin iframe grants no WebGL context — the bake cannot work here |
+| `E_RENDER_SCRIPT` / `E_IFRAME_LOAD` | the renderer could not be fetched — check network access to the pinned CDN |
+| `E_EMPTY_CAPTURE` | the renderer loaded but produced no usable frame |
+
+**Do not conflate the first two.** One means the environment is incapable; the other means it
+is merely offline.
+
+## A plane may not cover its frame
+
+`plane`-type presets are a rotated flat mesh, so at some aspect ratios they do not reach every
+corner and the capture carries transparent regions. Observed with `halo` at 480x300 (it covers
+at 560x360). The fill is applied with `scaleMode: 'FILL'`, which scales to cover and crops, so
+this is usually invisible — but a very wide or very tall node can still show it. Prefer a
+`waterPlane` or `sphere` preset when the field must cover an unusual aspect ratio, or check the
+result.
+
 ## Not the same as the web capability
 
 A baked field is **a picture of a gradient**, not a gradient. It does not animate, it does

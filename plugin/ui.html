@@ -969,6 +969,7 @@ code {
     // A gradient bake fetches a renderer bundle, compiles shaders, and waits for the
     // first frame to settle before reading pixels. The fetch is the slow, variable part.
     SHADER_GRADIENT: 9e4,
+    SHADER_GRADIENT_PROBE: 9e4,
     IMPORT_GRADIENT: 6e4,
     SCAN_DESIGN_SYSTEM: 3e4,
     AUDIT_DS: 12e4,
@@ -1464,7 +1465,7 @@ code {
     } catch {
     }
   });
-  versionEl.textContent = `v0.1.0 \xB7 ${true ? "2d0092f" : "dev"}`;
+  versionEl.textContent = `v0.1.0 \xB7 ${true ? "39e7111" : "dev"}`;
   setInterval(render, 1e3);
   render();
 
@@ -3159,6 +3160,9 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   function sendErr(id, code, message) {
     wsSend({ id, ok: false, error: { code, message }, fileContext: localFileContext() });
   }
+  function sendOk(id, result) {
+    wsSend({ id, ok: true, result, fileContext: localFileContext() });
+  }
   function handleWireData(raw) {
     let msg;
     try {
@@ -3234,6 +3238,38 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
             params: { payload: payload2, x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId }
           }
         }, "*");
+      } else if (req.cmd === "SHADER_GRADIENT_PROBE") {
+        const p = req.params ?? {};
+        if (!p.props || typeof p.props !== "object") {
+          sendErr(req.id, "E_INVALID_ARGS", "SHADER_GRADIENT_PROBE requires params.props");
+          emitActivity(req.id, false, { message: "SHADER_GRADIENT_PROBE requires params.props" });
+          return;
+        }
+        setStatusText("probing gradient\u2026", "ok");
+        const startedAt = Date.now();
+        try {
+          const bytes = await renderGradientToPng({
+            props: p.props,
+            width: p.width ?? 64,
+            height: p.height ?? 64,
+            scale: 1,
+            staticFrame: true
+          });
+          setStatusText("connected", "ok");
+          sendOk(req.id, {
+            ok: true,
+            renderable: true,
+            bytes: bytes.length,
+            ms: Date.now() - startedAt
+          });
+          emitActivity(req.id, true, {});
+        } catch (err) {
+          setStatusText("connected", "ok");
+          const code = err instanceof GradientRenderError ? err.code : "E_RENDER_FAILED";
+          const message = err instanceof Error ? err.message : String(err);
+          sendOk(req.id, { ok: true, renderable: false, code, message, ms: Date.now() - startedAt });
+          emitActivity(req.id, true, {});
+        }
       } else if (req.cmd === "SHADER_GRADIENT") {
         const p = req.params ?? {};
         if (!p.props || typeof p.props !== "object") {

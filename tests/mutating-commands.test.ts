@@ -26,7 +26,7 @@ const READ_ONLY_COMMANDS: readonly CommandName[] = [
   'GET_CORRECTION_MEMORY', 'EXPORT_PNG', 'HTML_TO_FIGMA', 'BATCH', 'PROJECT_BIND', 'JOB', 'COWORK',
   // SHADER_GRADIENT is READ_ONLY for the same reason HTML_TO_FIGMA is: it never reaches
   // main. The UI renders it and posts IMPORT_GRADIENT, and THAT is the mutating half.
-  'SHADER_GRADIENT',
+  'SHADER_GRADIENT', 'SHADER_GRADIENT_PROBE',
   'LIST_CONNECTIONS', 'VERIFY_CONNECTIONS',
 ];
 

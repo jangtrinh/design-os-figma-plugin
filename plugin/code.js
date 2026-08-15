@@ -11,6 +11,7 @@
     // A gradient bake fetches a renderer bundle, compiles shaders, and waits for the
     // first frame to settle before reading pixels. The fetch is the slow, variable part.
     SHADER_GRADIENT: 9e4,
+    SHADER_GRADIENT_PROBE: 9e4,
     IMPORT_GRADIENT: 6e4,
     SCAN_DESIGN_SYSTEM: 3e4,
     AUDIT_DS: 12e4,

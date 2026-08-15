@@ -128,8 +128,9 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + '[--w 1200 --h 800 --scale 2] [--static] [--timeout ms] [--list]   --preset takes a ledger '
       + 'slug (or upstream\'s camelCase key); --url takes a shadergradient.co/customize link; --set '
       + 'overrides either. --static freezes the field instead of capturing it mid-animation. --list '
-      + 'prints the preset roster and makes no canvas change. The resolved config is stored on the '
-      + 'node so a later bake can reproduce or resize it.',
+      + 'prints the preset roster and --self-test renders a tiny throwaway field to report whether '
+      + 'this environment can bake at all; both are read-only and make no canvas change. The '
+      + 'resolved config is stored on the node so a later bake can reproduce or resize it.',
   },
   {
     name: 'exec-js',
