@@ -52,10 +52,22 @@ We deliberately do not follow that:
 - it sends the user's config **off-machine**, which this repo's broker contract does not do.
 
 Instead the render iframe loads **pinned** ESM (`@shadergradient/react` at an exact version)
-from a CDN host the plugin manifest already allows for the html-to-figma iframe. The
-renderer is not vendored: bundling three + React Three Fiber + the renderer would add
-roughly a megabyte to a UI bundle that is inlined into the plugin, for a feature most
-sessions never invoke.
+from esm.sh, declared in the plugin manifest. The renderer is not vendored: bundling
+three + React Three Fiber + the renderer would add roughly a megabyte to a UI bundle that is
+inlined into the plugin, for a feature most sessions never invoke.
+
+**Why esm.sh specifically, and not a plain per-package CDN bundle.** A per-package ESM
+bundle resolves its own copy of React. Loading the renderer and React as separate bundles
+leaves the page with two React instances, so the renderer's hooks read from an instance that
+never mounted and the first render dies on `Cannot read properties of null (reading
+'useState')`. esm.sh's `?deps=` pins the shared dependencies to a single build of each.
+
+`@react-three/fiber` is pinned for a second, independent reason: unpinned, the latest major
+(v9) is resolved, which requires React 19 and fails against React 18 with an equally opaque
+internal error. The pinned pair is the one upstream develops against.
+
+**The rendered version is not the version in upstream's `package.json`** at the revision the
+presets came from — that one was bumped in-repo and never published. See `THIRD-PARTY.md`.
 
 **The trade this makes:** the bake needs network at render time. That is why every failure
 path carries its own code (`E_NO_WEBGL`, `E_IFRAME_LOAD`, `E_RENDER_SCRIPT`,

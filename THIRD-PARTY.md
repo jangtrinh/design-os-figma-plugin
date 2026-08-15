@@ -120,9 +120,18 @@ unrelated to this phase's absorption work).
 - Upstream: `ruucm/shadergradient`
 - Fork (upstream-tracked, read from): `jangtrinh/shadergradient`
 - Revision read: **`974a230b1e6c3ec375fbe17a8ea1c89edbc48019`** (committed 2026-06-12)
-- Package: `@shadergradient/react` **v2.4.24**
+- Version in that revision's `package.json`: **2.4.24** — source only, see below
+- Package version actually rendered with: `@shadergradient/react` **v2.4.20**
 - Read date: **2026-08-16**
 - License: MIT
+
+**Source version != published version.** At the pinned revision
+`packages/shadergradient/package.json` reads `2.4.24`, but that version was never released:
+changesets bumped it in-repo without publishing. npm's latest is **2.4.20**, and every
+registry and CDN 404s on 2.4.24. Preset values are read from the revision; the renderer is
+loaded at 2.4.20. **The two were compared key-by-key and are identical** on all 30
+render-relevant keys across all 10 presets, so the split introduces no drift — re-run that
+comparison at any future pin rather than assuming it still holds.
 
 **Where the license is declared.** This project has **no root `LICENSE` file** at the
 revision above — GitHub's own API consequently reports `license: null` for the repository,

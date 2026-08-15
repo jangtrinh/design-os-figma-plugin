@@ -18,9 +18,33 @@
 
 import type { ShaderGradientProps } from '../../../shared/shader-gradient-presets';
 
-/** Pinned exactly. A range would let a background republish change what a bake produces. */
-const RENDERER_VERSION = '2.4.24';
-const CDN_BASE = 'https://cdn.jsdelivr.net/npm';
+/**
+ * Pinned exactly. A range would let a background republish change what a bake produces.
+ *
+ * This is the PUBLISHED version, which is NOT the version in upstream's package.json at
+ * the revision the presets were read from. That file says 2.4.24; changesets bumped it
+ * in-repo without a release, so 2.4.24 exists only as source and 404s on every registry
+ * and CDN. Read the source version from the repo, but always render with a version that
+ * was actually published — see THIRD-PARTY.md for the full record.
+ */
+const RENDERER_VERSION = '2.4.20';
+
+/**
+ * esm.sh, not a plain CDN bundle, and this is load-bearing rather than a preference.
+ *
+ * A per-package ESM bundle resolves its OWN copy of react. Import the renderer and react
+ * as separate bundles and the page ends up with two react instances, so the renderer's
+ * hooks read from an instance that was never mounted and the first render dies on
+ * `Cannot read properties of null (reading 'useState')`. esm.sh's `?deps=` pins the
+ * shared dependencies so every module resolves to ONE build of each.
+ *
+ * `@react-three/fiber` is pinned for a second, separate reason: unpinned, esm.sh resolves
+ * the latest major (v9), which requires React 19 and dies against React 18 with an equally
+ * opaque internal error. 8.17.10 is the pair upstream itself develops against.
+ */
+const CDN_BASE = 'https://esm.sh';
+const REACT_VERSION = '18.3.1';
+const DEPS = `react@${REACT_VERSION},react-dom@${REACT_VERSION},three@0.169.0,@react-three/fiber@8.17.10`;
 
 const IFRAME_LOAD_TIMEOUT_MS = 15_000;
 const RENDER_TIMEOUT_MS = 45_000;
@@ -84,9 +108,9 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     if (!gl) { fail('E_NO_WEBGL', 'this environment provides no WebGL context'); return; }
 
     const [React, ReactDOMClient, SG] = await Promise.all([
-      import(${JSON.stringify(`${CDN_BASE}/react@18.3.1/+esm`)}),
-      import(${JSON.stringify(`${CDN_BASE}/react-dom@18.3.1/client/+esm`)}),
-      import(${JSON.stringify(`${CDN_BASE}/@shadergradient/react@${RENDERER_VERSION}/+esm`)}),
+      import(${JSON.stringify(`${CDN_BASE}/react@${REACT_VERSION}`)}),
+      import(${JSON.stringify(`${CDN_BASE}/react-dom@${REACT_VERSION}/client?deps=react@${REACT_VERSION}`)}),
+      import(${JSON.stringify(`${CDN_BASE}/@shadergradient/react@${RENDERER_VERSION}?deps=${DEPS}`)}),
     ]);
 
     const { ShaderGradientCanvas, ShaderGradient } = SG;

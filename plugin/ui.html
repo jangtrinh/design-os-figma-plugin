@@ -1464,7 +1464,7 @@ code {
     } catch {
     }
   });
-  versionEl.textContent = `v0.1.0 \xB7 ${true ? "7853108" : "dev"}`;
+  versionEl.textContent = `v0.1.0 \xB7 ${true ? "2d0092f" : "dev"}`;
   setInterval(render, 1e3);
   render();
 
@@ -2868,8 +2868,10 @@ code {
   }
 
   // plugin/src/ui/gradient-host.ts
-  var RENDERER_VERSION = "2.4.24";
-  var CDN_BASE = "https://cdn.jsdelivr.net/npm";
+  var RENDERER_VERSION = "2.4.20";
+  var CDN_BASE = "https://esm.sh";
+  var REACT_VERSION = "18.3.1";
+  var DEPS = `react@${REACT_VERSION},react-dom@${REACT_VERSION},three@0.169.0,@react-three/fiber@8.17.10`;
   var IFRAME_LOAD_TIMEOUT_MS2 = 15e3;
   var RENDER_TIMEOUT_MS = 45e3;
   var SETTLE_FRAMES = 8;
@@ -2909,9 +2911,9 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     if (!gl) { fail('E_NO_WEBGL', 'this environment provides no WebGL context'); return; }
 
     const [React, ReactDOMClient, SG] = await Promise.all([
-      import(${JSON.stringify(`${CDN_BASE}/react@18.3.1/+esm`)}),
-      import(${JSON.stringify(`${CDN_BASE}/react-dom@18.3.1/client/+esm`)}),
-      import(${JSON.stringify(`${CDN_BASE}/@shadergradient/react@${RENDERER_VERSION}/+esm`)}),
+      import(${JSON.stringify(`${CDN_BASE}/react@${REACT_VERSION}`)}),
+      import(${JSON.stringify(`${CDN_BASE}/react-dom@${REACT_VERSION}/client?deps=react@${REACT_VERSION}`)}),
+      import(${JSON.stringify(`${CDN_BASE}/@shadergradient/react@${RENDERER_VERSION}?deps=${DEPS}`)}),
     ]);
 
     const { ShaderGradientCanvas, ShaderGradient } = SG;

@@ -11,8 +11,13 @@ import { runCommand } from '../transport/broker-client.ts';
 import { resolveConfig, toQueryString } from '../../../shared/shader-gradient-config.ts';
 import { SHADER_GRADIENT_PRESETS } from '../../../shared/shader-gradient-presets.ts';
 
-/** Pinned renderer, recorded onto the node so a stale bake stays identifiable. */
-const RENDERER = '@shadergradient/react@2.4.24';
+/**
+ * Pinned renderer, recorded onto the node so a stale bake stays identifiable.
+ * The PUBLISHED version — upstream's package.json at the read revision says 2.4.24,
+ * which was never released and 404s everywhere. Keep this in step with
+ * RENDERER_VERSION in plugin/src/ui/gradient-host.ts.
+ */
+const RENDERER = '@shadergradient/react@2.4.20';
 
 export async function run(args: CommandArgs): Promise<unknown> {
   if (args.bool('list')) {
