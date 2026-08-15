@@ -113,3 +113,53 @@ approach) and the `scripts/probe/visual-diff.mjs` pixel-diff approach were adapt
 other MIT-licensed projects prior to this repo's own extraction from the `ease-design`
 monorepo — see the top-level `README.md`'s Attribution section for those (pre-existing,
 unrelated to this phase's absorption work).
+
+## Source — ShaderGradient
+
+- Project: `shadergradient` — "Create beautiful moving gradients on Framer, Figma and React"
+- Upstream: `ruucm/shadergradient`
+- Fork (upstream-tracked, read from): `jangtrinh/shadergradient`
+- Revision read: **`974a230b1e6c3ec375fbe17a8ea1c89edbc48019`** (committed 2026-06-12)
+- Package: `@shadergradient/react` **v2.4.24**
+- Read date: **2026-08-16**
+- License: MIT
+
+**Where the license is declared.** This project has **no root `LICENSE` file** at the
+revision above — GitHub's own API consequently reports `license: null` for the repository,
+and tooling that reads that field will wrongly conclude the project is unlicensed. MIT is
+declared in exactly two places, and those are the ones to cite:
+
+1. `packages/shadergradient/package.json` → `"license": "MIT"`
+2. `README.md` → `# License` section
+
+Verbatim from that README's `# License` section:
+
+```
+MIT © ruucm, stone-skipper
+```
+
+Upstream links those two names to `https://github.com/ruucm` and
+`https://github.com/stone-skipper` respectively. Our fork pins a copy of both files, so this
+attribution stays checkable even if upstream restructures.
+
+### What was adapted, and how
+
+- **`shared/shader-gradient-presets.ts`** — the 10 named presets' numeric prop sets, derived
+  by evaluating upstream's `packages/shadergradient/src/presets.ts` object literal at the
+  pinned revision and keeping only the render-relevant keys. This is the ONE file in this
+  toolchain carrying upstream parameter values; it is generated, not hand-written, and it is
+  regenerated rather than patched when the pin moves.
+- **The query-string interchange format** (`shared/shader-gradient-config.ts`) — upstream's
+  `shadergradient.co/customize?...` parameter names and value grammar are reimplemented as a
+  typed codec. No upstream code was copied into it.
+
+### What was NOT taken
+
+- **No GLSL.** None of upstream's vertex or fragment shaders are in this repo.
+- **No renderer.** The field is drawn by upstream's own published npm package loaded at
+  render time, not by a vendored copy.
+- **Not upstream's Figma plugin.** Its `apps/figma-plugin` loads its renderer from a remote
+  site (`shadergradient.co/figma-plugin`) inside a nested iframe. This repo deliberately does
+  not follow that design — see `knowledge/shader-gradient.md`.
+- **Nothing in the design-os kernel.** The companion `knowledge/shader-gradient/` ledger there
+  carries names, slugs, axes, and provenance only, and no parameter values at all.

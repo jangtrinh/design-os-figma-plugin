@@ -34,6 +34,7 @@ import {
 } from './executor-ops';
 import { opExecJs } from './executor-exec-js';
 import { opCloneTraits } from './executor-clone-traits';
+import { importGradient } from './executor-gradient';
 import { MUTATING_COMMANDS } from '../../../shared/mutating-commands';
 import { opConnect, opDisconnect, opListConnections, opReroute, opVerifyConnections } from './executor-connector';
 import { noteChangedNodes } from './connector-reroute';
@@ -661,6 +662,7 @@ async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
     case 'EXPORT_PNG': return opExportPng(params);
     case 'EXEC_JS': return opExecJs(params);
     case 'IMPORT_PAYLOAD': return importPayload(params);
+    case 'IMPORT_GRADIENT': return importGradient(params);
     case 'BATCH': return runBatch(params);
     default:
       // HTML_TO_FIGMA is handled entirely in the UI relay and arrives here as IMPORT_PAYLOAD

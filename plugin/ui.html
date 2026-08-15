@@ -966,6 +966,10 @@ code {
   var COMMAND_TIMEOUTS = {
     HTML_TO_FIGMA: 6e4,
     IMPORT_PAYLOAD: 6e4,
+    // A gradient bake fetches a renderer bundle, compiles shaders, and waits for the
+    // first frame to settle before reading pixels. The fetch is the slow, variable part.
+    SHADER_GRADIENT: 9e4,
+    IMPORT_GRADIENT: 6e4,
     SCAN_DESIGN_SYSTEM: 3e4,
     AUDIT_DS: 12e4,
     // usage scan traverses EVERY page's instances — heavier than the DS scan
@@ -1460,7 +1464,7 @@ code {
     } catch {
     }
   });
-  versionEl.textContent = `v0.1.0 \xB7 ${true ? "1564326" : "dev"}`;
+  versionEl.textContent = `v0.1.0 \xB7 ${true ? "7853108" : "dev"}`;
   setInterval(render, 1e3);
   render();
 
@@ -2863,6 +2867,152 @@ code {
     }
   }
 
+  // plugin/src/ui/gradient-host.ts
+  var RENDERER_VERSION = "2.4.24";
+  var CDN_BASE = "https://cdn.jsdelivr.net/npm";
+  var IFRAME_LOAD_TIMEOUT_MS2 = 15e3;
+  var RENDER_TIMEOUT_MS = 45e3;
+  var SETTLE_FRAMES = 8;
+  var GradientRenderError = class extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+      this.name = "GradientRenderError";
+    }
+  };
+  function buildRenderDocument(req, token) {
+    const w = Math.round(req.width * req.scale);
+    const h = Math.round(req.height * req.scale);
+    const config = JSON.stringify({ props: req.props, staticFrame: req.staticFrame, settle: SETTLE_FRAMES });
+    return `<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0;background:transparent;overflow:hidden}
+  #stage{width:${w}px;height:${h}px}
+</style></head>
+<body><div id="stage"></div>
+<script type="module">
+const TOKEN = ${JSON.stringify(token)};
+const CFG = ${config};
+const send = (msg) => parent.postMessage({ __gradientToken: TOKEN, ...msg }, '*');
+const fail = (code, message) => send({ ok: false, code, message: String(message) });
+
+// A module-level error (a failed import, a bad specifier) never reaches the try/catch
+// below, so it is caught here \u2014 otherwise the bake would hang until its timeout with
+// no reason recorded, which is the failure mode this whole file exists to avoid.
+window.addEventListener('error', (e) => fail('E_RENDER_SCRIPT', e.message || 'render script error'));
+window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.reason && e.reason.message) || 'render promise rejected'));
+
+(async () => {
+  try {
+    const probe = document.createElement('canvas');
+    const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+    if (!gl) { fail('E_NO_WEBGL', 'this environment provides no WebGL context'); return; }
+
+    const [React, ReactDOMClient, SG] = await Promise.all([
+      import(${JSON.stringify(`${CDN_BASE}/react@18.3.1/+esm`)}),
+      import(${JSON.stringify(`${CDN_BASE}/react-dom@18.3.1/client/+esm`)}),
+      import(${JSON.stringify(`${CDN_BASE}/@shadergradient/react@${RENDERER_VERSION}/+esm`)}),
+    ]);
+
+    const { ShaderGradientCanvas, ShaderGradient } = SG;
+    if (!ShaderGradientCanvas || !ShaderGradient) {
+      fail('E_RENDERER_SHAPE', 'the pinned renderer did not export ShaderGradientCanvas/ShaderGradient');
+      return;
+    }
+
+    const props = { ...CFG.props };
+    if (CFG.staticFrame) props.animate = 'off';
+
+    const el = React.createElement(
+      ShaderGradientCanvas,
+      {
+        style: { width: '100%', height: '100%' },
+        pixelDensity: 1,
+        fov: props.fov,
+        // Required to read pixels back at all: without it the drawing buffer may be
+        // cleared before toDataURL runs and the capture comes back empty.
+        preserveDrawingBuffer: true,
+        lazyLoad: false,
+      },
+      React.createElement(ShaderGradient, props),
+    );
+
+    ReactDOMClient.createRoot(document.getElementById('stage')).render(el);
+
+    // Settle: let the renderer compile, upload, and draw a few frames. A single rAF
+    // routinely captures a black frame mid shader-compile.
+    await new Promise((resolve) => {
+      let n = 0;
+      const tick = () => { if (++n >= CFG.settle) resolve(); else requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    });
+
+    const canvas = document.querySelector('#stage canvas');
+    if (!canvas) { fail('E_NO_CANVAS', 'the renderer mounted no canvas'); return; }
+
+    const dataUrl = canvas.toDataURL('image/png');
+    if (!dataUrl || dataUrl.length < 128) { fail('E_EMPTY_CAPTURE', 'the captured frame was empty'); return; }
+    send({ ok: true, dataUrl });
+  } catch (err) {
+    fail('E_RENDER_FAILED', (err && err.message) || err);
+  }
+})();
+<\/script></body></html>`;
+  }
+  function decodePngDataUrl(dataUrl) {
+    const comma = dataUrl.indexOf(",");
+    if (!dataUrl.startsWith("data:image/png") || comma === -1) {
+      throw new GradientRenderError("E_EMPTY_CAPTURE", "capture was not a PNG data URL");
+    }
+    const b64 = dataUrl.slice(comma + 1);
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function renderGradientToPng(req) {
+    if (!(req.width > 0) || !(req.height > 0)) {
+      throw new GradientRenderError("E_INVALID_ARGS", "gradient bake needs a positive width and height");
+    }
+    const token = `gr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "absolute";
+    iframe.style.left = "-100000px";
+    iframe.style.top = "0";
+    iframe.style.width = `${Math.round(req.width * req.scale)}px`;
+    iframe.style.height = `${Math.round(req.height * req.scale)}px`;
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+    let onMessage = null;
+    let timer = null;
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new GradientRenderError("E_TIMEOUT", `gradient render exceeded ${RENDER_TIMEOUT_MS}ms`)),
+          RENDER_TIMEOUT_MS
+        );
+        onMessage = (e) => {
+          const d = e.data;
+          if (!d || d.__gradientToken !== token) return;
+          if (d.ok === true && typeof d.dataUrl === "string") resolve(d.dataUrl);
+          else reject(new GradientRenderError(d.code ?? "E_RENDER_FAILED", d.message ?? "gradient render failed"));
+        };
+        window.addEventListener("message", onMessage);
+        const loadGuard = setTimeout(() => {
+          reject(new GradientRenderError("E_IFRAME_LOAD", "the render iframe never loaded"));
+        }, IFRAME_LOAD_TIMEOUT_MS2);
+        iframe.addEventListener("load", () => clearTimeout(loadGuard), { once: true });
+        iframe.srcdoc = buildRenderDocument(req, token);
+      });
+      return decodePngDataUrl(dataUrl);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+      if (onMessage !== null) window.removeEventListener("message", onMessage);
+      iframe.remove();
+    }
+  }
+
   // plugin/src/ui/activity-summary.ts
   var MAX_SPEC_DEPTH = 100;
   var MAX_ERROR_CHARS = 120;
@@ -3082,6 +3232,42 @@ code {
             params: { payload: payload2, x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId }
           }
         }, "*");
+      } else if (req.cmd === "SHADER_GRADIENT") {
+        const p = req.params ?? {};
+        if (!p.props || typeof p.props !== "object") {
+          sendErr(req.id, "E_INVALID_ARGS", "SHADER_GRADIENT requires params.props");
+          emitActivity(req.id, false, { message: "SHADER_GRADIENT requires params.props" });
+          return;
+        }
+        setStatusText("rendering gradient\u2026", "ok");
+        let bytes;
+        try {
+          bytes = await renderGradientToPng({
+            props: p.props,
+            width: p.width ?? 1200,
+            height: p.height ?? 800,
+            scale: p.scale ?? 2,
+            staticFrame: p.staticFrame === true
+          });
+        } finally {
+          setStatusText("connected", "ok");
+        }
+        parent.postMessage({
+          pluginMessage: {
+            requestId: req.id,
+            cmd: "IMPORT_GRADIENT",
+            expectedFile: req.expectedFile,
+            // Array.from, not the Uint8Array: postMessage does not preserve a typed
+            // array's type, and main reconstructs from a plain numeric collection.
+            params: {
+              bytes: Array.from(bytes),
+              nodeId: p.nodeId,
+              config: p.config,
+              slug: p.slug ?? null,
+              renderer: p.renderer
+            }
+          }
+        }, "*");
       } else {
         parent.postMessage({
           pluginMessage: {
@@ -3096,7 +3282,8 @@ code {
     } catch (err) {
       setStatusText("connected", "ok");
       const message = err instanceof Error ? err.message : String(err);
-      sendErr(req.id, "E_PLUGIN_ERROR", message);
+      const code = err instanceof GradientRenderError ? `E_PLUGIN_ERROR (${err.code})` : "E_PLUGIN_ERROR";
+      sendErr(req.id, "E_PLUGIN_ERROR", code === "E_PLUGIN_ERROR" ? message : `${err instanceof GradientRenderError ? err.code : ""}: ${message}`);
       emitActivity(req.id, false, { message });
     }
   }

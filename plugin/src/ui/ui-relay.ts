@@ -20,6 +20,7 @@ import {
   type ErrorCode, type FileContext, type ReplyMsg, type RequestMsg, type WireError,
 } from '../../../shared/protocol';
 import { renderHtmlToPayload } from './render-host';
+import { renderGradientToPng, GradientRenderError } from './gradient-host';
 import { summarizeError, summarizeResult } from './activity-summary';
 
 const PLUGIN_VERSION = '0.1.0';
@@ -230,6 +231,14 @@ interface HtmlToFigmaParams {
   x?: number; y?: number; parentId?: string; replaceId?: string;
 }
 
+interface ShaderGradientParams {
+  props?: Record<string, unknown>;
+  config?: string; slug?: string | null;
+  nodeId?: string;
+  width?: number; height?: number; scale?: number;
+  staticFrame?: boolean; renderer?: string;
+}
+
 async function handleRequest(req: RequestMsg): Promise<void> {
   startActivity(req); // timed + announced until completion
   try {
@@ -253,6 +262,39 @@ async function handleRequest(req: RequestMsg): Promise<void> {
           params: { payload, x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId },
         },
       }, '*');
+    } else if (req.cmd === 'SHADER_GRADIENT') {
+      const p = (req.params ?? {}) as ShaderGradientParams;
+      if (!p.props || typeof p.props !== 'object') {
+        sendErr(req.id, 'E_INVALID_ARGS', 'SHADER_GRADIENT requires params.props');
+        emitActivity(req.id, false, { message: 'SHADER_GRADIENT requires params.props' });
+        return;
+      }
+      setStatusText('rendering gradient…', 'ok');
+      let bytes: Uint8Array;
+      try {
+        bytes = await renderGradientToPng({
+          props: p.props as never,
+          width: p.width ?? 1200,
+          height: p.height ?? 800,
+          scale: p.scale ?? 2,
+          staticFrame: p.staticFrame === true,
+        });
+      } finally {
+        setStatusText('connected', 'ok');
+      }
+      parent.postMessage({
+        pluginMessage: {
+          requestId: req.id,
+          cmd: 'IMPORT_GRADIENT',
+          expectedFile: req.expectedFile,
+          // Array.from, not the Uint8Array: postMessage does not preserve a typed
+          // array's type, and main reconstructs from a plain numeric collection.
+          params: {
+            bytes: Array.from(bytes),
+            nodeId: p.nodeId, config: p.config, slug: p.slug ?? null, renderer: p.renderer,
+          },
+        },
+      }, '*');
     } else {
       // Everything else is a main-thread op — forward unchanged. `readOnly` is carried
       // through here (never forwarded before this — main.ts never saw it regardless of
@@ -269,7 +311,11 @@ async function handleRequest(req: RequestMsg): Promise<void> {
   } catch (err) {
     setStatusText('connected', 'ok');
     const message = err instanceof Error ? err.message : String(err);
-    sendErr(req.id, 'E_PLUGIN_ERROR', message);
+    // A gradient render failure carries its OWN reason (no WebGL, CDN unreachable,
+    // empty capture). Collapsing it into a bare E_PLUGIN_ERROR would leave the user
+    // with a command that "just failed" and no way to tell which of those it was.
+    const code = err instanceof GradientRenderError ? `E_PLUGIN_ERROR (${err.code})` : 'E_PLUGIN_ERROR';
+    sendErr(req.id, 'E_PLUGIN_ERROR', code === 'E_PLUGIN_ERROR' ? message : `${err instanceof GradientRenderError ? err.code : ''}: ${message}`);
     emitActivity(req.id, false, { message });
   }
 }

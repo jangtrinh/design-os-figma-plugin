@@ -18,6 +18,11 @@ export const MUTATING_COMMANDS: readonly CommandName[] = [
   'CREATE_FRAME', 'CREATE_INSTANCE', 'SET_VARIANT', 'CREATE_VARIABLE', 'BIND_VARIABLE',
   'SET_AUTOLAYOUT', 'SET_CONSTRAINTS', 'SET_TEXT', 'CLONE_TRAITS', 'SET_CORRECTION_MEMORY',
   'EXEC_JS', 'IMPORT_PAYLOAD', 'CONNECT', 'DISCONNECT', 'REROUTE',
+  // IMPORT_GRADIENT writes an image fill and plugin data onto an existing node —
+  // its own undo step, so one ⌘Z removes the bake and restores the previous fills.
+  // SHADER_GRADIENT itself is absent for the same reason HTML_TO_FIGMA is: it never
+  // reaches main (it arrives as IMPORT_GRADIENT after the UI renders).
+  'IMPORT_GRADIENT',
 ];
 // Not in the set (nothing to seal into an undo step): STATUS, GET_SELECTION,
 // SCAN_DESIGN_SYSTEM, AUDIT_DS, GET_CORRECTION_MEMORY, EXPORT_PNG, HTML_TO_FIGMA, BATCH.
