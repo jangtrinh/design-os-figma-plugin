@@ -39,6 +39,7 @@ import * as execJs from './commands/exec-js.ts';
 import * as exportPng from './commands/export-png.ts';
 import * as getSelection from './commands/get-selection.ts';
 import * as htmlToFigma from './commands/html-to-figma.ts';
+import * as shaderGradient from './commands/shader-gradient.ts';
 import * as inspect from './commands/inspect.ts';
 import * as job from './commands/job.ts';
 import * as mirrorVerify from './commands/mirror-verify.ts';
@@ -92,6 +93,7 @@ export const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<u
   'sync-corrections': syncCorrections,
   'export-png': exportPng,
   'html-to-figma': htmlToFigma,
+  'shader-gradient': shaderGradient,
   'exec-js': execJs,
   capture,
   batch,

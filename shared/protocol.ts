@@ -52,6 +52,8 @@ export const COMMANDS = [
   'EXPORT_PNG',
   'HTML_TO_FIGMA', // handled by ui-relay (render → payload) then IMPORT_PAYLOAD to main
   'IMPORT_PAYLOAD', // internal: ui → main with FigmaExportPayload
+  'SHADER_GRADIENT', // handled by ui-relay (WebGL render → PNG bytes) then IMPORT_GRADIENT to main
+  'IMPORT_GRADIENT', // internal: ui → main with PNG bytes + the config that produced them
   'EXEC_JS',
   'BATCH',
   // Registry-integrity phase 01 fix round: BROKER-LOCAL, never forwarded to a plugin
@@ -396,6 +398,10 @@ export const DEFAULT_COWORK_TIMEOUT_SECONDS = 600;
 export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   HTML_TO_FIGMA: 60_000,
   IMPORT_PAYLOAD: 60_000,
+  // A gradient bake fetches a renderer bundle, compiles shaders, and waits for the
+  // first frame to settle before reading pixels. The fetch is the slow, variable part.
+  SHADER_GRADIENT: 90_000,
+  IMPORT_GRADIENT: 60_000,
   SCAN_DESIGN_SYSTEM: 30_000,
   AUDIT_DS: 120_000, // usage scan traverses EVERY page's instances — heavier than the DS scan
   EXEC_JS: 30_000, // CLI --timeout may raise, capped at 120s

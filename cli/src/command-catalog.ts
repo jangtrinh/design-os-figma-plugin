@@ -121,6 +121,17 @@ export const COMMANDS: CommandCatalogEntry[] = [
     description: '--html <file|-> [--width 1280 --x --y --parent id --replace id]',
   },
   {
+    name: 'shader-gradient',
+    description:
+      'Bake an animated ShaderGradient field onto a node as an image fill '
+      + '[--node <id|selection>] [--preset <slug> | --url "<customize url>" | --set k=v,k2=v2] '
+      + '[--w 1200 --h 800 --scale 2] [--static] [--timeout ms] [--list]   --preset takes a ledger '
+      + 'slug (or upstream\'s camelCase key); --url takes a shadergradient.co/customize link; --set '
+      + 'overrides either. --static freezes the field instead of capturing it mid-animation. --list '
+      + 'prints the preset roster and makes no canvas change. The resolved config is stored on the '
+      + 'node so a later bake can reproduce or resize it.',
+  },
+  {
     name: 'exec-js',
     description:
       '<file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] — exec-js lints scripts '

@@ -128,6 +128,58 @@ function assertNotInInstance(node, op) {
 // return { created: [...ids], counts: {...}, errors };
 ```
 
+## Guards that make a false green impossible
+
+Each wrapper below exists because the plain form returned a confident wrong answer on a real
+run. Prose telling you to remember these already existed; the errors kept firing, so they are
+functions now.
+
+```js
+// Visibility is the ANCESTOR CHAIN, not the node. A node can be visible:true inside a hidden
+// parent and render nowhere — a check reading only the node reports text no human can see.
+function effectivelyVisible(node) {
+  for (let n = node; n && n.type !== 'PAGE'; n = n.parent) if (n.visible === false) return false;
+  return true;
+}
+
+// Counts must be measured NOW. Evidence from before the mutation, or truncated by a scan
+// budget, describes a canvas that no longer exists. Refuse rather than assert on a stale number.
+function assertCount(nodes, expected, what) {
+  const live = nodes.length;
+  if (expected == null) throw new Error(`REFUSE: no measured count for ${what}`);
+  if (live !== expected) throw new Error(`count mismatch for ${what}: expected ${expected}, canvas has ${live}`);
+  return live;
+}
+
+// Deletion has no typed command, so it runs through exec-js — the most destructive operation
+// on the least-guarded path. Removing a master breaks every instance in the file, including
+// ones outside your scope.
+function safeRemove(ids) {
+  const targets = ids.map(id => figma.getNodeById(id));
+  if (targets.some(n => !n)) throw new Error('REFUSE: some ids no longer exist — re-scan first');
+  const master = targets.find(n => n.type === 'COMPONENT' || n.type === 'COMPONENT_SET');
+  if (master) throw new Error(`REFUSE: ${master.name} is a master; removing it breaks every instance`);
+  targets.forEach(n => n.remove());
+  return { deleted: targets.length };
+}
+
+// Blast radius BEFORE the edit. In a componentised file nearly every node sits inside SOME
+// instance, so that fact alone is noise. What separates local from shared is how often the
+// same componentId recurs across the set you are touching.
+function masterFrequency(nodes) {
+  const uses = new Map();
+  for (const n of nodes) {
+    const id = n.type === 'INSTANCE' ? n.componentId : null;
+    if (id) uses.set(id, (uses.get(id) || 0) + 1);
+  }
+  return uses;   // a componentId hit more than once needs owner approval before editing it
+}
+```
+
+Always run mutations with `--undo-group` so a task collapses to one undo step and reverts on
+error, and never pass `--no-lint` to save a round trip — the preflight is the only check that
+runs before your code touches the document.
+
 ## Ordering laws baked into usage
 
 1. `appendChild`/reparent FIRST → `resize()` → `layoutSizing*` LAST (earlier sets are silently swallowed/reverted).

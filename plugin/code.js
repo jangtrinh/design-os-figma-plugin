@@ -8,6 +8,10 @@
   var COMMAND_TIMEOUTS = {
     HTML_TO_FIGMA: 6e4,
     IMPORT_PAYLOAD: 6e4,
+    // A gradient bake fetches a renderer bundle, compiles shaders, and waits for the
+    // first frame to settle before reading pixels. The fetch is the slow, variable part.
+    SHADER_GRADIENT: 9e4,
+    IMPORT_GRADIENT: 6e4,
     SCAN_DESIGN_SYSTEM: 3e4,
     AUDIT_DS: 12e4,
     // usage scan traverses EVERY page's instances — heavier than the DS scan
@@ -4420,6 +4424,62 @@
     return { sourceId: source.id, targetId: target.id, traits, applied, skipped };
   }
 
+  // plugin/src/main/executor-gradient.ts
+  var GRADIENT_DATA_KEY = "shaderGradientConfig";
+  function toBytes(raw) {
+    if (raw instanceof Uint8Array) return raw;
+    if (Array.isArray(raw)) return new Uint8Array(raw);
+    if (raw !== null && typeof raw === "object") {
+      const values = Object.values(raw).filter((v) => typeof v === "number");
+      if (values.length > 0) return new Uint8Array(values);
+    }
+    throw new Error("IMPORT_GRADIENT: params.bytes did not carry image data");
+  }
+  async function importGradient(params) {
+    const bytes = toBytes(params.bytes);
+    if (bytes.length === 0) throw new Error("IMPORT_GRADIENT: refusing to bake an empty image");
+    let target = null;
+    if (typeof params.nodeId === "string" && params.nodeId !== "") {
+      const node = await figma.getNodeByIdAsync(params.nodeId);
+      if (!node) throw new Error(`IMPORT_GRADIENT: no node with id '${params.nodeId}'`);
+      if (node.type === "DOCUMENT" || node.type === "PAGE") {
+        throw new Error(`IMPORT_GRADIENT: '${params.nodeId}' is a ${node.type}, which carries no fills`);
+      }
+      target = node;
+    } else {
+      const selection = figma.currentPage.selection;
+      if (selection.length === 0) {
+        throw new Error("IMPORT_GRADIENT: nothing selected \u2014 pass --node, or select a node to bake onto");
+      }
+      if (selection.length > 1) {
+        throw new Error(`IMPORT_GRADIENT: ${selection.length} nodes selected \u2014 select exactly one, or pass --node`);
+      }
+      target = selection[0];
+    }
+    if (!("fills" in target)) {
+      throw new Error(`IMPORT_GRADIENT: a ${target.type} carries no fills`);
+    }
+    const image = figma.createImage(bytes);
+    const paint = { type: "IMAGE", scaleMode: "FILL", imageHash: image.hash };
+    target.fills = [paint];
+    if (typeof params.config === "string" && params.config !== "") {
+      target.setPluginData(
+        GRADIENT_DATA_KEY,
+        JSON.stringify({
+          config: params.config,
+          slug: params.slug ?? null,
+          renderer: params.renderer ?? null
+        })
+      );
+    }
+    return {
+      nodeId: target.id,
+      name: target.name,
+      slug: params.slug ?? null,
+      bytes: bytes.length
+    };
+  }
+
   // shared/mutating-commands.ts
   var MUTATING_COMMANDS = [
     "CREATE_FRAME",
@@ -4436,7 +4496,12 @@
     "IMPORT_PAYLOAD",
     "CONNECT",
     "DISCONNECT",
-    "REROUTE"
+    "REROUTE",
+    // IMPORT_GRADIENT writes an image fill and plugin data onto an existing node —
+    // its own undo step, so one ⌘Z removes the bake and restores the previous fills.
+    // SHADER_GRADIENT itself is absent for the same reason HTML_TO_FIGMA is: it never
+    // reaches main (it arrives as IMPORT_GRADIENT after the UI renders).
+    "IMPORT_GRADIENT"
   ];
 
   // shared/connector-anchor.ts
@@ -5646,6 +5711,8 @@
         return opExecJs(params);
       case "IMPORT_PAYLOAD":
         return importPayload(params);
+      case "IMPORT_GRADIENT":
+        return importGradient(params);
       case "BATCH":
         return runBatch(params);
       default:
