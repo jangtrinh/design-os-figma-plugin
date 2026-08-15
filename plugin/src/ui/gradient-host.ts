@@ -77,8 +77,13 @@ export class GradientRenderError extends Error {
  * a data URL or a structured failure back to this frame.
  *
  * Everything the field needs is passed in as JSON — the iframe never reads outer scope.
+ *
+ * Exported so scripts/verify-gradient-render.mjs can render THE REAL DOCUMENT rather than a
+ * hand-written approximation of it. That distinction is not academic: the dual-React defect
+ * lived in this function's import block, and a harness that rebuilt its own HTML would have
+ * rendered fine while the shipped document stayed broken.
  */
-function buildRenderDocument(req: GradientRenderRequest, token: string): string {
+export function buildRenderDocument(req: GradientRenderRequest, token: string): string {
   const w = Math.round(req.width * req.scale);
   const h = Math.round(req.height * req.scale);
   const config = JSON.stringify({ props: req.props, staticFrame: req.staticFrame, settle: SETTLE_FRAMES });

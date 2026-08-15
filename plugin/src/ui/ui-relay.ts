@@ -170,6 +170,14 @@ function sendErr(id: string, code: ErrorCode, message: string): void {
   wsSend({ id, ok: false, error: { code, message }, fileContext: localFileContext() });
 }
 
+// The iframe answers on its own only for commands main never sees. Today that is the
+// read-only gradient probe: it deliberately reports a FAILED render as a successful reply
+// carrying `renderable: false`, because the caller asked a question and an answer of "no,
+// and here is the stage that broke" is a success, not a transport error.
+function sendOk(id: string, result: unknown): void {
+  wsSend({ id, ok: true, result, fileContext: localFileContext() });
+}
+
 // ─── Inbound WS: chunk reassembly + routing ─────────────────────────
 function handleWireData(raw: string): void {
   let msg: Record<string, unknown>;
@@ -262,6 +270,44 @@ async function handleRequest(req: RequestMsg): Promise<void> {
           params: { payload, x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId },
         },
       }, '*');
+    } else if (req.cmd === 'SHADER_GRADIENT_PROBE') {
+      // Read-only capability probe. Renders a deliberately tiny field and reports the
+      // outcome; it never posts IMPORT_GRADIENT, so no node and no fill is ever touched.
+      // Its whole reason to exist is that the alternative way to answer "can this
+      // environment bake" is to bake onto somebody's real file and see.
+      const p = (req.params ?? {}) as ShaderGradientParams;
+      if (!p.props || typeof p.props !== 'object') {
+        sendErr(req.id, 'E_INVALID_ARGS', 'SHADER_GRADIENT_PROBE requires params.props');
+        emitActivity(req.id, false, { message: 'SHADER_GRADIENT_PROBE requires params.props' });
+        return;
+      }
+      setStatusText('probing gradient…', 'ok');
+      const startedAt = Date.now();
+      try {
+        const bytes = await renderGradientToPng({
+          props: p.props as never,
+          width: p.width ?? 64,
+          height: p.height ?? 64,
+          scale: 1,
+          staticFrame: true,
+        });
+        setStatusText('connected', 'ok');
+        sendOk(req.id, {
+          ok: true,
+          renderable: true,
+          bytes: bytes.length,
+          ms: Date.now() - startedAt,
+        });
+        emitActivity(req.id, true, {});
+      } catch (err) {
+        setStatusText('connected', 'ok');
+        // A probe that FAILS still succeeded at its job, so it replies rather than erroring:
+        // the caller asked a question and this is the answer, with the stage that broke.
+        const code = err instanceof GradientRenderError ? err.code : 'E_RENDER_FAILED';
+        const message = err instanceof Error ? err.message : String(err);
+        sendOk(req.id, { ok: true, renderable: false, code, message, ms: Date.now() - startedAt });
+        emitActivity(req.id, true, {});
+      }
     } else if (req.cmd === 'SHADER_GRADIENT') {
       const p = (req.params ?? {}) as ShaderGradientParams;
       if (!p.props || typeof p.props !== 'object') {

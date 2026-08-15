@@ -53,6 +53,10 @@ export const COMMANDS = [
   'HTML_TO_FIGMA', // handled by ui-relay (render → payload) then IMPORT_PAYLOAD to main
   'IMPORT_PAYLOAD', // internal: ui → main with FigmaExportPayload
   'SHADER_GRADIENT', // handled by ui-relay (WebGL render → PNG bytes) then IMPORT_GRADIENT to main
+  // Read-only capability probe: renders a tiny field in the UI iframe and reports whether it
+  // worked. Never reaches main and never touches the canvas — it answers "can this environment
+  // bake at all", which is otherwise only discoverable by mutating someone's file.
+  'SHADER_GRADIENT_PROBE',
   'IMPORT_GRADIENT', // internal: ui → main with PNG bytes + the config that produced them
   'EXEC_JS',
   'BATCH',
@@ -401,6 +405,7 @@ export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   // A gradient bake fetches a renderer bundle, compiles shaders, and waits for the
   // first frame to settle before reading pixels. The fetch is the slow, variable part.
   SHADER_GRADIENT: 90_000,
+  SHADER_GRADIENT_PROBE: 90_000,
   IMPORT_GRADIENT: 60_000,
   SCAN_DESIGN_SYSTEM: 30_000,
   AUDIT_DS: 120_000, // usage scan traverses EVERY page's instances — heavier than the DS scan

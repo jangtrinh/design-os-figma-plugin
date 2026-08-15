@@ -32,6 +32,29 @@ export async function run(args: CommandArgs): Promise<unknown> {
     };
   }
 
+  if (args.bool('self-test')) {
+    // Read-only: renders a tiny field in the plugin UI and reports whether this
+    // environment can bake at all. It exists because the only other way to answer that
+    // question is to bake onto the user's real canvas and look at the result.
+    const probe = (await runCommand(
+      'SHADER_GRADIENT_PROBE',
+      { props: SHADER_GRADIENT_PRESETS['halo']!.props, width: 64, height: 64 },
+      { timeoutMs: args.num('timeout'), readOnly: true },
+    )) as { renderable?: boolean; code?: string; message?: string; ms?: number; bytes?: number };
+
+    if (probe.renderable === true) {
+      return { selfTest: 'pass', renderable: true, ms: probe.ms, bytes: probe.bytes, renderer: RENDERER };
+    }
+    // A reachable-but-unable environment is a real answer, so this reports rather than
+    // throwing — and it names the remedy per stage, since the codes are easy to confuse.
+    const hint = probe.code === 'E_NO_WEBGL'
+      ? "this Figma client's plugin iframe grants no WebGL context — the bake cannot work here"
+      : probe.code === 'E_RENDER_SCRIPT' || probe.code === 'E_IFRAME_LOAD'
+        ? 'the renderer could not be fetched — check network access to the pinned CDN'
+        : 'the renderer loaded but produced no usable frame';
+    return { selfTest: 'fail', renderable: false, code: probe.code, message: probe.message, hint, renderer: RENDERER };
+  }
+
   const preset = args.str('preset');
   const url = args.str('url');
   const rawSet = args.str('set');
