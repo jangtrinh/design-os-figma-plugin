@@ -4,13 +4,22 @@
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
-  "editorType": ["figma", "figjam", "slides"],
+  "editorType": [
+    "figma",
+    "figjam",
+    "slides"
+  ],
   "documentAccess": "dynamic-page",
   "enablePrivatePluginApi": true,
   "relaunchButtons": [
-    { "command": "open", "name": "Reconnect figma-agent" }
+    {
+      "command": "open",
+      "name": "Reconnect figma-agent"
+    }
   ],
-  "permissions": ["currentuser"],
+  "permissions": [
+    "currentuser"
+  ],
   "networkAccess": {
     "allowedDomains": [
       "http://localhost",
@@ -59,9 +68,10 @@
       "https://cdn.jsdelivr.net",
       "https://fonts.googleapis.com",
       "https://fonts.gstatic.com",
-      "https://unpkg.com"
+      "https://unpkg.com",
+      "https://esm.sh"
     ],
-    "reasoning": "Connects to the local figma-agent CLI broker via WebSocket (port range 9410-9419); CDN + font hosts let the hidden UI iframe render HTML for html-to-figma conversion. External images are inlined as data URIs by the CLI before sending.",
+    "reasoning": "Connects to the local figma-agent CLI broker via WebSocket (port range 9410-9419); CDN + font hosts let the hidden UI iframe render HTML for html-to-figma conversion. esm.sh serves the pinned ShaderGradient renderer to the offscreen gradient-bake iframe, with its shared React/three dependencies pinned to a single build so the renderer's hooks resolve against the instance that mounted them. External images are inlined as data URIs by the CLI before sending.",
     "devAllowedDomains": [
       "http://localhost",
       "ws://localhost",
@@ -109,7 +119,8 @@
       "https://cdn.jsdelivr.net",
       "https://fonts.googleapis.com",
       "https://fonts.gstatic.com",
-      "https://unpkg.com"
+      "https://unpkg.com",
+      "https://esm.sh"
     ]
   }
 }
