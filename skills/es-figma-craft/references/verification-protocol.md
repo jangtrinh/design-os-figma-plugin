@@ -50,6 +50,10 @@ Node-read says fine, PNG looks broken (or vice versa) → **neither wins; measur
 | CLI timeout / E_NO_PLUGIN | Script may still be running server-side |
 | `node.name` after `swapComponent` | Old name kept — read `mainComponent.name` |
 | Structural script found no targets | "Succeeded", did nothing — garbage remains |
+| Node `visible:true` inside a hidden ancestor | Renders nowhere — visibility is the whole ANCESTOR CHAIN |
+| PNG exported right after a component swap | Stale paint; property state already correct — re-export before judging |
+| Assertion using a count from earlier evidence | Canvas moved; measure the count live in the same script |
+| Mutation rejected on an enum name from the docs | Runtime enum drifted (`VERTICAL` vs `VERTICAL_SCROLLING`) — read the value off a live node first |
 
 ## Sweep disciplines
 
