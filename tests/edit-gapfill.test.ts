@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   SNAPSHOT_CHUNK_BYTES, deletedPageIds, diffSnapshots, gapfillEditsForPage, mergeUpdatedRecords,
-  normalizeSnapshotCoord, pageWasTruncated, resolvePageWrite, splitSnapshotChunks,
+  normalizeSnapshotCoord, pageWasTruncated, resolvePageWrite, snapshotProviderFrom, splitSnapshotChunks,
   type NodeSnapshot,
 } from '../plugin/src/main/edit-gapfill.ts';
 
@@ -243,5 +243,31 @@ describe('resolvePageWrite — per-page atomicity: one page\'s failure never cor
     const otherResult = resolvePageWrite(otherPage, otherPrev, () => ({ records: [], truncated: false }));
     expect(otherResult!.entry).toEqual({ pageId: 'page-2', pageName: 'Other', chunks: 0, truncated: false });
     expect(prevEntry).toEqual({ pageId: 'page-1', pageName: 'Screens', chunks: 2, truncated: false }); // untouched
+  });
+});
+
+describe('snapshotProviderFrom — the boot write reuses the walk the diff already took', () => {
+  it('a cached page returns the precomputed result WITHOUT invoking the fallback walker', () => {
+    const cached = { records: [node()], truncated: false };
+    let walks = 0;
+    const provider = snapshotProviderFrom(
+      new Map([['page-1', cached]]),
+      () => { walks += 1; return { records: [], truncated: false }; },
+    );
+    expect(provider({ id: 'page-1' })).toBe(cached);
+    expect(walks).toBe(0); // the whole point: no second walk for a page already snapshotted
+  });
+
+  it('an uncached page falls back to the walker (and only for that page)', () => {
+    const fresh = { records: [], truncated: false };
+    let walks = 0;
+    const provider = snapshotProviderFrom(
+      new Map([['page-1', { records: [node()], truncated: true }]]),
+      () => { walks += 1; return fresh; },
+    );
+    expect(provider({ id: 'page-2' })).toBe(fresh);
+    expect(walks).toBe(1);
+    provider({ id: 'page-1' });
+    expect(walks).toBe(1); // the cached page still never re-walks
   });
 });

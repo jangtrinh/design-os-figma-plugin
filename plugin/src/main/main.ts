@@ -425,14 +425,18 @@ function onDocumentChange(event: DocumentChangeEvent): void {
 
 // Subscribe only after all pages are loaded (dynamic-page requirement).
 figma.loadAllPagesAsync()
-  .then(() => {
+  .then(async () => {
     // Reconnect gap-fill (wave 4.4 phase 02 §2) — ONE diff against the PREVIOUS session's
     // snapshot, covering the window this plugin was closed (page switches need no
     // gap-fill: `documentchange` is document-wide once `loadAllPagesAsync` has run, the
-    // spec's own verdict). Runs BEFORE subscribing to `documentchange`, so a live edit in
-    // this same tick can never race the boot diff's read of the about-to-be-superseded
-    // snapshot. `runGapfillDiff` itself writes the fresh baseline before returning.
-    const gapfillEdits = runGapfillDiff(figma.root.children);
+    // spec's own verdict). Completes BEFORE subscribing to `documentchange`, so a live
+    // edit can never race the boot diff's read of the about-to-be-superseded snapshot.
+    // The diff yields between pages (boot must not hold the plugin thread for the whole
+    // document — the measured freeze on large files); an edit made during a yield is not
+    // seen live (no subscription yet) AND is absent from the pre-edit baseline the diff
+    // writes, so the NEXT session's gap-fill reports it — delayed, never lost.
+    // `runGapfillDiff` itself writes the fresh baseline before resolving.
+    const gapfillEdits = await runGapfillDiff(figma.root.children);
     if (gapfillEdits.length > 0) {
       // Stage-4 fix round (M3) — posted DIRECTLY, never through `coalesceEdits`.
       // `coalesceEdits` keys by nodeId ALONE across the WHOLE batch, with no notion of
