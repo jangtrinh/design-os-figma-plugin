@@ -132,6 +132,12 @@
     if (current.length > 0) chunks.push(JSON.stringify(current));
     return chunks;
   }
+  function snapshotProviderFrom(precomputed, fallback) {
+    return (page) => precomputed.get(page.id) ?? fallback(page);
+  }
+  function yieldToHost() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
   var MOVE_EPSILON = 0.5;
   function diffSnapshots(prev, next) {
     const prevById = new Map(prev.map((n) => [n.id, n]));
@@ -252,13 +258,13 @@
       return prevEntry ? { entry: prevEntry, chunksToWrite: null } : null;
     }
   }
-  function writeSnapshot(pages) {
+  function writeSnapshot(pages, snapshotFor = snapshotPage) {
     const prevManifest = readManifest();
     const manifest = { v: 1, pages: [] };
     const currentPageIds = new Set(pages.map((p) => p.id));
     for (const page of pages) {
       const prevEntry = prevManifest?.pages.find((p) => p.pageId === page.id);
-      const result = resolvePageWrite(page, prevEntry, () => snapshotPage(page));
+      const result = resolvePageWrite(page, prevEntry, () => snapshotFor(page));
       if (!result) continue;
       if (result.chunksToWrite === null) {
         manifest.pages.push(result.entry);
@@ -289,13 +295,22 @@
     } catch {
     }
   }
-  function runGapfillDiff(pages) {
+  async function runGapfillDiff(pages) {
     const prev = readManifest();
     if (!prev) {
-      writeSnapshot(pages);
+      const firstRun = /* @__PURE__ */ new Map();
+      for (const page of pages) {
+        await yieldToHost();
+        try {
+          firstRun.set(page.id, snapshotPage(page));
+        } catch {
+        }
+      }
+      writeSnapshot(pages, snapshotProviderFrom(firstRun, snapshotPage));
       return [];
     }
     const edits = [];
+    const walked = /* @__PURE__ */ new Map();
     const currentPageIds = new Set(pages.map((p) => p.id));
     for (const deletedId of deletedPageIds(prev.pages.map((p) => p.pageId), currentPageIds)) {
       const prevEntry = prev.pages.find((p) => p.pageId === deletedId);
@@ -308,9 +323,11 @@
       ));
     }
     for (const page of pages) {
+      await yieldToHost();
       const prevEntry = prev.pages.find((p) => p.pageId === page.id);
       const prevRecords = prevEntry ? readPageChunks(prevEntry) : [];
       const { records: nextRecords, truncated: nextTruncated } = snapshotPage(page);
+      walked.set(page.id, { records: nextRecords, truncated: nextTruncated });
       if (pageWasTruncated(prevEntry?.truncated, nextTruncated)) {
         edits.push(toGapfillEdit("updated", { id: `truncated:${page.id}`, name: page.name, type: "PAGE", x: 0, y: 0, parent: null }, page.name, ["truncated"]));
         continue;
@@ -318,7 +335,7 @@
       const diff = diffSnapshots(prevRecords, nextRecords);
       edits.push(...gapfillEditsForPage(diff, page.name));
     }
-    writeSnapshot(pages);
+    writeSnapshot(pages, snapshotProviderFrom(walked, snapshotPage));
     return edits;
   }
 
@@ -5543,8 +5560,8 @@
     }
     if (changes.length > 0 || edits.length > 0) resetIdleTimer();
   }
-  figma.loadAllPagesAsync().then(() => {
-    const gapfillEdits = runGapfillDiff(figma.root.children);
+  figma.loadAllPagesAsync().then(async () => {
+    const gapfillEdits = await runGapfillDiff(figma.root.children);
     if (gapfillEdits.length > 0) {
       figma.ui.postMessage({
         type: "EDIT_FEED",

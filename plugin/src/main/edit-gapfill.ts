@@ -85,6 +85,25 @@ export function splitSnapshotChunks(records: readonly NodeSnapshot[]): string[] 
   return chunks;
 }
 
+/** Boot-path seam: `runGapfillDiff` has ALREADY walked every page once for its diff, so
+ *  the baseline write must reuse those results instead of walking the whole document a
+ *  second time (the double walk was measured as the boot freeze on large files). Reusing
+ *  the PRE-diff snapshot is also the correct baseline: an edit made while the diff is
+ *  yielding must NOT be baked into the baseline it was absent from, or the next session's
+ *  gap-fill would never report it. Pure — unit-tested directly. */
+export function snapshotProviderFrom<P extends { id: string }, R>(
+  precomputed: ReadonlyMap<string, R>,
+  fallback: (page: P) => R,
+): (page: P) => R {
+  return (page) => precomputed.get(page.id) ?? fallback(page);
+}
+
+/** One macrotask hop between per-page walks, so the boot diff never holds the plugin's
+ *  single thread for the whole document at once (the UI-freeze half of the boot cost). */
+function yieldToHost(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 const MOVE_EPSILON = 0.5;
 
 export interface RecordPair { prev: NodeSnapshot; next: NodeSnapshot }
@@ -282,14 +301,21 @@ export function resolvePageWrite(
  *
  *  Best-effort throughout: a write failure degrades to "no gap-fill this session", never
  *  a crash (risk register). */
-export function writeSnapshot(pages: readonly PageNode[]): void {
+export function writeSnapshot(
+  pages: readonly PageNode[],
+  // Injectable so the boot path can reuse the walk `runGapfillDiff` already took (see
+  // `snapshotProviderFrom`). The default keeps every OTHER caller — idle debounce and the
+  // `close` handler, both of which have no prior walk to reuse and MUST stay fully
+  // synchronous — exactly as it was.
+  snapshotFor: (page: PageNode) => PageSnapshotResult = snapshotPage,
+): void {
   const prevManifest = readManifest();
   const manifest: SnapshotManifest = { v: 1, pages: [] };
   const currentPageIds = new Set(pages.map((p) => p.id));
 
   for (const page of pages) {
     const prevEntry = prevManifest?.pages.find((p) => p.pageId === page.id);
-    const result = resolvePageWrite(page, prevEntry, () => snapshotPage(page));
+    const result = resolvePageWrite(page, prevEntry, () => snapshotFor(page));
     if (!result) continue; // brand-new page, first attempt failed — nothing to carry, nothing to write
     if (result.chunksToWrite === null) {
       manifest.pages.push(result.entry); // carrying the previous entry forward verbatim
@@ -349,13 +375,23 @@ export function writeSnapshot(pages: readonly PageNode[]): void {
  *   Honest under-reporting beats a wrong fact: suppress the WHOLE diff for that page and
  *   emit only the truncation notice.
  */
-export function runGapfillDiff(pages: readonly PageNode[]): EditInput[] {
+export async function runGapfillDiff(pages: readonly PageNode[]): Promise<EditInput[]> {
   const prev = readManifest();
   if (!prev) {
-    writeSnapshot(pages); // first-ever run — nothing to diff, but start the baseline now
+    // First-ever run — nothing to diff, but start the baseline now. Walked here (with
+    // yields) so the write below reuses the results; a page whose walk throws is simply
+    // not cached, and `resolvePageWrite`'s own fallback attempt keeps its per-page skip
+    // semantics for exactly that page.
+    const firstRun = new Map<string, PageSnapshotResult>();
+    for (const page of pages) {
+      await yieldToHost();
+      try { firstRun.set(page.id, snapshotPage(page)); } catch { /* resolvePageWrite re-attempts and skips */ }
+    }
+    writeSnapshot(pages, snapshotProviderFrom(firstRun, snapshotPage));
     return [];
   }
   const edits: EditInput[] = [];
+  const walked = new Map<string, PageSnapshotResult>();
   const currentPageIds = new Set(pages.map((p) => p.id));
 
   for (const deletedId of deletedPageIds(prev.pages.map((p) => p.pageId), currentPageIds)) {
@@ -370,9 +406,14 @@ export function runGapfillDiff(pages: readonly PageNode[]): EditInput[] {
   }
 
   for (const page of pages) {
+    await yieldToHost();
     const prevEntry = prev.pages.find((p) => p.pageId === page.id);
     const prevRecords = prevEntry ? readPageChunks(prevEntry) : [];
+    // A throw here still aborts the whole diff (caught by main.ts's `.catch` → capture
+    // disabled), exactly as before — only the DOUBLE walk and the single-tick execution
+    // changed, never the failure semantics.
     const { records: nextRecords, truncated: nextTruncated } = snapshotPage(page);
+    walked.set(page.id, { records: nextRecords, truncated: nextTruncated });
     if (pageWasTruncated(prevEntry?.truncated, nextTruncated)) {
       edits.push(toGapfillEdit('updated', { id: `truncated:${page.id}`, name: page.name, type: 'PAGE', x: 0, y: 0, parent: null }, page.name, ['truncated']));
       continue; // never a created/deleted/renamed/moved fact for this page this round
@@ -380,6 +421,9 @@ export function runGapfillDiff(pages: readonly PageNode[]): EditInput[] {
     const diff = diffSnapshots(prevRecords, nextRecords);
     edits.push(...gapfillEditsForPage(diff, page.name));
   }
-  writeSnapshot(pages); // the diff window now starts at THIS observation, not session start
+  // The diff window now starts at THIS observation, not session start — and the baseline
+  // is the walk taken ABOVE, never a re-walk: an edit made during a yield stays absent
+  // from the baseline, so the next session's gap-fill reports it instead of losing it.
+  writeSnapshot(pages, snapshotProviderFrom(walked, snapshotPage));
   return edits;
 }
