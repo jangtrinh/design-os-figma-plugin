@@ -44,7 +44,7 @@ metadata:
 
 Detail per phase: [pipeline.md](references/pipeline.md).
 
-## The 12 laws (gates, not advice — each one is a paid-for scar)
+## The 13 laws (gates, not advice — each one is a paid-for scar)
 
 1. **Verified = measured.** Screenshots are for humans; geometry gets numeric asserts, structure gets metadata reads. Node-read AND rendered-PNG can BOTH lie — when they disagree, measure bounding boxes.
 2. **Fresh PNG is the final arbiter of every mutation batch.** Numeric asserts passing is not done; look at the image with your eyes. Verify against FRESH artifacts (check mtime / re-export).
@@ -58,6 +58,7 @@ Detail per phase: [pipeline.md](references/pipeline.md).
 10. **No try-catch that swallows mutation errors.** Sizing/props failures throw or collect into the returned output. A green gate that is blind is worse than a red gate.
 11. **Sequential canvas, single hand.** One file, one plugin connection, rate limits: never fan out parallel agents against a Figma file. Multi-screen work = a checklist driven step-by-step.
 12. **Respect the owner.** A value the owner re-changed 2× after you set it = owner intent — stop, check the decision ledger, ask once. Never delete content you didn't author without confirmation. Their DS/conventions win over your spec.
+13. **No instance-level style overrides.** Fills, strokes, effects, corner radius, typography and text-case on an instance (root or sublayer) come from the master/variant/token — never set them on the instance to fake a look. Need a different look → climb, don't override: missing token → mint the token; missing variant → add the variant (owner approval for shared masters, per law 9); missing component → build one. Instance overrides are for DATA only: text characters, icon swaps, variant switches (`setProperties`), visibility of layers designed to toggle, and per-instance geometry already codified as a pattern (e.g. detached meter fills — and a detach still gets declared as debt). Verify: compare instance paints against master paints (root + text sublayers) — the diff must be zero.
 
 Full thinking layer (8 operating gates + rationale): [operating-gates.md](references/operating-gates.md).
 
