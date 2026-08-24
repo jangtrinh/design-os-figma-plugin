@@ -5338,8 +5338,13 @@
   }
 
   // plugin/src/ui/panel-model.ts
-  var PANEL_WIDTH = 300;
-  var PANEL_HEIGHT = 420;
+  var RAIL_WIDTH = 240;
+  var RAIL_HEIGHT = 44;
+  var INSPECTOR_WIDTH = 288;
+  var INSPECTOR_HEIGHT = 280;
+  function viewportFor(mode) {
+    return mode === "inspector" ? { width: INSPECTOR_WIDTH, height: INSPECTOR_HEIGHT } : { width: RAIL_WIDTH, height: RAIL_HEIGHT };
+  }
 
   // plugin/src/main/readonly-guard.ts
   function createReadOnlyGuardState() {
@@ -5361,8 +5366,8 @@
   // plugin/src/main/main.ts
   figma.showUI(__html__, {
     visible: true,
-    width: PANEL_WIDTH,
-    height: PANEL_HEIGHT,
+    width: RAIL_WIDTH,
+    height: RAIL_HEIGHT,
     title: "design:os by JANG",
     themeColors: true
   });
@@ -5583,6 +5588,11 @@
   });
   figma.ui.onmessage = async (msg) => {
     const chrome = msg;
+    if (chrome && chrome.type === "PANEL_VIEWPORT" && (chrome.mode === "rail" || chrome.mode === "inspector")) {
+      const viewport = viewportFor(chrome.mode);
+      figma.ui.resize(viewport.width, viewport.height);
+      return;
+    }
     if (chrome && chrome.type === "SYNC_CONFIG") {
       const data = chrome.data;
       const raw = data?.idleMs;
