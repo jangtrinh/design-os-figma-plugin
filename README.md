@@ -4,9 +4,10 @@
 an AI coding agent draw on a real canvas, read back what a human just changed, and never
 let the two trample each other.
 
-<img src="docs/images/adaptive-agent-rail.gif" width="600" alt="The adaptive agent rail showing semantic Thinking Orb activity in Figma">
-
-<img src="docs/images/panel-connected-dark.png" width="320" alt="The panel — status, context, activity">
+<p align="center">
+  <img src="docs/images/adaptive-agent-rail.gif" width="600" alt="The adaptive agent rail moving through semantic Thinking Orb states and contextual actions in Figma">
+</p>
+<p align="center"><sub>One compact surface for connection, semantic activity, file targeting, and pending sync.</sub></p>
 
 Part of the [ease-design](https://github.com/jangtrinh/design-os) toolchain — this repo is
 the optional, non-deterministic "hands" for its Figma authoring track. It talks to Figma only
@@ -84,8 +85,6 @@ the prompt alive so the retry is still there. `figma-agent changes` reads back t
 edit history as plain sentences any time — even while the plugin is closed, thanks to a
 reconnect gap-fill diff.
 
-<img src="docs/images/sync-prompt.png" width="320" alt="The sync prompt — N changes ready">
-
 ### The agent cannot wreck your file
 
 Every mutating operation seals **its own undo step** — ⌘Z rolls back one thing, not the
@@ -99,8 +98,6 @@ record. Every error lands in `design/figma-errors.jsonl` with its full untruncat
 a log written for the agent that caused it, so it can read and fix — and `figma-agent errors`
 reads it back without ever crashing on a bad line.
 
-<img src="docs/images/activity-feed.png" width="320" alt="The activity feed — one honest sentence per operation">
-
 ### Multiple files, one broker
 
 Several open Figma files stay connected at once — they no longer evict each other. Commands
@@ -110,8 +107,6 @@ panel's activity feed labels each entry with the harness that sent it, so a desi
 watching the canvas can tell who just did that. Omit it and the wire frame is byte-identical
 to what a pre-flag CLI sent — the panel's own `cli` default is applied when the row renders,
 never stamped onto the request.
-
-<img src="docs/images/multi-file-peers.png" width="320" alt="Multiple files connected at once">
 
 ## Install / build
 
