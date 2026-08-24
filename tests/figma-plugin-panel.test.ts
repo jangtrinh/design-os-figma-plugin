@@ -1,26 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { allContentChecks, lintA11y, lintLayout, lintTaste } from 'ease-design/lint';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const KERNEL_CORE = `${ROOT}/kernel/design-os/src/core/`;
-if (!existsSync(`${KERNEL_CORE}layout-lint.ts`)) {
-  throw new Error('kernel/design-os submodule is not checked out — run: git submodule update --init --depth 1');
-}
-
-// Dynamic imports keep the missing-submodule message above actionable.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyLintModule = any;
-const layoutLintMod: AnyLintModule = await import(/* @vite-ignore */ `${KERNEL_CORE}layout-lint.ts`);
-const a11yLintMod: AnyLintModule = await import(/* @vite-ignore */ `${KERNEL_CORE}a11y-lint.ts`);
-const tasteLintMod: AnyLintModule = await import(/* @vite-ignore */ `${KERNEL_CORE}taste-lint.ts`);
-const contentChecksMod: AnyLintModule = await import(/* @vite-ignore */ `${KERNEL_CORE}content-checks.ts`);
-const { lintLayout } = layoutLintMod as { lintLayout: (html: string) => { errorCount: number } };
-const { lintA11y } = a11yLintMod as { lintA11y: (html: string) => { errorCount: number } };
-const { lintTaste } = tasteLintMod as { lintTaste: (html: string) => { errorCount: number } };
-const { allContentChecks } = contentChecksMod as {
-  allContentChecks: ReadonlyArray<(src: string) => ReadonlyArray<{ severity: string }>>;
-};
 
 const read = (path: string): string => readFileSync(`${ROOT}/${path}`, 'utf8');
 const html = read('plugin/src/ui/panel.html');
@@ -53,6 +36,11 @@ function contentErrors(source: string): number {
 }
 
 describe('adaptive panel source contract', () => {
+  it('loads panel linters from the exact dev-only ease-design package', () => {
+    expect(packageJson.dependencies?.['ease-design']).toBeUndefined();
+    expect(packageJson.devDependencies?.['ease-design']).toBe('0.5.0');
+  });
+
   it('passes the shared layout, accessibility, taste, and content linters', () => {
     expect(lintLayout(html).errorCount, 'layout errors').toBe(0);
     expect(lintA11y(html).errorCount, 'a11y errors').toBe(0);
