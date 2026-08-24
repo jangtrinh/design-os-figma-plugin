@@ -3,7 +3,7 @@ import {
   BoundedKeySet, VIEW_KEY_LIMIT, applyActivityOutcome, connectionForce,
   currentActivity, landTerminalActivity, unresolvedActivityCount,
 } from '../plugin/src/ui/panel-view-state.ts';
-import { renderFailureBadge } from '../plugin/src/ui/panel-activity-view.ts';
+import { ActivityView, renderFailureBadge } from '../plugin/src/ui/panel-activity-view.ts';
 import type { ActivityRecord } from '../plugin/src/ui/activity-feed.ts';
 
 const record = (id: string, pending: boolean, ok: boolean, at: number): ActivityRecord => ({
@@ -65,6 +65,57 @@ describe('keyed unresolved activity failures', () => {
     renderFailureBadge(badge, 0);
     expect(badge).toMatchObject({ hidden: true, textContent: '' });
     expect(attributes.get('aria-label')).toBe('0 unresolved failures');
+  });
+});
+
+describe('pending activity command snapshots', () => {
+  const view = (): ActivityView => new ActivityView(
+    {} as HTMLElement, {} as HTMLButtonElement, {} as HTMLElement, {} as HTMLElement,
+  );
+
+  it('includes every pending request without deduplicating command names', () => {
+    const activity = view();
+    activity.push(record('oldest', true, true, 1));
+    activity.push(record('newest', true, true, 2));
+    expect(activity.pendingTools()).toEqual(['EXEC_JS', 'EXEC_JS']);
+  });
+
+  it('keeps unrelated pending work through out-of-order completion', () => {
+    const activity = view();
+    activity.push({ ...record('oldest', true, true, 1), tool: 'AUDIT_DS' });
+    activity.push({ ...record('newest', true, true, 2), tool: 'SET_TEXT' });
+    activity.resolve({ id: 'newest', ok: true, ms: 1 });
+    expect(activity.pendingTools()).toEqual(['AUDIT_DS']);
+    activity.resolve({ id: 'oldest', ok: true, ms: 2 });
+    expect(activity.pendingTools()).toEqual([]);
+  });
+
+  it('keeps the newer request when the oldest request resolves first', () => {
+    const activity = view();
+    activity.push({ ...record('oldest', true, true, 1), tool: 'AUDIT_DS' });
+    activity.push({ ...record('newest', true, true, 2), tool: 'SET_TEXT' });
+    activity.resolve({ id: 'oldest', ok: true, ms: 1 });
+    expect(activity.pendingTools()).toEqual(['SET_TEXT']);
+  });
+
+  it('tracks every active request beyond the capped 50-row display history', () => {
+    const activity = view();
+    for (let index = 0; index < 65; index += 1) {
+      activity.push(record(`request-${index}`, true, true, index));
+    }
+    expect(activity.pendingTools()).toHaveLength(65);
+    activity.resolve({ id: 'request-0', ok: true, ms: 1 });
+    expect(activity.pendingTools()).toHaveLength(64);
+    activity.resolve({ id: 'request-64', ok: true, ms: 1 });
+    expect(activity.pendingTools()).toHaveLength(63);
+  });
+
+  it('returns a fresh snapshot that cannot mutate the activity buffer', () => {
+    const activity = view();
+    activity.push(record('request', true, true, 1));
+    const snapshot = activity.pendingTools() as string[];
+    snapshot.length = 0;
+    expect(activity.pendingTools()).toEqual(['EXEC_JS']);
   });
 });
 

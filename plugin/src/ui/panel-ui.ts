@@ -87,7 +87,7 @@ function renderOrb(): void {
   const orb = orbPresentation({
     connection: payload?.state ?? 'disconnected', connectionFailure, syncFailure,
     activityFailure: activityView.failures.unresolvedCount > 0,
-    activityPending: activityView.railPhase() === 'pending',
+    pendingTools: activityView.pendingTools(),
     syncPending: pendingSyncCount > 0,
   });
   thinkingOrb.update(orb);

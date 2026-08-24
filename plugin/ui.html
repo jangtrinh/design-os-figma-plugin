@@ -1391,13 +1391,17 @@ body { overflow: hidden; }
       this.failureCount = failureCount;
       this.records = [];
       this.previousKeys = [];
+      this.activeTools = /* @__PURE__ */ new Map();
       this.failures = new BoundedKeySet();
     }
     push(record) {
       this.records = pushActivity(this.records, record);
+      if (record.pending) this.activeTools.set(record.id, record.tool);
+      else this.activeTools.delete(record.id);
     }
     resolve(patch, trackFailure = true) {
       this.records = landTerminalActivity(this.records, patch);
+      this.activeTools.delete(patch.id);
       if (trackFailure) applyActivityOutcome(this.failures, patch.id, patch.ok);
     }
     acknowledgeFailures() {
@@ -1406,6 +1410,9 @@ body { overflow: hidden; }
     railPhase() {
       const current = currentActivity(this.records);
       return !current ? "idle" : current.pending ? "pending" : current.ok ? "complete" : "failed";
+    }
+    pendingTools() {
+      return [...this.activeTools.values()];
     }
     render(now = Date.now()) {
       const shown = this.records.slice(0, 20);
@@ -2067,6 +2074,57 @@ body { overflow: hidden; }
     return tt.set(t, M), M;
   }
 
+  // plugin/src/ui/orb-command-state.ts
+  var COMMANDS_BY_STATE = {
+    searching: /* @__PURE__ */ new Set([
+      "STATUS",
+      "GET_SELECTION",
+      "SCAN_DESIGN_SYSTEM",
+      "GET_CORRECTION_MEMORY",
+      "LIST_CONNECTIONS",
+      "SHADER_GRADIENT_PROBE"
+    ]),
+    solving: /* @__PURE__ */ new Set(["AUDIT_DS", "VERIFY_CONNECTIONS"]),
+    composing: /* @__PURE__ */ new Set([
+      "CREATE_FRAME",
+      "CREATE_INSTANCE",
+      "CREATE_VARIABLE",
+      "SET_TEXT",
+      "HTML_TO_FIGMA",
+      "IMPORT_PAYLOAD",
+      "SHADER_GRADIENT",
+      "IMPORT_GRADIENT",
+      "EXPORT_PNG"
+    ]),
+    shaping: /* @__PURE__ */ new Set([
+      "SET_VARIANT",
+      "BIND_VARIABLE",
+      "SET_AUTOLAYOUT",
+      "SET_CONSTRAINTS",
+      "CLONE_TRAITS"
+    ]),
+    weaving: /* @__PURE__ */ new Set(["BATCH", "CONNECT", "DISCONNECT", "REROUTE", "RECONCILE"]),
+    working: /* @__PURE__ */ new Set(["EXEC_JS", "SET_CORRECTION_MEMORY", "PROJECT_BIND", "JOB"]),
+    listening: /* @__PURE__ */ new Set(["COWORK"])
+  };
+  var STATUS_BY_STATE = {
+    searching: "Searching",
+    solving: "Analyzing",
+    composing: "Composing",
+    shaping: "Shaping",
+    weaving: "Coordinating",
+    listening: "Listening",
+    working: "Processing"
+  };
+  function commandOrbPresentation(command) {
+    for (const state of Object.keys(COMMANDS_BY_STATE)) {
+      if (COMMANDS_BY_STATE[state].has(command)) {
+        return { state, status: STATUS_BY_STATE[state] };
+      }
+    }
+    return { state: "working", status: STATUS_BY_STATE.working };
+  }
+
   // plugin/src/ui/thinking-orb.ts
   var ORB_SIZE = 20;
   var STATIC_TIME = 0.75;
@@ -2080,8 +2138,16 @@ body { overflow: hidden; }
     if (signals.connection === "disconnected") {
       return { state: "connecting", paused: true, dimmed: true, status: "Disconnected" };
     }
-    if (signals.activityPending || signals.syncPending) {
-      return { state: "working", paused: false, dimmed: false, status: "Processing" };
+    const syncRepresented = signals.pendingTools.includes("RECONCILE");
+    const pendingCount = signals.pendingTools.length + (signals.syncPending && !syncRepresented ? 1 : 0);
+    if (pendingCount >= 2) {
+      return { state: "weaving", paused: false, dimmed: false, status: `${pendingCount} tasks running` };
+    }
+    if (signals.syncPending) {
+      return { state: "weaving", paused: false, dimmed: false, status: "Syncing" };
+    }
+    if (signals.pendingTools.length === 1) {
+      return { ...commandOrbPresentation(signals.pendingTools[0] ?? ""), paused: false, dimmed: false };
     }
     return { state: "breathing", paused: false, dimmed: false, status: "Connected" };
   }
@@ -2104,7 +2170,7 @@ body { overflow: hidden; }
       connectionFailure: false,
       syncFailure: false,
       activityFailure: false,
-      activityPending: false,
+      pendingTools: [],
       syncPending: false
     });
     canvas.dataset.dimmed = String(presentation.dimmed);
@@ -2264,7 +2330,7 @@ body { overflow: hidden; }
       connectionFailure,
       syncFailure,
       activityFailure: activityView.failures.unresolvedCount > 0,
-      activityPending: activityView.railPhase() === "pending",
+      pendingTools: activityView.pendingTools(),
       syncPending: pendingSyncCount > 0
     });
     thinkingOrb.update(orb);
@@ -2472,7 +2538,7 @@ body { overflow: hidden; }
     }, 4e3);
     render();
   });
-  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "8e47266" : "dev"}`;
+  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "dcf064d" : "dev"}`;
   replaceIcon(targetRailBtn, "files");
   replaceIcon(syncRailBtn, "refresh-cw");
   replaceIcon(toggleBtn, "chevron-down");
