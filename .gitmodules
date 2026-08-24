@@ -1,4 +1,0 @@
-[submodule "kernel/design-os"]
-	path = kernel/design-os
-	url = https://github.com/jangtrinh/design-os.git
-	shallow = true
