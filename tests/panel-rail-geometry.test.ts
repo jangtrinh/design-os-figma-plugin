@@ -6,6 +6,7 @@ import { chromium } from 'playwright';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const html = readFileSync(`${ROOT}/plugin/src/ui/panel.html`, 'utf8');
+const BROWSER_SETUP_TIMEOUT_MS = 30_000;
 let browser: Browser;
 let page: Page;
 
@@ -17,7 +18,7 @@ beforeAll(async () => {
   }
   page = await browser.newPage({ viewport: { width: 200, height: 44 } });
   await page.setContent(html);
-});
+}, BROWSER_SETUP_TIMEOUT_MS);
 
 afterAll(async () => { await browser?.close(); });
 
