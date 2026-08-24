@@ -23,7 +23,7 @@ GitHub issue = one Sonnet-ready task. The standard lifecycle, using installed ak
 ## Gates (all must pass before any PR)
 
 - `npm run typecheck` · `npm run build` · `npm test` (includes the panel gate,
-  `tests/figma-plugin-panel.test.ts`, which needs `git submodule update --init --depth 1`).
+  `tests/figma-plugin-panel.test.ts`, backed by the exact dev dependency `ease-design@0.5.0`).
 - `npm run lint:comments` — fails on a NEW ephemeral work-tracking ref (a GH issue/PR
   number, a dated plan-dir slug, or a bare finding/audit label) in a tracked comment or
   test name under `plugin/src`, `cli/src`, `shared`, `tests`. It deliberately ALLOWS this
@@ -35,8 +35,8 @@ GitHub issue = one Sonnet-ready task. The standard lifecycle, using installed ak
   — including one added right next to an existing one — still fails. Run
   `npm run lint:comments:update-baseline` only when deliberately retiring an old citation by
   restating its invariant directly (never to launder a new one through).
-- The panel gate runs the kernel's own linters from the pinned `kernel/design-os` submodule —
-  a bridge until `ease-design/lint` is published (issue #9). Bump the pin deliberately.
+- The panel gate imports layout, accessibility, taste, and content linters directly from
+  `ease-design/lint`; keep the package pin exact so local and CI results share one boundary.
 
 ## House rules (carried from the design-os studio)
 
@@ -65,6 +65,5 @@ GitHub issue = one Sonnet-ready task. The standard lifecycle, using installed ak
 - `shared/` — protocol, edit-feed schema, mutating-command classification.
 - `tests/` — the full suite (900+); daemon-harness tests cover the broker seams pure unit
   tests cannot see.
-- `kernel/design-os` — pinned submodule (panel-gate linters only; see issue #9).
 
 The studio this belongs to: https://github.com/jangtrinh/design-os

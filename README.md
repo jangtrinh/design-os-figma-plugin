@@ -170,28 +170,11 @@ plugin/       Figma plugin: main-thread executor + a hidden-iframe HTML→Figma 
 shared/       wire-protocol types shared by cli/ and plugin/
 scripts/      esbuild build script + an optional probe/ suite (site recon, visual diff)
 tests/        vitest unit tests (pure-logic; run with `npm test`)
-kernel/       git submodule bridge to the design-os kernel (dev-only, see below)
 ```
 
-### Dev note: the `kernel/design-os` submodule (a bridge, not architecture)
-
-`tests/figma-plugin-panel.test.ts` (the panel's craft/taste/a11y gate) runs the SAME four
-linters every ease-design-generated artifact does. Those linters aren't part of the
-published `ease-design` npm package yet, and an npm git-dependency doesn't help either —
-npm applies the kernel's own publish `"files"` allowlist even to git-dependency installs,
-so the linter sources never land in `node_modules` regardless of what the pinned commit
-actually contains. `kernel/design-os` is a real git **submodule** instead (a raw checkout
-npm packing can't touch), pinned to one commit — one source of truth, no local fork of
-the linter subsystem.
-
-- First clone: `git submodule update --init --depth 1` before running `npm test`. The
-  panel test fails with that exact instruction if you forget.
-- Bumping the pin: `cd kernel/design-os && git fetch --depth 1 origin <ref> && git
-  checkout <ref>`, then commit the updated gitlink in this repo — a deliberate act, not
-  automatic drift.
-- This bridge is temporary: once the kernel publishes its linters as a real
-  `ease-design/lint` subpath export, this submodule goes away and the panel test imports
-  the published package directly instead.
+`tests/figma-plugin-panel.test.ts` runs the same layout, accessibility, taste, and content
+linters as ease-design-generated artifacts. They come from the exact dev dependency
+`ease-design@0.5.0`, so `npm ci` is sufficient to run the panel gate in a fresh clone.
 
 ## Supervised editing loop
 
