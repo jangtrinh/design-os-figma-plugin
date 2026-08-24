@@ -6,9 +6,10 @@ import {
   fileNote, showOnboarding, statusSentence, syncNowLabel, syncPromptLabel,
   syncResultLabel, syncResultSentence, syncStartSentence, syncStuckSentence,
   syncSupersededSentence, targetButtonLabel, shouldClearPendingCount,
-  SYNC_STUCK_TIMEOUT_MS, type ViewportMode,
+  railViewportMode, SYNC_STUCK_TIMEOUT_MS, type ViewportMode,
 } from './panel-model';
 import { BoundedKeySet, connectionForce } from './panel-view-state';
+import { mountThinkingOrb, orbPresentation } from './thinking-orb';
 
 declare const __BUILD_ID__: string;
 const el = (id: string): HTMLElement => document.getElementById(id) as HTMLElement;
@@ -28,6 +29,7 @@ const syncMsg = el('fga-sync-msg');
 const syncNowBtn = btn('fga-sync-now');
 const targetBtn = btn('fga-target-btn');
 const activityView = new ActivityView(el('fga-activity'), currentBtn, el('fga-current-label'), el('fga-failure-count'));
+const thinkingOrb = mountThinkingOrb(connectionBtn);
 type Tab = 'activity' | 'context' | 'details';
 const tabNames: Tab[] = ['activity', 'context', 'details'];
 const tabs = Object.fromEntries(tabNames.map((name) => [name, btn(`fga-tab-${name}`)])) as Record<Tab, HTMLButtonElement>;
@@ -40,9 +42,18 @@ let peersCount = 1, peersIsActiveTarget = true, peersPinned = false, pendingSync
 let selectedTab: Tab = 'activity', inspectorOpen = false, userExpanded = false, forcedOnly = false;
 let connectionFailure = false, syncFailure = false, connectionTransition = 0;
 let previousConnectionState: ConnectionState | null = null;
+let lastViewportMode: ViewportMode = 'rail-compact';
 const disclosed = new BoundedKeySet();
 
-function viewport(mode: ViewportMode): void { parent.postMessage({ pluginMessage: { type: 'PANEL_VIEWPORT', mode } }, '*'); }
+function viewport(mode: ViewportMode): void {
+  if (lastViewportMode === mode) return;
+  lastViewportMode = mode;
+  parent.postMessage({ pluginMessage: { type: 'PANEL_VIEWPORT', mode } }, '*');
+}
+function syncViewport(): void {
+  const railMode = railViewportMode(!targetRailBtn.hidden, !syncRailBtn.hidden);
+  viewport(inspectorOpen ? 'inspector' : railMode);
+}
 function selectTab(tab: Tab, focus = false): void {
   selectedTab = tab;
   for (const name of tabNames) {
@@ -62,7 +73,7 @@ function setInspector(open: boolean, tab = selectedTab, intent = false): void {
   labelControl(toggleBtn, open ? 'Close inspector' : 'Open inspector');
   replaceIcon(toggleBtn, open ? 'chevron-up' : 'chevron-down');
   if (open) selectTab(tab);
-  viewport(open ? 'inspector' : 'rail');
+  syncViewport();
 }
 function forceOnce(key: string, tab: Tab): void {
   if (disclosed.has(key)) return;
@@ -72,7 +83,18 @@ function forceOnce(key: string, tab: Tab): void {
 }
 function unresolved(): boolean { return connectionFailure || syncFailure || activityView.failures.unresolvedCount > 0; }
 function updateSignal(): void { panel.dataset.unresolved = String(unresolved()); }
-function acknowledgeActivity(): void { activityView.acknowledgeFailures(); updateSignal(); activityView.render(); }
+function renderOrb(): void {
+  const orb = orbPresentation({
+    connection: payload?.state ?? 'disconnected', connectionFailure, syncFailure,
+    activityFailure: activityView.failures.unresolvedCount > 0,
+    activityPending: activityView.railPhase() === 'pending',
+    syncPending: pendingSyncCount > 0,
+  });
+  thinkingOrb.update(orb);
+  connectionBtn.className = 'rail-control';
+  labelControl(connectionBtn, `${orb.status}. Open details`);
+}
+function acknowledgeActivity(): void { activityView.acknowledgeFailures(); updateSignal(); activityView.render(); renderOrb(); }
 function openUser(tab: Tab): void { if (tab === 'activity') acknowledgeActivity(); setInspector(true, tab, true); }
 function context(): void {
   el('fga-ctx-file').textContent = sceneFile || '—'; el('fga-ctx-file').title = sceneFile;
@@ -86,21 +108,23 @@ function context(): void {
     replaceIcon(targetRailBtn, peersPinned ? 'pin' : 'files');
     targetRailBtn.classList.toggle('tone-info', peersIsActiveTarget);
   }
+  syncViewport();
 }
 function render(): void {
   const now = Date.now(), state: ConnectionState = payload?.state ?? 'disconnected', age = payload ? now - payload.since : 0;
   const view = statusSentence(state, age, hadConnection);
   sentence.textContent = view.text; sentence.dataset.tone = view.tone;
   onboarding.hidden = !showOnboarding(state, hadConnection);
-  replaceIcon(connectionBtn, state === 'connected' ? 'circle-check' : state === 'probing' || state === 'handshake' ? 'loader-circle' : 'circle-off', state === 'probing' || state === 'handshake');
-  connectionBtn.className = `rail-control tone-${view.tone}`; labelControl(connectionBtn, view.text);
   context(); activityView.render(now);
   const showSync = pendingSyncCount > 0 || syncFailure;
   syncRailBtn.hidden = !showSync;
   if (showSync) { syncBadge.textContent = String(Math.max(1, pendingSyncCount)); replaceIcon(syncRailBtn, syncFailure ? 'circle-x' : 'refresh-cw'); syncRailBtn.className = `rail-control tone-${syncFailure ? 'danger' : 'warning'}`; labelControl(syncRailBtn, syncFailure ? `${syncMsg.textContent || 'Sync failed'}. Open sync actions` : `${syncPromptLabel(pendingSyncCount)}. Open sync actions`); }
+  syncViewport();
   const force = connectionForce(state, age, hadConnection, connectionTransition);
   connectionFailure = force?.kind === 'probe-timeout' || force?.kind === 'connection-lost';
-  updateSignal(); if (force) forceOnce(force.key, 'details');
+  updateSignal();
+  renderOrb();
+  if (force) forceOnce(force.key, 'details');
   if (state === 'connected' && forcedOnly && !userExpanded && !unresolved()) { forcedOnly = false; setInspector(false); }
 }
 
@@ -115,6 +139,7 @@ for (const tab of tabNames) {
   tabs[tab].onkeydown = (event) => { const index = tabNames.indexOf(tab); const target = event.key === 'ArrowRight' ? tabNames[(index + 1) % 3] : event.key === 'ArrowLeft' ? tabNames[(index + 2) % 3] : event.key === 'Home' ? tabNames[0] : event.key === 'End' ? tabNames[2] : null; if (target) { event.preventDefault(); if (target === 'activity') acknowledgeActivity(); selectTab(target, true); } };
 }
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && inspectorOpen) { event.preventDefault(); setInspector(false, selectedTab, true); toggleBtn.focus(); } });
+window.addEventListener('pagehide', () => thinkingOrb.dispose(), { once: true });
 window.addEventListener('figma-agent:conn-state', (event) => { const next = (event as CustomEvent).detail as ConnectionStatePayload | undefined; if (!next || typeof next.state !== 'string') return; if (next.state !== previousConnectionState) connectionTransition += 1; previousConnectionState = next.state; if (next.state === 'connected') hadConnection = true; payload = next; render(); });
 window.addEventListener('figma-agent:activity', (event) => { const detail = (event as CustomEvent).detail as { phase?: unknown } | undefined; if (detail?.phase === 'done') { const patch = toActivityResult(detail); if (!patch) return; activityView.resolve(patch); if (!patch.ok) forceOnce(`activity-failure:${patch.id}`, 'activity'); } else { const record = toActivityRecord(detail); if (!record) return; activityView.push(record); } updateSignal(); render(); });
 window.addEventListener('figma-agent:peers', (event) => { const data = (event as CustomEvent).detail as { count?: unknown; isActiveTarget?: unknown; pinned?: unknown } | undefined; if (typeof data?.count === 'number' && Number.isFinite(data.count)) peersCount = data.count; if (typeof data?.isActiveTarget === 'boolean') peersIsActiveTarget = data.isActiveTarget; peersPinned = data?.pinned === true; context(); });

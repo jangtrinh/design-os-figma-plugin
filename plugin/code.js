@@ -5338,12 +5338,16 @@
   }
 
   // plugin/src/ui/panel-model.ts
-  var RAIL_WIDTH = 240;
+  var RAIL_COMPACT_WIDTH = 200;
+  var RAIL_ONE_ACTION_WIDTH = 220;
+  var RAIL_TWO_ACTIONS_WIDTH = 240;
   var RAIL_HEIGHT = 44;
   var INSPECTOR_WIDTH = 288;
   var INSPECTOR_HEIGHT = 280;
   function viewportFor(mode) {
-    return mode === "inspector" ? { width: INSPECTOR_WIDTH, height: INSPECTOR_HEIGHT } : { width: RAIL_WIDTH, height: RAIL_HEIGHT };
+    if (mode === "inspector") return { width: INSPECTOR_WIDTH, height: INSPECTOR_HEIGHT };
+    const width = mode === "rail-compact" ? RAIL_COMPACT_WIDTH : mode === "rail-one-action" ? RAIL_ONE_ACTION_WIDTH : RAIL_TWO_ACTIONS_WIDTH;
+    return { width, height: RAIL_HEIGHT };
   }
 
   // plugin/src/main/readonly-guard.ts
@@ -5366,7 +5370,7 @@
   // plugin/src/main/main.ts
   figma.showUI(__html__, {
     visible: true,
-    width: RAIL_WIDTH,
+    width: RAIL_COMPACT_WIDTH,
     height: RAIL_HEIGHT,
     title: "design:os by JANG",
     themeColors: true
@@ -5588,7 +5592,7 @@
   });
   figma.ui.onmessage = async (msg) => {
     const chrome = msg;
-    if (chrome && chrome.type === "PANEL_VIEWPORT" && (chrome.mode === "rail" || chrome.mode === "inspector")) {
+    if (chrome && chrome.type === "PANEL_VIEWPORT" && (chrome.mode === "rail-compact" || chrome.mode === "rail-one-action" || chrome.mode === "rail-two-actions" || chrome.mode === "inspector")) {
       const viewport = viewportFor(chrome.mode);
       figma.ui.resize(viewport.width, viewport.height);
       return;

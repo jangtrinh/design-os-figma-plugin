@@ -821,21 +821,21 @@ code {
   .inline-link, .sync-prompt, .status-sentence, .activity-row { transition: none; }
 }
 
-/* Adaptive Agent Rail. The host viewport owns the two exact sizes; this document owns
+/* Adaptive Agent Rail. The host viewport owns the named sizes; this document owns
    disclosure within them. Existing theme tokens remain the color source of truth. */
 body { overflow: hidden; }
 .panel { height: 100%; overflow: hidden; }
 .agent-rail {
   height: 44px;
   padding: 0 var(--space-1);
-  display: grid;
-  grid-template-columns: 32px minmax(32px, 1fr) auto auto 32px;
+  display: flex;
   gap: var(--space-hair);
   align-items: center;
   background: var(--fga-chrome);
 }
 .rail-control {
   position: relative;
+  flex: 0 0 32px;
   width: 32px;
   min-width: 32px;
   height: 32px;
@@ -857,8 +857,10 @@ body { overflow: hidden; }
   outline: 2px solid var(--fga-focus);
   outline-offset: 1px;
 }
-.current-control { width: auto; min-width: 32px; justify-content: flex-start; padding: 0 var(--space-1); }
+.current-control { flex: 1 1 auto; width: auto; min-width: 32px; justify-content: flex-start; padding: 0 var(--space-1); }
 .current-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thinking-orb { display: block; width: 20px; height: 20px; }
+.thinking-orb[data-dimmed="true"] { opacity: 0.5; }
 .failure-count {
   min-width: 14px;
   padding: 0 var(--space-hair);

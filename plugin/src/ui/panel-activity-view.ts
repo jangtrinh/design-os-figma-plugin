@@ -25,6 +25,8 @@ export interface FailureBadgeTarget {
   setAttribute(name: string, value: string): void;
 }
 
+export type ActivityRailPhase = 'idle' | 'pending' | 'complete' | 'failed';
+
 export function renderFailureBadge(target: FailureBadgeTarget, count: number): void {
   target.hidden = count === 0;
   target.textContent = count === 0 ? '' : String(count);
@@ -90,6 +92,11 @@ export class ActivityView {
 
   acknowledgeFailures(): void { this.failures.acknowledge(); }
 
+  railPhase(): ActivityRailPhase {
+    const current = currentActivity(this.records);
+    return !current ? 'idle' : current.pending ? 'pending' : current.ok ? 'complete' : 'failed';
+  }
+
   render(now = Date.now()): void {
     const shown = this.records.slice(0, 20);
     if (shown.length === 0) {
@@ -115,16 +122,14 @@ export class ActivityView {
     renderFailureBadge(this.failureCount, count);
     const suffix = count === 0 ? '' : `. ${count} unresolved failure${count === 1 ? '' : 's'}`;
     if (!current) {
-      replaceIcon(this.currentButton, 'activity');
       this.currentLabel.textContent = 'Idle';
       this.currentButton.className = `rail-control current-control${count ? ' tone-danger' : ''}`;
       labelControl(this.currentButton, `Current activity: Idle${suffix}`);
       return;
     }
     const state = current.pending ? 'running' : current.ok ? 'complete' : 'failed';
-    replaceIcon(this.currentButton, current.pending ? 'loader-circle' : current.ok ? 'circle-check' : 'circle-x', current.pending);
     this.currentLabel.textContent = sentence(current);
-    this.currentButton.className = `rail-control current-control tone-${count ? 'danger' : current.pending ? 'warning' : current.ok ? 'success' : 'danger'}`;
+    this.currentButton.className = `rail-control current-control${count ? ' tone-danger' : ''}`;
     labelControl(this.currentButton, `Current activity ${state}: ${sentence(current)}${suffix}`);
   }
 }

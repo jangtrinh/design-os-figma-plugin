@@ -1,12 +1,15 @@
 import type { ConnectionState } from '../../../shared/protocol';
 
 export type Tone = 'success' | 'warning' | 'info' | 'muted';
-export const RAIL_WIDTH = 240;
+export const RAIL_COMPACT_WIDTH = 200;
+export const RAIL_ONE_ACTION_WIDTH = 220;
+export const RAIL_TWO_ACTIONS_WIDTH = 240;
 export const RAIL_HEIGHT = 44;
 export const INSPECTOR_WIDTH = 288;
 export const INSPECTOR_HEIGHT = 280;
 export const SYNC_STUCK_TIMEOUT_MS = 30_000;
-export type ViewportMode = 'rail' | 'inspector';
+export type RailViewportMode = 'rail-compact' | 'rail-one-action' | 'rail-two-actions';
+export type ViewportMode = RailViewportMode | 'inspector';
 export type SyncSource = 'manual' | 'auto';
 
 export function statusSentence(state: ConnectionState, ageMs: number, hadConnection: boolean): { text: string; tone: Tone } {
@@ -34,8 +37,17 @@ export function showOnboarding(state: ConnectionState, hadConnection: boolean): 
   return !hadConnection && (state === 'disconnected' || state === 'probing');
 }
 
+export function railViewportMode(targetVisible: boolean, syncVisible: boolean): RailViewportMode {
+  const actions = Number(targetVisible) + Number(syncVisible);
+  return actions === 0 ? 'rail-compact' : actions === 1 ? 'rail-one-action' : 'rail-two-actions';
+}
+
 export function viewportFor(mode: ViewportMode): { width: number; height: number } {
-  return mode === 'inspector' ? { width: INSPECTOR_WIDTH, height: INSPECTOR_HEIGHT } : { width: RAIL_WIDTH, height: RAIL_HEIGHT };
+  if (mode === 'inspector') return { width: INSPECTOR_WIDTH, height: INSPECTOR_HEIGHT };
+  const width = mode === 'rail-compact'
+    ? RAIL_COMPACT_WIDTH
+    : mode === 'rail-one-action' ? RAIL_ONE_ACTION_WIDTH : RAIL_TWO_ACTIONS_WIDTH;
+  return { width, height: RAIL_HEIGHT };
 }
 
 export function shouldForceInspector(state: ConnectionState, ageMs: number, hadConnection: boolean): boolean {
