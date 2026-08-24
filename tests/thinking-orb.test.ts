@@ -6,14 +6,18 @@ const healthy = {
   connectionFailure: false,
   syncFailure: false,
   activityFailure: false,
-  activityPending: false,
+  pendingTools: [] as string[],
   syncPending: false,
 };
 
 describe('orbPresentation', () => {
   it('makes unresolved failure the highest-priority aggregate state', () => {
+    const activeTransport = {
+      ...healthy, connection: 'handshake' as const,
+      pendingTools: ['SCAN_DESIGN_SYSTEM'], syncPending: true,
+    };
     for (const failure of ['connectionFailure', 'syncFailure', 'activityFailure'] as const) {
-      expect(orbPresentation({ ...healthy, [failure]: true })).toEqual({
+      expect(orbPresentation({ ...activeTransport, [failure]: true })).toEqual({
         state: 'shaping', paused: true, dimmed: false, status: 'Needs attention',
       });
     }
@@ -31,16 +35,36 @@ describe('orbPresentation', () => {
     });
   });
 
-  it('maps pending work and connected rest after connection health', () => {
-    expect(orbPresentation({ ...healthy, activityPending: true })).toEqual({
-      state: 'working', paused: false, dimmed: false, status: 'Processing',
+  it('maps one command, sync, concurrency, fallback, and connected rest', () => {
+    expect(orbPresentation({ ...healthy, pendingTools: ['SCAN_DESIGN_SYSTEM'] })).toEqual({
+      state: 'searching', paused: false, dimmed: false, status: 'Searching',
     });
     expect(orbPresentation({ ...healthy, syncPending: true })).toEqual({
+      state: 'weaving', paused: false, dimmed: false, status: 'Syncing',
+    });
+    expect(orbPresentation({ ...healthy, pendingTools: ['RECONCILE'], syncPending: true })).toEqual({
+      state: 'weaving', paused: false, dimmed: false, status: 'Syncing',
+    });
+    expect(orbPresentation({ ...healthy, pendingTools: ['SCAN_DESIGN_SYSTEM', 'RECONCILE'], syncPending: true }).status).toBe('2 tasks running');
+    expect(orbPresentation({ ...healthy, pendingTools: ['RECONCILE', 'RECONCILE'], syncPending: true }).status).toBe('2 tasks running');
+    expect(orbPresentation({ ...healthy, pendingTools: ['AUDIT_DS'], syncPending: true })).toEqual({
+      state: 'weaving', paused: false, dimmed: false, status: '2 tasks running',
+    });
+    expect(orbPresentation({ ...healthy, pendingTools: ['SET_TEXT', 'SET_TEXT'] })).toEqual({
+      state: 'weaving', paused: false, dimmed: false, status: '2 tasks running',
+    });
+    expect(orbPresentation({ ...healthy, pendingTools: ['FUTURE_COMMAND'] })).toEqual({
       state: 'working', paused: false, dimmed: false, status: 'Processing',
     });
     expect(orbPresentation(healthy)).toEqual({
       state: 'breathing', paused: false, dimmed: false, status: 'Connected',
     });
+  });
+
+  it('keeps failure and transport above semantic work', () => {
+    const working = { ...healthy, pendingTools: ['SCAN_DESIGN_SYSTEM'] };
+    expect(orbPresentation({ ...working, connection: 'handshake' }).status).toBe('Connecting');
+    expect(orbPresentation({ ...working, connection: 'disconnected' }).status).toBe('Disconnected');
   });
 });
 

@@ -74,6 +74,7 @@ function row(record: ActivityRecord, now: number, stale: boolean, fresh: boolean
 export class ActivityView {
   private records: ActivityRecord[] = [];
   private previousKeys: string[] = [];
+  private readonly activeTools = new Map<string, string>();
   readonly failures = new BoundedKeySet();
 
   constructor(
@@ -83,10 +84,15 @@ export class ActivityView {
     private readonly failureCount: HTMLElement,
   ) {}
 
-  push(record: ActivityRecord): void { this.records = pushActivity(this.records, record); }
+  push(record: ActivityRecord): void {
+    this.records = pushActivity(this.records, record);
+    if (record.pending) this.activeTools.set(record.id, record.tool);
+    else this.activeTools.delete(record.id);
+  }
 
   resolve(patch: ActivityResult, trackFailure = true): void {
     this.records = landTerminalActivity(this.records, patch);
+    this.activeTools.delete(patch.id);
     if (trackFailure) applyActivityOutcome(this.failures, patch.id, patch.ok);
   }
 
@@ -95,6 +101,10 @@ export class ActivityView {
   railPhase(): ActivityRailPhase {
     const current = currentActivity(this.records);
     return !current ? 'idle' : current.pending ? 'pending' : current.ok ? 'complete' : 'failed';
+  }
+
+  pendingTools(): readonly string[] {
+    return [...this.activeTools.values()];
   }
 
   render(now = Date.now()): void {
