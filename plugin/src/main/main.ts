@@ -47,14 +47,14 @@ import {
   writeEdgeCorrections,
 } from './correction-edge-store';
 import type { CorrectionEvent } from '../../../shared/supervised-memory';
-import { PANEL_WIDTH, PANEL_HEIGHT } from '../ui/panel-model';
+import { RAIL_WIDTH, RAIL_HEIGHT, viewportFor } from '../ui/panel-model';
 import {
   createReadOnlyGuardState, isReadOnlyExecJs, recordDocumentChangeBatch,
   snapshotChangeEvents, violatedSinceSnapshot,
 } from './readonly-guard';
 
-// Panel IA v2: one opening size — no compact/expanded split, no user-resizable
-// Details toggle left to preserve (the whole PANEL_RESIZE path is gone below).
+// The adaptive panel opens as a rail. The iframe can request one of two named modes;
+// main owns the dimensions and never trusts arbitrary width/height input.
 //
 // Owner decree 2026-07-30: the plugin window's own (host-drawn) title bar cannot be
 // removed and duplicated the panel's internal masthead, which is now gone (panel.html) —
@@ -68,7 +68,7 @@ import {
 // `html.figma-light { ... }` override block (a sibling of the default dark :root) is
 // what actually repaints every color token; this flag is what makes that class exist.
 figma.showUI(__html__, {
-  visible: true, width: PANEL_WIDTH, height: PANEL_HEIGHT, title: 'design:os by JANG', themeColors: true,
+  visible: true, width: RAIL_WIDTH, height: RAIL_HEIGHT, title: 'design:os by JANG', themeColors: true,
 });
 
 // Absorption phase-03 (FigJam) — which design-only boot capabilities this session
@@ -493,10 +493,13 @@ interface UiRequest {
 }
 
 figma.ui.onmessage = async (msg: unknown) => {
-  // Panel IA v2 removed the Details toggle — its PANEL_RESIZE message was the only
-  // emitter, so the handler that used to live here (and phase-01's width-preserving
-  // resize on top of it) is gone with it. One opening size, never resized again.
-  const chrome = msg as { type?: unknown; data?: unknown } | null;
+  const chrome = msg as { type?: unknown; mode?: unknown; data?: unknown } | null;
+  if (chrome && chrome.type === 'PANEL_VIEWPORT'
+      && (chrome.mode === 'rail' || chrome.mode === 'inspector')) {
+    const viewport = viewportFor(chrome.mode);
+    figma.ui.resize(viewport.width, viewport.height);
+    return;
+  }
   // Live-sync (spec 004 P4): the broker's idle window, relayed by the iframe.
   if (chrome && chrome.type === 'SYNC_CONFIG') {
     const data = chrome.data as { idleMs?: unknown; bound?: unknown } | undefined;

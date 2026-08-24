@@ -1,19 +1,13 @@
-// Panel view-model — the pure layer under the DOM controller (panel-ui.ts).
-// IA v2: statusSentence (Block 1) replaces stateView/troubleshootHint/compactMeta;
-// fileNote (Block 2) is new. The activity feed's own model lives in activity-feed.ts,
-// and its SENTENCE mapping in activity-sentence.ts — see their own test files.
 import { describe, it, expect } from 'vitest';
 import {
-  statusSentence, formatAge, showOnboarding, fileNote, PANEL_WIDTH, PANEL_HEIGHT,
+  statusSentence, formatAge, showOnboarding, fileNote,
+  RAIL_WIDTH, RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT,
+  viewportFor, shouldForceInspector,
   syncPromptLabel, syncResultLabel, syncNowLabel, shouldClearPendingCount,
   syncStartSentence, syncResultSentence, syncStuckSentence, syncSupersededSentence, SYNC_STUCK_TIMEOUT_MS,
   targetButtonLabel,
 } from '../plugin/src/ui/panel-model.ts';
-
 describe('statusSentence — Block 1: the problem and the next action, six branches', () => {
-  // Owner addendum 2026-07-30: success states are minimal (the tone dot already signals
-  // state); problem states keep problem + next action, trimmed to the shortest honest
-  // sentence, no filler words, no text glyphs (the … ban covers "Connecting…" too).
   it('connected — success tone, minimal (the dot already signals it)', () => {
     expect(statusSentence('connected', 0, true)).toEqual({
       text: 'Connected', tone: 'success',
@@ -43,7 +37,6 @@ describe('statusSentence — Block 1: the problem and the next action, six branc
     });
   });
 });
-
 describe('formatAge', () => {
   it('formatAge steps just-now → seconds → minutes → hours', () => {
     expect(formatAge(0)).toBe('just now');
@@ -54,7 +47,6 @@ describe('formatAge', () => {
     expect(formatAge(Number.NaN)).toBe('—');
   });
 });
-
 describe('showOnboarding — first-run only (survives the IA v2 cut, priority-1 content)', () => {
   it('shows while waiting and never connected', () => {
     expect(showOnboarding('disconnected', false)).toBe(true);
@@ -66,7 +58,6 @@ describe('showOnboarding — first-run only (survives the IA v2 cut, priority-1 
     expect(showOnboarding('handshake', false)).toBe(false);
   });
 });
-
 describe('fileNote — Block 2: honest answer to "which file will my command hit?"', () => {
   it('single file, this one is the target → "command target"', () => {
     expect(fileNote(1, true)).toBe('command target');
@@ -83,9 +74,6 @@ describe('fileNote — Block 2: honest answer to "which file will my command hit
     expect(fileNote(2, false)).toBe('1 other file — commands go elsewhere');
   });
 });
-
-// #35 P2 — `pinned` distinguishes "target because pinned" from "target because
-// most-recent"; omitted/false reproduces the pre-pin wording exactly (proven above).
 describe('fileNote — pinned distinction (#35 P2)', () => {
   it('single file, pinned target → "pinned target" (never "command target")', () => {
     expect(fileNote(1, true, true)).toBe('pinned target');
@@ -101,7 +89,6 @@ describe('fileNote — pinned distinction (#35 P2)', () => {
     expect(fileNote(1, true)).toBe('command target');
   });
 });
-
 describe('targetButtonLabel — the "Target this plugin" toggle (#35 P2)', () => {
   it('unpinned → invites the click', () => {
     expect(targetButtonLabel(false)).toBe('Target this plugin');
@@ -111,14 +98,22 @@ describe('targetButtonLabel — the "Target this plugin" toggle (#35 P2)', () =>
     expect(targetButtonLabel(true)).not.toBe(targetButtonLabel(false));
   });
 });
-
-describe('panel geometry (IA v2 — one opening size, no compact/expanded split)', () => {
-  it('the iframe opens 300×420', () => {
-    expect(PANEL_WIDTH).toBe(300);
-    expect(PANEL_HEIGHT).toBe(420);
+describe('adaptive panel geometry', () => {
+  it('maps named viewport modes to the only accepted dimensions', () => {
+    expect(viewportFor('rail')).toEqual({ width: 240, height: 44 });
+    expect(viewportFor('inspector')).toEqual({ width: 288, height: 280 });
+    expect([RAIL_WIDTH, RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT])
+      .toEqual([240, 44, 288, 280]);
+  });
+  it('forces text-bearing recovery only when it is actionable', () => {
+    expect(shouldForceInspector('disconnected', 0, false)).toBe(true);
+    expect(shouldForceInspector('probing', 9_000, false)).toBe(true);
+    expect(shouldForceInspector('probing', 10_000, true)).toBe(true);
+    expect(shouldForceInspector('disconnected', 0, true)).toBe(true);
+    expect(shouldForceInspector('handshake', 0, false)).toBe(false);
+    expect(shouldForceInspector('connected', 0, true)).toBe(false);
   });
 });
-
 describe('idle-commit prompt labels (spec 004 P4)', () => {
   it('syncPromptLabel pluralizes and floors count at 1', () => {
     expect(syncPromptLabel(1)).toBe('1 change ready');
@@ -134,27 +129,17 @@ describe('idle-commit prompt labels (spec 004 P4)', () => {
     expect(syncResultLabel(true, '')).toBe('Synced — done'); // empty summary → sane default
     expect(syncResultLabel(false, '   ')).toBe('Sync failed — failed');
   });
-
   it('syncResultLabel — unbound renders the bind command bare, not under a failure verdict', () => {
     const summary = 'No project bound for "VSF - PCP" — run: figma-agent bind --file "VSF - PCP" --dir <project>';
     expect(syncResultLabel(false, summary, true, true)).toBe(summary);
-    // ok=false is what the broker actually sends for an unbound refusal — proves `unbound`
-    // takes precedence over the "Sync failed" branch rather than being unreachable dead code.
     expect(syncResultLabel(false, summary, true, true)).not.toContain('Sync failed');
   });
-
   it('syncNowLabel — swaps to the bind hint on E_UNBOUND, reverts once bound (fix round, finding 2)', () => {
     expect(syncNowLabel(false)).toBe('Sync now');
     expect(syncNowLabel(true)).toBe('Bind & retry');
     expect(syncNowLabel(true)).not.toBe(syncNowLabel(false)); // the state machine's two branches
   });
 });
-
-// Owner addendum (task #145) — the Activity feed's OWN long-form sync sentences. These
-// bypass activitySentence()'s generic tool/count/name mapper entirely (that mapper is
-// exactly what collapsed a sync row to the bare word "Synced" — see ActivityRecord.sentence's
-// own doc). Three required cases per the review ruling: success with the kernel summary,
-// failure with the reason, and the unbound passthrough.
 describe('syncStartSentence — the pending Activity row (task #145)', () => {
   it('manual click names the file and what is about to happen', () => {
     expect(syncStartSentence('manual', 'VSF - PCP')).toBe('Sync started — checking VSF - PCP for pending Figma changes to apply');
@@ -164,25 +149,21 @@ describe('syncStartSentence — the pending Activity row (task #145)', () => {
     expect(syncStartSentence('auto', 'X')).not.toBe(syncStartSentence('manual', 'X'));
   });
 });
-
 describe('syncResultSentence — the resolved Activity row, three required cases (task #145)', () => {
   it('success carries the KERNEL SUMMARY verbatim, never collapsing to a bare "Synced"', () => {
     const s = syncResultSentence(true, '3 added, 1 updated, 2 deprecated', true, false, 'VSF - PCP');
     expect(s).toBe('Synced VSF - PCP — 3 added, 1 updated, 2 deprecated');
     expect(s).not.toBe('Synced'); // the exact regression this field exists to stop
   });
-
   it('success with nothing landed says so, distinct from a real sync', () => {
     expect(syncResultSentence(true, 'every new component still pending re-ingest', false, false, 'VSF - PCP'))
       .toBe('Nothing synced for VSF - PCP — every new component still pending re-ingest');
   });
-
   it('failure carries the REASON, never collapsing to a bare "Reconcile failed"', () => {
     const s = syncResultSentence(false, 'ui not runnable', true, false, 'VSF - PCP');
     expect(s).toBe('Sync failed for VSF - PCP — ui not runnable');
     expect(s).not.toBe('Reconcile failed');
   });
-
   it('unbound passes syncResultLabel\'s own bare message through UNWRAPPED (never "Sync failed for…")', () => {
     const summary = 'No project bound for "VSF - PCP" — run: figma-agent bind --file "VSF - PCP" --dir <project>';
     const s = syncResultSentence(false, summary, true, true, 'VSF - PCP');
@@ -190,7 +171,6 @@ describe('syncResultSentence — the resolved Activity row, three required cases
     expect(s).not.toContain('Sync failed');
   });
 });
-
 describe('syncStuckSentence — the bounded-timeout fallback (live-observed broker-restart gap)', () => {
   it('names the cause and the recovery action, never implies the sync itself is broken', () => {
     expect(syncStuckSentence()).toBe('Sync did not answer — the broker restarted mid-run; press Sync again');
@@ -200,20 +180,15 @@ describe('syncStuckSentence — the bounded-timeout fallback (live-observed brok
     expect(SYNC_STUCK_TIMEOUT_MS).toBeLessThan(120_000);
   });
 });
-
 describe('syncSupersededSentence — a second click resolves the first row (stage-4 fix round, minor 9)', () => {
   it('names the fact plainly — never implies the first sync itself failed', () => {
     expect(syncSupersededSentence()).toBe('Superseded by a newer sync');
     expect(syncSupersededSentence()).not.toContain('failed');
   });
 });
-
 describe('shouldClearPendingCount', () => {
   it('ONLY a genuine success clears the pending counter (closing round, defect #2)', () => {
     expect(shouldClearPendingCount(true)).toBe(true);
-    // false covers BOTH a real reconcile failure AND an E_UNBOUND refusal — either way,
-    // nothing applied, so retry must stay possible (the bug: it used to clear on any
-    // non-unbound outcome, including "a sync is already running").
     expect(shouldClearPendingCount(false)).toBe(false);
   });
 });

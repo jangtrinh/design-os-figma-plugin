@@ -273,7 +273,6 @@
   --fga-tone-success: #5BA46F;    /* the reference's own green, ~8% less saturated — 5.96 (body, text), 4.20 (row-active, indicator) */
   --fga-tone-warning: #C9A356;    /* web-amber → ochre; stops shouting next to the greys — 7.56 (body, text) */
   --fga-tone-info: #8FB4D9;       /* desaturated steel, not "link blue" — 8.28 (body, text); also --fga-focus's value, 3:1+ on all three surfaces */
-  --fga-tone-muted: #9B9B9B;      /* already neutral; aligned with --fga-text-muted — 6.45 (body, indicator) */
   --fga-tone-danger: #D98A8A;     /* muted terracotta, icon-only (never text) — 4.78 (row-active, indicator) */
   --fga-radius: 8px;              /* inputs, cards, buttons */
   --fga-radius-sm: 6px;           /* chips */
@@ -329,7 +328,7 @@
 
    Full recompute (WCAG 2.1, text 4.5:1 / non-text-indicator 3:1), against every
    surface a token is REACHABLE on in this file's actual markup (status-sentence and
-   status-dot sit on --fga-chrome, which equals --fga-surface's hex here; activity-row
+   rail icons sit on --fga-chrome, which equals --fga-surface's hex here; activity-row
    icons sit on --fga-row-active when fresh, --fga-surface when stale; section-label
    and .activity-empty reach --fga-body via the Context block / plain body):
      --fga-text     (#1A1A1A) vs body 16.25, surface/chrome 17.40, row-active 14.73 — PASS everywhere
@@ -348,9 +347,8 @@
      --fga-tone-warning (#8A6A1F) vs chrome 5.05 (text) · vs row-active 4.27 (indicator) — PASS
      --fga-tone-info    (#2B5E8C) vs chrome 6.81 (text) · vs row-active 5.77 (indicator);
                     also --fga-focus's value — vs body 6.36, surface/chrome 6.81, row-active 5.77,
-                    all far past the 3:1 focus-ring floor — PASS
+                    all well past the 3:1 focus-ring floor — PASS
      --fga-tone-danger  (#B3372F) — icon-only, never text — vs row-active 5.07 (indicator) — PASS
-     --fga-tone-muted   (#6B6B6B, = text-muted) vs chrome/body — PASS (see text-muted above)
      --fga-border-strong (#767676, decorative-boundary token, not owner-specified — derived)
                     vs surface (sync-btn's own bg) 4.54, vs row-active (hover) 3.84 — both
                     clear the 3:1 non-text floor
@@ -371,7 +369,6 @@ html.figma-light {
   --fga-tone-success: #1F7A3D;
   --fga-tone-warning: #8A6A1F;
   --fga-tone-info: #2B5E8C;
-  --fga-tone-muted: #6B6B6B;
   --fga-tone-danger: #B3372F;
   --fga-hairline: rgba(0, 0, 0, 0.12);       /* raised-card border — black flip of the dark 0.08 */
   --fga-hairline-soft: rgba(0, 0, 0, 0.08);  /* nested/secondary edges, row hover — black flip of 0.06 */
@@ -394,7 +391,8 @@ html.figma-light {
    onboarding card is priority-1 content and stays, re-parented under the status
    sentence. One font family throughout (`--font-family-body`, declared ONCE on
    `body` and inherited); every text glyph that used to be cross/check is now an
-   inline Phosphor-style SVG (panel-ui.ts's `ICONS` map). ──────────────────── */
+   inline SVG marks. The adaptive rail replaces them with the locally vendored Lucide
+   descriptor factory in panel-ui.ts. ──────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 img, svg { max-width: 100%; }
 
@@ -440,21 +438,17 @@ body {
    Gate D exempts this selector by name. */
 ::selection { background: rgba(143, 180, 217, 0.28); color: var(--fga-text); }
 
-/* Spatial rhythm (phase 03 §1): one row layout, one icon grid, one dot grid —
+/* Spatial rhythm (phase 03 §1): one row layout and one icon grid —
    applied via markup classes (`fga-row`, `fga-icon`) rather than duplicated
    per-selector, so `.status-row` and `.activity-row` share the same flex
-   layout instead of re-declaring it. Two size families, not one: SVG icons
-   ride the 14px grid; the two CSS-drawn dots (`.status-dot`, `.identity-dot`)
-   are dots, not icons — unified at 8px so there is one dot size, one icon
-   size, and no third. */
+   layout instead of re-declaring it. SVG icons ride the 14px grid. */
 .fga-row { display: flex; align-items: flex-start; gap: var(--space-1); }
-/* Optical centring on the FIRST line box rather than the flex box: a 14px icon
+/* Optical centring on the FIRST line box rather than the flex box: the legacy icon
    beside a 13px/1.5-line-height line sits high if you centre on the box. line
    box = 13 * 1.5 = 19.5px, so (19.5 - 14)/2 = 2.75px — derived, not eyeballed,
    and it stays correct if the size token moves. */
 .fga-icon { width: 14px; height: 14px; flex: 0 0 auto; }
 .fga-row > .fga-icon { margin-top: calc((1.5em - 14px) / 2); }
-.status-dot, .identity-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 
 /* Block 1 — STATUS: sticky, one dot + one sentence. No pill/meta split, no
    port numbers, no attempt counts — the sentence names the problem AND the
@@ -476,33 +470,6 @@ body {
 }
 .status-row { min-width: 0; }
 
-/* Live marker — a circle, tone-coloured. Pings outward while probing. Plain
-   CSS shape (Phosphor `circle`, filled) — no SVG needed for an unadorned dot.
-   Sizing comes from the shared `.status-dot, .identity-dot` rule above; this
-   one only adds what is unique to the status dot (position + tone colour). */
-.status-dot {
-  position: relative;
-  /* Sits beside the TITLE line (14px / --fga-lh-title), not the body line the
-     shared .fga-icon formula assumes — derived against its own context rather
-     than reused blind: (14px * 1.35 - 8px) / 2. */
-  margin-top: calc((var(--fga-font-title) * var(--fga-lh-title) - 8px) / 2);
-  background: var(--fga-tone-muted);
-  /* Motion (§4): tone crossfades instead of jumping. Named properties only. */
-  transition: background-color var(--fga-motion) var(--fga-ease);
-}
-.status-dot[data-tone="success"] { background: var(--fga-tone-success); }
-.status-dot[data-tone="warning"] { background: var(--fga-tone-warning); }
-.status-dot[data-tone="info"]    { background: var(--fga-tone-info); }
-.status-dot[data-tone="muted"]   { background: var(--fga-tone-muted); }
-.status-dot::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: inherit;
-  opacity: 0;
-}
-.status-dot.is-pulsing::after { animation: fga-ping 1.6s ease-out infinite; }
 
 /* The ONE title — replaces the old pill+meta split. Tone-coloured (the pill's
    job), states the problem and the next action in one sentence (the meta's job). */
@@ -730,19 +697,18 @@ code {
    (the newest, non-stale one) gets the border-lift; every other row is inert
    on hover. */
 .activity-row:not(.is-stale):hover { border-color: var(--fga-hairline-soft); }
-/* Status reads by SHAPE first, colour second: an inline Phosphor-style SVG per
+/* Status reads by SHAPE first, colour second: an inline SVG per
    state (check-circle / x-circle / circle-notch), never a text glyph. The
    accessible label lives on this WRAPPING span (aria-label="ok"/"failed"/
    "running"); the svg inside is aria-hidden — its meaning is already spoken.
    Sizing + optical centring come from the shared `.fga-icon` rule (§1) —
    `.log-icon-wrap` carries that class too; this selector only adds colour. */
-.log-icon { display: block; width: 100%; height: 100%; }
-.log-icon-wrap[data-state="ok"]      .log-icon { color: var(--fga-tone-success); }
-.log-icon-wrap[data-state="failed"]  .log-icon { color: var(--fga-tone-danger); }
-.log-icon-wrap[data-state="running"] .log-icon { color: var(--fga-tone-warning); animation: fga-spin 1s linear infinite; }
+.log-icon-wrap[data-state="ok"]      .fga-icon { color: var(--fga-tone-success); }
+.log-icon-wrap[data-state="failed"]  .fga-icon { color: var(--fga-tone-danger); }
+.log-icon-wrap[data-state="running"] .fga-icon { color: var(--fga-tone-warning); }
 /* Stale (non-newest) rows dim the icon too — same equal-specificity family as the
    tone rules above, so it must come after them in source order to win the tie. */
-.activity-row.is-stale .log-icon { color: var(--fga-text-dim); }
+.activity-row.is-stale .fga-icon { color: var(--fga-text-dim); }
 .log-body {
   flex: 1 1 auto;
   min-width: 0; /* lets the ellipsis in .log-label / .log-meta actually engage */
@@ -822,31 +788,6 @@ code {
   outline-offset: 2px;
 }
 
-/* Footer band — identity row only (status-dot mirror + build id). The Docs/Copy/
-   Details actions row that used to sit below it is cut entirely (§2); the file
-   name it also used to carry now lives in Block 2's Context row instead. */
-.footer-row {
-  border-top: 1px dotted var(--fga-divider);
-  padding: var(--space-1) var(--space-2);
-  padding-top: var(--fga-divider-gap);
-  margin-top: auto;
-}
-.identity-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-hair);
-  min-width: 0;
-}
-/* CSS mirror of #fga-dot's tone — panel-ui.ts writes the tone onto #fga-dot only;
-   a second JS write target would be a behaviour change, so the mirror is derived
-   here instead. Falls back to muted if :has() is unsupported — quiet, never broken. */
-/* Sizing comes from the shared `.status-dot, .identity-dot` rule (§1: one dot
-   grid, 8px — was 6px). This rule adds only the default (muted) fill. */
-.identity-dot { background: var(--fga-tone-muted); }
-.panel:has(#fga-dot[data-tone="success"]) .identity-dot { background: var(--fga-tone-success); }
-.panel:has(#fga-dot[data-tone="warning"]) .identity-dot { background: var(--fga-tone-warning); }
-.panel:has(#fga-dot[data-tone="info"])    .identity-dot { background: var(--fga-tone-info); }
 #fga-version { flex: 0 0 auto; font-size: var(--fga-font-caption); color: var(--fga-text-muted); font-variant-numeric: tabular-nums; }
 
 /* ── Responsive contract (240px → 640px+, any height, locked) ─────────────────
@@ -854,22 +795,16 @@ code {
    anywhere on the path that keeps its intrinsic width pushes the row past the
    panel edge. overflow-x:hidden would then merely HIDE the overflow. */
 .panel > * { min-width: 0; max-width: 100%; }
-.status-row > *, .identity-row > *, .sync-prompt > *,
+.status-row > *, .sync-prompt > *,
 .log-body, .log-body > *, .detail-cell, .detail-cell > *, .activity-row > * { min-width: 0; }
 
 /* Truncation: the trio is a set — ellipsis without the other two does nothing. */
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Motion — the probing marker pings outward (transform + opacity only, never a
-   layout property). Snappy 0.1s ease-out is the brand curve. The pending feed
-   icon spins (transform only) — a continuous linear rotation is the one place
+/* Motion — the pending feed icon spins (transform only). Continuous linear rotation is the one place
    `linear` is correct (taste-lint's checkLinearOrAllTransition only inspects
    `transition:`, never `animation:`). Every animated/transitioned selector is
    guarded below. */
-@keyframes fga-ping {
-  0%   { opacity: 0.5; transform: scale(1); }
-  100% { opacity: 0;   transform: scale(2.4); }
-}
 @keyframes fga-spin {
   to { transform: rotate(360deg); }
 }
@@ -879,80 +814,170 @@ code {
   to   { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .status-dot.is-pulsing::after,
-  .log-icon-wrap[data-state="running"] .log-icon,
+  .log-icon-wrap[data-state="running"] .fga-icon,
   .activity-row.is-new { animation: none; } /* .is-new, not bare .activity-row — the
     entrance animation lives on the two-class selector, so the guard must match its
     specificity or `animation: none` here would lose the cascade to `.is-new`'s rule. */
-  .inline-link, .sync-prompt, .status-dot, .status-sentence, .activity-row { transition: none; }
+  .inline-link, .sync-prompt, .status-sentence, .activity-row { transition: none; }
+}
+
+/* Adaptive Agent Rail. The host viewport owns the two exact sizes; this document owns
+   disclosure within them. Existing theme tokens remain the color source of truth. */
+body { overflow: hidden; }
+.panel { height: 100%; overflow: hidden; }
+.agent-rail {
+  height: 44px;
+  padding: 0 var(--space-1);
+  display: grid;
+  grid-template-columns: 32px minmax(32px, 1fr) auto auto 32px;
+  gap: var(--space-hair);
+  align-items: center;
+  background: var(--fga-chrome);
+}
+.rail-control {
+  position: relative;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--fga-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-hair);
+  background: transparent;
+  color: var(--fga-text-muted);
+  cursor: pointer;
+  transition: background-color var(--fga-motion) var(--fga-ease), border-color var(--fga-motion) var(--fga-ease), color var(--fga-motion) var(--fga-ease);
+}
+.rail-control:hover, .rail-control[aria-expanded="true"] { background: var(--fga-row-active); color: var(--fga-text); }
+.rail-control:active { background: var(--fga-surface); }
+.rail-control:focus-visible, .tab-button:focus-visible, .sync-btn:focus-visible, .inline-link:focus-visible {
+  outline: 2px solid var(--fga-focus);
+  outline-offset: 1px;
+}
+.current-control { width: auto; min-width: 32px; justify-content: flex-start; padding: 0 var(--space-1); }
+.current-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.failure-count {
+  min-width: 14px;
+  padding: 0 var(--space-hair);
+  border-radius: var(--radius-full);
+  background: var(--fga-tone-danger);
+  color: var(--fga-body);
+  font-size: var(--fga-font-caption);
+  line-height: var(--fga-lh-caption);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.fga-icon { display: block; width: 16px; height: 16px; flex: 0 0 auto; }
+.tone-success { color: var(--fga-tone-success); }
+.tone-warning { color: var(--fga-tone-warning); }
+.tone-info { color: var(--fga-tone-info); }
+.tone-danger { color: var(--fga-tone-danger); }
+.rail-badge {
+  position: absolute;
+  inset: 0 0 auto auto;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--fga-tone-warning);
+  color: var(--fga-body);
+  font-size: var(--fga-font-caption);
+  line-height: var(--fga-lh-caption);
+  font-variant-numeric: tabular-nums;
+}
+.inspector { height: calc(100% - 44px); background: var(--fga-body); overflow: hidden; }
+.inspector-tabs { height: 36px; display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px dotted var(--fga-divider); }
+.tab-button {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--fga-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.tab-button:hover { color: var(--fga-text); background: var(--fga-row-active); }
+.tab-button[aria-selected="true"] { color: var(--fga-text); background: var(--fga-surface); }
+.inspector-content { height: calc(100% - 36px); overflow-y: auto; overflow-x: hidden; }
+.inspector-panel { min-width: 0; padding: var(--space-1); }
+.inspector-panel[hidden], .inspector[hidden], .rail-control[hidden], .sync-prompt[hidden] { display: none; }
+.inspector .context, .inspector .activity, .inspector .status-hero { position: static; border-top: 0; padding: 0; background: transparent; }
+.inspector .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.details-stack { display: flex; flex-direction: column; gap: var(--space-1); }
+.details-card { padding: var(--space-1); border: 1px solid var(--fga-hairline); border-top-color: var(--fga-topedge); border-radius: var(--fga-radius); }
+.details-card .status-sentence { margin: 0; }
+.version-row { color: var(--fga-text-muted); font-size: var(--fga-font-caption); font-variant-numeric: tabular-nums; }
+.sync-prompt { margin: var(--space-1); }
+.is-spinning { animation: fga-spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning { animation: none; }
+  .rail-control { transition: none; }
 }
 </style>
 </head>
 <body>
-<main class="panel" id="fga-panel">
-  <!-- Owner decree 2026-07-30: the internal masthead ("Figma Design Agent") is removed —
-       it duplicated the Figma plugin window's own chrome title directly above it, and
-       that OS/host-drawn title bar cannot be removed (verified against showUI docs). The
-       sticky status block is now the panel's first visible row. -->
-  <section class="status-hero fga-block" id="fga-status" aria-live="polite" aria-label="Connection status">
-    <div class="status-row fga-row">
-      <span class="status-dot" id="fga-dot" data-tone="muted"></span>
-      <p class="status-sentence" id="fga-sentence" data-tone="muted">Not connected — your first command starts the broker.</p>
+<main class="panel" id="fga-panel" data-view="rail">
+  <header class="agent-rail" id="fga-rail" aria-label="Agent status">
+    <button class="rail-control" id="fga-connection-btn" type="button" title="Connection details" aria-label="Connection details"></button>
+    <button class="rail-control current-control" id="fga-current-btn" type="button" title="Current activity: Idle" aria-label="Current activity: Idle">
+      <span class="current-label" id="fga-current-label">Idle</span>
+      <span class="failure-count" id="fga-failure-count" role="status" aria-live="polite" aria-atomic="true" aria-label="0 unresolved failures" hidden></span>
+    </button>
+    <button class="rail-control" id="fga-target-rail-btn" type="button" title="File target" aria-label="File target" hidden></button>
+    <button class="rail-control" id="fga-sync-rail-btn" type="button" title="Pending sync" aria-label="Pending sync" hidden><span class="rail-badge" id="fga-sync-badge">1</span></button>
+    <button class="rail-control" id="fga-toggle-btn" type="button" title="Open inspector" aria-label="Open inspector" aria-expanded="false" aria-controls="fga-inspector"></button>
+  </header>
+
+  <section class="inspector" id="fga-inspector" aria-label="Agent inspector" hidden>
+    <div class="inspector-tabs" role="tablist" aria-label="Inspector views">
+      <button class="tab-button" id="fga-tab-activity" type="button" role="tab" aria-selected="true" tabindex="0" aria-controls="fga-panel-activity">Activity</button>
+      <button class="tab-button" id="fga-tab-context" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="fga-panel-context">Context</button>
+      <button class="tab-button" id="fga-tab-details" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="fga-panel-details">Details</button>
     </div>
+    <div class="inspector-content">
+      <section class="sync-prompt" id="fga-sync" aria-live="polite" aria-atomic="true" hidden>
+        <p class="sync-msg" id="fga-sync-msg">changes ready</p>
+        <div class="sync-actions">
+          <button class="sync-btn" id="fga-sync-now" type="button">Sync now</button>
+          <button class="inline-link" id="fga-sync-later" type="button">Later</button>
+        </div>
+      </section>
 
-    <!-- Onboarding: priority-1 content, not a debug affordance — re-parented here
-         (block 1) so it answers the "disconnected, never connected" state directly.
-         JS toggles [hidden] via showOnboarding (panel-model.ts). -->
-    <section class="onboarding" id="fga-onboarding" aria-label="Getting started">
-      <ul class="onboarding-list">
-        <li>Bridges the figma-agent CLI to this file.</li>
-        <li>Verify: <code>figma-agent status</code></li>
-        <li>Keep this panel open.</li>
-      </ul>
-    </section>
-  </section>
+      <section class="inspector-panel" id="fga-panel-activity" role="tabpanel" aria-labelledby="fga-tab-activity">
+        <section class="activity" id="fga-activity-block" aria-label="Activity log">
+          <ul class="activity-list" id="fga-activity" aria-live="polite" aria-atomic="true">
+            <li class="activity-empty">No activity yet</li>
+          </ul>
+        </section>
+      </section>
 
-  <section class="context fga-block" id="fga-context" aria-label="File context">
-    <h2 class="section-label">Context</h2>
-    <dl class="detail-grid">
-      <div class="detail-cell">
-        <dt>File</dt>
-        <dd id="fga-ctx-file">—</dd>
-        <p class="detail-note" id="fga-ctx-file-note"></p>
-      </div>
-      <div class="detail-cell"><dt>Page</dt><dd id="fga-ctx-page">—</dd></div>
-      <div class="detail-cell"><dt>Selection</dt><dd id="fga-ctx-selection">None</dd></div>
-    </dl>
-    <!-- #35 P2: pins the daemon's routing target to THIS plugin instance (a runtime-only,
-         human-set pin — see broker-daemon.ts's `targetInstancePin`). Toggles between
-         "Target this plugin" and "Targeted" — panel-ui.ts wires the click, panel-model.ts
-         owns the label text. -->
-    <button class="sync-btn" id="fga-target-btn" type="button">Target this plugin</button>
-  </section>
+      <section class="inspector-panel" id="fga-panel-context" role="tabpanel" aria-labelledby="fga-tab-context" hidden>
+        <section class="context" id="fga-context" aria-label="File context">
+          <dl class="detail-grid">
+            <div class="detail-cell"><dt>File</dt><dd id="fga-ctx-file">—</dd><p class="detail-note" id="fga-ctx-file-note"></p></div>
+            <div class="detail-cell"><dt>Page</dt><dd id="fga-ctx-page">—</dd></div>
+            <div class="detail-cell"><dt>Selection</dt><dd id="fga-ctx-selection">None</dd></div>
+          </dl>
+          <button class="sync-btn" id="fga-target-btn" type="button">Target this plugin</button>
+        </section>
+      </section>
 
-  <section class="activity fga-block" id="fga-activity-block" aria-label="Activity log">
-    <h2 class="section-label">Activity</h2>
-    <ul class="activity-list" id="fga-activity" aria-live="polite">
-      <li class="activity-empty">No activity yet</li>
-    </ul>
-  </section>
-
-  <!-- Live-sync idle-commit prompt (spec 004 P4): one line, shown only at the idle
-       point. "Sync now" applies the change-log via the deterministic kernel. -->
-  <section class="sync-prompt" id="fga-sync" aria-live="polite" hidden>
-    <p class="sync-msg" id="fga-sync-msg">changes ready</p>
-    <div class="sync-actions">
-      <button class="sync-btn" id="fga-sync-now" type="button">Sync now</button>
-      <button class="inline-link" id="fga-sync-later" type="button">Later</button>
+      <section class="inspector-panel" id="fga-panel-details" role="tabpanel" aria-labelledby="fga-tab-details" hidden>
+        <div class="details-stack">
+          <section class="details-card status-hero" id="fga-status" aria-live="polite" aria-atomic="true" aria-label="Connection status">
+            <p class="status-sentence" id="fga-sentence" data-tone="muted">Not connected — your first command starts the broker.</p>
+          </section>
+          <section class="onboarding" id="fga-onboarding" aria-label="Getting started">
+            <ul class="onboarding-list"><li>Bridges the figma-agent CLI to this file.</li><li>Verify: <code>figma-agent status</code></li><li>Keep this panel open.</li></ul>
+          </section>
+          <div class="version-row" id="fga-version">v0.1.0</div>
+        </div>
+      </section>
     </div>
   </section>
-
-  <footer class="footer-row">
-    <div class="identity-row">
-      <span class="identity-dot"></span>
-      <span id="fga-version">v0.1.0</span>
-    </div>
-  </footer>
 </main>
 <script>
 "use strict";
@@ -1019,68 +1044,27 @@ code {
     return { base, delay };
   }
 
-  // plugin/src/ui/panel-model.ts
-  var PROBE_TROUBLESHOOT_MS = 1e4;
-  function statusSentence(state, ageMs, hadConnection2) {
-    switch (state) {
-      case "connected":
-        return { text: "Connected", tone: "success" };
-      case "probing":
-        return ageMs >= PROBE_TROUBLESHOOT_MS ? { text: "Broker not running \u2014 run figma-agent status.", tone: "warning" } : { text: "Looking for the broker", tone: "warning" };
-      case "handshake":
-        return { text: "Connecting", tone: "info" };
-      case "disconnected":
-      default:
-        return hadConnection2 ? { text: "Connection lost \u2014 reconnecting.", tone: "muted" } : { text: "Not connected \u2014 your first command starts the broker.", tone: "muted" };
-    }
-  }
-  function showOnboarding(state, hadConnection2) {
-    return !hadConnection2 && (state === "disconnected" || state === "probing");
-  }
-  function fileNote(count, isActiveTarget, pinned = false) {
-    if (count <= 1) return isActiveTarget ? pinned ? "pinned target" : "command target" : "";
-    const others = count - 1;
-    const files = others === 1 ? "file" : "files";
-    if (!isActiveTarget) return `${others} other ${files} \u2014 commands go elsewhere`;
-    return pinned ? `pinned target \xB7 ${others} other ${files}` : `command target \xB7 ${others} other ${files}`;
-  }
-  function targetButtonLabel(pinned) {
-    return pinned ? "Targeted" : "Target this plugin";
-  }
-  function syncPromptLabel(count) {
-    const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 1;
-    return `${n} change${n === 1 ? "" : "s"} ready`;
-  }
-  function syncResultLabel(ok, summary, landed = true, unbound = false) {
-    const clean = typeof summary === "string" && summary.trim().length > 0 ? summary.trim() : ok ? "done" : "failed";
-    if (unbound) return clean;
-    if (!ok) return `Sync failed \u2014 ${clean}`;
-    return landed ? `Synced \u2014 ${clean}` : `Nothing synced \u2014 ${clean}`;
-  }
-  function syncNowLabel(unbound) {
-    return unbound ? "Bind & retry" : "Sync now";
-  }
-  function syncStartSentence(source, fileLabel) {
-    return source === "auto" ? `Auto-sync started \u2014 ${fileLabel} went idle, applying its pending changes` : `Sync started \u2014 checking ${fileLabel} for pending Figma changes to apply`;
-  }
-  function syncResultSentence(ok, summary, landed, unbound, fileLabel) {
-    const clean = typeof summary === "string" && summary.trim().length > 0 ? summary.trim() : ok ? "done" : "failed";
-    if (unbound) return clean;
-    if (!ok) return `Sync failed for ${fileLabel} \u2014 ${clean}`;
-    return landed ? `Synced ${fileLabel} \u2014 ${clean}` : `Nothing synced for ${fileLabel} \u2014 ${clean}`;
-  }
-  var SYNC_STUCK_TIMEOUT_MS = 3e4;
-  function syncStuckSentence() {
-    return "Sync did not answer \u2014 the broker restarted mid-run; press Sync again";
-  }
-  function syncSupersededSentence() {
-    return "Superseded by a newer sync";
-  }
-  function shouldClearPendingCount(ok) {
-    return ok === true;
-  }
-
   // plugin/src/ui/activity-feed.ts
+  function formatClock(at) {
+    if (!Number.isFinite(at)) return "--:--:--";
+    const d = new Date(at);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  function formatTimestamp(at) {
+    if (!Number.isFinite(at)) return "\u2014";
+    const d = new Date(at);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${formatClock(at)}`;
+  }
+  function timeAgo(nowMs, atMs) {
+    const s = Math.floor((nowMs - atMs) / 1e3);
+    if (s < 1) return "now";
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    return `${Math.floor(m / 60)}h`;
+  }
   function toActivityRecord(detail) {
     if (detail === null || typeof detail !== "object") return null;
     const d = detail;
@@ -1192,25 +1176,345 @@ code {
     return verbs.plain;
   }
 
+  // plugin/src/ui/lucide-icons.ts
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var ICONS = {
+    activity: [["path", { d: "M22 12h-4l-3 9L9 3l-3 9H2" }]],
+    "chevron-down": [["path", { d: "m6 9 6 6 6-6" }]],
+    "chevron-up": [["path", { d: "m18 15-6-6-6 6" }]],
+    "circle-check": [
+      ["circle", { cx: "12", cy: "12", r: "10" }],
+      ["path", { d: "m9 12 2 2 4-4" }]
+    ],
+    "circle-off": [
+      ["path", { d: "M20.42 15.89A10 10 0 1 1 8.11 3.58" }],
+      ["path", { d: "m2 2 20 20" }]
+    ],
+    "circle-x": [
+      ["circle", { cx: "12", cy: "12", r: "10" }],
+      ["path", { d: "m15 9-6 6" }],
+      ["path", { d: "m9 9 6 6" }]
+    ],
+    files: [
+      ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }],
+      ["path", { d: "M14 2v6h6" }],
+      ["path", { d: "M2 6h2" }],
+      ["path", { d: "M2 10h2" }],
+      ["path", { d: "M2 14h2" }],
+      ["path", { d: "M2 18h2" }]
+    ],
+    info: [
+      ["circle", { cx: "12", cy: "12", r: "10" }],
+      ["path", { d: "M12 16v-4" }],
+      ["path", { d: "M12 8h.01" }]
+    ],
+    "loader-circle": [
+      ["path", { d: "M21 12a9 9 0 1 1-6.22-8.56" }]
+    ],
+    "panels-top-left": [
+      ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+      ["path", { d: "M3 9h18" }],
+      ["path", { d: "M9 21V9" }]
+    ],
+    pin: [
+      ["path", { d: "M12 17v5" }],
+      ["path", { d: "M5 17h14" }],
+      ["path", { d: "M6 17 7 7l-2-2h14l-2 2 1 10" }]
+    ],
+    "refresh-cw": [
+      ["path", { d: "M21 12a9 9 0 0 1-15.17 6.55L3 16" }],
+      ["path", { d: "M3 21v-5h5" }],
+      ["path", { d: "M3 12A9 9 0 0 1 18.17 5.45L21 8" }],
+      ["path", { d: "M16 8h5V3" }]
+    ]
+  };
+  function makeLucideIcon(name) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("class", "fga-icon");
+    for (const [tag, attributes] of ICONS[name]) {
+      const node = document.createElementNS(SVG_NS, tag);
+      for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+      svg.appendChild(node);
+    }
+    return svg;
+  }
+
+  // plugin/src/ui/panel-view-state.ts
+  var VIEW_KEY_LIMIT = 64;
+  var BoundedKeySet = class {
+    constructor(limit = VIEW_KEY_LIMIT) {
+      this.limit = limit;
+      this.keys = /* @__PURE__ */ new Set();
+      this.overflow = 0;
+    }
+    add(key) {
+      if (this.keys.has(key)) this.keys.delete(key);
+      this.keys.add(key);
+      while (this.keys.size > this.limit) {
+        const oldest = this.keys.values().next().value;
+        if (oldest === void 0) break;
+        this.keys.delete(oldest);
+        this.overflow += 1;
+      }
+    }
+    delete(key) {
+      this.keys.delete(key);
+    }
+    has(key) {
+      return this.keys.has(key);
+    }
+    get size() {
+      return this.keys.size;
+    }
+    get unresolvedCount() {
+      return this.keys.size + this.overflow;
+    }
+    get overflowCount() {
+      return this.overflow;
+    }
+    values() {
+      return [...this.keys];
+    }
+    acknowledge() {
+      this.keys.clear();
+      this.overflow = 0;
+    }
+  };
+  function applyActivityOutcome(failures, id, ok) {
+    if (ok) failures.delete(id);
+    else failures.add(id);
+  }
+  function currentActivity(records) {
+    return records.find((record) => record.pending) ?? records[0];
+  }
+  function landTerminalActivity(records, patch, at = Date.now()) {
+    if (records.some((record) => record.id === patch.id)) return resolveActivity(records, patch);
+    const outcome = patch.ok ? "completed" : "failed";
+    const detail = patch.sentence ?? patch.result ?? outcome;
+    return pushActivity(records, {
+      id: patch.id,
+      tool: "REQUEST",
+      pending: false,
+      ok: patch.ok,
+      ms: patch.ms,
+      at,
+      result: patch.result,
+      errorCode: patch.code,
+      nodeName: patch.nodeName,
+      sentence: `Late result for request ${patch.id} \u2014 ${detail}`
+    });
+  }
+  function connectionForce(state, ageMs, hadConnection2, transitionId) {
+    if (state === "probing" && ageMs >= 1e4) {
+      return { key: `probe-timeout:${transitionId}`, kind: "probe-timeout" };
+    }
+    if (state === "disconnected" && hadConnection2) {
+      return { key: `connection-lost:${transitionId}`, kind: "connection-lost" };
+    }
+    if (!hadConnection2 && (state === "disconnected" || state === "probing")) {
+      return { key: `onboarding:${transitionId}`, kind: "onboarding" };
+    }
+    return null;
+  }
+
+  // plugin/src/ui/panel-activity-view.ts
+  function replaceIcon(target, name, spinning = false) {
+    const kept = Array.from(target.children).filter((child) => child.classList.contains("rail-badge") || child.classList.contains("current-label") || child.classList.contains("failure-count"));
+    const icon = makeLucideIcon(name);
+    if (spinning) icon.classList.add("is-spinning");
+    target.replaceChildren(icon, ...kept);
+  }
+  function labelControl(target, label) {
+    target.title = label;
+    target.setAttribute("aria-label", label);
+  }
+  function renderFailureBadge(target, count) {
+    target.hidden = count === 0;
+    target.textContent = count === 0 ? "" : String(count);
+    target.setAttribute("aria-label", `${count} unresolved failure${count === 1 ? "" : "s"}`);
+  }
+  function sentence(record) {
+    return record.sentence ?? activitySentence({
+      tool: record.tool,
+      label: record.label,
+      result: record.result,
+      errorCode: record.errorCode,
+      errorMessage: !record.ok ? record.result : void 0,
+      nodeName: record.nodeName,
+      pending: record.pending,
+      ok: record.ok
+    });
+  }
+  function row(record, now, stale, fresh) {
+    const item = document.createElement("li");
+    item.className = ["activity-row", stale && "is-stale", fresh && "is-new"].filter(Boolean).join(" ");
+    const state = record.pending ? "running" : record.ok ? "ok" : "failed";
+    const iconWrap = document.createElement("span");
+    iconWrap.className = "log-icon-wrap";
+    iconWrap.dataset.state = state;
+    iconWrap.setAttribute("aria-label", state);
+    const icon = makeLucideIcon(record.pending ? "loader-circle" : record.ok ? "circle-check" : "circle-x");
+    if (record.pending) icon.classList.add("is-spinning");
+    iconWrap.append(icon);
+    const body = document.createElement("div");
+    body.className = "log-body";
+    const text = document.createElement("div");
+    text.className = record.pending || record.ok ? "log-label" : "log-label log-label--wrap";
+    const agent = document.createElement("span");
+    agent.className = "log-agent";
+    agent.textContent = `${record.agent ?? "cli"} \xB7 `;
+    const line = sentence(record);
+    text.append(agent, document.createTextNode(line));
+    text.title = line;
+    const meta = document.createElement("div");
+    meta.className = "log-meta";
+    meta.textContent = record.pending ? "running" : timeAgo(now, record.at);
+    meta.title = formatTimestamp(record.at);
+    body.append(text, meta);
+    item.append(iconWrap, body);
+    return item;
+  }
+  var ActivityView = class {
+    constructor(list, currentButton, currentLabel, failureCount) {
+      this.list = list;
+      this.currentButton = currentButton;
+      this.currentLabel = currentLabel;
+      this.failureCount = failureCount;
+      this.records = [];
+      this.previousKeys = [];
+      this.failures = new BoundedKeySet();
+    }
+    push(record) {
+      this.records = pushActivity(this.records, record);
+    }
+    resolve(patch, trackFailure = true) {
+      this.records = landTerminalActivity(this.records, patch);
+      if (trackFailure) applyActivityOutcome(this.failures, patch.id, patch.ok);
+    }
+    acknowledgeFailures() {
+      this.failures.acknowledge();
+    }
+    render(now = Date.now()) {
+      const shown = this.records.slice(0, 20);
+      if (shown.length === 0) {
+        this.previousKeys = [];
+        if (this.list.children.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "activity-empty";
+          empty.textContent = "No activity yet";
+          this.list.append(empty);
+        }
+      } else {
+        const keys = shown.map((record) => record.id);
+        const fresh = new Set(diffRowKeys(this.previousKeys, keys));
+        this.list.replaceChildren(...shown.map((record, index) => row(record, now, index > 0, fresh.has(record.id))));
+        this.previousKeys = keys;
+      }
+      this.renderRail();
+    }
+    renderRail() {
+      const current = currentActivity(this.records);
+      const count = this.failures.unresolvedCount;
+      renderFailureBadge(this.failureCount, count);
+      const suffix = count === 0 ? "" : `. ${count} unresolved failure${count === 1 ? "" : "s"}`;
+      if (!current) {
+        replaceIcon(this.currentButton, "activity");
+        this.currentLabel.textContent = "Idle";
+        this.currentButton.className = `rail-control current-control${count ? " tone-danger" : ""}`;
+        labelControl(this.currentButton, `Current activity: Idle${suffix}`);
+        return;
+      }
+      const state = current.pending ? "running" : current.ok ? "complete" : "failed";
+      replaceIcon(this.currentButton, current.pending ? "loader-circle" : current.ok ? "circle-check" : "circle-x", current.pending);
+      this.currentLabel.textContent = sentence(current);
+      this.currentButton.className = `rail-control current-control tone-${count ? "danger" : current.pending ? "warning" : current.ok ? "success" : "danger"}`;
+      labelControl(this.currentButton, `Current activity ${state}: ${sentence(current)}${suffix}`);
+    }
+  };
+
+  // plugin/src/ui/panel-model.ts
+  var SYNC_STUCK_TIMEOUT_MS = 3e4;
+  function statusSentence(state, ageMs, hadConnection2) {
+    if (state === "connected") return { text: "Connected", tone: "success" };
+    if (state === "probing") return ageMs >= 1e4 ? { text: "Broker not running \u2014 run figma-agent status.", tone: "warning" } : { text: "Looking for the broker", tone: "warning" };
+    if (state === "handshake") return { text: "Connecting", tone: "info" };
+    return hadConnection2 ? { text: "Connection lost \u2014 reconnecting.", tone: "muted" } : { text: "Not connected \u2014 your first command starts the broker.", tone: "muted" };
+  }
+  function showOnboarding(state, hadConnection2) {
+    return !hadConnection2 && (state === "disconnected" || state === "probing");
+  }
+  function fileNote(count, active, pinned = false) {
+    if (count <= 1) return active ? pinned ? "pinned target" : "command target" : "";
+    const others = count - 1;
+    const files = others === 1 ? "file" : "files";
+    if (!active) return `${others} other ${files} \u2014 commands go elsewhere`;
+    return pinned ? `pinned target \xB7 ${others} other ${files}` : `command target \xB7 ${others} other ${files}`;
+  }
+  function targetButtonLabel(pinned) {
+    return pinned ? "Targeted" : "Target this plugin";
+  }
+  function syncPromptLabel(count) {
+    const value = Number.isFinite(count) && count > 0 ? Math.floor(count) : 1;
+    return `${value} change${value === 1 ? "" : "s"} ready`;
+  }
+  function syncResultLabel(ok, summary, landed = true, unbound = false) {
+    const clean = summary.trim() || (ok ? "done" : "failed");
+    if (unbound) return clean;
+    if (!ok) return `Sync failed \u2014 ${clean}`;
+    return landed ? `Synced \u2014 ${clean}` : `Nothing synced \u2014 ${clean}`;
+  }
+  function syncNowLabel(unbound) {
+    return unbound ? "Bind & retry" : "Sync now";
+  }
+  function syncStartSentence(source, fileLabel) {
+    return source === "auto" ? `Auto-sync started \u2014 ${fileLabel} went idle, applying its pending changes` : `Sync started \u2014 checking ${fileLabel} for pending Figma changes to apply`;
+  }
+  function syncResultSentence(ok, summary, landed, unbound, fileLabel) {
+    const clean = summary.trim() || (ok ? "done" : "failed");
+    if (unbound) return clean;
+    if (!ok) return `Sync failed for ${fileLabel} \u2014 ${clean}`;
+    return landed ? `Synced ${fileLabel} \u2014 ${clean}` : `Nothing synced for ${fileLabel} \u2014 ${clean}`;
+  }
+  function syncStuckSentence() {
+    return "Sync did not answer \u2014 the broker restarted mid-run; press Sync again";
+  }
+  function syncSupersededSentence() {
+    return "Superseded by a newer sync";
+  }
+  function shouldClearPendingCount(ok) {
+    return ok === true;
+  }
+
   // plugin/src/ui/panel-ui.ts
   var el = (id) => document.getElementById(id);
-  var dot = el("fga-dot");
-  var sentence = el("fga-sentence");
+  var btn = (id) => el(id);
+  var panel = el("fga-panel");
+  var inspector = el("fga-inspector");
+  var connectionBtn = btn("fga-connection-btn");
+  var currentBtn = btn("fga-current-btn");
+  var targetRailBtn = btn("fga-target-rail-btn");
+  var syncRailBtn = btn("fga-sync-rail-btn");
+  var syncBadge = el("fga-sync-badge");
+  var toggleBtn = btn("fga-toggle-btn");
+  var sentence2 = el("fga-sentence");
   var onboarding = el("fga-onboarding");
-  var ctxFile = el("fga-ctx-file");
-  var ctxFileNote = el("fga-ctx-file-note");
-  var ctxPage = el("fga-ctx-page");
-  var ctxSelection = el("fga-ctx-selection");
-  var targetBtn = el("fga-target-btn");
-  var activityList = el("fga-activity");
-  var versionEl = el("fga-version");
   var syncPrompt = el("fga-sync");
   var syncMsg = el("fga-sync-msg");
-  var syncNowBtn = el("fga-sync-now");
-  var syncLaterBtn = el("fga-sync-later");
+  var syncNowBtn = btn("fga-sync-now");
+  var targetBtn = btn("fga-target-btn");
+  var activityView = new ActivityView(el("fga-activity"), currentBtn, el("fga-current-label"), el("fga-failure-count"));
+  var tabNames = ["activity", "context", "details"];
+  var tabs = Object.fromEntries(tabNames.map((name) => [name, btn(`fga-tab-${name}`)]));
+  var tabPanels = Object.fromEntries(tabNames.map((name) => [name, el(`fga-panel-${name}`)]));
   var payload = null;
   var hadConnection = false;
-  var activity = [];
   var sceneFile = "";
   var scenePage = "";
   var selectionName = null;
@@ -1218,254 +1522,258 @@ code {
   var peersCount = 1;
   var peersIsActiveTarget = true;
   var peersPinned = false;
-  var SVG_NS = "http://www.w3.org/2000/svg";
-  var ICONS = {
-    // check-circle, regular — the wrapper's aria-label carries the state; colour (via
-    // CSS) carries "success" visually.
-    check: "M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z",
-    // x-circle, regular.
-    x: "M165.66,101.66,139.31,128l26.35,26.34a8,8,0,0,1-11.32,11.32L128,139.31l-26.34,26.35a8,8,0,0,1-11.32-11.32L116.69,128,90.34,101.66a8,8,0,0,1,11.32-11.32L128,116.69l26.34-26.35a8,8,0,0,1,11.32,11.32ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z",
-    // circle-notch, regular — CSS rotates it (fga-spin).
-    notch: "M232,128a104,104,0,0,1-208,0c0-41,23.81-78.36,60.66-95.27a8,8,0,0,1,6.68,14.54C60.15,61.59,40,93.27,40,128a88,88,0,0,0,176,0c0-34.73-20.15-66.41-51.34-80.73a8,8,0,0,1,6.68-14.54C208.19,49.64,232,87,232,128Z"
-  };
-  function makeIcon(name) {
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("viewBox", "0 0 256 256");
-    svg.setAttribute("fill", "currentColor");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("class", "log-icon");
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", ICONS[name]);
-    svg.appendChild(path);
-    return svg;
+  var pendingSyncCount = 0;
+  var selectedTab = "activity";
+  var inspectorOpen = false;
+  var userExpanded = false;
+  var forcedOnly = false;
+  var connectionFailure = false;
+  var syncFailure = false;
+  var connectionTransition = 0;
+  var previousConnectionState = null;
+  var disclosed = new BoundedKeySet();
+  function viewport(mode) {
+    parent.postMessage({ pluginMessage: { type: "PANEL_VIEWPORT", mode } }, "*");
   }
-  function renderContext() {
-    ctxFile.textContent = sceneFile || "\u2014";
-    ctxFile.title = sceneFile || "";
-    ctxFileNote.textContent = fileNote(peersCount, peersIsActiveTarget, peersPinned);
-    ctxPage.textContent = scenePage || "\u2014";
-    ctxPage.title = scenePage || "";
-    ctxSelection.textContent = selectionText();
-    targetBtn.textContent = targetButtonLabel(peersPinned);
-  }
-  function selectionText() {
-    if (selectionCount <= 0) return "None";
-    const first = selectionName ?? "(unnamed)";
-    return selectionCount > 1 ? `${first} +${selectionCount - 1} more` : first;
-  }
-  var ACTIVITY_ROWS = 20;
-  function activityRow(r, now, stale, isNew) {
-    const li = document.createElement("li");
-    const classes = ["activity-row", "fga-row"];
-    if (stale) classes.push("is-stale");
-    if (isNew) classes.push("is-new");
-    li.className = classes.join(" ");
-    const state = r.pending ? "running" : r.ok ? "ok" : "failed";
-    const iconName = r.pending ? "notch" : r.ok ? "check" : "x";
-    const iconWrap = document.createElement("span");
-    iconWrap.className = "log-icon-wrap fga-icon";
-    iconWrap.dataset.state = state;
-    iconWrap.setAttribute("aria-label", state);
-    iconWrap.appendChild(makeIcon(iconName));
-    const body = document.createElement("div");
-    body.className = "log-body";
-    const text = document.createElement("div");
-    text.className = !r.pending && !r.ok ? "log-label log-label--wrap" : "log-label";
-    const line = r.sentence ?? activitySentence({
-      tool: r.tool,
-      label: r.label,
-      result: r.result,
-      errorCode: r.errorCode,
-      errorMessage: !r.ok ? r.result : void 0,
-      nodeName: r.nodeName,
-      pending: r.pending,
-      ok: r.ok
-    });
-    const agentSpan = document.createElement("span");
-    agentSpan.className = "log-agent";
-    agentSpan.textContent = `${r.agent ?? "cli"} \xB7 `;
-    text.append(agentSpan, document.createTextNode(line));
-    text.title = line;
-    const caption = document.createElement("div");
-    caption.className = "log-meta";
-    caption.textContent = r.pending ? "running" : timeAgoCaption(now, r.at);
-    caption.title = formatTimestampCaption(r.at);
-    body.append(text, caption);
-    li.append(iconWrap, body);
-    return li;
-  }
-  function timeAgoCaption(now, at) {
-    const s = Math.floor((now - at) / 1e3);
-    if (s < 1) return "now";
-    if (s < 60) return `${s}s ago`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `${m}m ago`;
-    return `${Math.floor(m / 60)}h ago`;
-  }
-  function formatTimestampCaption(at) {
-    if (!Number.isFinite(at)) return "\u2014";
-    const d = new Date(at);
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  }
-  var previousRowKeys = [];
-  function renderActivity(now) {
-    if (activity.length === 0) {
-      previousRowKeys = [];
-      return;
+  function selectTab(tab, focus = false) {
+    selectedTab = tab;
+    for (const name of tabNames) {
+      const selected = name === tab;
+      tabs[name].setAttribute("aria-selected", String(selected));
+      tabs[name].tabIndex = selected ? 0 : -1;
+      tabPanels[name].hidden = !selected;
     }
-    const shown = activity.slice(0, ACTIVITY_ROWS);
-    const nextKeys = shown.map((r) => r.id);
-    const newKeys = new Set(diffRowKeys(previousRowKeys, nextKeys));
-    activityList.replaceChildren(
-      ...shown.map((r, i) => activityRow(r, now, i > 0, newKeys.has(r.id)))
-    );
-    previousRowKeys = nextKeys;
+    if (focus) tabs[tab].focus();
+  }
+  function setInspector(open, tab = selectedTab, intent = false) {
+    inspectorOpen = open;
+    if (intent) {
+      userExpanded = open;
+      forcedOnly = false;
+    }
+    panel.dataset.view = open ? "inspector" : "rail";
+    inspector.hidden = !open;
+    toggleBtn.setAttribute("aria-expanded", String(open));
+    labelControl(toggleBtn, open ? "Close inspector" : "Open inspector");
+    replaceIcon(toggleBtn, open ? "chevron-up" : "chevron-down");
+    if (open) selectTab(tab);
+    viewport(open ? "inspector" : "rail");
+  }
+  function forceOnce(key, tab) {
+    if (disclosed.has(key)) return;
+    disclosed.add(key);
+    if (!userExpanded) forcedOnly = true;
+    setInspector(true, tab);
+  }
+  function unresolved() {
+    return connectionFailure || syncFailure || activityView.failures.unresolvedCount > 0;
+  }
+  function updateSignal() {
+    panel.dataset.unresolved = String(unresolved());
+  }
+  function acknowledgeActivity() {
+    activityView.acknowledgeFailures();
+    updateSignal();
+    activityView.render();
+  }
+  function openUser(tab) {
+    if (tab === "activity") acknowledgeActivity();
+    setInspector(true, tab, true);
+  }
+  function context() {
+    el("fga-ctx-file").textContent = sceneFile || "\u2014";
+    el("fga-ctx-file").title = sceneFile;
+    el("fga-ctx-file-note").textContent = fileNote(peersCount, peersIsActiveTarget, peersPinned);
+    el("fga-ctx-page").textContent = scenePage || "\u2014";
+    el("fga-ctx-page").title = scenePage;
+    el("fga-ctx-selection").textContent = selectionCount <= 0 ? "None" : `${selectionName ?? "(unnamed)"}${selectionCount > 1 ? ` +${selectionCount - 1} more` : ""}`;
+    targetBtn.textContent = targetButtonLabel(peersPinned);
+    targetRailBtn.hidden = peersCount <= 1;
+    if (!targetRailBtn.hidden) {
+      labelControl(targetRailBtn, `${peersCount} files. ${fileNote(peersCount, peersIsActiveTarget, peersPinned)}`);
+      replaceIcon(targetRailBtn, peersPinned ? "pin" : "files");
+      targetRailBtn.classList.toggle("tone-info", peersIsActiveTarget);
+    }
   }
   function render() {
-    const now = Date.now();
-    const state = payload?.state ?? "disconnected";
-    const view = statusSentence(state, payload ? now - payload.since : 0, hadConnection);
-    dot.dataset.tone = view.tone;
-    dot.classList.toggle("is-pulsing", state === "probing");
-    sentence.textContent = view.text;
-    sentence.dataset.tone = view.tone;
+    const now = Date.now(), state = payload?.state ?? "disconnected", age = payload ? now - payload.since : 0;
+    const view = statusSentence(state, age, hadConnection);
+    sentence2.textContent = view.text;
+    sentence2.dataset.tone = view.tone;
     onboarding.hidden = !showOnboarding(state, hadConnection);
-    renderContext();
-    renderActivity(now);
+    replaceIcon(connectionBtn, state === "connected" ? "circle-check" : state === "probing" || state === "handshake" ? "loader-circle" : "circle-off", state === "probing" || state === "handshake");
+    connectionBtn.className = `rail-control tone-${view.tone}`;
+    labelControl(connectionBtn, view.text);
+    context();
+    activityView.render(now);
+    const showSync = pendingSyncCount > 0 || syncFailure;
+    syncRailBtn.hidden = !showSync;
+    if (showSync) {
+      syncBadge.textContent = String(Math.max(1, pendingSyncCount));
+      replaceIcon(syncRailBtn, syncFailure ? "circle-x" : "refresh-cw");
+      syncRailBtn.className = `rail-control tone-${syncFailure ? "danger" : "warning"}`;
+      labelControl(syncRailBtn, syncFailure ? `${syncMsg.textContent || "Sync failed"}. Open sync actions` : `${syncPromptLabel(pendingSyncCount)}. Open sync actions`);
+    }
+    const force = connectionForce(state, age, hadConnection, connectionTransition);
+    connectionFailure = force?.kind === "probe-timeout" || force?.kind === "connection-lost";
+    updateSignal();
+    if (force) forceOnce(force.key, "details");
+    if (state === "connected" && forcedOnly && !userExpanded && !unresolved()) {
+      forcedOnly = false;
+      setInspector(false);
+    }
   }
-  window.addEventListener("figma-agent:conn-state", (ev) => {
-    const p = ev.detail;
-    if (!p || typeof p.state !== "string") return;
-    if (p.state === "connected") hadConnection = true;
-    payload = p;
+  connectionBtn.onclick = () => setInspector(true, "details", true);
+  currentBtn.onclick = () => openUser("activity");
+  var toggleTarget = () => {
+    try {
+      window.dispatchEvent(new CustomEvent(peersPinned ? "figma-agent:clear-target" : "figma-agent:set-target"));
+    } catch {
+    }
+  };
+  targetRailBtn.onclick = toggleTarget;
+  targetBtn.onclick = toggleTarget;
+  syncRailBtn.onclick = () => {
+    syncPrompt.hidden = false;
+    openUser("activity");
+  };
+  toggleBtn.onclick = () => {
+    if (!inspectorOpen && selectedTab === "activity") acknowledgeActivity();
+    setInspector(!inspectorOpen, selectedTab, true);
+  };
+  for (const tab of tabNames) {
+    tabs[tab].onclick = () => {
+      if (tab === "activity") acknowledgeActivity();
+      selectTab(tab);
+    };
+    tabs[tab].onkeydown = (event) => {
+      const index = tabNames.indexOf(tab);
+      const target = event.key === "ArrowRight" ? tabNames[(index + 1) % 3] : event.key === "ArrowLeft" ? tabNames[(index + 2) % 3] : event.key === "Home" ? tabNames[0] : event.key === "End" ? tabNames[2] : null;
+      if (target) {
+        event.preventDefault();
+        if (target === "activity") acknowledgeActivity();
+        selectTab(target, true);
+      }
+    };
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && inspectorOpen) {
+      event.preventDefault();
+      setInspector(false, selectedTab, true);
+      toggleBtn.focus();
+    }
+  });
+  window.addEventListener("figma-agent:conn-state", (event) => {
+    const next = event.detail;
+    if (!next || typeof next.state !== "string") return;
+    if (next.state !== previousConnectionState) connectionTransition += 1;
+    previousConnectionState = next.state;
+    if (next.state === "connected") hadConnection = true;
+    payload = next;
     render();
   });
-  window.addEventListener("figma-agent:activity", (ev) => {
-    const detail = ev.detail;
+  window.addEventListener("figma-agent:activity", (event) => {
+    const detail = event.detail;
     if (detail?.phase === "done") {
       const patch = toActivityResult(detail);
       if (!patch) return;
-      activity = resolveActivity(activity, patch);
+      activityView.resolve(patch);
+      if (!patch.ok) forceOnce(`activity-failure:${patch.id}`, "activity");
     } else {
-      const rec = toActivityRecord(detail);
-      if (!rec) return;
-      activity = pushActivity(activity, rec);
+      const record = toActivityRecord(detail);
+      if (!record) return;
+      activityView.push(record);
     }
-    renderActivity(Date.now());
+    updateSignal();
+    render();
   });
-  window.addEventListener("figma-agent:peers", (ev) => {
-    const d = ev.detail;
-    if (typeof d?.count === "number" && Number.isFinite(d.count)) peersCount = d.count;
-    if (typeof d?.isActiveTarget === "boolean") peersIsActiveTarget = d.isActiveTarget;
-    peersPinned = typeof d?.pinned === "boolean" && d.pinned;
-    renderContext();
+  window.addEventListener("figma-agent:peers", (event) => {
+    const data = event.detail;
+    if (typeof data?.count === "number" && Number.isFinite(data.count)) peersCount = data.count;
+    if (typeof data?.isActiveTarget === "boolean") peersIsActiveTarget = data.isActiveTarget;
+    peersPinned = data?.pinned === true;
+    context();
   });
-  window.addEventListener("message", (ev) => {
-    const pm = ev.data?.pluginMessage;
-    if (!pm) return;
-    if (pm.type === "IDLE_READY" && pm.data) {
-      const count = typeof pm.data.count === "number" ? pm.data.count : 1;
-      syncMsg.textContent = syncPromptLabel(count);
+  window.addEventListener("message", (event) => {
+    const message = event.data?.pluginMessage;
+    if (!message) return;
+    if (message.type === "IDLE_READY" && message.data) {
+      pendingSyncCount = typeof message.data.count === "number" ? Math.max(1, Math.floor(message.data.count)) : 1;
+      syncFailure = false;
+      syncMsg.textContent = syncPromptLabel(pendingSyncCount);
       syncNowBtn.textContent = syncNowLabel(false);
-      syncPrompt.hidden = false;
+      syncPrompt.hidden = true;
+      render();
       return;
     }
-    if (pm.type !== "FILE_INFO" || !pm.data) return;
-    if (typeof pm.data.fileName === "string") sceneFile = pm.data.fileName;
-    if (typeof pm.data.page === "string") scenePage = pm.data.page;
-    selectionName = typeof pm.data.selectionName === "string" ? pm.data.selectionName : null;
-    selectionCount = typeof pm.data.selectionCount === "number" ? pm.data.selectionCount : 0;
-    renderContext();
-  });
-  var reconcileRun = null;
-  var reconcileStuckTimer = null;
-  syncNowBtn.addEventListener("click", () => {
-    syncMsg.textContent = "Syncing";
-    const at = Date.now();
-    const id = `reconcile_${at}`;
-    if (reconcileRun) {
-      if (reconcileStuckTimer !== null) {
-        clearTimeout(reconcileStuckTimer);
-        reconcileStuckTimer = null;
-      }
-      activity = resolveActivity(activity, {
-        id: reconcileRun.id,
-        ok: false,
-        ms: at - reconcileRun.at,
-        sentence: syncSupersededSentence()
-      });
+    if (message.type === "FILE_INFO" && message.data) {
+      if (typeof message.data.fileName === "string") sceneFile = message.data.fileName;
+      if (typeof message.data.page === "string") scenePage = message.data.page;
+      selectionName = typeof message.data.selectionName === "string" ? message.data.selectionName : null;
+      selectionCount = typeof message.data.selectionCount === "number" ? message.data.selectionCount : 0;
+      context();
     }
-    reconcileRun = { id, at };
-    const fileLabel = sceneFile ?? "(unnamed file)";
-    activity = pushActivity(activity, {
-      id,
-      tool: "RECONCILE",
-      label: "Reconcile \xB7 apply",
-      pending: true,
-      ok: true,
-      ms: 0,
-      at,
-      sentence: syncStartSentence("manual", fileLabel)
-    });
-    renderActivity(at);
+  });
+  var run = null;
+  var stuckTimer = null;
+  syncNowBtn.onclick = () => {
+    const at = Date.now(), id = `reconcile_${at}`;
+    syncMsg.textContent = "Syncing";
+    if (run) {
+      if (stuckTimer) clearTimeout(stuckTimer);
+      activityView.resolve({ id: run.id, ok: false, ms: at - run.at, sentence: syncSupersededSentence() }, false);
+    }
+    run = { id, at };
+    activityView.push({ id, tool: "RECONCILE", label: "Reconcile \xB7 apply", pending: true, ok: true, ms: 0, at, sentence: syncStartSentence("manual", sceneFile || "(unnamed file)") });
+    render();
     try {
       window.dispatchEvent(new CustomEvent("figma-agent:sync-request"));
     } catch {
     }
-    if (reconcileStuckTimer !== null) clearTimeout(reconcileStuckTimer);
-    reconcileStuckTimer = setTimeout(() => {
-      if (reconcileRun?.id !== id) return;
+    stuckTimer = setTimeout(() => {
+      if (run?.id !== id) return;
       const now = Date.now();
-      activity = resolveActivity(activity, { id, ok: false, ms: now - at, sentence: syncStuckSentence() });
-      reconcileRun = null;
-      reconcileStuckTimer = null;
-      renderActivity(now);
+      activityView.resolve({ id, ok: false, ms: now - at, sentence: syncStuckSentence() });
+      run = null;
+      stuckTimer = null;
+      syncFailure = true;
+      syncMsg.textContent = syncStuckSentence();
+      syncPrompt.hidden = false;
+      forceOnce(`activity-failure:${id}`, "activity");
+      render();
     }, SYNC_STUCK_TIMEOUT_MS);
-  });
-  syncLaterBtn.addEventListener("click", () => {
+  };
+  btn("fga-sync-later").onclick = () => {
     syncPrompt.hidden = true;
-  });
-  window.addEventListener("figma-agent:sync-result", (ev) => {
-    const d = ev.detail;
-    const unbound = d?.code === "E_UNBOUND";
-    const ok = d?.ok === true;
-    const summary = typeof d?.summary === "string" ? d.summary : "";
-    const landed = d?.landed !== false;
-    const label = syncResultLabel(ok, summary, landed, unbound);
-    syncMsg.textContent = label;
+  };
+  window.addEventListener("figma-agent:sync-result", (event) => {
+    const data = event.detail;
+    const unbound = data?.code === "E_UNBOUND", ok = data?.ok === true, summary = typeof data?.summary === "string" ? data.summary : "", landed = data?.landed !== false;
+    syncMsg.textContent = syncResultLabel(ok, summary, landed, unbound);
     syncNowBtn.textContent = syncNowLabel(unbound);
-    if (reconcileRun) {
-      if (reconcileStuckTimer !== null) {
-        clearTimeout(reconcileStuckTimer);
-        reconcileStuckTimer = null;
-      }
-      const now = Date.now();
-      const fileLabel = sceneFile ?? "(unnamed file)";
-      activity = resolveActivity(activity, {
-        id: reconcileRun.id,
-        ok,
-        ms: now - reconcileRun.at,
-        sentence: syncResultSentence(ok, summary, landed, unbound, fileLabel)
-      });
-      reconcileRun = null;
-      renderActivity(now);
+    const current = run;
+    if (current) {
+      if (stuckTimer) clearTimeout(stuckTimer);
+      activityView.resolve({ id: current.id, ok, ms: Date.now() - current.at, sentence: syncResultSentence(ok, summary, landed, unbound, sceneFile || "(unnamed file)") });
+      run = null;
+      stuckTimer = null;
     }
     const commit = shouldClearPendingCount(ok);
     parent.postMessage({ pluginMessage: { type: "SYNC_DONE", commit } }, "*");
+    syncFailure = !ok;
+    if (commit) pendingSyncCount = 0;
     syncPrompt.hidden = false;
+    if (!ok) forceOnce(`activity-failure:${current?.id ?? Date.now()}`, "activity");
     if (commit) setTimeout(() => {
       syncPrompt.hidden = true;
+      render();
     }, 4e3);
+    render();
   });
-  targetBtn.addEventListener("click", () => {
-    const event = peersPinned ? "figma-agent:clear-target" : "figma-agent:set-target";
-    try {
-      window.dispatchEvent(new CustomEvent(event));
-    } catch {
-    }
-  });
-  versionEl.textContent = `v0.1.0 \xB7 ${true ? "6a89393" : "dev"}`;
+  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "15cb9e2" : "dev"}`;
+  replaceIcon(targetRailBtn, "files");
+  replaceIcon(syncRailBtn, "refresh-cw");
+  replaceIcon(toggleBtn, "chevron-down");
   setInterval(render, 1e3);
   render();
 
