@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   statusSentence, formatAge, showOnboarding, fileNote,
-  RAIL_WIDTH, RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT,
-  viewportFor, shouldForceInspector,
+  RAIL_COMPACT_WIDTH, RAIL_ONE_ACTION_WIDTH, RAIL_TWO_ACTIONS_WIDTH,
+  RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT,
+  railViewportMode, viewportFor, shouldForceInspector,
   syncPromptLabel, syncResultLabel, syncNowLabel, shouldClearPendingCount,
   syncStartSentence, syncResultSentence, syncStuckSentence, syncSupersededSentence, SYNC_STUCK_TIMEOUT_MS,
   targetButtonLabel,
@@ -100,10 +101,20 @@ describe('targetButtonLabel — the "Target this plugin" toggle (#35 P2)', () =>
 });
 describe('adaptive panel geometry', () => {
   it('maps named viewport modes to the only accepted dimensions', () => {
-    expect(viewportFor('rail')).toEqual({ width: 240, height: 44 });
+    expect(viewportFor('rail-compact')).toEqual({ width: 200, height: 44 });
+    expect(viewportFor('rail-one-action')).toEqual({ width: 220, height: 44 });
+    expect(viewportFor('rail-two-actions')).toEqual({ width: 240, height: 44 });
     expect(viewportFor('inspector')).toEqual({ width: 288, height: 280 });
-    expect([RAIL_WIDTH, RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT])
-      .toEqual([240, 44, 288, 280]);
+    expect([
+      RAIL_COMPACT_WIDTH, RAIL_ONE_ACTION_WIDTH, RAIL_TWO_ACTIONS_WIDTH,
+      RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT,
+    ]).toEqual([200, 220, 240, 44, 288, 280]);
+  });
+  it('selects the smallest safe rail from conditional control visibility', () => {
+    expect(railViewportMode(false, false)).toBe('rail-compact');
+    expect(railViewportMode(true, false)).toBe('rail-one-action');
+    expect(railViewportMode(false, true)).toBe('rail-one-action');
+    expect(railViewportMode(true, true)).toBe('rail-two-actions');
   });
   it('forces text-bearing recovery only when it is actionable', () => {
     expect(shouldForceInspector('disconnected', 0, false)).toBe(true);

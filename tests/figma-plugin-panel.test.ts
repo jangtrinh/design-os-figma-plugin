@@ -27,9 +27,14 @@ const html = read('plugin/src/ui/panel.html');
 const model = read('plugin/src/ui/panel-model.ts');
 const panelUi = read('plugin/src/ui/panel-ui.ts');
 const activityView = read('plugin/src/ui/panel-activity-view.ts');
+const thinkingOrb = existsSync(`${ROOT}/plugin/src/ui/thinking-orb.ts`) ? read('plugin/src/ui/thinking-orb.ts') : '';
 const viewState = read('plugin/src/ui/panel-view-state.ts');
 const main = read('plugin/src/main/main.ts');
 const icons = existsSync(`${ROOT}/plugin/src/ui/lucide-icons.ts`) ? read('plugin/src/ui/lucide-icons.ts') : '';
+const packageJson = JSON.parse(read('package.json')) as {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
 
 const THEME_BLOCK_RE = /(?::root|html\.figma-light)\s*\{[\s\S]*?\}/g;
 const chrome = html.replace(THEME_BLOCK_RE, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -56,16 +61,23 @@ describe('adaptive panel source contract', () => {
   });
 
   it('opens as the exact rail and whitelists only named viewport modes', () => {
-    expect(model).toContain('RAIL_WIDTH = 240');
+    expect(model).toContain('RAIL_COMPACT_WIDTH = 200');
+    expect(model).toContain('RAIL_ONE_ACTION_WIDTH = 220');
+    expect(model).toContain('RAIL_TWO_ACTIONS_WIDTH = 240');
     expect(model).toContain('RAIL_HEIGHT = 44');
     expect(model).toContain('INSPECTOR_WIDTH = 288');
     expect(model).toContain('INSPECTOR_HEIGHT = 280');
-    expect(main).toMatch(/width:\s*RAIL_WIDTH,\s*height:\s*RAIL_HEIGHT/);
+    expect(main).toMatch(/width:\s*RAIL_COMPACT_WIDTH,\s*height:\s*RAIL_HEIGHT/);
     expect(main).toContain("chrome.type === 'PANEL_VIEWPORT'");
+    for (const mode of ['rail-compact', 'rail-one-action', 'rail-two-actions', 'inspector']) {
+      expect(main).toContain(`chrome.mode === '${mode}'`);
+    }
     expect(main).toContain("chrome.mode === 'inspector'");
     expect(main).toContain('viewportFor(chrome.mode)');
     expect(main).toContain('figma.ui.resize(viewport.width, viewport.height)');
     expect(main).not.toMatch(/chrome\.(?:width|height)/);
+    expect(panelUi).toContain('railViewportMode(!targetRailBtn.hidden, !syncRailBtn.hidden)');
+    expect(panelUi).toContain('if (lastViewportMode === mode) return');
   });
 
   it('owns a compact rail and a mounted three-view inspector', () => {
@@ -101,6 +113,30 @@ describe('Lucide and control accessibility', () => {
     expect(icons).not.toContain('innerHTML');
     expect(activityView).toContain("from './lucide-icons'");
     expect(`${panelUi}${activityView}${icons}`).not.toContain('Phosphor');
+  });
+
+  it('uses the exact engine package without pulling React into the panel', () => {
+    expect(packageJson.dependencies?.['thinking-orbs']).toBeUndefined();
+    expect(packageJson.devDependencies?.['thinking-orbs']).toBe('0.3.1');
+    expect(thinkingOrb).toContain("from 'thinking-orbs/engine'");
+    expect(thinkingOrb).not.toMatch(/from ['"]thinking-orbs['"]|from ['"]react['"]/);
+    expect(panelUi).toContain('mountThinkingOrb(connectionBtn)');
+  });
+
+  it('uses one aggregate canvas status and no current-activity outcome glyph', () => {
+    expect(thinkingOrb).toContain("document.createElement('canvas')");
+    expect((thinkingOrb.match(/document\.createElement\('canvas'\)/g) ?? []).length).toBe(1);
+    expect(panelUi).not.toContain('replaceIcon(connectionBtn');
+    expect(activityView).not.toContain('replaceIcon(this.currentButton');
+    expect(activityView).toContain('makeLucideIcon(record.pending');
+    expect(activityView).toContain('railPhase()');
+  });
+
+  it('recomputes aggregate orb status immediately when activity is acknowledged', () => {
+    expect(panelUi).toContain('function renderOrb()');
+    const acknowledge = /function acknowledgeActivity\(\): void \{([\s\S]*?)\}/.exec(panelUi)?.[1] ?? '';
+    expect(acknowledge).toContain('activityView.acknowledgeFailures()');
+    expect(acknowledge).toContain('renderOrb()');
   });
 
   it('gives every icon-only rail control a title, accessible name, and native button', () => {
