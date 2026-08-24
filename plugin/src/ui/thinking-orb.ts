@@ -1,5 +1,6 @@
 import type { ConnectionState } from '../../../shared/protocol';
 import { MODE_DRAWS, resolvePreset, type OrbState } from 'thinking-orbs/engine';
+import { commandOrbPresentation } from './orb-command-state';
 
 const ORB_SIZE = 20;
 const STATIC_TIME = 0.75;
@@ -9,7 +10,7 @@ export interface OrbSignals {
   connectionFailure: boolean;
   syncFailure: boolean;
   activityFailure: boolean;
-  activityPending: boolean;
+  pendingTools: readonly string[];
   syncPending: boolean;
 }
 
@@ -17,7 +18,7 @@ export interface OrbPresentation {
   state: OrbState;
   paused: boolean;
   dimmed: boolean;
-  status: 'Connected' | 'Processing' | 'Connecting' | 'Disconnected' | 'Needs attention';
+  status: string;
 }
 
 export function orbPresentation(signals: OrbSignals): OrbPresentation {
@@ -30,8 +31,16 @@ export function orbPresentation(signals: OrbSignals): OrbPresentation {
   if (signals.connection === 'disconnected') {
     return { state: 'connecting', paused: true, dimmed: true, status: 'Disconnected' };
   }
-  if (signals.activityPending || signals.syncPending) {
-    return { state: 'working', paused: false, dimmed: false, status: 'Processing' };
+  const syncRepresented = signals.pendingTools.includes('RECONCILE');
+  const pendingCount = signals.pendingTools.length + (signals.syncPending && !syncRepresented ? 1 : 0);
+  if (pendingCount >= 2) {
+    return { state: 'weaving', paused: false, dimmed: false, status: `${pendingCount} tasks running` };
+  }
+  if (signals.syncPending) {
+    return { state: 'weaving', paused: false, dimmed: false, status: 'Syncing' };
+  }
+  if (signals.pendingTools.length === 1) {
+    return { ...commandOrbPresentation(signals.pendingTools[0] ?? ''), paused: false, dimmed: false };
   }
   return { state: 'breathing', paused: false, dimmed: false, status: 'Connected' };
 }
@@ -57,7 +66,7 @@ export function mountThinkingOrb(target: HTMLElement): ThinkingOrbController {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   let presentation = orbPresentation({
     connection: 'disconnected', connectionFailure: false, syncFailure: false,
-    activityFailure: false, activityPending: false, syncPending: false,
+    activityFailure: false, pendingTools: [], syncPending: false,
   });
   canvas.dataset.dimmed = String(presentation.dimmed);
   let frameId: number | null = null;
