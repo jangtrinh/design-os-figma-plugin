@@ -273,7 +273,6 @@
   --fga-tone-success: #5BA46F;    /* the reference's own green, ~8% less saturated — 5.96 (body, text), 4.20 (row-active, indicator) */
   --fga-tone-warning: #C9A356;    /* web-amber → ochre; stops shouting next to the greys — 7.56 (body, text) */
   --fga-tone-info: #8FB4D9;       /* desaturated steel, not "link blue" — 8.28 (body, text); also --fga-focus's value, 3:1+ on all three surfaces */
-  --fga-tone-muted: #9B9B9B;      /* already neutral; aligned with --fga-text-muted — 6.45 (body, indicator) */
   --fga-tone-danger: #D98A8A;     /* muted terracotta, icon-only (never text) — 4.78 (row-active, indicator) */
   --fga-radius: 8px;              /* inputs, cards, buttons */
   --fga-radius-sm: 6px;           /* chips */
@@ -329,7 +328,7 @@
 
    Full recompute (WCAG 2.1, text 4.5:1 / non-text-indicator 3:1), against every
    surface a token is REACHABLE on in this file's actual markup (status-sentence and
-   status-dot sit on --fga-chrome, which equals --fga-surface's hex here; activity-row
+   rail icons sit on --fga-chrome, which equals --fga-surface's hex here; activity-row
    icons sit on --fga-row-active when fresh, --fga-surface when stale; section-label
    and .activity-empty reach --fga-body via the Context block / plain body):
      --fga-text     (#1A1A1A) vs body 16.25, surface/chrome 17.40, row-active 14.73 — PASS everywhere
@@ -348,9 +347,8 @@
      --fga-tone-warning (#8A6A1F) vs chrome 5.05 (text) · vs row-active 4.27 (indicator) — PASS
      --fga-tone-info    (#2B5E8C) vs chrome 6.81 (text) · vs row-active 5.77 (indicator);
                     also --fga-focus's value — vs body 6.36, surface/chrome 6.81, row-active 5.77,
-                    all far past the 3:1 focus-ring floor — PASS
+                    all well past the 3:1 focus-ring floor — PASS
      --fga-tone-danger  (#B3372F) — icon-only, never text — vs row-active 5.07 (indicator) — PASS
-     --fga-tone-muted   (#6B6B6B, = text-muted) vs chrome/body — PASS (see text-muted above)
      --fga-border-strong (#767676, decorative-boundary token, not owner-specified — derived)
                     vs surface (sync-btn's own bg) 4.54, vs row-active (hover) 3.84 — both
                     clear the 3:1 non-text floor
@@ -371,7 +369,6 @@ html.figma-light {
   --fga-tone-success: #1F7A3D;
   --fga-tone-warning: #8A6A1F;
   --fga-tone-info: #2B5E8C;
-  --fga-tone-muted: #6B6B6B;
   --fga-tone-danger: #B3372F;
   --fga-hairline: rgba(0, 0, 0, 0.12);       /* raised-card border — black flip of the dark 0.08 */
   --fga-hairline-soft: rgba(0, 0, 0, 0.08);  /* nested/secondary edges, row hover — black flip of 0.06 */
@@ -394,7 +391,8 @@ html.figma-light {
    onboarding card is priority-1 content and stays, re-parented under the status
    sentence. One font family throughout (`--font-family-body`, declared ONCE on
    `body` and inherited); every text glyph that used to be cross/check is now an
-   inline Phosphor-style SVG (panel-ui.ts's `ICONS` map). ──────────────────── */
+   inline SVG marks. The adaptive rail replaces them with the locally vendored Lucide
+   descriptor factory in panel-ui.ts. ──────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 img, svg { max-width: 100%; }
 
@@ -440,21 +438,17 @@ body {
    Gate D exempts this selector by name. */
 ::selection { background: rgba(143, 180, 217, 0.28); color: var(--fga-text); }
 
-/* Spatial rhythm (phase 03 §1): one row layout, one icon grid, one dot grid —
+/* Spatial rhythm (phase 03 §1): one row layout and one icon grid —
    applied via markup classes (`fga-row`, `fga-icon`) rather than duplicated
    per-selector, so `.status-row` and `.activity-row` share the same flex
-   layout instead of re-declaring it. Two size families, not one: SVG icons
-   ride the 14px grid; the two CSS-drawn dots (`.status-dot`, `.identity-dot`)
-   are dots, not icons — unified at 8px so there is one dot size, one icon
-   size, and no third. */
+   layout instead of re-declaring it. SVG icons ride the 14px grid. */
 .fga-row { display: flex; align-items: flex-start; gap: var(--space-1); }
-/* Optical centring on the FIRST line box rather than the flex box: a 14px icon
+/* Optical centring on the FIRST line box rather than the flex box: the legacy icon
    beside a 13px/1.5-line-height line sits high if you centre on the box. line
    box = 13 * 1.5 = 19.5px, so (19.5 - 14)/2 = 2.75px — derived, not eyeballed,
    and it stays correct if the size token moves. */
 .fga-icon { width: 14px; height: 14px; flex: 0 0 auto; }
 .fga-row > .fga-icon { margin-top: calc((1.5em - 14px) / 2); }
-.status-dot, .identity-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 
 /* Block 1 — STATUS: sticky, one dot + one sentence. No pill/meta split, no
    port numbers, no attempt counts — the sentence names the problem AND the
@@ -476,33 +470,6 @@ body {
 }
 .status-row { min-width: 0; }
 
-/* Live marker — a circle, tone-coloured. Pings outward while probing. Plain
-   CSS shape (Phosphor `circle`, filled) — no SVG needed for an unadorned dot.
-   Sizing comes from the shared `.status-dot, .identity-dot` rule above; this
-   one only adds what is unique to the status dot (position + tone colour). */
-.status-dot {
-  position: relative;
-  /* Sits beside the TITLE line (14px / --fga-lh-title), not the body line the
-     shared .fga-icon formula assumes — derived against its own context rather
-     than reused blind: (14px * 1.35 - 8px) / 2. */
-  margin-top: calc((var(--fga-font-title) * var(--fga-lh-title) - 8px) / 2);
-  background: var(--fga-tone-muted);
-  /* Motion (§4): tone crossfades instead of jumping. Named properties only. */
-  transition: background-color var(--fga-motion) var(--fga-ease);
-}
-.status-dot[data-tone="success"] { background: var(--fga-tone-success); }
-.status-dot[data-tone="warning"] { background: var(--fga-tone-warning); }
-.status-dot[data-tone="info"]    { background: var(--fga-tone-info); }
-.status-dot[data-tone="muted"]   { background: var(--fga-tone-muted); }
-.status-dot::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: inherit;
-  opacity: 0;
-}
-.status-dot.is-pulsing::after { animation: fga-ping 1.6s ease-out infinite; }
 
 /* The ONE title — replaces the old pill+meta split. Tone-coloured (the pill's
    job), states the problem and the next action in one sentence (the meta's job). */
@@ -730,19 +697,18 @@ code {
    (the newest, non-stale one) gets the border-lift; every other row is inert
    on hover. */
 .activity-row:not(.is-stale):hover { border-color: var(--fga-hairline-soft); }
-/* Status reads by SHAPE first, colour second: an inline Phosphor-style SVG per
+/* Status reads by SHAPE first, colour second: an inline SVG per
    state (check-circle / x-circle / circle-notch), never a text glyph. The
    accessible label lives on this WRAPPING span (aria-label="ok"/"failed"/
    "running"); the svg inside is aria-hidden — its meaning is already spoken.
    Sizing + optical centring come from the shared `.fga-icon` rule (§1) —
    `.log-icon-wrap` carries that class too; this selector only adds colour. */
-.log-icon { display: block; width: 100%; height: 100%; }
-.log-icon-wrap[data-state="ok"]      .log-icon { color: var(--fga-tone-success); }
-.log-icon-wrap[data-state="failed"]  .log-icon { color: var(--fga-tone-danger); }
-.log-icon-wrap[data-state="running"] .log-icon { color: var(--fga-tone-warning); animation: fga-spin 1s linear infinite; }
+.log-icon-wrap[data-state="ok"]      .fga-icon { color: var(--fga-tone-success); }
+.log-icon-wrap[data-state="failed"]  .fga-icon { color: var(--fga-tone-danger); }
+.log-icon-wrap[data-state="running"] .fga-icon { color: var(--fga-tone-warning); }
 /* Stale (non-newest) rows dim the icon too — same equal-specificity family as the
    tone rules above, so it must come after them in source order to win the tie. */
-.activity-row.is-stale .log-icon { color: var(--fga-text-dim); }
+.activity-row.is-stale .fga-icon { color: var(--fga-text-dim); }
 .log-body {
   flex: 1 1 auto;
   min-width: 0; /* lets the ellipsis in .log-label / .log-meta actually engage */
@@ -822,31 +788,6 @@ code {
   outline-offset: 2px;
 }
 
-/* Footer band — identity row only (status-dot mirror + build id). The Docs/Copy/
-   Details actions row that used to sit below it is cut entirely (§2); the file
-   name it also used to carry now lives in Block 2's Context row instead. */
-.footer-row {
-  border-top: 1px dotted var(--fga-divider);
-  padding: var(--space-1) var(--space-2);
-  padding-top: var(--fga-divider-gap);
-  margin-top: auto;
-}
-.identity-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-hair);
-  min-width: 0;
-}
-/* CSS mirror of #fga-dot's tone — panel-ui.ts writes the tone onto #fga-dot only;
-   a second JS write target would be a behaviour change, so the mirror is derived
-   here instead. Falls back to muted if :has() is unsupported — quiet, never broken. */
-/* Sizing comes from the shared `.status-dot, .identity-dot` rule (§1: one dot
-   grid, 8px — was 6px). This rule adds only the default (muted) fill. */
-.identity-dot { background: var(--fga-tone-muted); }
-.panel:has(#fga-dot[data-tone="success"]) .identity-dot { background: var(--fga-tone-success); }
-.panel:has(#fga-dot[data-tone="warning"]) .identity-dot { background: var(--fga-tone-warning); }
-.panel:has(#fga-dot[data-tone="info"])    .identity-dot { background: var(--fga-tone-info); }
 #fga-version { flex: 0 0 auto; font-size: var(--fga-font-caption); color: var(--fga-text-muted); font-variant-numeric: tabular-nums; }
 
 /* ── Responsive contract (240px → 640px+, any height, locked) ─────────────────
@@ -854,22 +795,16 @@ code {
    anywhere on the path that keeps its intrinsic width pushes the row past the
    panel edge. overflow-x:hidden would then merely HIDE the overflow. */
 .panel > * { min-width: 0; max-width: 100%; }
-.status-row > *, .identity-row > *, .sync-prompt > *,
+.status-row > *, .sync-prompt > *,
 .log-body, .log-body > *, .detail-cell, .detail-cell > *, .activity-row > * { min-width: 0; }
 
 /* Truncation: the trio is a set — ellipsis without the other two does nothing. */
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Motion — the probing marker pings outward (transform + opacity only, never a
-   layout property). Snappy 0.1s ease-out is the brand curve. The pending feed
-   icon spins (transform only) — a continuous linear rotation is the one place
+/* Motion — the pending feed icon spins (transform only). Continuous linear rotation is the one place
    `linear` is correct (taste-lint's checkLinearOrAllTransition only inspects
    `transition:`, never `animation:`). Every animated/transitioned selector is
    guarded below. */
-@keyframes fga-ping {
-  0%   { opacity: 0.5; transform: scale(1); }
-  100% { opacity: 0;   transform: scale(2.4); }
-}
 @keyframes fga-spin {
   to { transform: rotate(360deg); }
 }
@@ -879,80 +814,170 @@ code {
   to   { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .status-dot.is-pulsing::after,
-  .log-icon-wrap[data-state="running"] .log-icon,
+  .log-icon-wrap[data-state="running"] .fga-icon,
   .activity-row.is-new { animation: none; } /* .is-new, not bare .activity-row — the
     entrance animation lives on the two-class selector, so the guard must match its
     specificity or `animation: none` here would lose the cascade to `.is-new`'s rule. */
-  .inline-link, .sync-prompt, .status-dot, .status-sentence, .activity-row { transition: none; }
+  .inline-link, .sync-prompt, .status-sentence, .activity-row { transition: none; }
+}
+
+/* Adaptive Agent Rail. The host viewport owns the two exact sizes; this document owns
+   disclosure within them. Existing theme tokens remain the color source of truth. */
+body { overflow: hidden; }
+.panel { height: 100%; overflow: hidden; }
+.agent-rail {
+  height: 44px;
+  padding: 0 var(--space-1);
+  display: grid;
+  grid-template-columns: 32px minmax(32px, 1fr) auto auto 32px;
+  gap: var(--space-hair);
+  align-items: center;
+  background: var(--fga-chrome);
+}
+.rail-control {
+  position: relative;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--fga-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-hair);
+  background: transparent;
+  color: var(--fga-text-muted);
+  cursor: pointer;
+  transition: background-color var(--fga-motion) var(--fga-ease), border-color var(--fga-motion) var(--fga-ease), color var(--fga-motion) var(--fga-ease);
+}
+.rail-control:hover, .rail-control[aria-expanded="true"] { background: var(--fga-row-active); color: var(--fga-text); }
+.rail-control:active { background: var(--fga-surface); }
+.rail-control:focus-visible, .tab-button:focus-visible, .sync-btn:focus-visible, .inline-link:focus-visible {
+  outline: 2px solid var(--fga-focus);
+  outline-offset: 1px;
+}
+.current-control { width: auto; min-width: 32px; justify-content: flex-start; padding: 0 var(--space-1); }
+.current-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.failure-count {
+  min-width: 14px;
+  padding: 0 var(--space-hair);
+  border-radius: var(--radius-full);
+  background: var(--fga-tone-danger);
+  color: var(--fga-body);
+  font-size: var(--fga-font-caption);
+  line-height: var(--fga-lh-caption);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.fga-icon { display: block; width: 16px; height: 16px; flex: 0 0 auto; }
+.tone-success { color: var(--fga-tone-success); }
+.tone-warning { color: var(--fga-tone-warning); }
+.tone-info { color: var(--fga-tone-info); }
+.tone-danger { color: var(--fga-tone-danger); }
+.rail-badge {
+  position: absolute;
+  inset: 0 0 auto auto;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--fga-tone-warning);
+  color: var(--fga-body);
+  font-size: var(--fga-font-caption);
+  line-height: var(--fga-lh-caption);
+  font-variant-numeric: tabular-nums;
+}
+.inspector { height: calc(100% - 44px); background: var(--fga-body); overflow: hidden; }
+.inspector-tabs { height: 36px; display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px dotted var(--fga-divider); }
+.tab-button {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--fga-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.tab-button:hover { color: var(--fga-text); background: var(--fga-row-active); }
+.tab-button[aria-selected="true"] { color: var(--fga-text); background: var(--fga-surface); }
+.inspector-content { height: calc(100% - 36px); overflow-y: auto; overflow-x: hidden; }
+.inspector-panel { min-width: 0; padding: var(--space-1); }
+.inspector-panel[hidden], .inspector[hidden], .rail-control[hidden], .sync-prompt[hidden] { display: none; }
+.inspector .context, .inspector .activity, .inspector .status-hero { position: static; border-top: 0; padding: 0; background: transparent; }
+.inspector .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.details-stack { display: flex; flex-direction: column; gap: var(--space-1); }
+.details-card { padding: var(--space-1); border: 1px solid var(--fga-hairline); border-top-color: var(--fga-topedge); border-radius: var(--fga-radius); }
+.details-card .status-sentence { margin: 0; }
+.version-row { color: var(--fga-text-muted); font-size: var(--fga-font-caption); font-variant-numeric: tabular-nums; }
+.sync-prompt { margin: var(--space-1); }
+.is-spinning { animation: fga-spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning { animation: none; }
+  .rail-control { transition: none; }
 }
 </style>
 </head>
 <body>
-<main class="panel" id="fga-panel">
-  <!-- Owner decree 2026-07-30: the internal masthead ("Figma Design Agent") is removed —
-       it duplicated the Figma plugin window's own chrome title directly above it, and
-       that OS/host-drawn title bar cannot be removed (verified against showUI docs). The
-       sticky status block is now the panel's first visible row. -->
-  <section class="status-hero fga-block" id="fga-status" aria-live="polite" aria-label="Connection status">
-    <div class="status-row fga-row">
-      <span class="status-dot" id="fga-dot" data-tone="muted"></span>
-      <p class="status-sentence" id="fga-sentence" data-tone="muted">Not connected — your first command starts the broker.</p>
+<main class="panel" id="fga-panel" data-view="rail">
+  <header class="agent-rail" id="fga-rail" aria-label="Agent status">
+    <button class="rail-control" id="fga-connection-btn" type="button" title="Connection details" aria-label="Connection details"></button>
+    <button class="rail-control current-control" id="fga-current-btn" type="button" title="Current activity: Idle" aria-label="Current activity: Idle">
+      <span class="current-label" id="fga-current-label">Idle</span>
+      <span class="failure-count" id="fga-failure-count" role="status" aria-live="polite" aria-atomic="true" aria-label="0 unresolved failures" hidden></span>
+    </button>
+    <button class="rail-control" id="fga-target-rail-btn" type="button" title="File target" aria-label="File target" hidden></button>
+    <button class="rail-control" id="fga-sync-rail-btn" type="button" title="Pending sync" aria-label="Pending sync" hidden><span class="rail-badge" id="fga-sync-badge">1</span></button>
+    <button class="rail-control" id="fga-toggle-btn" type="button" title="Open inspector" aria-label="Open inspector" aria-expanded="false" aria-controls="fga-inspector"></button>
+  </header>
+
+  <section class="inspector" id="fga-inspector" aria-label="Agent inspector" hidden>
+    <div class="inspector-tabs" role="tablist" aria-label="Inspector views">
+      <button class="tab-button" id="fga-tab-activity" type="button" role="tab" aria-selected="true" tabindex="0" aria-controls="fga-panel-activity">Activity</button>
+      <button class="tab-button" id="fga-tab-context" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="fga-panel-context">Context</button>
+      <button class="tab-button" id="fga-tab-details" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="fga-panel-details">Details</button>
     </div>
+    <div class="inspector-content">
+      <section class="sync-prompt" id="fga-sync" aria-live="polite" aria-atomic="true" hidden>
+        <p class="sync-msg" id="fga-sync-msg">changes ready</p>
+        <div class="sync-actions">
+          <button class="sync-btn" id="fga-sync-now" type="button">Sync now</button>
+          <button class="inline-link" id="fga-sync-later" type="button">Later</button>
+        </div>
+      </section>
 
-    <!-- Onboarding: priority-1 content, not a debug affordance — re-parented here
-         (block 1) so it answers the "disconnected, never connected" state directly.
-         JS toggles [hidden] via showOnboarding (panel-model.ts). -->
-    <section class="onboarding" id="fga-onboarding" aria-label="Getting started">
-      <ul class="onboarding-list">
-        <li>Bridges the figma-agent CLI to this file.</li>
-        <li>Verify: <code>figma-agent status</code></li>
-        <li>Keep this panel open.</li>
-      </ul>
-    </section>
-  </section>
+      <section class="inspector-panel" id="fga-panel-activity" role="tabpanel" aria-labelledby="fga-tab-activity">
+        <section class="activity" id="fga-activity-block" aria-label="Activity log">
+          <ul class="activity-list" id="fga-activity" aria-live="polite" aria-atomic="true">
+            <li class="activity-empty">No activity yet</li>
+          </ul>
+        </section>
+      </section>
 
-  <section class="context fga-block" id="fga-context" aria-label="File context">
-    <h2 class="section-label">Context</h2>
-    <dl class="detail-grid">
-      <div class="detail-cell">
-        <dt>File</dt>
-        <dd id="fga-ctx-file">—</dd>
-        <p class="detail-note" id="fga-ctx-file-note"></p>
-      </div>
-      <div class="detail-cell"><dt>Page</dt><dd id="fga-ctx-page">—</dd></div>
-      <div class="detail-cell"><dt>Selection</dt><dd id="fga-ctx-selection">None</dd></div>
-    </dl>
-    <!-- #35 P2: pins the daemon's routing target to THIS plugin instance (a runtime-only,
-         human-set pin — see broker-daemon.ts's `targetInstancePin`). Toggles between
-         "Target this plugin" and "Targeted" — panel-ui.ts wires the click, panel-model.ts
-         owns the label text. -->
-    <button class="sync-btn" id="fga-target-btn" type="button">Target this plugin</button>
-  </section>
+      <section class="inspector-panel" id="fga-panel-context" role="tabpanel" aria-labelledby="fga-tab-context" hidden>
+        <section class="context" id="fga-context" aria-label="File context">
+          <dl class="detail-grid">
+            <div class="detail-cell"><dt>File</dt><dd id="fga-ctx-file">—</dd><p class="detail-note" id="fga-ctx-file-note"></p></div>
+            <div class="detail-cell"><dt>Page</dt><dd id="fga-ctx-page">—</dd></div>
+            <div class="detail-cell"><dt>Selection</dt><dd id="fga-ctx-selection">None</dd></div>
+          </dl>
+          <button class="sync-btn" id="fga-target-btn" type="button">Target this plugin</button>
+        </section>
+      </section>
 
-  <section class="activity fga-block" id="fga-activity-block" aria-label="Activity log">
-    <h2 class="section-label">Activity</h2>
-    <ul class="activity-list" id="fga-activity" aria-live="polite">
-      <li class="activity-empty">No activity yet</li>
-    </ul>
-  </section>
-
-  <!-- Live-sync idle-commit prompt (spec 004 P4): one line, shown only at the idle
-       point. "Sync now" applies the change-log via the deterministic kernel. -->
-  <section class="sync-prompt" id="fga-sync" aria-live="polite" hidden>
-    <p class="sync-msg" id="fga-sync-msg">changes ready</p>
-    <div class="sync-actions">
-      <button class="sync-btn" id="fga-sync-now" type="button">Sync now</button>
-      <button class="inline-link" id="fga-sync-later" type="button">Later</button>
+      <section class="inspector-panel" id="fga-panel-details" role="tabpanel" aria-labelledby="fga-tab-details" hidden>
+        <div class="details-stack">
+          <section class="details-card status-hero" id="fga-status" aria-live="polite" aria-atomic="true" aria-label="Connection status">
+            <p class="status-sentence" id="fga-sentence" data-tone="muted">Not connected — your first command starts the broker.</p>
+          </section>
+          <section class="onboarding" id="fga-onboarding" aria-label="Getting started">
+            <ul class="onboarding-list"><li>Bridges the figma-agent CLI to this file.</li><li>Verify: <code>figma-agent status</code></li><li>Keep this panel open.</li></ul>
+          </section>
+          <div class="version-row" id="fga-version">v0.1.0</div>
+        </div>
+      </section>
     </div>
   </section>
-
-  <footer class="footer-row">
-    <div class="identity-row">
-      <span class="identity-dot"></span>
-      <span id="fga-version">v0.1.0</span>
-    </div>
-  </footer>
 </main>
 <script>
 /*__FIGMA_AGENT_UI_BUNDLE__*/

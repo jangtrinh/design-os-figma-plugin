@@ -226,24 +226,24 @@ answer (`cycles: 0`, exit 0), not an error, and the plugin disconnecting mid-wai
 with a reconnect hint rather than hanging to the deadline. Edits it declined to attribute
 are reported as a count rather than dropped.
 
-## The panel
+## The adaptive agent rail
 
-Once loaded, the plugin opens a small (340×480) panel — the bridge's face. **Keep it open**
-while you (or an agent) drive the CLI; closing it drops the connection.
+Once loaded, the plugin opens as a `240×44` rail. **Keep it open** while you or an agent
+drive the CLI; closing it drops the connection. The rail always shows connection health and
+the current operation. Multi-file targeting and pending sync appear only when they matter.
 
-**Status states** — the big pill updates live as the broker comes and goes:
+Open the inspector for Activity, Context, or Details. It expands to `288×280` at most:
 
-| Pill | Meaning |
-|---|---|
-| **No broker yet** (muted) | Normal idle — not an error. The broker starts automatically on your first CLI command. |
-| **Looking for broker…** (amber, pulsing) | Scanning `localhost:9410–9419`. After ~10s it nudges you to run `figma-agent status`. |
-| **Handshaking…** (blue) | Broker found; registering this plugin. |
-| **Connected** (green) | Ready — the CLI can drive this file. Shows the port + connection uptime. |
+- **Activity** shows concurrent work, newest-first history, and a readable failure reason.
+- **Context** shows file, page, selection, and the PEERS-authoritative target control.
+- **Details** shows the connection sentence, first-run/recovery guidance, and build identity.
 
-**Activity log** lists recent commands (tool · duration · time-ago, newest first) so you can
-watch an agent work — each row carrying the label of the harness that sent it when one was
-given (`--agent`). **Connection details** (collapsible) exposes port, protocol version,
-heartbeat age, reconnect attempts, and the file/page.
+Pending edits stay on the rail as a count badge. Opening the badge reveals the existing
+**Sync now / Later** flow; a failed or unbound sync remains visible and retryable, and only a
+genuine success clears the count. First-run and actionable failures may open the inspector
+once to expose their recovery text. Opening Activity acknowledges the rail's unresolved-failure
+count; the activity history and failure reason remain available. Every icon action is a locally
+vendored Lucide SVG with a tooltip, accessible name, keyboard focus, and a 32px target.
 
 ## Multiple files open at once
 
