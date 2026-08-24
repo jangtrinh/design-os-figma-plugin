@@ -6,6 +6,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const read = (path: string): string => readFileSync(`${ROOT}/${path}`, 'utf8');
 const html = read('plugin/src/ui/panel.html');
 const activityView = read('plugin/src/ui/panel-activity-view.ts');
+const thinkingOrb = read('plugin/src/ui/thinking-orb.ts');
 const blocks = /(?::root|html\.figma-light)\s*\{[\s\S]*?\}/g;
 const chrome = html.replace(blocks, '').replace(/\/\*[\s\S]*?\*\//g, '');
 const rules: [string, string][] = [...chrome.matchAll(/([^{}]+)\{([^}]*)\}/g)]
@@ -57,6 +58,15 @@ describe('panel visual regression contract', () => {
     expect(chrome).not.toMatch(/@media[^{]*\(\s*(?:min|max)-width/);
   });
 
+  it('hugs the rail with flex while only the activity label may shrink', () => {
+    expect(declarationsFor('.agent-rail')).toMatch(/display:\s*flex/);
+    expect(declarationsFor('.agent-rail')).not.toMatch(/grid-template-columns|\b1fr\b/);
+    expect(declarationsFor('.rail-control')).toMatch(/flex:\s*0\s+0\s+32px/);
+    expect(declarationsFor('.current-control')).toMatch(/flex:\s*1\s+1\s+auto/);
+    expect(declarationsFor('.current-label')).toMatch(/min-width:\s*0/);
+    expect(declarationsFor('.current-label')).toMatch(/text-overflow:\s*ellipsis/);
+  });
+
   it('keeps spacing, depth, focus, and applied 16px Lucide classes intentional', () => {
     const offGrid: string[] = [];
     for (const [selector, value] of rules) {
@@ -75,6 +85,18 @@ describe('panel visual regression contract', () => {
     expect(chrome).not.toMatch(/background(?:-color)?:\s*var\(--fga-(hairline|hairline-soft|topedge)\)/);
     expect(chrome).not.toMatch(/box-shadow:\s*inset|border-left:\s*(?!0)/);
     for (const selector of ['.rail-control:focus-visible', '.tab-button:focus-visible', '.sync-btn:focus-visible', '.inline-link:focus-visible']) expect(declarationsFor(selector)).toMatch(/outline:\s*2px/);
+  });
+
+  it('keeps the aggregate orb inline, monochrome, and lifecycle-bounded', () => {
+    expect(declarationsFor('.thinking-orb')).toMatch(/width:\s*20px/);
+    expect(declarationsFor('.thinking-orb')).toMatch(/height:\s*20px/);
+    expect(thinkingOrb).toContain('Math.min(2, window.devicePixelRatio || 1)');
+    expect(thinkingOrb).toContain("matchMedia('(prefers-reduced-motion: reduce)')");
+    expect(thinkingOrb).toContain("document.addEventListener('visibilitychange'");
+    expect(thinkingOrb).toContain('document.hidden');
+    expect(thinkingOrb).toContain('requestAnimationFrame');
+    expect(thinkingOrb).toContain('cancelAnimationFrame');
+    expect(thinkingOrb).not.toContain('IntersectionObserver');
   });
 
   it('uses exact reduced-motion coverage and no stale icon selectors', () => {

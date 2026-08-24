@@ -33,6 +33,7 @@
     "@types/ws": "^8.5.10",
     "esbuild": "^0.24.0",
     "playwright-core": "^1.62.1",
+    "thinking-orbs": "0.3.1",
     "typescript": "^5.6.0",
     "vitest": "^4.1.7"
   },

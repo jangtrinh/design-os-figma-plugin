@@ -47,13 +47,13 @@ import {
   writeEdgeCorrections,
 } from './correction-edge-store';
 import type { CorrectionEvent } from '../../../shared/supervised-memory';
-import { RAIL_WIDTH, RAIL_HEIGHT, viewportFor } from '../ui/panel-model';
+import { RAIL_COMPACT_WIDTH, RAIL_HEIGHT, viewportFor } from '../ui/panel-model';
 import {
   createReadOnlyGuardState, isReadOnlyExecJs, recordDocumentChangeBatch,
   snapshotChangeEvents, violatedSinceSnapshot,
 } from './readonly-guard';
 
-// The adaptive panel opens as a rail. The iframe can request one of two named modes;
+// The adaptive panel opens as its smallest rail. The iframe can request only named modes;
 // main owns the dimensions and never trusts arbitrary width/height input.
 //
 // Owner decree 2026-07-30: the plugin window's own (host-drawn) title bar cannot be
@@ -68,7 +68,7 @@ import {
 // `html.figma-light { ... }` override block (a sibling of the default dark :root) is
 // what actually repaints every color token; this flag is what makes that class exist.
 figma.showUI(__html__, {
-  visible: true, width: RAIL_WIDTH, height: RAIL_HEIGHT, title: 'design:os by JANG', themeColors: true,
+  visible: true, width: RAIL_COMPACT_WIDTH, height: RAIL_HEIGHT, title: 'design:os by JANG', themeColors: true,
 });
 
 // Absorption phase-03 (FigJam) — which design-only boot capabilities this session
@@ -495,7 +495,8 @@ interface UiRequest {
 figma.ui.onmessage = async (msg: unknown) => {
   const chrome = msg as { type?: unknown; mode?: unknown; data?: unknown } | null;
   if (chrome && chrome.type === 'PANEL_VIEWPORT'
-      && (chrome.mode === 'rail' || chrome.mode === 'inspector')) {
+      && (chrome.mode === 'rail-compact' || chrome.mode === 'rail-one-action'
+        || chrome.mode === 'rail-two-actions' || chrome.mode === 'inspector')) {
     const viewport = viewportFor(chrome.mode);
     figma.ui.resize(viewport.width, viewport.height);
     return;
