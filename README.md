@@ -4,6 +4,8 @@
 an AI coding agent draw on a real canvas, read back what a human just changed, and never
 let the two trample each other.
 
+<img src="docs/images/adaptive-agent-rail.gif" width="600" alt="The adaptive agent rail showing semantic Thinking Orb activity in Figma">
+
 <img src="docs/images/panel-connected-dark.png" width="320" alt="The panel — status, context, activity">
 
 Part of the [ease-design](https://github.com/jangtrinh/design-os) toolchain — this repo is
@@ -228,11 +230,27 @@ are reported as a count rather than dropped.
 
 ## The adaptive agent rail
 
-Once loaded, the plugin opens as a `240×44` rail. **Keep it open** while you or an agent
-drive the CLI; closing it drops the connection. The rail always shows connection health and
-the current operation. Multi-file targeting and pending sync appear only when they matter.
+Once loaded, the plugin opens as a compact `200×44` rail. It grows to `220×44` or `240×44`
+only when one or two contextual actions need space, so it covers as little of the canvas as
+possible. **Keep it open** while you or an agent drive the CLI; closing it drops the
+connection. The rail always shows connection health and the current operation. Multi-file
+targeting and pending sync appear only when they matter. The sizing contract lives in
+[`panel-model.ts`](plugin/src/ui/panel-model.ts) and its
+[`panel gate`](tests/figma-plugin-panel.test.ts).
 
-Open the inspector for Activity, Context, or Details. It expands to `288×280` at most:
+The Thinking Orb gives peripheral progress without adding another icon or a verbose status
+panel. Stable command identity selects semantic motion; it never guesses from user-facing
+labels. Concurrent operations converge on a coordinating state, while an unknown future
+command falls back to Processing instead of inventing meaning. The taxonomy and priority
+rules are owned by [`orb-command-state.ts`](plugin/src/ui/orb-command-state.ts),
+[`thinking-orb.ts`](plugin/src/ui/thinking-orb.ts), and their
+[`behavior tests`](tests/orb-command-state.test.ts).
+
+`COWORK` maps to Listening only when that activity is visible to the plugin. A broker-side
+wait does not fabricate plugin telemetry, so the rail stays truthful when no such event
+exists.
+
+Open the inspector for Activity, Context, or Details. It expands to `288×280`:
 
 - **Activity** shows concurrent work, newest-first history, and a readable failure reason.
 - **Context** shows file, page, selection, and the PEERS-authoritative target control.
@@ -243,7 +261,9 @@ Pending edits stay on the rail as a count badge. Opening the badge reveals the e
 genuine success clears the count. First-run and actionable failures may open the inspector
 once to expose their recovery text. Opening Activity acknowledges the rail's unresolved-failure
 count; the activity history and failure reason remain available. Every icon action is a locally
-vendored Lucide SVG with a tooltip, accessible name, keyboard focus, and a 32px target.
+vendored Lucide SVG with a tooltip, accessible name, keyboard focus, and a 32px target. The
+orb canvas is decorative; the connection control announces its semantic status, and reduced
+motion renders a static frame instead of continuous animation.
 
 ## Multiple files open at once
 
