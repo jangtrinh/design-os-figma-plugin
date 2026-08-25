@@ -68,6 +68,7 @@ let scratchDir: string;
 let advertisePath: string;
 let scratchLogFile: string;
 let sockets: WebSocket[];
+let priorPluginWaitMs: string | undefined;
 
 /** Load `broker-daemon.ts` fresh, AFTER the given env vars are set — required for the
  *  module-load-time `envMs(...)` constants (see file header). */
@@ -261,6 +262,7 @@ async function bindProject(
 }
 
 beforeEach(() => {
+  priorPluginWaitMs = process.env[PLUGIN_WAIT_MS_KEY];
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-broker-harness-'));
   advertisePath = join(scratchDir, 'broker.json');
   scratchLogFile = join(scratchDir, 'broker.log');
@@ -279,6 +281,8 @@ afterEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 50));
   for (const ws of sockets) { try { ws.terminate(); } catch { /* already closed */ } }
   rmSync(scratchDir, { recursive: true, force: true });
+  if (priorPluginWaitMs === undefined) delete process.env[PLUGIN_WAIT_MS_KEY];
+  else process.env[PLUGIN_WAIT_MS_KEY] = priorPluginWaitMs;
 });
 
 describe('daemon harness — mutation admission', () => {
@@ -305,19 +309,110 @@ describe('daemon harness — mutation admission', () => {
     });
   });
 
-  it('rejects blank/padded/conflicting target assertions and a mismatched live scene key before ownership', async () => {
+  it('keeps an exact-key request parked when a different raw-key plugin reconnects, then dispatches only to the exact key', async () => {
+    const port = await startTestBroker();
+    const cli = await connectSocket(port);
+    const cliFrames = collectFrames(cli);
+    const requestId = 'c_target_reconnect_exact';
+    const jobState = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cli.send(JSON.stringify(makeRequestFrame(
+      requestId, 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Reconnect-A',
+    )));
+
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'p-target-reconnect-b', 'Target Reconnect B', 'Raw/Reconnect-B');
+    const pluginBFrames = collectFrames(pluginB);
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+
+    expect(cliFrames.frames.some((frame) =>
+      (frame as EventMsg).type === 'JOB_STATE' || (frame as { id?: string }).id === requestId,
+    )).toBe(false);
+    expect(pluginBFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+
+    const pluginA = await connectSocket(port);
+    const pluginAFrames = collectFrames(pluginA);
+    await helloPlugin(pluginA, 'p-target-reconnect-a', 'Target Reconnect A', 'Raw/Reconnect-A');
+    await jobState;
+    await waitFor(() => pluginAFrames.frames.some((frame) => (frame as { id?: string }).id === requestId));
+
+    expect(pluginBFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+  });
+
+  it('parks an initial exact-key request while a different raw-key plugin is already connected', async () => {
+    const port = await startTestBroker();
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'p-target-initial-b', 'Target Initial B', 'Raw/Initial-B');
+    const pluginBFrames = collectFrames(pluginB);
+    const cli = await connectSocket(port);
+    const cliFrames = collectFrames(cli);
+    const requestId = 'c_target_initial_exact';
+    const jobState = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cli.send(JSON.stringify(makeRequestFrame(
+      requestId, 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Initial-A',
+    )));
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+
+    expect(cliFrames.frames.some((frame) =>
+      (frame as EventMsg).type === 'JOB_STATE' || (frame as { id?: string }).id === requestId,
+    )).toBe(false);
+    expect(pluginBFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+
+    const pluginA = await connectSocket(port);
+    const pluginAFrames = collectFrames(pluginA);
+    await helloPlugin(pluginA, 'p-target-initial-a', 'Target Initial A', 'Raw/Initial-A');
+    await jobState;
+    await waitFor(() => pluginAFrames.frames.some((frame) => (frame as { id?: string }).id === requestId));
+
+    expect(pluginBFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+  });
+
+  it('flushes an exact-key parked request only after FILE_INFO supplies its raw key', async () => {
+    const port = await startTestBroker();
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'p-target-file-info-b', 'Target File Info B', 'Raw/File-Info-B');
+    const pluginBFrames = collectFrames(pluginB);
+    const cli = await connectSocket(port);
+    const cliFrames = collectFrames(cli);
+    const requestId = 'c_target_file_info_exact';
+    cli.send(JSON.stringify(makeRequestFrame(
+      requestId, 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/File-Info-A',
+    )));
+
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'p-target-file-info-a', 'Target File Info A', null);
+    const pluginAFrames = collectFrames(pluginA);
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+
+    expect(cliFrames.frames.some((frame) =>
+      (frame as EventMsg).type === 'JOB_STATE' || (frame as { id?: string }).id === requestId,
+    )).toBe(false);
+    expect(pluginAFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+    expect(pluginBFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+
+    const jobState = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    sendFileInfo(pluginA, 'Target File Info A', 'Raw/File-Info-A');
+    const admission = await Promise.race<EventMsg | null>([
+      jobState,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(1_000, HARNESS_SETTLE_MS * 4))),
+    ]);
+    expect(admission).not.toBeNull();
+    await waitFor(() => pluginAFrames.frames.some((frame) => (frame as { id?: string }).id === requestId));
+
+    expect(pluginAFrames.frames.find((frame) => (frame as { id?: string }).id === requestId)).toMatchObject({
+      targetFileKey: 'Raw/File-Info-A',
+    });
+    expect(pluginBFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+  });
+
+  it('rejects blank, padded, and conflicting target assertions before ownership', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
     await helloPlugin(plugin, 'p-target-other', 'Target Other', 'Raw/Other-Key');
     const pluginFrames = collectFrames(plugin);
     const cli = await connectSocket(port);
-
-    const mismatch = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_mismatch');
-    cli.send(JSON.stringify(makeRequestFrame(
-      'c_target_mismatch', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
-      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
-    )));
-    expect((await mismatch).error.code).toBe('E_WRONG_FILE');
 
     const blank = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_blank');
     cli.send(JSON.stringify({
@@ -339,24 +434,51 @@ describe('daemon harness — mutation admission', () => {
       undefined, 'Target Other', undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
     )));
     expect((await conflict).error.code).toBe('E_INVALID_ARGS');
-    expect(pluginFrames.frames.some((frame) => ['c_target_mismatch', 'c_target_blank', 'c_target_padded', 'c_target_conflict']
+    expect(pluginFrames.frames.some((frame) => ['c_target_blank', 'c_target_padded', 'c_target_conflict']
       .includes((frame as { id?: string }).id ?? ''))).toBe(false);
   });
 
-  it('returns E_FILE_KEY_UNAVAILABLE when a target assertion meets a keyless live plugin', async () => {
-    const port = await startTestBroker();
-    const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'p-target-missing', 'Target Missing', null);
-    const pluginFrames = collectFrames(plugin);
-    const cli = await connectSocket(port);
-    const reply = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_missing');
-    cli.send(JSON.stringify(makeRequestFrame(
-      'c_target_missing', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
-      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
-    )));
+  it('keeps an exact-key request parked across a keyless reconnect, then expires as E_NO_PLUGIN naming that key', async () => {
+    let controlledNow = 1_000_000;
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => controlledNow);
+    try {
+      const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '300' });
+      const cli = await connectSocket(port);
+      const cliFrames = collectFrames(cli);
+      const requestId = 'c_target_keyless';
+      const expiry = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === requestId);
+      cli.send(JSON.stringify(makeRequestFrame(
+        requestId, 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+        undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
+      )));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(HARNESS_SETTLE_MS, 100)));
 
-    expect((await reply).error.code).toBe('E_FILE_KEY_UNAVAILABLE');
-    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_missing')).toBe(false);
+      // Move the broker clock partway through the parked window before a keyless HELLO.
+      // Advancing it to the original deadline below proves that this HELLO did not reset
+      // `ParkedRequest.deadline`; only the real 100 ms sweep timer remains asynchronous.
+      controlledNow += 200;
+      const plugin = await connectSocket(port);
+      await helloPlugin(plugin, 'p-target-missing', 'Target Missing', null);
+      const pluginFrames = collectFrames(plugin);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(HARNESS_SETTLE_MS, 100)));
+
+      expect(cliFrames.frames.some((frame) =>
+        (frame as EventMsg).type === 'JOB_STATE' || (frame as { id?: string }).id === requestId,
+      )).toBe(false);
+      expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+
+      controlledNow += 100;
+      const reply = await Promise.race<ReplyErr | null>([
+        expiry,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(1_000, HARNESS_SETTLE_MS * 4))),
+      ]);
+      expect(reply).not.toBeNull();
+      expect((reply as ReplyErr).error.code).toBe('E_NO_PLUGIN');
+      expect((reply as ReplyErr).error.message).toContain('Raw/Expected-Key');
+      expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === requestId)).toBe(false);
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it('returns E_MUTATION_GATE_UNAVAILABLE before missing live identity or job ownership when the gate store is corrupt', async () => {

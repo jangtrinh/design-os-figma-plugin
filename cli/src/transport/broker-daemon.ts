@@ -1021,23 +1021,13 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (targetWs && targetWs.readyState !== WebSocket.OPEN) targetWs = undefined;
     if (requestedTargetFileKey !== undefined) {
       // The caller's key is a routing assertion, never canonical evidence: only the
-      // currently registered scene key may select a plugin. A live keyless plugin is an
-      // identity failure; a live different key is a wrong-file refusal, never a guess.
+      // currently registered exact scene key may select a plugin. A live keyless plugin
+      // or different key is unrelated — leave the request unresolved so exact-key parking
+      // can wait for the asserted file without emitting a false wrong-file refusal.
       const live = st.registry.liveEntries();
       const exact = live.find((entry) => durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null) === requestedTargetFileKey);
       if (exact) {
         targetWs = exact.ws;
-      } else if (live.length > 0) {
-        const hasMissingKey = live.some((entry) => durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null) === null);
-        sendReplyErr(
-          from,
-          id,
-          hasMissingKey ? 'E_FILE_KEY_UNAVAILABLE' : 'E_WRONG_FILE',
-          hasMissingKey
-            ? 'targetFileKey cannot be verified because a live plugin has no raw fileKey'
-            : `no live plugin matches targetFileKey ${JSON.stringify(requestedTargetFileKey)}`,
-        );
-        return;
       }
     } else if (!targetWs) {
       const hits = st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind });
@@ -1073,7 +1063,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // a pinned file connect after the command was issued.
       const parkable = !(cmd && WAIT_EXEMPT.has(cmd)) && PLUGIN_WAIT_TIMEOUT_MS > 0;
       if (!parkable) {
-        sendReplyErr(from, id, 'E_NO_PLUGIN', noPluginMessage(st.registry, filter));
+        sendReplyErr(
+          from,
+          id,
+          'E_NO_PLUGIN',
+          requestedTargetFileKey === undefined
+            ? noPluginMessage(st.registry, filter)
+            : `no live plugin matches targetFileKey ${JSON.stringify(requestedTargetFileKey)}`,
+        );
         return;
       }
       // A mutation cannot claim a durable target identity from a filename, a route
@@ -1253,7 +1250,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (req.from.readyState !== WebSocket.OPEN) continue; // CLI gone — drop silently
       const targetExists = req.targetFileKey === undefined
         ? st.registry.selectTarget(req.filter.value, { exact: req.filter.exact, kind: req.filter.kind }) !== null
-        : st.registry.liveEntries().length > 0;
+        : st.registry.liveEntries().some((entry) =>
+          durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null) === req.targetFileKey,
+        );
       if (targetExists) {
         const flagValue = req.filter.source === 'flag' ? req.filter.value ?? undefined : undefined;
         admitRequest(
@@ -1782,6 +1781,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           broadcastPeers();
           promotePendingBind(ws); // registry-integrity phase 01 §2 — fill a pending fileKey on first sight
           schedulePluginSetPersist(); // broker-restart reconnect visibility — scene changed
+          // The UI relay can register before main's first FILE_INFO carries its raw key.
+          // A valid scene-identity update is therefore another exact-target readiness
+          // transition, after the existing broadcast/promotion/persistence side effects.
+          flushWaiting();
         }
       } else if (msg.type === 'DOC_CHANGE') {
         // Live-sync capture: append the plugin's coalesced batch to the change log.
@@ -2038,7 +2041,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // The request's OWN filter, not the env pin — otherwise a timed-out --file
         // request blames FIGMA_AGENT_FILE (or prints the generic message) instead of
         // naming the flag the caller actually used.
-        sendReplyErr(req.from, req.id, 'E_NO_PLUGIN', noPluginMessage(st.registry, req.filter));
+        sendReplyErr(
+          req.from,
+          req.id,
+          'E_NO_PLUGIN',
+          req.targetFileKey === undefined
+            ? noPluginMessage(st.registry, req.filter)
+            : `no plugin matching targetFileKey ${JSON.stringify(req.targetFileKey)} connected before the wait deadline`,
+        );
       } else {
         survivors.push(req);
       }
