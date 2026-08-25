@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
 import type { CommandArgs } from '../cli/src/arg-parse.ts';
+import { mutationGatePathFor } from '../cli/src/transport/mutation-admission-gate.ts';
 
 vi.mock('../cli/src/transport/broker-discovery.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../cli/src/transport/broker-discovery.ts')>();
@@ -64,8 +65,8 @@ function connectSocket(port: number): Promise<WebSocket> {
   });
 }
 
-async function helloPlugin(ws: WebSocket, instanceId: string, fileName: string): Promise<void> {
-  ws.send(JSON.stringify({ type: 'PLUGIN_HELLO', data: { instanceId, fileName, fileKey: null, caps: ['fileGuard'] } }));
+async function helloPlugin(ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null): Promise<void> {
+  ws.send(JSON.stringify({ type: 'PLUGIN_HELLO', data: { instanceId, fileName, fileKey, caps: ['fileGuard'] } }));
   await new Promise<void>((resolvePromise) => {
     const handler = (raw: WebSocket.RawData): void => {
       const msg = JSON.parse(raw.toString()) as { type?: string };
@@ -97,6 +98,30 @@ afterEach(async () => {
 });
 
 describe('status --wait', () => {
+  it('keeps a persisted gate row and marks it connected only when the exact raw file key is live', async () => {
+    writeFileSync(mutationGatePathFor(advertisePath), JSON.stringify({
+      schemaVersion: 1,
+      sequence: 3,
+      gates: { 'Raw Key / connected': { state: 'paused', lastTransitionRevision: 3 } },
+      latestTransition: {
+        fileKey: 'Raw Key / connected', from: 'open', to: 'paused', at: 1, revision: 3,
+      },
+    }));
+    const mod = await loadBrokerDaemon();
+    await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
+    const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number; pid: number };
+    vi.mocked(ensureBroker).mockResolvedValue({ port: ad.port, pid: ad.pid, protocolV: 1, buildMtime: 0, startedAt: Date.now(), lastSeen: Date.now() });
+    const ws = await connectSocket(ad.port);
+    await helloPlugin(ws, 'p_1', 'My File', 'Raw Key / connected');
+
+    const result = await run(fakeArgs()) as { broker: Record<string, unknown>; mutationGates?: unknown[]; mutationGateStoreHealth?: unknown };
+    expect(result.broker.targetFileKeyAdmissionV).toBe(1);
+    expect(result.mutationGates).toEqual([
+      { fileKey: 'Raw Key / connected', state: 'paused', lastTransitionRevision: 3, connected: true },
+    ]);
+    expect(result.mutationGateStoreHealth).toMatchObject({ state: 'healthy', path: mutationGatePathFor(advertisePath) });
+  });
+
   it('a plugin that registers DURING the wait: exits normally with waitedMs, not a timeout', async () => {
     const mod = await loadBrokerDaemon();
     await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });

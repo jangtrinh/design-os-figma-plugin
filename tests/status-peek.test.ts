@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { peek } from '../cli/src/transport/broker-peek.ts';
+import { mutationGatePathFor } from '../cli/src/transport/mutation-admission-gate.ts';
 
 /** Accepts a TCP connection and then says nothing, forever — the ONLY way to
  *  actually exercise the deadline-timer branch of peek()'s race (a closed port
@@ -105,6 +106,27 @@ describe('peek() — in-process, real broker + fake plugin', () => {
     expect(result.broker).not.toBeNull();
     expect(result.broker?.pid).toBe(process.pid);
     expect(result.plugins).toEqual([]);
+  });
+
+  it('keeps disconnected persisted mutation-gate rows and store health in the non-spawning projection', async () => {
+    writeFileSync(mutationGatePathFor(advertisePath), JSON.stringify({
+      schemaVersion: 1,
+      sequence: 7,
+      gates: { 'Raw Key / disconnected': { state: 'paused', lastTransitionRevision: 7 } },
+      latestTransition: {
+        fileKey: 'Raw Key / disconnected', from: 'open', to: 'paused', at: 1, revision: 7,
+      },
+    }));
+    const mod = await loadBrokerDaemon();
+    await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
+
+    const result = await peek({ path: advertisePath });
+    expect(result.connected).toBe(false);
+    expect(result.broker).toMatchObject({ targetFileKeyAdmissionV: 1 });
+    expect(result.mutationGates).toEqual([
+      { fileKey: 'Raw Key / disconnected', state: 'paused', lastTransitionRevision: 7 },
+    ]);
+    expect(result.mutationGateStoreHealth).toMatchObject({ state: 'healthy', path: mutationGatePathFor(advertisePath) });
   });
 
   it('a matching plugin build reports versionMatch/protocolMatch true', async () => {
@@ -210,6 +232,30 @@ describe('status --peek — subprocess, no broker present', () => {
         env: { ...process.env, FIGMA_AGENT_BROKER_FILE: nonePath },
       });
       expect(Date.now() - started).toBeLessThan(2_000); // generous subprocess-startup allowance; peek() itself is <200ms
+    } finally {
+      rmSync(noneDir, { recursive: true, force: true });
+    }
+  });
+
+  it('validates --target-file-key before non-spawning peek and preserves its distinct selector contract', () => {
+    const noneDir = mkdtempSync(join(tmpdir(), 'fa-peek-target-key-'));
+    const nonePath = join(noneDir, 'none.json');
+    const errorFor = (args: string[]): { error: { code: string; message: string } } => {
+      try {
+        execFileSync(process.execPath, [CLI_DIST, 'status', '--peek', ...args], {
+          cwd: ROOT,
+          env: { ...process.env, FIGMA_AGENT_BROKER_FILE: nonePath },
+          encoding: 'utf8',
+        });
+      } catch (err) {
+        return JSON.parse(String((err as { stdout?: string }).stdout));
+      }
+      throw new Error('expected --target-file-key validation to reject before status --peek');
+    };
+    try {
+      expect(errorFor(['--target-file-key', ' Raw/Key'])).toMatchObject({ error: { code: 'E_INVALID_ARGS' } });
+      expect(errorFor(['--target-file-key', 'Raw/Key', '--file', 'Other file'])).toMatchObject({ error: { code: 'E_INVALID_ARGS' } });
+      expect(existsSync(nonePath)).toBe(false);
     } finally {
       rmSync(noneDir, { recursive: true, force: true });
     }

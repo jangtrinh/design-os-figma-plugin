@@ -234,7 +234,7 @@ export class JobTable {
   }
 
   /** Refuses a RUNNING job — the sandbox cannot interrupt a live `eval`. */
-  cancelQueued(jobId: string): { ok: boolean; reason?: string } {
+  cancelQueued(jobId: string, replyFrames: string[] = []): { ok: boolean; reason?: string } {
     const rec = this.jobs.get(jobId);
     if (!rec) return { ok: false, reason: 'no such job' };
     if (rec.state === 'running') {
@@ -244,9 +244,11 @@ export class JobTable {
     rec.state = 'cancelled';
     rec.finishedAt = this.now();
     rec.queuedMs = rec.finishedAt - rec.createdAt;
+    rec.replyFrames = replyFrames;
     delete rec.queuePosition;
     this.finishedOrder.push(jobId);
     this.enforceFinishedCap();
+    this.enforceByteBudget();
     return { ok: true };
   }
 

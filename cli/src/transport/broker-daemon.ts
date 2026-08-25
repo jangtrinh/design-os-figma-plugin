@@ -25,6 +25,9 @@ import {
 } from './protocol-helpers.ts';
 import { PluginRegistry, suspectedZombie, type PluginEntry } from './plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage } from './broker-status.ts';
+import { MutationAdmissionGate, mutationGatePathFor } from './mutation-admission-gate.ts';
+import { durableFileKey, exactTargetFileKey } from './file-identity.ts';
+import { isBrokerSafeRead } from '../../../shared/mutating-commands.ts';
 import {
   clearReconnected, filterAwaitingReconnect, lastPluginsPathFor, readLastPlugins,
   toAwaitingReconnectStatus, writeLastPluginsAtomic, type AwaitingReconnectEntry, type LastPluginRecord,
@@ -80,17 +83,6 @@ const IDLE_CHECK_MS = Math.min(60_000, Math.max(500, Math.floor(IDLE_SHUTDOWN_MS
 // never parked in the plugin-wait queue (a status probe must not hang 12s).
 const WAIT_EXEMPT = new Set(['STATUS']);
 
-// Concurrency & jobs (backlog 1.1+2.6+4.3) — commands implicitly read-only for QUEUEING
-// purposes even without an explicit `readOnly` flag on the envelope. A DIFFERENT axis
-// from mutating-commands.ts's undo-commit classification: AUDIT_DS is classified
-// MUTATING here (deliberately absent from this set) even though it seals no undo step —
-// it calls `setCurrentPageAsync` for every page without restoring the original
-// (executor-audit.ts), and `figma.currentPage` is shared view state a concurrent
-// mutating script reads implicitly. `EXEC_JS` is mutating by default; every read
-// implemented through it (scan-node, scan-conventions) must declare `readOnly: true`
-// itself — it is never inferred from `cmd` alone.
-const IMPLICIT_READ_ONLY = new Set(['STATUS', 'GET_SELECTION', 'EXPORT_PNG', 'SCAN_DESIGN_SYSTEM', 'GET_CORRECTION_MEMORY']);
-
 // A running job with no reply within this window is marked failed(E_TIMEOUT) FOR
 // REPORTING ONLY — the file's mutation slot stays blocked (the script may still be
 // running; the sandbox cannot interrupt a live `eval`, so advancing would deliberately
@@ -144,6 +136,12 @@ interface ParkedRequest {
   cmd?: string;
   readOnly?: boolean;
   activity?: string;
+  /** Exact raw assertion captured before a mutation parks; never inferred at flush. */
+  targetFileKey?: string;
+  /** Target-local gate revision that was open when this parked mutation was admitted. */
+  admissionRevision?: number;
+  /** Audit timestamp of that parking admission; no durable parked job is ever created. */
+  admittedAt?: number;
 }
 
 /**
@@ -399,6 +397,7 @@ function appendContentionLog(path: string, fileSlug: string, queuedMs: number | 
  */
 export interface BrokerDaemonOptions {
   advertisePath?: string;
+  mutationGatePath?: string;
   ports?: readonly number[];
   exit?: (code: number) => never;
   logFile?: string;
@@ -412,6 +411,7 @@ function defaultPortRange(): number[] {
 
 export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<void> {
   const advertisePath = options?.advertisePath ?? BROKER_FILE;
+  const mutationGate = new MutationAdmissionGate(options?.mutationGatePath ?? mutationGatePathFor(advertisePath));
   const ports = options?.ports ?? defaultPortRange();
   const exit: (code: number) => never = options?.exit ?? ((code: number): never => process.exit(code));
   // Resolved BEFORE any `log()` call below — a harness-spawned broker must never
@@ -851,6 +851,23 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const errReplyFrame = (id: string, code: ErrorCode, message: string): string =>
     JSON.stringify({ id, ok: false, error: { code, message } } satisfies ReplyErr);
 
+  /** Finalize a not-yet-running mutation after a gate denial. The same stored frame is
+   * delivered live and remains available through JOB polling. */
+  const cancelQueuedForGate = (job: JobRecord, code: ErrorCode, message: string): boolean => {
+    const frame = errReplyFrame(job.requestId, code, message);
+    const result = st.jobs.cancelQueued(job.jobId, [frame]);
+    if (!result.ok) return false;
+    const q = st.queues.get(job.fileSlug);
+    if (q && q.running !== job.jobId) st.queues.set(job.fileSlug, removeFromQueue(q, job.jobId));
+    recordContention(job);
+    if (job.from && job.from.readyState === WebSocket.OPEN) {
+      try { job.from.send(frame); } catch { /* requester vanished */ }
+    }
+    st.pending.delete(job.requestId);
+    st.dispatchedTo.delete(job.requestId);
+    return true;
+  };
+
   /**
    * Write-through a finished job's `queuedMs` into its durable contention counter — the
    * ONE seam every `st.jobs.finish`/`cancelQueued` call site below routes through, right
@@ -929,6 +946,13 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       advanceQueue(nextJob);
       return;
     }
+    if (!nextJob.readOnly) {
+      const admission = mutationGate.admit(nextJob.fileSlug);
+      if (!admission.ok) {
+        if (cancelQueuedForGate(nextJob, admission.error.code, admission.error.message)) advanceQueue(nextJob);
+        return;
+      }
+    }
     st.jobs.markRunning(nextJob.jobId);
     dispatchJob(nextJob, entry.ws);
   };
@@ -944,7 +968,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
    */
   const admitRequest = (
     from: WebSocket, id: string, rawText: string, cmd?: string, expectedFile?: string,
-    expectedInstance?: string, readOnly = false, projectDir?: string, activity?: string,
+    expectedInstance?: string, targetFileKey?: unknown, _readOnly = false, projectDir?: string, activity?: string,
+    parkedAdmission?: { targetFileKey: string; admissionRevision: number; admittedAt: number },
   ): void => {
     const duplicateJob = st.jobs.byRequestId(id);
     const duplicateWaiting = st.waiting.some((request) => request.id === id);
@@ -954,6 +979,28 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       log(`refused duplicate request id ${id}${duplicateJob ? ` (job ${duplicateJob.jobId})` : ' (parked)'}`);
       return;
     }
+    const requestedTargetFileKey = targetFileKey === undefined
+      ? undefined
+      : exactTargetFileKey(typeof targetFileKey === 'string' ? targetFileKey : null);
+    if (targetFileKey !== undefined && requestedTargetFileKey === null) {
+      sendReplyErr(from, id, 'E_INVALID_ARGS', 'targetFileKey must be a nonempty unpadded raw Figma fileKey');
+      return;
+    }
+    if (requestedTargetFileKey !== undefined && (expectedFile !== undefined || expectedInstance !== undefined)) {
+      sendReplyErr(from, id, 'E_INVALID_ARGS', 'targetFileKey is mutually exclusive with expectedFile and expectedInstance');
+      return;
+    }
+    const isReadOnly = cmd !== undefined && isBrokerSafeRead(cmd);
+    // Durable gate health precedes every mutation identity, routing, ownership, and frame
+    // decision. A corrupt/unreadable store must not become a misleading key or route error.
+    if (!isReadOnly) {
+      const status = mutationGate.status();
+      if (status.health.state === 'unavailable') {
+        sendReplyErr(from, id, 'E_MUTATION_GATE_UNAVAILABLE',
+          `mutation gate store is unavailable: ${status.health.reason ?? 'unreadable store'}`);
+        return;
+      }
+    }
     // #35 P2: the standing runtime pin is consulted BEFORE `resolveRouteFilter` — a
     // per-request `--instance`/`--file` still bypasses it entirely (route-filter.ts's own
     // precedence), but a no-flag command with a pin set must never silently fall through
@@ -962,15 +1009,27 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // the override rule.
     const pin = targetInstancePin;
     const pinLive = pin !== null && st.registry.getByInstanceId(pin)?.ws.readyState === WebSocket.OPEN;
-    if (pin !== null && pinDisconnected(expectedFile, expectedInstance, pin, pinLive)) {
+    if (requestedTargetFileKey === undefined && pin !== null && pinDisconnected(expectedFile, expectedInstance, pin, pinLive)) {
       sendReplyErr(from, id, 'E_TARGET_DISCONNECTED',
         `the pinned plugin (instance ${pin}) is no longer connected — re-target it with the panel's "Target this plugin" button, or clear the pin and retry`);
       return;
     }
-    const filter = resolveRouteFilter(expectedFile, currentFilter(), expectedInstance, pinLive ? pin : null);
+    const filter: RouteFilter = requestedTargetFileKey === undefined
+      ? resolveRouteFilter(expectedFile, currentFilter(), expectedInstance, pinLive ? pin : null)
+      : { value: null, exact: true, source: 'none', kind: 'name' };
     let targetWs = st.dispatchedTo.get(id);
     if (targetWs && targetWs.readyState !== WebSocket.OPEN) targetWs = undefined;
-    if (!targetWs) {
+    if (requestedTargetFileKey !== undefined) {
+      // The caller's key is a routing assertion, never canonical evidence: only the
+      // currently registered exact scene key may select a plugin. A live keyless plugin
+      // or different key is unrelated — leave the request unresolved so exact-key parking
+      // can wait for the asserted file without emitting a false wrong-file refusal.
+      const live = st.registry.liveEntries();
+      const exact = live.find((entry) => durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null) === requestedTargetFileKey);
+      if (exact) {
+        targetWs = exact.ws;
+      }
+    } else if (!targetWs) {
       const hits = st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind });
       // An explicit --file that matches two open files is AMBIGUOUS: same-named files are
       // indistinguishable here (fileKey is null for a non-org plugin), and guessing by recency
@@ -1004,14 +1063,40 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // a pinned file connect after the command was issued.
       const parkable = !(cmd && WAIT_EXEMPT.has(cmd)) && PLUGIN_WAIT_TIMEOUT_MS > 0;
       if (!parkable) {
-        sendReplyErr(from, id, 'E_NO_PLUGIN', noPluginMessage(st.registry, filter));
+        sendReplyErr(
+          from,
+          id,
+          'E_NO_PLUGIN',
+          requestedTargetFileKey === undefined
+            ? noPluginMessage(st.registry, filter)
+            : `no live plugin matches targetFileKey ${JSON.stringify(requestedTargetFileKey)}`,
+        );
         return;
+      }
+      // A mutation cannot claim a durable target identity from a filename, a route
+      // filter, or a later plugin HELLO. Only an explicit raw target key may park it.
+      if (!isReadOnly && requestedTargetFileKey === undefined) {
+        sendReplyErr(from, id, 'E_FILE_KEY_UNAVAILABLE',
+          'a disconnected mutation requires an exact raw targetFileKey; filename routing is not durable identity');
+        return;
+      }
+      const parkedAt = Date.now();
+      let admissionRevision: number | undefined;
+      if (!isReadOnly) {
+        const parkingAdmission = mutationGate.admit(requestedTargetFileKey);
+        if (!parkingAdmission.ok) {
+          sendReplyErr(from, id, parkingAdmission.error.code, parkingAdmission.error.message);
+          return;
+        }
+        admissionRevision = parkingAdmission.lastTransitionRevision;
       }
       st.waiting.push({
         id, from, rawText, deadline: Date.now() + PLUGIN_WAIT_TIMEOUT_MS, filter, projectDir,
-        cmd, readOnly, activity,
+        cmd, readOnly: isReadOnly, activity,
+        ...(requestedTargetFileKey !== undefined && requestedTargetFileKey !== null && { targetFileKey: requestedTargetFileKey }),
+        ...(admissionRevision !== undefined && { admissionRevision, admittedAt: parkedAt }),
       });
-      log(`parked ${id}${cmd ? ` (${cmd})` : ''}${filter.value ? ` [${filter.source}="${filter.value}"]` : ''} — awaiting ${filter.value ? 'matching ' : ''}plugin (${st.waiting.length} queued)`);
+      log(`parked ${id}${cmd ? ` (${cmd})` : ''}${requestedTargetFileKey ? ` [targetFileKey=${JSON.stringify(requestedTargetFileKey)} rev=${admissionRevision ?? 'safe-read'} at=${parkedAt}]` : filter.value ? ` [${filter.source}="${filter.value}"]` : ''} — awaiting ${requestedTargetFileKey || filter.value ? 'matching ' : ''}plugin (${st.waiting.length} queued)`);
       return;
     }
 
@@ -1023,15 +1108,40 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       return;
     }
 
+    const rawFileKey = durableFileKey((targetEntry.scene.fileKey as string | null | undefined) ?? null);
+    if (requestedTargetFileKey !== undefined) {
+      if (rawFileKey === null) {
+        sendReplyErr(from, id, 'E_FILE_KEY_UNAVAILABLE', 'targetFileKey cannot be verified because the selected plugin has no raw fileKey');
+        return;
+      }
+      if (rawFileKey !== requestedTargetFileKey) {
+        sendReplyErr(from, id, 'E_WRONG_FILE', `selected plugin key does not match targetFileKey ${JSON.stringify(requestedTargetFileKey)}`);
+        return;
+      }
+    }
+    if (!isReadOnly) {
+      const admission = mutationGate.admit(rawFileKey);
+      if (!admission.ok) {
+        sendReplyErr(from, id, admission.error.code, admission.error.message);
+        return;
+      }
+      // A pause/resume of THIS target deliberately invalidates its formerly open
+      // parking decision; a store-wide sequence change for another target does not.
+      if (parkedAdmission !== undefined && admission.lastTransitionRevision > parkedAdmission.admissionRevision) {
+        sendReplyErr(from, id, 'E_STALE_ADMISSION',
+          `parked mutation for ${JSON.stringify(parkedAdmission.targetFileKey)} became stale after gate revision ${parkedAdmission.admissionRevision} (parked at ${parkedAdmission.admittedAt})`);
+        return;
+      }
+    }
+
     recordRequestBinding(targetWs, projectDir);
     st.pending.set(id, from);
     st.dispatchedTo.set(id, targetWs);
 
-    const fileSlug = fileIdentity(
-      (targetEntry.scene.fileKey as string | null | undefined) ?? null,
+    const fileSlug = rawFileKey ?? fileIdentity(
+      null,
       (targetEntry.scene.fileName as string | undefined) ?? null,
     );
-    const isReadOnly = readOnly === true || (cmd !== undefined && IMPLICIT_READ_ONLY.has(cmd));
     const job = st.jobs.create({
       requestId: id, cmd: cmd ?? '(unknown)', fileSlug, readOnly: isReadOnly,
       requestFrames: [rawText], from, targetInstanceId: targetEntry.instanceId,
@@ -1052,6 +1162,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const { q: nextQ, startNow } = enqueueJob(q, job.jobId);
     st.queues.set(fileSlug, nextQ);
     if (startNow) {
+      const admission = mutationGate.admit(rawFileKey);
+      if (!admission.ok) {
+        if (cancelQueuedForGate(job, admission.error.code, admission.error.message)) advanceQueue(job);
+        return;
+      }
       st.jobs.markRunning(job.jobId);
       dispatchJob(job, targetWs);
     } else {
@@ -1068,8 +1183,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
    * `cmd`/`readOnly`/`expectedFile` — those live inside the reassembled JSON. Buffer until
    * `last`, then reassemble with the SAME `ChunkAssembler` used elsewhere (envelope-level
    * only — the broker still never reads `params`) and admit with the REAL envelope. Never
-   * invent a synthetic `CHUNKED` pseudo-command: that would misroute a filtered request,
-   * force a large declared-read-only EXEC_JS to queue, and put false metadata in `status`.
+   * invent a synthetic `CHUNKED` pseudo-command: that would misroute a filtered request
+   * and put false metadata in `status`.
    */
   const admitChunk = (from: WebSocket, id: string, rawText: string, last: boolean): void => {
     // A chunk belonging to an ALREADY-admitted job (running or queued) is a continuation
@@ -1115,7 +1230,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     }
     admitRequest(
       from, id, JSON.stringify(assembled), assembled.cmd, assembled.expectedFile, assembled.expectedInstance,
-      assembled.readOnly === true, assembled.projectDir, assembled.activity,
+      assembled.targetFileKey, assembled.readOnly === true, assembled.projectDir, assembled.activity,
     );
   };
 
@@ -1133,13 +1248,21 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     let delivered = 0;
     for (const req of queued) {
       if (req.from.readyState !== WebSocket.OPEN) continue; // CLI gone — drop silently
-      if (st.registry.selectTarget(req.filter.value, { exact: req.filter.exact, kind: req.filter.kind })) {
+      const targetExists = req.targetFileKey === undefined
+        ? st.registry.selectTarget(req.filter.value, { exact: req.filter.exact, kind: req.filter.kind }) !== null
+        : st.registry.liveEntries().some((entry) =>
+          durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null) === req.targetFileKey,
+        );
+      if (targetExists) {
         const flagValue = req.filter.source === 'flag' ? req.filter.value ?? undefined : undefined;
         admitRequest(
           req.from, req.id, req.rawText, req.cmd,
           req.filter.kind === 'name' ? flagValue : undefined,
           req.filter.kind === 'instance' ? flagValue : undefined,
-          req.readOnly === true, req.projectDir, req.activity,
+          req.targetFileKey, req.readOnly === true, req.projectDir, req.activity,
+          req.targetFileKey !== undefined && req.admissionRevision !== undefined && req.admittedAt !== undefined
+            ? { targetFileKey: req.targetFileKey, admissionRevision: req.admissionRevision, admittedAt: req.admittedAt }
+            : undefined,
         );
         delivered++;
       } else {
@@ -1351,6 +1474,54 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       : { job: info });
   };
 
+  /** Broker-terminal durable pause/open control. It intentionally uses only the raw
+   * file key supplied by the caller; a file name never becomes gate state. */
+  const handleMutationGate = (ws: WebSocket, msg: RequestMsg): void => {
+    const params = msg.params as { mode?: unknown; fileKey?: unknown } | null;
+    const mode = typeof params?.mode === 'string' ? params.mode : null;
+    const fileKey = durableFileKey(typeof params?.fileKey === 'string' ? params.fileKey : null);
+    if (fileKey === null) {
+      sendReplyErr(ws, msg.id, 'E_FILE_KEY_UNAVAILABLE', 'MUTATION_GATE requires a nonempty raw fileKey');
+      return;
+    }
+    if (mode === 'status') {
+      const status = mutationGate.status();
+      if (status.health.state === 'unavailable') {
+        sendReplyErr(ws, msg.id, 'E_MUTATION_GATE_UNAVAILABLE', `mutation gate store is unavailable: ${status.health.reason ?? 'unreadable store'}`);
+        return;
+      }
+      const row = status.gates.find((gate) => gate.fileKey === fileKey)
+        ?? { fileKey, state: 'open' as const, lastTransitionRevision: 0 };
+      sendReplyOk(ws, msg.id, { ...row, mutationGateStoreHealth: status.health });
+      return;
+    }
+    if (mode !== 'pause' && mode !== 'resume') {
+      sendReplyErr(ws, msg.id, 'E_INVALID_ARGS', 'MUTATION_GATE mode must be pause, resume, or status');
+      return;
+    }
+    const transition = mutationGate.transition(fileKey, mode === 'pause' ? 'paused' : 'open');
+    if (!transition.ok) {
+      sendReplyErr(ws, msg.id, transition.error.code, transition.error.message);
+      return;
+    }
+    if (transition.state === 'paused') {
+      const q = st.queues.get(fileKey);
+      for (const jobId of [...(q?.waiting ?? [])]) {
+        const job = st.jobs.byId(jobId);
+        if (job !== 'unknown' && job !== 'expired') {
+          cancelQueuedForGate(job, 'E_MUTATIONS_PAUSED', `mutations are paused for fileKey ${JSON.stringify(fileKey)}`);
+        }
+      }
+    }
+    sendReplyOk(ws, msg.id, {
+      fileKey,
+      state: transition.state,
+      lastTransitionRevision: transition.lastTransitionRevision,
+      sequence: transition.sequence,
+      mutationGateStoreHealth: transition.health,
+    });
+  };
+
   /**
    * auto-connect slice 3 — `figma-agent cowork`. Broker-terminal (same precedent as
    * PROJECT_BIND/JOB): resolves a target plugin ONCE using the SAME routing filter
@@ -1517,7 +1688,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // elsewhere (envelope-level only — the broker still never reads `params`), and
       // THEN admits the request with its real `cmd`/`readOnly`/`expectedFile`/
       // `projectDir` — never a synthetic pseudo-command that would misroute a filtered
-      // request or force a declared-read-only EXEC_JS to queue.
+      // request or misclassify its broker-safe-read admission.
       if (isPlugin) { st.registry.touchActive(ws); routeFromPlugin(msg.id, text, msg.last, ws); }
       else admitChunk(ws, msg.id, text, msg.last);
     } else if (isReplyMsg(msg)) {
@@ -1549,10 +1720,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     } else if (isRequestMsg(msg)) {
       if (msg.cmd === 'PROJECT_BIND') handleProjectBind(ws, msg);
       else if (msg.cmd === 'JOB') handleJobCommand(ws, msg);
+      else if (msg.cmd === 'MUTATION_GATE') handleMutationGate(ws, msg);
       else if (msg.cmd === 'COWORK') handleCowork(ws, msg);
       // Envelope-only: cmd + readOnly decide queueing. params are never parsed — the
       // pure-relay rule (concurrency & jobs, backlog 1.1+2.6+4.3).
-      else admitRequest(ws, msg.id, text, msg.cmd, msg.expectedFile, msg.expectedInstance, msg.readOnly === true, msg.projectDir, msg.activity);
+      else admitRequest(
+        ws, msg.id, text, msg.cmd, msg.expectedFile, msg.expectedInstance, msg.targetFileKey,
+        msg.readOnly === true, msg.projectDir, msg.activity,
+      );
     } else if (isEventMsg(msg)) {
       if (msg.type === 'PLUGIN_HELLO') {
         // Multi-plugin: register this instance in its OWN slot — never evict another
@@ -1606,6 +1781,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           broadcastPeers();
           promotePendingBind(ws); // registry-integrity phase 01 §2 — fill a pending fileKey on first sight
           schedulePluginSetPersist(); // broker-restart reconnect visibility — scene changed
+          // The UI relay can register before main's first FILE_INFO carries its raw key.
+          // A valid scene-identity update is therefore another exact-target readiness
+          // transition, after the existing broadcast/promotion/persistence side effects.
+          flushWaiting();
         }
       } else if (msg.type === 'DOC_CHANGE') {
         // Live-sync capture: append the plugin's coalesced batch to the change log.
@@ -1761,6 +1940,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           currentFilter(),
           Date.now,
           jobStatusFor,
+          mutationGate.status(),
         ),
         ...(awaitingReconnect.length > 0 && { awaitingReconnect }),
       },
@@ -1861,7 +2041,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // The request's OWN filter, not the env pin — otherwise a timed-out --file
         // request blames FIGMA_AGENT_FILE (or prints the generic message) instead of
         // naming the flag the caller actually used.
-        sendReplyErr(req.from, req.id, 'E_NO_PLUGIN', noPluginMessage(st.registry, req.filter));
+        sendReplyErr(
+          req.from,
+          req.id,
+          'E_NO_PLUGIN',
+          req.targetFileKey === undefined
+            ? noPluginMessage(st.registry, req.filter)
+            : `no plugin matching targetFileKey ${JSON.stringify(req.targetFileKey)} connected before the wait deadline`,
+        );
       } else {
         survivors.push(req);
       }

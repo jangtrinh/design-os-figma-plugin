@@ -2,7 +2,7 @@
 // (`figma-agent status` reads it) and the E_NO_PLUGIN message. Kept out of
 // broker-daemon.ts so both are unit-testable without a live socket.
 import type { PluginRegistry, RegistrySocket } from './plugin-registry.ts';
-import type { JobInfo, PluginStatusEntry } from '../../../shared/protocol.ts';
+import type { JobInfo, MutationGateRow, MutationGateStoreHealth, PluginStatusEntry } from '../../../shared/protocol.ts';
 import type { RouteFilter } from './route-filter.ts';
 import { fileIdentity } from './file-identity.ts';
 
@@ -17,6 +17,11 @@ export interface FileJobStatus {
 /** A `plugins[]` row once `jobStatusFor` augments it (see `buildBrokerHelloData`) —
  *  status.ts's own type for reading the field back, instead of an untyped cast. */
 export type PluginStatusEntryWithJob = PluginStatusEntry & FileJobStatus;
+
+export interface MutationGateStatus {
+  health: MutationGateStoreHealth;
+  gates: MutationGateRow[];
+}
 
 /** Daemon-owned fields the registry can't know (identity + uptime). */
 export interface BrokerMeta {
@@ -57,6 +62,7 @@ export function buildBrokerHelloData(
   // omitted key, per each row's OWN fileSlug (`fileIdentity(fileKey, fileName)` — the
   // SAME identity chain routing + registry + jobs already share).
   jobStatusFor?: (fileSlug: string) => FileJobStatus,
+  mutationGateStatus?: MutationGateStatus,
 ): Record<string, unknown> {
   const plugins: PluginStatusEntry[] = registry.statusList();
   const target = registry.selectTarget(filter);
@@ -68,10 +74,17 @@ export function buildBrokerHelloData(
         const { runningJob, queueDepth } = jobStatusFor(slug);
         return { ...p, runningJob, queueDepth };
       });
+  const mutationGates = mutationGateStatus?.gates.map((gate) => ({
+    ...gate,
+    ...(plugins.some((plugin) => plugin.fileKey === gate.fileKey) && { connected: true }),
+  }));
   return {
     port: meta.port,
     pid: meta.pid,
     protocolV: meta.protocolV,
+    // Capability, not a protocol-version bump: a bundled current broker can enforce an
+    // exact `targetFileKey` admission assertion while older brokers simply omit it.
+    targetFileKeyAdmissionV: 1,
     buildMtime: meta.buildMtime,
     uptimeMs: meta.uptimeMs,
     plugins: withJobs,
@@ -93,6 +106,10 @@ export function buildBrokerHelloData(
     pluginState: connected ? 'connected' : 'disconnected',
     lastHeartbeatAge: target && target.lastSeenAt ? now() - target.lastSeenAt : null,
     pluginInfo: target ? target.scene : null,
+    ...(mutationGateStatus !== undefined && {
+      mutationGates,
+      mutationGateStoreHealth: mutationGateStatus.health,
+    }),
   };
 }
 

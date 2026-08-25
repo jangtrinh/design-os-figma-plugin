@@ -103,6 +103,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     pid: ad.pid,
     uptimeMs: (hello.uptimeMs as number | undefined) ?? null,
     protocolVersion: (hello.protocolV as number | undefined) ?? PROTOCOL_VERSION,
+    ...(hello.targetFileKeyAdmissionV === 1 && { targetFileKeyAdmissionV: 1 }),
     // Sender-verification counter (backlog 2.10 / issue #15) — mirrors BROKER_HELLO's
     // own byte-identical-when-zero contract: present only once a cross-instance reply
     // has actually been discarded, so the common (zero) case stays unchanged here too.
@@ -157,6 +158,9 @@ export async function run(args: CommandArgs): Promise<unknown> {
   // still see what IS connected even though it doesn't match what they asked about.
   return {
     broker, plugins, activePlugin, plugin, protocolVersion: broker.protocolVersion,
+    ...(Array.isArray(hello.mutationGates) && { mutationGates: hello.mutationGates }),
+    ...(hello.mutationGateStoreHealth !== null && typeof hello.mutationGateStoreHealth === 'object'
+      && { mutationGateStoreHealth: hello.mutationGateStoreHealth }),
     ...(wantedFile ? { pluginsAll: all } : {}),
     // Broker-restart reconnect visibility — a HINT from last-known state, never a live
     // plugin (it must never appear in `plugins`/`pluginsAll` above); present only when

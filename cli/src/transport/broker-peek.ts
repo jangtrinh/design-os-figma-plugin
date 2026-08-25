@@ -2,7 +2,13 @@
 // able to call this without ever starting a broker. NEVER calls `ensureBroker`
 // (broker-discovery.ts, which spawns); only reads the /tmp advertisement and,
 // if one looks live, asks that broker ONE short question with its own deadline.
-import { BROKER_FILE, PROTOCOL_VERSION, type PluginStatusEntry } from '../../../shared/protocol.ts';
+import {
+  BROKER_FILE,
+  PROTOCOL_VERSION,
+  type MutationGateRow,
+  type MutationGateStoreHealth,
+  type PluginStatusEntry,
+} from '../../../shared/protocol.ts';
 import { isAdvertisementLive, readAdvertisement } from './broker-discovery.ts';
 import { fetchBrokerHello } from './broker-client.ts';
 import { envMs } from './protocol-helpers.ts';
@@ -26,11 +32,13 @@ export interface PeekResult {
   idle?: true;
   reason?: string;
   degraded?: string;
-  broker: { port: number; pid: number; protocolVersion?: number; uptimeMs?: number } | null;
+  broker: { port: number; pid: number; protocolVersion?: number; uptimeMs?: number; targetFileKeyAdmissionV?: 1 } | null;
   plugins?: PeekPluginEntry[];
   cliVersion: string;
   versionMatch?: boolean | null;
   protocolMatch?: boolean | null;
+  mutationGates?: MutationGateRow[];
+  mutationGateStoreHealth?: MutationGateStoreHealth;
 }
 
 /** `undefined` (the field was never sent) is UNKNOWN, not a mismatch. */
@@ -130,10 +138,14 @@ export async function peek(opts?: { path?: string; queryMs?: number }): Promise<
       pid: ad.pid,
       protocolVersion: (hello.protocolV as number | undefined) ?? PROTOCOL_VERSION,
       uptimeMs: (hello.uptimeMs as number | undefined) ?? undefined,
+      ...(hello.targetFileKeyAdmissionV === 1 && { targetFileKeyAdmissionV: 1 as const }),
     },
     plugins,
     cliVersion: CLI_VERSION,
     versionMatch: active ? active.versionMatch : null,
     protocolMatch: active ? active.protocolMatch : null,
+    ...(Array.isArray(hello.mutationGates) && { mutationGates: hello.mutationGates as MutationGateRow[] }),
+    ...(hello.mutationGateStoreHealth !== null && typeof hello.mutationGateStoreHealth === 'object'
+      && { mutationGateStoreHealth: hello.mutationGateStoreHealth as MutationGateStoreHealth }),
   };
 }

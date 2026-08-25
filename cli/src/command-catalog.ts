@@ -37,6 +37,13 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + 'SECONDS, default 60 — on timeout this exits non-zero with E_NO_PLUGIN instead of the '
       + 'normal payload.',
   },
+  {
+    name: 'mutation-gate',
+    description:
+      '<pause|resume|status> --file-key <raw-key>   control the local broker\'s durable per-file '
+      + 'mutation admission gate. The key is passed verbatim and must be a nonempty raw Figma fileKey; '
+      + 'this command never derives identity from a filename.',
+  },
   { name: 'seat', description: 'Probe seat → {seat, bridge, reason} [--seat free|paid skips the probe]' },
   {
     name: 'bind',
@@ -206,6 +213,13 @@ export const GLOBAL_FLAGS: GlobalFlagEntry[] = [
       + 'FIGMA_AGENT_FILE; payloads >512KB route by the env pin but are still guarded)',
   },
   {
+    flag: '--target-file-key <raw Figma fileKey>',
+    description:
+      'exact broker-side target assertion for a disconnected mutation. It is passed verbatim, '
+      + 'must be nonempty and unpadded, never derives from a filename/bind cache/reply, and is '
+      + 'mutually exclusive with --file and --instance.',
+  },
+  {
     flag: '--instance <instanceId>',
     description:
       "route to that EXACT plugin instance (from `status`'s instanceId column) — beats --file and "
@@ -222,9 +236,9 @@ export const GLOBAL_FLAGS: GlobalFlagEntry[] = [
   {
     flag: '--read-only',
     description:
-      'declare that this command only READS. Skips the per-file mutation queue (backlog 1.1+2.6+4.3). '
-      + 'TRUSTED, NOT ENFORCED — the plugin sandbox cannot verify it, so a mis-declared mutation can '
-      + "interleave with another agent's work.",
+      'request the broker-safe read path. Only STATUS, GET_SELECTION, EXPORT_PNG, SCAN_DESIGN_SYSTEM, '
+      + 'GET_CORRECTION_MEMORY, LIST_CONNECTIONS, VERIFY_CONNECTIONS, and SHADER_GRADIENT_PROBE bypass '
+      + 'the per-file mutation gate; the caller cannot declare any other command safe.',
   },
   {
     flag: '--agent <id> | FIGMA_AGENT_ID',
