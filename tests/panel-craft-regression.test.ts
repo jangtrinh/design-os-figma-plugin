@@ -7,6 +7,9 @@ const read = (path: string): string => readFileSync(`${ROOT}/${path}`, 'utf8');
 const html = read('plugin/src/ui/panel.html');
 const activityView = read('plugin/src/ui/panel-activity-view.ts');
 const thinkingOrb = read('plugin/src/ui/thinking-orb.ts');
+const orbPainter = read('plugin/src/ui/thinking-orb-painter.ts');
+const orbWorker = read('plugin/src/ui/thinking-orb-worker.ts');
+const orbWorkerHost = read('plugin/src/ui/thinking-orb-worker-host.ts');
 const blocks = /(?::root|html\.figma-light)\s*\{[\s\S]*?\}/g;
 const chrome = html.replace(blocks, '').replace(/\/\*[\s\S]*?\*\//g, '');
 const rules: [string, string][] = [...chrome.matchAll(/([^{}]+)\{([^}]*)\}/g)]
@@ -90,12 +93,14 @@ describe('panel visual regression contract', () => {
   it('keeps the aggregate orb inline, monochrome, and lifecycle-bounded', () => {
     expect(declarationsFor('.thinking-orb')).toMatch(/width:\s*20px/);
     expect(declarationsFor('.thinking-orb')).toMatch(/height:\s*20px/);
-    expect(thinkingOrb).toContain('Math.min(2, window.devicePixelRatio || 1)');
+    expect(orbPainter).toContain('Math.min(2, dpr || 1)');
     expect(thinkingOrb).toContain("matchMedia('(prefers-reduced-motion: reduce)')");
     expect(thinkingOrb).toContain("document.addEventListener('visibilitychange'");
     expect(thinkingOrb).toContain('document.hidden');
-    expect(thinkingOrb).toContain('requestAnimationFrame');
-    expect(thinkingOrb).toContain('cancelAnimationFrame');
+    expect(orbWorker).toContain('requestAnimationFrame');
+    expect(orbWorker).toContain('cancelAnimationFrame');
+    expect(orbWorkerHost).toContain('transferControlToOffscreen');
+    expect(orbWorkerHost).toContain('worker.onerror = failover');
     expect(thinkingOrb).not.toContain('IntersectionObserver');
   });
 
