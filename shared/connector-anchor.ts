@@ -57,3 +57,34 @@ export function resolveAnchors(source: Rect, target: Rect): { source: Anchor; ta
 
   return { source: anchorOn(source, sourceSide), target: anchorOn(target, OPPOSITE[sourceSide]) };
 }
+
+function edgeGap(aStart: number, aEnd: number, bStart: number, bEnd: number): number {
+  if (aEnd < bStart) return bStart - aEnd;
+  if (bEnd < aStart) return aStart - bEnd;
+  return 0;
+}
+
+/**
+ * Pick annotation anchors from the shortest positive gap between the boxes' edges.
+ *
+ * Centre distance is the right signal for relationship flows, where the overall layout
+ * direction matters. A straight annotation pointer instead reads best when it crosses the
+ * nearest whitespace between the note and its subject. If the boxes overlap on both axes,
+ * there is no edge gap to compare, so the stable centre-based rule remains the fallback.
+ * Equal positive gaps resolve vertically to keep the tie deterministic.
+ */
+export function resolveAnnotationAnchors(source: Rect, target: Rect): { source: Anchor; target: Anchor } {
+  const horizontalGap = edgeGap(source.x, source.x + source.width, target.x, target.x + target.width);
+  const verticalGap = edgeGap(source.y, source.y + source.height, target.y, target.y + target.height);
+
+  if (horizontalGap === 0 && verticalGap === 0) return resolveAnchors(source, target);
+
+  const from = centre(source);
+  const to = centre(target);
+  const vertical = verticalGap > 0 && (horizontalGap === 0 || verticalGap <= horizontalGap);
+  const sourceSide: Side = vertical
+    ? (to.y >= from.y ? 'BOTTOM' : 'TOP')
+    : (to.x >= from.x ? 'RIGHT' : 'LEFT');
+
+  return { source: anchorOn(source, sourceSide), target: anchorOn(target, OPPOSITE[sourceSide]) };
+}

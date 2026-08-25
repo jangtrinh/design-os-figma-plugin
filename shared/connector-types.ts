@@ -48,7 +48,7 @@ export interface VectorNetworkSpec {
  * linter reports a record behind the current version as stale so a redraw can repair it,
  * rather than reporting every older connector as drifted geometry.
  */
-export const ROUTER_VERSION = 1;
+export const ROUTER_VERSION = 2;
 
 /**
  * One connector, as persisted. `flow` is the provenance that makes the canvas a PROJECTION

@@ -281,6 +281,22 @@ afterEach(async () => {
   rmSync(scratchDir, { recursive: true, force: true });
 });
 
+describe('daemon harness — process listeners belong to one daemon lifetime', () => {
+  it('restores signal and exception listener counts after BROKER_SHUTDOWN_REQUEST', async () => {
+    const events = ['SIGTERM', 'SIGINT', 'uncaughtException'] as const;
+    const baseline = Object.fromEntries(events.map((event) => [event, process.listenerCount(event)]));
+    const port = await startTestBroker();
+
+    for (const event of events) expect(process.listenerCount(event)).toBe(baseline[event] + 1);
+
+    const cli = await connectSocket(port);
+    cli.send(JSON.stringify({ type: 'BROKER_SHUTDOWN_REQUEST' }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    for (const event of events) expect(process.listenerCount(event)).toBe(baseline[event]);
+  });
+});
+
 describe('daemon harness — cancel-then-complete never dispatches the cancelled job (BLOCKER 1)', () => {
   it('a QUEUED job cancelled via `job --cancel` is never resurrected when the running job finishes', async () => {
     const port = await startTestBroker();
