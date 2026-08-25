@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mountThinkingOrb, orbPresentation } from '../plugin/src/ui/thinking-orb.ts';
+import { orbHarness, workerHarness } from './helpers/thinking-orb-harness.ts';
 
 const healthy = {
   connection: 'connected' as const,
@@ -68,74 +69,57 @@ describe('orbPresentation', () => {
   });
 });
 
-interface OrbHarness {
-  target: { append(node: unknown): void };
-  canvas: { removed: boolean };
-  context: { clears: number };
-  media: { matches: boolean; emit(): void; listeners: Set<() => void> };
-  documentState: { hidden: boolean; emit(): void; listeners: Set<() => void> };
-  observer: { emit(): void; disconnected: boolean };
-  raf: Map<number, FrameRequestCallback>;
-  cancelled: number[];
-  runFrame(now?: number): void;
-}
-
-function orbHarness(hasContext = true): OrbHarness {
-  const context = {
-    clears: 0, fillStyle: '', strokeStyle: '', lineWidth: 0,
-    setTransform() {}, clearRect() { this.clears += 1; }, beginPath() {},
-    arc() {}, fill() {}, moveTo() {}, lineTo() {}, stroke() {},
-  };
-  const canvas = {
-    width: 0, height: 0, className: '', dataset: {} as Record<string, string>, removed: false,
-    setAttribute() {}, getContext: () => hasContext ? context : null, remove() { this.removed = true; },
-  };
-  const mediaListeners = new Set<() => void>();
-  const media = {
-    matches: false, listeners: mediaListeners,
-    addEventListener: (_: string, fn: () => void) => mediaListeners.add(fn),
-    removeEventListener: (_: string, fn: () => void) => mediaListeners.delete(fn),
-    emit: () => [...mediaListeners].forEach((fn) => fn()),
-  };
-  const visibilityListeners = new Set<() => void>();
-  const documentState = {
-    hidden: false, listeners: visibilityListeners,
-    documentElement: { classList: { contains: () => false } },
-    createElement: () => canvas,
-    addEventListener: (_: string, fn: () => void) => visibilityListeners.add(fn),
-    removeEventListener: (_: string, fn: () => void) => visibilityListeners.delete(fn),
-    emit: () => [...visibilityListeners].forEach((fn) => fn()),
-  };
-  let observerCallback: () => void = () => {};
-  const observer = { emit: () => observerCallback(), disconnected: false };
-  class FakeMutationObserver {
-    constructor(callback: () => void) { observerCallback = callback; }
-    observe() {}
-    disconnect() { observer.disconnected = true; }
-  }
-  const raf = new Map<number, FrameRequestCallback>();
-  const cancelled: number[] = [];
-  let nextFrame = 1;
-  vi.stubGlobal('document', documentState);
-  vi.stubGlobal('window', { devicePixelRatio: 3, matchMedia: () => media });
-  vi.stubGlobal('MutationObserver', FakeMutationObserver);
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-    const id = nextFrame++; raf.set(id, callback); return id;
-  });
-  vi.stubGlobal('cancelAnimationFrame', (id: number) => { cancelled.push(id); raf.delete(id); });
-  return {
-    target: { append: () => {} }, canvas, context, media, documentState, observer, raf, cancelled,
-    runFrame(now = 1000): void {
-      const entry = raf.entries().next().value as [number, FrameRequestCallback] | undefined;
-      if (!entry) throw new Error('No pending animation frame');
-      raf.delete(entry[0]); entry[1](now);
-    },
-  };
-}
-
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Thinking Orb canvas lifecycle', () => {
+  it('moves the exact animation loop off the UI thread when worker canvas is supported', () => {
+    const harness = workerHarness();
+    const controller = mountThinkingOrb(harness.target as unknown as HTMLElement, {
+      workerSource: 'self.onmessage = () => {};',
+    });
+    controller.update(orbPresentation(healthy));
+    expect(harness.raf.size).toBe(0);
+    expect(harness.worker.messages.length).toBeGreaterThanOrEqual(2);
+    expect(harness.worker.messages[0]).toMatchObject({ type: 'init', canvas: harness.transferred });
+    controller.dispose();
+    expect(harness.worker.terminated).toBe(true);
+  });
+
+  it('terminates the worker and restores the main-thread renderer when init is refused', () => {
+    const harness = workerHarness(true);
+    const controller = mountThinkingOrb(harness.target as unknown as HTMLElement, {
+      workerSource: 'self.onmessage = () => {};',
+    });
+    expect(harness.worker.terminated).toBe(true);
+    controller.update(orbPresentation(healthy));
+    expect(harness.raf.size).toBe(1);
+    controller.dispose();
+  });
+
+  it('replaces a transferred canvas after an asynchronous worker failure', () => {
+    const harness = workerHarness();
+    const controller = mountThinkingOrb(harness.target as unknown as HTMLElement, {
+      workerSource: 'self.onmessage = () => {};',
+    });
+    harness.worker.emitError();
+    expect(harness.worker.terminated).toBe(true);
+    controller.update(orbPresentation(healthy));
+    expect(harness.raf.size).toBe(1);
+    controller.dispose();
+  });
+
+  it('falls back when the browser refuses to create a worker blob', () => {
+    const harness = workerHarness();
+    vi.stubGlobal('Blob', class { constructor() { throw new Error('blob refused'); } });
+    let controller: ReturnType<typeof mountThinkingOrb> | undefined;
+    expect(() => { controller = mountThinkingOrb(harness.target as unknown as HTMLElement, {
+      workerSource: 'self.onmessage = () => {};',
+    }); }).not.toThrow();
+    controller?.update(orbPresentation(healthy));
+    expect(harness.raf.size).toBe(1);
+    controller?.dispose();
+  });
+
   it('fails soft when a 2D canvas context is unavailable', () => {
     const harness = orbHarness(false);
     const controller = mountThinkingOrb(harness.target as unknown as HTMLElement);

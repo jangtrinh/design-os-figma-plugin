@@ -1507,6 +1507,57 @@ body { overflow: hidden; }
     return ok === true;
   }
 
+  // plugin/src/ui/orb-command-state.ts
+  var COMMANDS_BY_STATE = {
+    searching: /* @__PURE__ */ new Set([
+      "STATUS",
+      "GET_SELECTION",
+      "SCAN_DESIGN_SYSTEM",
+      "GET_CORRECTION_MEMORY",
+      "LIST_CONNECTIONS",
+      "SHADER_GRADIENT_PROBE"
+    ]),
+    solving: /* @__PURE__ */ new Set(["AUDIT_DS", "VERIFY_CONNECTIONS"]),
+    composing: /* @__PURE__ */ new Set([
+      "CREATE_FRAME",
+      "CREATE_INSTANCE",
+      "CREATE_VARIABLE",
+      "SET_TEXT",
+      "HTML_TO_FIGMA",
+      "IMPORT_PAYLOAD",
+      "SHADER_GRADIENT",
+      "IMPORT_GRADIENT",
+      "EXPORT_PNG"
+    ]),
+    shaping: /* @__PURE__ */ new Set([
+      "SET_VARIANT",
+      "BIND_VARIABLE",
+      "SET_AUTOLAYOUT",
+      "SET_CONSTRAINTS",
+      "CLONE_TRAITS"
+    ]),
+    weaving: /* @__PURE__ */ new Set(["BATCH", "CONNECT", "DISCONNECT", "REROUTE", "RECONCILE"]),
+    working: /* @__PURE__ */ new Set(["EXEC_JS", "SET_CORRECTION_MEMORY", "PROJECT_BIND", "JOB"]),
+    listening: /* @__PURE__ */ new Set(["COWORK"])
+  };
+  var STATUS_BY_STATE = {
+    searching: "Searching",
+    solving: "Analyzing",
+    composing: "Composing",
+    shaping: "Shaping",
+    weaving: "Coordinating",
+    listening: "Listening",
+    working: "Processing"
+  };
+  function commandOrbPresentation(command) {
+    for (const state of Object.keys(COMMANDS_BY_STATE)) {
+      if (COMMANDS_BY_STATE[state].has(command)) {
+        return { state, status: STATUS_BY_STATE[state] };
+      }
+    }
+    return { state: "working", status: STATUS_BY_STATE.working };
+  }
+
   // node_modules/thinking-orbs/dist/engine.es.js
   function U(n, s, t) {
     return n + (s - n) * t;
@@ -2074,60 +2125,119 @@ body { overflow: hidden; }
     return tt.set(t, M), M;
   }
 
-  // plugin/src/ui/orb-command-state.ts
-  var COMMANDS_BY_STATE = {
-    searching: /* @__PURE__ */ new Set([
-      "STATUS",
-      "GET_SELECTION",
-      "SCAN_DESIGN_SYSTEM",
-      "GET_CORRECTION_MEMORY",
-      "LIST_CONNECTIONS",
-      "SHADER_GRADIENT_PROBE"
-    ]),
-    solving: /* @__PURE__ */ new Set(["AUDIT_DS", "VERIFY_CONNECTIONS"]),
-    composing: /* @__PURE__ */ new Set([
-      "CREATE_FRAME",
-      "CREATE_INSTANCE",
-      "CREATE_VARIABLE",
-      "SET_TEXT",
-      "HTML_TO_FIGMA",
-      "IMPORT_PAYLOAD",
-      "SHADER_GRADIENT",
-      "IMPORT_GRADIENT",
-      "EXPORT_PNG"
-    ]),
-    shaping: /* @__PURE__ */ new Set([
-      "SET_VARIANT",
-      "BIND_VARIABLE",
-      "SET_AUTOLAYOUT",
-      "SET_CONSTRAINTS",
-      "CLONE_TRAITS"
-    ]),
-    weaving: /* @__PURE__ */ new Set(["BATCH", "CONNECT", "DISCONNECT", "REROUTE", "RECONCILE"]),
-    working: /* @__PURE__ */ new Set(["EXEC_JS", "SET_CORRECTION_MEMORY", "PROJECT_BIND", "JOB"]),
-    listening: /* @__PURE__ */ new Set(["COWORK"])
-  };
-  var STATUS_BY_STATE = {
-    searching: "Searching",
-    solving: "Analyzing",
-    composing: "Composing",
-    shaping: "Shaping",
-    weaving: "Coordinating",
-    listening: "Listening",
-    working: "Processing"
-  };
-  function commandOrbPresentation(command) {
-    for (const state of Object.keys(COMMANDS_BY_STATE)) {
-      if (COMMANDS_BY_STATE[state].has(command)) {
-        return { state, status: STATUS_BY_STATE[state] };
-      }
+  // plugin/src/ui/thinking-orb-painter.ts
+  var ORB_SIZE = 20;
+  var STATIC_TIME = 0.75;
+  function paintThinkingOrb(canvas, context2, presentation, now, dark, animated, dpr) {
+    const scale = Math.min(2, dpr || 1);
+    const pixels = Math.round(ORB_SIZE * scale);
+    if (canvas.width !== pixels || canvas.height !== pixels) {
+      canvas.width = pixels;
+      canvas.height = pixels;
     }
-    return { state: "working", status: STATUS_BY_STATE.working };
+    context2.setTransform(scale, 0, 0, scale, 0, 0);
+    context2.clearRect(0, 0, ORB_SIZE, ORB_SIZE);
+    const preset = Lt(presentation.state, ORB_SIZE);
+    const time = (animated ? now / 1e3 : STATIC_TIME) * preset.speed;
+    Ct[preset.mode](context2, ORB_SIZE, time, dark, preset.opts);
+  }
+
+  // plugin/src/ui/thinking-orb-worker-host.ts
+  var READY_TIMEOUT_MS = 5e3;
+  function mountThinkingOrbWorker(options) {
+    const transferable = options.canvas;
+    if (!options.source || typeof Worker === "undefined" || !transferable.transferControlToOffscreen) return null;
+    let blobUrl = null;
+    let worker = null;
+    let transferred = false;
+    try {
+      blobUrl = URL.createObjectURL(new Blob([options.source], { type: "text/javascript" }));
+      worker = new Worker(blobUrl);
+      const offscreen = transferable.transferControlToOffscreen();
+      transferred = true;
+      let fallback = null;
+      let disposed = false;
+      let ready = false;
+      let readyTimer = null;
+      const state = () => ({
+        presentation: options.getPresentation(),
+        dark: options.isDark(),
+        dpr: window.devicePixelRatio || 1,
+        hidden: document.hidden,
+        reducedMotion: options.reducedMotion.matches
+      });
+      const observer = new MutationObserver(() => refresh());
+      const cleanup = () => {
+        if (readyTimer !== null) clearTimeout(readyTimer);
+        document.removeEventListener("visibilitychange", refresh);
+        window.removeEventListener("resize", refresh);
+        options.reducedMotion.removeEventListener("change", refresh);
+        observer.disconnect();
+        worker?.terminate();
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+      };
+      const failover = () => {
+        if (disposed || fallback) return;
+        cleanup();
+        options.canvas.remove();
+        fallback = options.mountFallback();
+        fallback.update(options.getPresentation());
+      };
+      const refresh = () => {
+        if (fallback) {
+          fallback.update(options.getPresentation());
+          return;
+        }
+        try {
+          worker?.postMessage({ type: "update", ...state() });
+        } catch {
+          failover();
+        }
+      };
+      worker.onmessage = (event) => {
+        if (event.data?.type !== "ready") return;
+        ready = true;
+        if (readyTimer !== null) clearTimeout(readyTimer);
+      };
+      worker.onerror = failover;
+      worker.onmessageerror = failover;
+      worker.postMessage({ type: "init", canvas: offscreen, ...state() }, [offscreen]);
+      document.addEventListener("visibilitychange", refresh);
+      window.addEventListener("resize", refresh);
+      options.reducedMotion.addEventListener("change", refresh);
+      observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+      if (!ready) readyTimer = setTimeout(failover, READY_TIMEOUT_MS);
+      return {
+        update(next) {
+          const current = options.getPresentation();
+          if (next.state === current.state && next.paused === current.paused && next.dimmed === current.dimmed && next.status === current.status) return;
+          options.setPresentation(next);
+          options.canvas.dataset.dimmed = String(next.dimmed);
+          refresh();
+        },
+        dispose() {
+          disposed = true;
+          if (fallback) fallback.dispose();
+          else {
+            cleanup();
+            options.canvas.remove();
+          }
+        }
+      };
+    } catch {
+      worker?.terminate();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      if (transferred) {
+        options.canvas.remove();
+        const fallback = options.mountFallback();
+        fallback.update(options.getPresentation());
+        return fallback;
+      }
+      return null;
+    }
   }
 
   // plugin/src/ui/thinking-orb.ts
-  var ORB_SIZE = 20;
-  var STATIC_TIME = 0.75;
   function orbPresentation(signals) {
     if (signals.connectionFailure || signals.syncFailure || signals.activityFailure) {
       return { state: "shaping", paused: true, dimmed: false, status: "Needs attention" };
@@ -2151,19 +2261,14 @@ body { overflow: hidden; }
     }
     return { state: "breathing", paused: false, dimmed: false, status: "Connected" };
   }
-  function mountThinkingOrb(target) {
+  function bundledWorkerSource() {
+    return true ? '"use strict";\n(() => {\n  // node_modules/thinking-orbs/dist/engine.es.js\n  function U(n, s, t) {\n    return n + (s - n) * t;\n  }\n  function nt(n) {\n    return n - Math.floor(n);\n  }\n  function G(n, s) {\n    const t = Math.floor(n), r = Math.floor(s);\n    let a = n - t, o = s - r;\n    a = a * a * (3 - 2 * a), o = o * o * (3 - 2 * o);\n    const c = E(t, r), M = E(t + 1, r), h = E(t, r + 1), m = E(t + 1, r + 1);\n    return c + (M - c) * a + (h - c) * o + (c - M - h + m) * a * o;\n  }\n  function E(n, s) {\n    const t = Math.sin(n * 12.9898 + s * 78.233) * 43758.5453;\n    return t - Math.floor(t);\n  }\n  function J(n, s) {\n    const t = Math.PI * (3 - Math.sqrt(5)), r = 1 - 2 * (n + 0.5) / s, a = Math.sqrt(1 - r * r), o = n * t;\n    return [a * Math.cos(o), r, a * Math.sin(o)];\n  }\n  function et(n, s) {\n    return Math.atan2(Math.sin(n - s), Math.cos(n - s));\n  }\n  function _(n, s, t, r, a) {\n    const o = Math.sin(s), c = Math.cos(s), M = Math.sin(n), h = Math.cos(n);\n    return (m, D, p) => {\n      const e = m * h + p * M, l = -m * M + p * h, R = D * c - l * o, w = D * o + l * c;\n      return [t + e * a, r - R * a, w];\n    };\n  }\n  function rt(n, s, t, r = 0.3) {\n    for (const a of s) {\n      const o = a.a ?? 1, c = Math.min(1, Math.max(0, a.white)), M = Math.round((t ? 1 - c : c) * 255);\n      n.fillStyle = `rgba(${M},${M},${M},${o})`, n.beginPath(), n.arc(a.x, a.y, a.r, 0, Math.PI * 2), n.fill();\n    }\n  }\n  function it(n, s, t) {\n    for (const r of s) {\n      const a = r.a ?? 1, o = Math.min(1, Math.max(0, r.white)), c = Math.round((t ? 1 - o : o) * 255);\n      n.strokeStyle = `rgba(${c},${c},${c},${a})`, n.lineWidth = r.w, n.beginPath(), n.moveTo(r.x1, r.y1), n.lineTo(r.x2, r.y2), n.stroke();\n    }\n  }\n  function L(n, s, t = 0.3) {\n    const r = [];\n    for (const a of n)\n      (a.a ?? 1) < 0.02 || (a.r = Math.max(t, a.r), r.push(a));\n    return r.sort((a, o) => a.z - o.z), { dots: r, lines: s.filter((a) => (a.a ?? 1) >= 0.02) };\n  }\n  function ht(n, s, t) {\n    s.lines.length && it(n, s.lines, t), rt(n, s.dots, t);\n  }\n  function $(n, s) {\n    return (n / 300) ** s;\n  }\n  var Mt = (n, s, t) => {\n    const r = n / 2, a = n / 2, o = n / 2 * 0.76, c = _(s * 0.4, 0.3, r, a, 1), M = $(n, t.rsPow ?? 0.6), h = [], m = t.ghostN ?? 150;\n    for (let e = 0; e < m; e++) {\n      const l = J(e, m), [R, w, i] = c(l[0] * o, l[1] * o, l[2] * o), u = (i / o + 1) / 2;\n      h.push({ x: R, y: w, z: i, r: 0.8 * M, white: 0.78, a: 0.1 + 0.22 * u });\n    }\n    const D = t.strandN ?? 52, p = t.turns ?? 3;\n    for (let e = 0; e < 3; e++) {\n      const l = e / 3 * 2 * Math.PI;\n      for (let R = 0; R < D; R++) {\n        const w = (nt(R / D + s * 0.045) * 2 - 1) * 0.96, i = Math.sqrt(Math.max(0, 1 - w * w)), u = Math.min(1, (1 - Math.abs(w)) / 0.1), y = w * Math.PI * p + l, b = 1 + 0.075 * Math.sin(w * Math.PI * p * 2 + l * 2 + s * 0.8), f = i * o * b, [P, x, g] = c(Math.cos(y) * f, w * o * b, Math.sin(y) * f), d = (g / o + 1) / 2;\n        h.push({\n          x: P,\n          y: x,\n          z: g,\n          r: ((t.rBase ?? 1.2) + (t.rDepth ?? 1.8) * d) * M,\n          white: 0.55 - 0.45 * d,\n          a: u * (0.45 + 0.55 * d)\n        });\n      }\n    }\n    return L(h, [], t.rMin);\n  };\n  function lt(n, s, t, r) {\n    const a = 2 * s * t + r, o = n % a, c = new Array(s).fill(0);\n    let M = -1;\n    if (o < 2 * s * t) {\n      const h = Math.floor(o / t), m = (o - h * t) / t, p = 1 - (1 - Math.min(1, m / 0.7)) ** 3;\n      if (h < s) {\n        for (let e = 0; e < h; e++) c[e] = 1;\n        c[h] = p, M = h;\n      } else {\n        const e = 2 * s - 1 - h;\n        for (let l = 0; l < e; l++) c[l] = 1;\n        c[e] = 1 - p, M = e;\n      }\n    }\n    return { amount: c, active: M };\n  }\n  function pt(n, s, t) {\n    let [r, a, o] = n, c = false;\n    for (let M = 0; M < s.length; M++) {\n      if (t.amount[M] <= 0) continue;\n      const h = s[M], m = h.axis === 0 ? r : h.axis === 1 ? a : o;\n      if (m < h.lo || m >= h.hi) continue;\n      M === t.active && (c = true);\n      const D = h.ang * t.amount[M], p = Math.cos(D), e = Math.sin(D);\n      if (h.axis === 0) {\n        const l = a * p - o * e;\n        o = a * e + o * p, a = l;\n      } else if (h.axis === 1) {\n        const l = r * p + o * e;\n        o = -r * e + o * p, r = l;\n      } else {\n        const l = r * p - a * e;\n        a = r * e + a * p, r = l;\n      }\n    }\n    return [r, a, o, c];\n  }\n  function ut(n) {\n    const s = [];\n    for (let t = 0; t < n; t++) {\n      const r = Math.min(2, Math.floor(E(t, 2.3) * 3)), a = -1 + 0.5 * Math.min(3, Math.floor(E(t, 5.9) * 4)), o = E(t, 7.7) < 0.5 ? 1 : -1;\n      s.push({ axis: r, lo: a, hi: a + 0.5, ang: o * Math.PI / 2 });\n    }\n    return s;\n  }\n  var ft = (n, s, t) => {\n    const a = n / 2, o = n / 2, c = n / 2 * 0.82, M = 0.4 + 0.06 * Math.sin(s * 0.35), h = _(s * 0.5, M, a, o, c), m = s * (0.5 + (1.7 - 0.5) * (t.scanMul ?? 1)), D = $(n, t.rsPow ?? 0.6), p = t.dimBase ?? 1, e = [], l = t.latRings ?? 17, R = t.lonDensity ?? 44;\n    for (let w = 0; w <= l; w++) {\n      const i = -Math.PI / 2 + w / l * Math.PI, u = Math.cos(i), y = Math.sin(i), b = Math.max(1, Math.round(Math.abs(u) * R));\n      for (let f = 0; f < b; f++) {\n        const P = f / b * 2 * Math.PI, [x, g, d] = h(u * Math.cos(P), y, u * Math.sin(P)), v = (d + 1) / 2, k = et(P + s * 0.5, m), N = Math.exp(-(k * k) / 0.18) * Math.max(0, d);\n        e.push({\n          x,\n          y: g,\n          z: d,\n          r: ((t.rBase ?? 0.6) + (t.rDepth ?? 1.7) * v + (t.rBoost ?? 1) * N) * D,\n          white: (t.inkFar ?? 0.62) - (t.inkSpan ?? 0.54) * v,\n          // dimBase < 1 fades un-scanned dots so the meridian reads clearly\n          a: p + (1 - p) * Math.min(1, N)\n        });\n      }\n    }\n    return L(e, [], t.rMin);\n  };\n  var dt = (n, s, t) => {\n    const r = n / 2, a = n / 2, o = n / 2 * 0.82, c = _(s * 0.55, 0.35 + 0.1 * Math.sin(s * 0.9), r, a, o), M = $(n, t.rsPow ?? 0.6), h = t.moveCount ?? 14, m = ut(h), D = lt(s, h, 0.42, 1.2), p = [], e = t.latRings ?? 15, l = t.lonDensity ?? 40;\n    for (let R = 0; R <= e; R++) {\n      const w = -Math.PI / 2 + R / e * Math.PI, i = Math.cos(w), u = Math.sin(w), y = Math.max(1, Math.round(Math.abs(i) * l));\n      for (let b = 0; b < y; b++) {\n        const f = b / y * 2 * Math.PI, [P, x, g, d] = pt([i * Math.cos(f), u, i * Math.sin(f)], m, D), [v, k, N] = c(P, x, g), z = (N + 1) / 2;\n        p.push({\n          x: v,\n          y: k,\n          z: N,\n          r: ((t.rBase ?? 0.6) + (t.rDepth ?? 1.7) * z + (d ? t.rActive ?? 0.3 : 0)) * M,\n          white: (t.inkFar ?? 0.62) - (t.inkSpan ?? 0.54) * z - (d ? 0.14 : 0)\n        });\n      }\n    }\n    return L(p, [], t.rMin);\n  };\n  var bt = (n, s, t) => {\n    const r = n / 2, a = n / 2, o = n / 2 * 0.874, c = _(s * 0.18, 0.38, r, a, 1), M = $(n, t.rsPow ?? 0.6), h = [], m = t.rings ?? 15, D = t.lonDensity ?? 40;\n    for (let p = 0; p <= m; p++) {\n      const e = -Math.PI / 2 + p / m * Math.PI, l = Math.cos(e), R = Math.sin(e), w = 0.62 * Math.sin(s * 2.1 - p * 0.52) + 0.38 * Math.sin(s * 1.27 + p * 0.83), i = o * (0.88 + 0.105 * w), u = Math.max(1, Math.round(Math.abs(l) * D));\n      for (let y = 0; y < u; y++) {\n        const b = y / u * 2 * Math.PI, [f, P, x] = c(l * Math.cos(b) * i, R * i, l * Math.sin(b) * i), g = (x / o + 1) / 2, d = Math.max(0, w);\n        h.push({\n          x: f,\n          y: P,\n          z: x,\n          r: ((t.rBase ?? 0.6) + (t.rDepth ?? 1.7) * g) * (1 + 0.4 * d) * M,\n          white: 0.66 - 0.56 * g - 0.1 * d\n        });\n      }\n    }\n    return L(h, [], t.rMin);\n  };\n  function xt(n) {\n    return n * n * (3 - 2 * n);\n  }\n  function st(n) {\n    const s = n.length, t = [];\n    let r = 0;\n    for (let a = 0; a < s; a++) {\n      const o = n[a], c = n[(a + 1) % s], M = Math.hypot(c[0] - o[0], c[1] - o[1]);\n      t.push(M), r += M;\n    }\n    return (a) => {\n      let o = a * r, c = 0;\n      for (; o > t[c] && c < s - 1; )\n        o -= t[c], c++;\n      const M = n[c], h = n[(c + 1) % s], m = t[c] ? Math.min(1, o / t[c]) : 0;\n      return [M[0] + (h[0] - M[0]) * m, M[1] + (h[1] - M[1]) * m];\n    };\n  }\n  var yt = (n) => {\n    const s = -Math.PI / 2 + n * 2 * Math.PI;\n    return [Math.cos(s) * 0.24, Math.sin(s) * 0.24];\n  };\n  var gt = st([\n    [0, -0.26],\n    [0.24, 0.16],\n    [-0.24, 0.16]\n  ]);\n  var mt = st([\n    [0, -0.2],\n    [0.2, -0.2],\n    [0.2, 0.2],\n    [-0.2, 0.2],\n    [-0.2, -0.2]\n  ]);\n  var H = [yt, gt, mt];\n  function wt(n) {\n    return Math.max(6, Math.round(34 * n));\n  }\n  var V = 1.4;\n  var ot = 0.9;\n  var Q = V + ot;\n  var Pt = (n, s, t) => {\n    const r = H.length, a = s % (Q * r), o = Math.floor(a / Q), c = a - o * Q, M = c > V ? xt((c - V) / ot) : 0, h = t.spread ?? 1, m = H[o], D = H[(o + 1) % r], p = 160, e = [];\n    for (let x = 0; x < p; x++) {\n      const g = x / p, d = m(g), v = D(g);\n      e.push([(d[0] + (v[0] - d[0]) * M) * h, (d[1] + (v[1] - d[1]) * M) * h]);\n    }\n    const l = [];\n    let R = 0;\n    for (let x = 0; x < p; x++) {\n      const g = e[x], d = e[(x + 1) % p], v = Math.hypot(d[0] - g[0], d[1] - g[1]);\n      l.push(v), R += v;\n    }\n    const w = wt(t.iconD ?? 1), i = (t.rDot ?? 0.021) * 1.35 * h, u = 1 + 0.02 * Math.sin(c * 3.1), y = [], b = n / 2;\n    let f = 0, P = 0;\n    for (let x = 0; x < w; x++) {\n      const g = x / w * R;\n      for (; P + l[f] < g && f < p - 1; )\n        P += l[f], f++;\n      const d = e[f], v = e[(f + 1) % p], k = l[f] ? Math.min(1, (g - P) / l[f]) : 0, N = (d[0] + (v[0] - d[0]) * k) * u, z = (d[1] + (v[1] - d[1]) * k) * u;\n      y.push({\n        x: b + N * n,\n        y: b + z * n,\n        z: 0,\n        r: Math.max(0.35, i * n),\n        white: 0.1\n      });\n    }\n    return L(y, [], t.rMin);\n  };\n  var Rt = (n, s, t) => {\n    const r = n / 2, a = n / 2, o = n / 2 * 0.82, c = _(s * 0.12, 0.3, r, a, 1), M = $(n, t.rsPow ?? 0.6), h = [], m = t.orbitN ?? 12, D = t.ghostN ?? 40, p = t.particles ?? 3;\n    for (let e = 0; e < m; e++) {\n      const l = E(e, 1.7), R = E(e, 5.2), w = E(e, 8.9), i = o * (0.45 + 0.52 * l), u = l * 2 * Math.PI, y = Math.acos(2 * R - 1), b = Math.sin(y) * Math.cos(u), f = Math.cos(y), P = Math.sin(y) * Math.sin(u);\n      let x = -f, g = b;\n      const d = 0, v = Math.max(1e-6, Math.sqrt(x * x + g * g));\n      x /= v, g /= v;\n      const k = f * d - P * g, N = P * x - b * d, z = b * g - f * x, O = (0.25 + 0.55 * w) * (w > 0.5 ? 1 : -1);\n      for (let B = 0; B < D; B++) {\n        const I = B / D * 2 * Math.PI, [S, A, T] = c(\n          (x * Math.cos(I) + k * Math.sin(I)) * i,\n          (g * Math.cos(I) + N * Math.sin(I)) * i,\n          (d * Math.cos(I) + z * Math.sin(I)) * i\n        ), C = (T / i + 1) / 2;\n        h.push({\n          x: S,\n          y: A,\n          z: T,\n          r: (t.ghostR ?? 0.9) * M,\n          white: 0.72,\n          a: (t.ghostA ?? 0.5) * (0.4 + 0.6 * C)\n        });\n      }\n      for (let B = 0; B < p; B++) {\n        const I = s * O + B / p * 2 * Math.PI + R * 6, [S, A, T] = c(\n          (x * Math.cos(I) + k * Math.sin(I)) * i,\n          (g * Math.cos(I) + N * Math.sin(I)) * i,\n          (d * Math.cos(I) + z * Math.sin(I)) * i\n        ), C = (T / i + 1) / 2;\n        h.push({\n          x: S,\n          y: A,\n          z: T,\n          r: ((t.partR ?? 1.2) + (t.partRDepth ?? 1.6) * C) * M,\n          white: 0.3 - 0.22 * C\n        });\n      }\n    }\n    return L(h, [], t.rMin);\n  };\n  var Z = (n, s, t) => {\n    const r = n / 2, a = n / 2, o = n / 2 * 0.78, c = t.spin ?? 1, M = 0.3, h = _(s * 0.1 * c, M, r, a, 1), m = $(n, t.rsPow ?? 0.6), D = [], p = t.ghostN ?? 150;\n    for (let z = 0; z < p; z++) {\n      const O = J(z, p), [B, I, S] = h(O[0] * o, O[1] * o, O[2] * o), A = (S / o + 1) / 2;\n      D.push({ x: B, y: I, z: S, r: 0.8 * m, white: 0.78, a: 0.1 + 0.22 * A });\n    }\n    const e = s * 0.24 * c, l = t.faceOn ? -M : 0.55 + 0.3 * Math.sin(s * 0.18) * c, R = Math.cos(e), w = 0, i = Math.sin(e), u = -i * Math.sin(l), y = Math.cos(l), b = R * Math.sin(l), f = w * b - i * y, P = i * u - R * b, x = R * y - w * u, g = 0.23 * (t.wobMul ?? 1), d = t.faceOn ? o / (1 + 0.85 * g) : o, v = t.lanes ?? 5, k = t.segs ?? 88, N = Math.max(1, Math.round(v * (t.bandMul ?? 1)));\n    for (let z = 0; z < N; z++) {\n      const O = (z - (N - 1) / 2) * 0.075, B = Math.abs(z - (N - 1) / 2) / Math.max(1, (N - 1) / 2);\n      for (let I = 0; I < k; I++) {\n        const S = I / k * 2 * Math.PI, A = (0.16 * Math.sin(S * 3 - s * 1.7 + z * 0.22) + 0.07 * Math.sin(S * 5 + s * 1.1)) * (t.wobMul ?? 1), T = t.faceOn ? 1 + A : 1, C = t.faceOn ? O : O + A, q = R * Math.cos(S) + u * Math.sin(S) + f * C, F = w * Math.cos(S) + y * Math.sin(S) + P * C, j = i * Math.cos(S) + b * Math.sin(S) + x * C, W = Math.sqrt(q * q + F * F + j * j), Y = d * T, [ct, at, X] = h(q / W * Y, F / W * Y, j / W * Y), K = (X / o + 1) / 2;\n        D.push({\n          x: ct,\n          y: at,\n          z: X,\n          r: ((t.rBase ?? 1.1) + (t.rDepth ?? 1.7) * K) * (1 - 0.25 * B) * m,\n          white: 0.52 - 0.44 * K + 0.18 * B,\n          a: 0.4 + 0.6 * K\n        });\n      }\n    }\n    return L(D, [], t.rMin);\n  };\n  var Dt = (n, s, t) => {\n    const r = n / 2, a = n / 2, o = n / 2 * 0.8 * (t.spread ?? 1), c = _(s * 0.12, 0.32, r, a, o), M = $(n, t.rsPow ?? 0.6), h = t.nodeN ?? 30, m = t.thr ?? 0.72, D = t.nodeR ?? 1.4, p = t.nodeRDepth ?? 1.8, e = [];\n    for (let i = 0; i < h; i++) {\n      const u = J(i, h), y = u[0] + 0.3 * (G(i * 0.31 + 9, s * 0.24) - 0.5) * 2, b = u[1] + 0.3 * (G(i * 0.53 + 27, s * 0.21) - 0.5) * 2, f = u[2] + 0.3 * (G(i * 0.77 + 55, s * 0.27) - 0.5) * 2, P = Math.sqrt(y * y + b * b + f * f);\n      e.push([y / P, b / P, f / P]);\n    }\n    const l = [], R = [];\n    for (let i = 0; i < h; i++)\n      for (let u = i + 1; u < h; u++) {\n        const y = e[i][0] - e[u][0], b = e[i][1] - e[u][1], f = e[i][2] - e[u][2], P = Math.sqrt(y * y + b * b + f * f);\n        if (P >= m) continue;\n        const [x, g, d] = c(e[i][0], e[i][1], e[i][2]), [v, k, N] = c(e[u][0], e[u][1], e[u][2]), z = ((d + N) / 2 + 1) / 2;\n        l.push({\n          x1: x,\n          y1: g,\n          x2: v,\n          y2: k,\n          white: 0.42,\n          a: (1 - P / m) * (0.3 + 0.55 * z),\n          w: Math.max(0.6, (t.lineW ?? 0.8) * M)\n        });\n      }\n    for (let i = 0; i < h; i++) {\n      const [u, y, b] = c(e[i][0], e[i][1], e[i][2]), f = (b + 1) / 2, P = 1 + 0.25 * Math.sin(s * 1.4 + i * 2.7);\n      R.push({\n        x: u,\n        y,\n        z: b,\n        r: (D + p * f) * P * M,\n        white: 0.55 - 0.45 * f\n      });\n    }\n    const w = t.signals ?? 5;\n    for (let i = 0; i < w; i++) {\n      const u = Math.floor(s * 0.55 + i * 7.31), y = Math.floor(E(u, i * 3.1 + 1.7) * h), b = Math.floor(E(u, i * 5.7 + 4.2) * h);\n      if (y === b) continue;\n      const f = nt(s * 0.55 + i * 7.31), P = U(e[y][0], e[b][0], f), x = U(e[y][1], e[b][1], f), g = U(e[y][2], e[b][2], f), d = Math.max(1e-6, Math.sqrt(P * P + x * x + g * g)), [v, k, N] = c(P / d, x / d, g / d), z = (N + 1) / 2;\n      R.push({\n        x: v,\n        y: k,\n        z: N,\n        r: (D * 1.5 + p * z) * M,\n        white: 0.05,\n        a: 0.5 + 0.5 * z\n      });\n    }\n    return L(R, l, t.rMin);\n  };\n  var vt = {\n    orbits: Rt,\n    globe: ft,\n    rubik: dt,\n    wave: bt,\n    web: Dt,\n    braid: Mt,\n    ribbon: Z,\n    // ring shares ribbon\'s geometry \u2014 the `faceOn` profile flag switches it\n    ring: Z,\n    morph: Pt\n  };\n  var Ct = Object.fromEntries(\n    Object.entries(vt).map(([n, s]) => [\n      n,\n      (t, r, a, o, c) => ht(t, s(r, a, c), o)\n    ])\n  );\n  var zt = [\n    ["latRings", "lonDensity"],\n    ["rings", "lonDensity"],\n    ["lanes", "segs"]\n  ];\n  var Nt = ["orbitN", "ghostN", "nodeN", "strandN", "signals"];\n  var It = ["iconD"];\n  var kt = [\n    "rBase",\n    "rDepth",\n    "rActive",\n    "rDot",\n    "ghostR",\n    "partR",\n    "partRDepth",\n    "nodeR",\n    "nodeRDepth"\n  ];\n  function St(n, s) {\n    const t = { ...n }, r = /* @__PURE__ */ new Set(), a = Math.sqrt(s);\n    for (const [o, c] of zt) {\n      const M = t[o], h = t[c];\n      M != null && h != null && !r.has(o) && !r.has(c) && (t[o] = Math.max(2, Math.round(M * a)), t[c] = Math.max(2, Math.round(h * a)), r.add(o), r.add(c));\n    }\n    for (const o of Nt) {\n      const c = t[o];\n      c != null && c !== 0 && !r.has(o) && (t[o] = Math.max(1, Math.round(c * s)));\n    }\n    for (const o of It) {\n      const c = t[o];\n      c != null && (t[o] = Math.max(0.02, c * s));\n    }\n    return t;\n  }\n  function Bt(n, s) {\n    const t = { ...n };\n    for (const r of kt) {\n      const a = t[r];\n      a != null && (t[r] = a * s);\n    }\n    return t.rSizeMul = (t.rSizeMul ?? 1) * s, t;\n  }\n  var Et = {\n    globe: {\n      latRings: 17,\n      lonDensity: 44,\n      rBase: 0.6,\n      rDepth: 1.7,\n      rBoost: 1,\n      inkFar: 0.62,\n      inkSpan: 0.54,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    orbits: {\n      orbitN: 12,\n      ghostN: 40,\n      ghostR: 0.9,\n      ghostA: 0.5,\n      particles: 3,\n      partR: 1.2,\n      partRDepth: 1.6,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    rubik: {\n      latRings: 15,\n      lonDensity: 40,\n      moveCount: 14,\n      rBase: 0.6,\n      rDepth: 1.7,\n      rActive: 0.3,\n      inkFar: 0.62,\n      inkSpan: 0.54,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    wave: {\n      rings: 15,\n      lonDensity: 40,\n      rBase: 0.6,\n      rDepth: 1.7,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    web: {\n      nodeN: 30,\n      thr: 0.72,\n      signals: 5,\n      nodeR: 1.4,\n      nodeRDepth: 1.8,\n      lineW: 0.8,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    braid: {\n      strandN: 52,\n      turns: 3,\n      ghostN: 150,\n      rBase: 1.2,\n      rDepth: 1.8,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    ribbon: {\n      lanes: 5,\n      segs: 88,\n      ghostN: 150,\n      rBase: 1.1,\n      rDepth: 1.7,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    // ring shares ribbon\'s painter; faceOn cancels the camera tilt and moves\n    // the undulation onto the radius, and there is no ghost sphere behind it\n    ring: {\n      lanes: 5,\n      segs: 88,\n      ghostN: 0,\n      faceOn: 1,\n      rBase: 1.1,\n      rDepth: 1.7,\n      rsPow: 0.6,\n      rMin: 0.3\n    },\n    morph: {\n      rDot: 0.021,\n      iconD: 1,\n      rMin: 0.25\n    }\n  };\n  var Ot = {\n    working: "orbits",\n    searching: "globe",\n    solving: "rubik",\n    listening: "wave",\n    connecting: "web",\n    weaving: "braid",\n    composing: "ribbon",\n    breathing: "ring",\n    shaping: "morph"\n  };\n  var At = {\n    orbits: {\n      64: { speed: 1.885, count: 1, size: 1 },\n      20: { speed: 3.9, count: 0.238, size: 2.4 }\n    },\n    globe: {\n      64: { speed: 2.015, count: 0.42, size: 1.15, extra: { scanMul: 4.08, dimBase: 0.45 } },\n      20: { speed: 2.665, count: 0.105, size: 1.75, extra: { scanMul: 4.335, dimBase: 0.45 } }\n    },\n    rubik: {\n      64: { speed: 1.82, count: 0.35, size: 1.05 },\n      20: { speed: 1.95, count: 0.088, size: 1.9 }\n    },\n    wave: {\n      64: { speed: 4.388, count: 0.341, size: 1 },\n      20: { speed: 3.998, count: 0.105, size: 1.6 }\n    },\n    web: {\n      64: { speed: 3.315, count: 1.35, size: 0.95 },\n      20: { speed: 6.63, count: 0.25, size: 1.52 }\n    },\n    braid: {\n      64: { speed: 1.625, count: 0.5, size: 1 },\n      20: { speed: 2.75, count: 0.1125, size: 1.36 }\n    },\n    ribbon: {\n      64: { speed: 2.34, count: 0.25, size: 0.85, extra: { spin: 0, bandMul: 3.9, wobMul: 1 } },\n      20: { speed: 3.12, count: 0.051, size: 1.073, extra: { spin: 0, bandMul: 4.94, wobMul: 1 } }\n    },\n    ring: {\n      64: { speed: 3.24, count: 0.25, size: 0.956, extra: { spin: 0, bandMul: 3.627, wobMul: 0.368 } },\n      20: { speed: 3.78, count: 0.028, size: 1.622, extra: { spin: 0, bandMul: 3.968, wobMul: 0.565 } }\n    },\n    morph: {\n      64: { speed: 2.405, count: 0.702, size: 0.395, extra: { spread: 1.45 } },\n      20: { speed: 2.08, count: 0.53, size: 1.011, extra: { spread: 1.45 } }\n    }\n  };\n  var tt = /* @__PURE__ */ new Map();\n  function Lt(n, s) {\n    const t = `${n}-${s}`, r = tt.get(t);\n    if (r) return r;\n    const a = Ot[n], o = At[a][s];\n    let c = { ...Et[a] };\n    o.count !== 1 && (c = St(c, o.count)), o.size !== 1 && (c = Bt(c, o.size)), o.extra && (c = { ...c, ...o.extra });\n    const M = { mode: a, speed: o.speed, opts: c };\n    return tt.set(t, M), M;\n  }\n\n  // plugin/src/ui/thinking-orb-painter.ts\n  var ORB_SIZE = 20;\n  var STATIC_TIME = 0.75;\n  function paintThinkingOrb(canvas, context2, presentation, now, dark, animated, dpr) {\n    const scale = Math.min(2, dpr || 1);\n    const pixels = Math.round(ORB_SIZE * scale);\n    if (canvas.width !== pixels || canvas.height !== pixels) {\n      canvas.width = pixels;\n      canvas.height = pixels;\n    }\n    context2.setTransform(scale, 0, 0, scale, 0, 0);\n    context2.clearRect(0, 0, ORB_SIZE, ORB_SIZE);\n    const preset = Lt(presentation.state, ORB_SIZE);\n    const time = (animated ? now / 1e3 : STATIC_TIME) * preset.speed;\n    Ct[preset.mode](context2, ORB_SIZE, time, dark, preset.opts);\n  }\n\n  // plugin/src/ui/thinking-orb-worker.ts\n  var state = null;\n  var context = null;\n  var frameId = null;\n  var announcedReady = false;\n  function isAnimated() {\n    return Boolean(state && !state.presentation.paused && !state.hidden && !state.reducedMotion);\n  }\n  function stop() {\n    if (frameId === null) return;\n    cancelAnimationFrame(frameId);\n    frameId = null;\n  }\n  function paint(now) {\n    if (!state || !context) return;\n    paintThinkingOrb(state.canvas, context, state.presentation, now, state.dark, isAnimated(), state.dpr);\n    if (!announcedReady) {\n      announcedReady = true;\n      self.postMessage({ type: "ready" });\n    }\n  }\n  function schedule() {\n    if (!isAnimated() || frameId !== null) return;\n    frameId = requestAnimationFrame((now) => {\n      frameId = null;\n      paint(now);\n      schedule();\n    });\n  }\n  function refresh() {\n    stop();\n    paint(performance.now());\n    schedule();\n  }\n  self.onmessage = (event) => {\n    const message = event.data;\n    if (message.type === "init") {\n      state = message;\n      context = message.canvas.getContext("2d");\n    } else if (state) {\n      state = { ...state, ...message };\n    }\n    refresh();\n  };\n})();\n' : "";
+  }
+  function mountThinkingOrb(target, options = {}) {
     const canvas = document.createElement("canvas");
     canvas.className = "thinking-orb";
     canvas.setAttribute("aria-hidden", "true");
     target.append(canvas);
-    const context2 = canvas.getContext("2d");
-    if (!context2) {
-      canvas.remove();
-      return { update: () => {
-      }, dispose: () => {
-      } };
-    }
-    const drawingContext = context2;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let presentation = orbPresentation({
       connection: "disconnected",
@@ -2174,25 +2279,33 @@ body { overflow: hidden; }
       syncPending: false
     });
     canvas.dataset.dimmed = String(presentation.dimmed);
+    const isDark = () => !document.documentElement.classList.contains("figma-light");
+    const workerSource = options.workerSource ?? bundledWorkerSource();
+    const workerController = mountThinkingOrbWorker({
+      canvas,
+      source: workerSource,
+      reducedMotion,
+      getPresentation: () => presentation,
+      setPresentation: (next) => {
+        presentation = next;
+      },
+      isDark,
+      mountFallback: () => mountThinkingOrb(target, { workerSource: "" })
+    });
+    if (workerController) return workerController;
+    const context2 = canvas.getContext("2d");
+    if (!context2) {
+      canvas.remove();
+      return { update: () => {
+      }, dispose: () => {
+      } };
+    }
+    const drawingContext = context2;
     let frameId = null;
     let disposed = false;
-    const isDark = () => !document.documentElement.classList.contains("figma-light");
     const isAnimated = () => !presentation.paused && !reducedMotion.matches && !document.hidden;
-    function prepareCanvas() {
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const pixels = Math.round(ORB_SIZE * dpr);
-      if (canvas.width !== pixels || canvas.height !== pixels) {
-        canvas.width = pixels;
-        canvas.height = pixels;
-      }
-      drawingContext.setTransform(dpr, 0, 0, dpr, 0, 0);
-    }
     function paint(now) {
-      prepareCanvas();
-      drawingContext.clearRect(0, 0, ORB_SIZE, ORB_SIZE);
-      const preset = Lt(presentation.state, ORB_SIZE);
-      const time = isAnimated() ? now / 1e3 * preset.speed : STATIC_TIME * preset.speed;
-      Ct[preset.mode](drawingContext, ORB_SIZE, time, isDark(), preset.opts);
+      paintThinkingOrb(canvas, drawingContext, presentation, now, isDark(), isAnimated(), window.devicePixelRatio || 1);
     }
     function stop() {
       if (frameId === null) return;
@@ -2538,7 +2651,7 @@ body { overflow: hidden; }
     }, 4e3);
     render();
   });
-  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "dcf064d" : "dev"}`;
+  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "e7bf3f1" : "dev"}`;
   replaceIcon(targetRailBtn, "files");
   replaceIcon(syncRailBtn, "refresh-cw");
   replaceIcon(toggleBtn, "chevron-down");

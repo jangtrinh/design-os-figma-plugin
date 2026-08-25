@@ -75,13 +75,24 @@ async function buildPluginUi() {
   const codeJs = readFileSync(resolve(root, 'plugin/code.js'));
   const manifest = readFileSync(resolve(root, 'plugin/manifest.json'));
   const template = readFileSync(resolve(root, 'plugin/src/ui/panel.html'), 'utf8');
+  const worker = await esbuild.build({
+    ...common,
+    entryPoints: [resolve(root, 'plugin/src/ui/thinking-orb-worker.ts')],
+    platform: 'browser',
+    format: 'iife',
+    write: false,
+  });
+  const workerSource = worker.outputFiles[0].text;
   const buildUi = (buildId) => esbuild.build({
     ...common,
     entryPoints: [resolve(root, 'plugin/src/ui/ui-relay.ts')],
     platform: 'browser',
     format: 'iife',
     write: false,
-    define: { __BUILD_ID__: JSON.stringify(buildId) },
+    define: {
+      __BUILD_ID__: JSON.stringify(buildId),
+      __THINKING_ORB_WORKER__: JSON.stringify(workerSource),
+    },
   });
   const provisional = await buildUi('pending');
   const MARKER = '/*__FIGMA_AGENT_UI_BUNDLE__*/';

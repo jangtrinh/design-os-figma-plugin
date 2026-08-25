@@ -1,9 +1,10 @@
 import type { ConnectionState } from '../../../shared/protocol';
-import { MODE_DRAWS, resolvePreset, type OrbState } from 'thinking-orbs/engine';
+import type { OrbState } from 'thinking-orbs/engine';
 import { commandOrbPresentation } from './orb-command-state';
+import { paintThinkingOrb } from './thinking-orb-painter';
+import { mountThinkingOrbWorker } from './thinking-orb-worker-host';
 
-const ORB_SIZE = 20;
-const STATIC_TIME = 0.75;
+declare const __THINKING_ORB_WORKER__: string;
 
 export interface OrbSignals {
   connection: ConnectionState;
@@ -50,18 +51,22 @@ export interface ThinkingOrbController {
   dispose(): void;
 }
 
-export function mountThinkingOrb(target: HTMLElement): ThinkingOrbController {
+interface ThinkingOrbOptions {
+  workerSource?: string;
+}
+
+function bundledWorkerSource(): string {
+  return typeof __THINKING_ORB_WORKER__ === 'string' ? __THINKING_ORB_WORKER__ : '';
+}
+
+export function mountThinkingOrb(
+  target: HTMLElement,
+  options: ThinkingOrbOptions = {},
+): ThinkingOrbController {
   const canvas = document.createElement('canvas');
   canvas.className = 'thinking-orb';
   canvas.setAttribute('aria-hidden', 'true');
   target.append(canvas);
-
-  const context = canvas.getContext('2d');
-  if (!context) {
-    canvas.remove();
-    return { update: () => {}, dispose: () => {} };
-  }
-  const drawingContext: CanvasRenderingContext2D = context;
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   let presentation = orbPresentation({
@@ -69,28 +74,29 @@ export function mountThinkingOrb(target: HTMLElement): ThinkingOrbController {
     activityFailure: false, pendingTools: [], syncPending: false,
   });
   canvas.dataset.dimmed = String(presentation.dimmed);
+  const isDark = (): boolean => !document.documentElement.classList.contains('figma-light');
+  const workerSource = options.workerSource ?? bundledWorkerSource();
+  const workerController = mountThinkingOrbWorker({
+    canvas, source: workerSource, reducedMotion,
+    getPresentation: () => presentation,
+    setPresentation: (next) => { presentation = next; },
+    isDark,
+    mountFallback: () => mountThinkingOrb(target, { workerSource: '' }),
+  });
+  if (workerController) return workerController;
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    canvas.remove();
+    return { update: () => {}, dispose: () => {} };
+  }
+  const drawingContext = context;
   let frameId: number | null = null;
   let disposed = false;
-
-  const isDark = (): boolean => !document.documentElement.classList.contains('figma-light');
   const isAnimated = (): boolean => !presentation.paused && !reducedMotion.matches && !document.hidden;
 
-  function prepareCanvas(): void {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const pixels = Math.round(ORB_SIZE * dpr);
-    if (canvas.width !== pixels || canvas.height !== pixels) {
-      canvas.width = pixels;
-      canvas.height = pixels;
-    }
-    drawingContext.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-
   function paint(now: number): void {
-    prepareCanvas();
-    drawingContext.clearRect(0, 0, ORB_SIZE, ORB_SIZE);
-    const preset = resolvePreset(presentation.state, ORB_SIZE);
-    const time = isAnimated() ? now / 1000 * preset.speed : STATIC_TIME * preset.speed;
-    MODE_DRAWS[preset.mode](drawingContext, ORB_SIZE, time, isDark(), preset.opts);
+    paintThinkingOrb(canvas, drawingContext, presentation, now, isDark(), isAnimated(), window.devicePixelRatio || 1);
   }
 
   function stop(): void {
