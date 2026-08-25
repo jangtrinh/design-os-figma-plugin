@@ -164,10 +164,10 @@ export function abandonedChunkIds(
 
 /**
  * Stage-4 fix round (minor 6) — chunk buffering keyed per CONNECTION (the socket in
- * hand), not by the process-unique request id alone. Request ids are `c_<counter>_<ts>`,
- * unique only WITHIN one CLI process — two simultaneous CLI processes could in principle
- * mint the same id, and a flat `Map<string, ...>` keyed by that id alone would let their
- * chunk payloads merge into one garbled reassembly. `Conn` is a type param (a real
+ * hand), not by request id alone. Current ids include a random per-process namespace, but
+ * the broker does not trust an unassembled frame to honour that contract: legacy or
+ * malformed clients can still reuse an id, and a flat map would let their chunk payloads
+ * merge into one garbled reassembly. `Conn` is a type param (a real
  * WebSocket in the broker, anything with reference identity in a test) so this stays
  * pure and testable without a socket.
  */

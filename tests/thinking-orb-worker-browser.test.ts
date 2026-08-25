@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { Browser, Page } from 'playwright';
+import type { Browser, Locator, Page } from 'playwright';
 import { chromium } from 'playwright';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -9,6 +9,17 @@ const html = readFileSync(`${ROOT}/plugin/ui.html`, 'utf8');
 const BROWSER_SETUP_TIMEOUT_MS = 30_000;
 let browser: Browser;
 let page: Page;
+
+async function waitForDifferentFrame(orb: Locator, baseline: Buffer): Promise<Buffer> {
+  let changed: Buffer | undefined;
+  await expect.poll(async () => {
+    const candidate = await orb.screenshot();
+    if (!candidate.equals(baseline)) changed = candidate;
+    return changed !== undefined;
+  }, { timeout: 5_000, interval: 50, message: 'worker canvas pixels never changed' }).toBe(true);
+  if (!changed) throw new Error('worker canvas pixels never changed');
+  return changed;
+}
 
 beforeAll(async () => {
   try {
@@ -37,11 +48,9 @@ describe('Thinking Orb worker renderer in Chromium', () => {
       detail: { state: 'connected', since: Date.now() },
     })));
     const orb = page.locator('.thinking-orb');
-    await page.waitForTimeout(50);
     const firstFrame = await orb.screenshot();
-    await page.waitForTimeout(100);
-    const laterFrame = await orb.screenshot();
-    expect(laterFrame.equals(firstFrame)).toBe(false);
+    const paintedFrame = await waitForDifferentFrame(orb, firstFrame);
+    await waitForDifferentFrame(orb, paintedFrame);
     const mainRafCount = await page.evaluate(
       () => (window as typeof window & { __mainRafCount: number }).__mainRafCount,
     );
