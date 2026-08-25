@@ -6,7 +6,7 @@
 // drawn as a straight line runs through every screen between its two ends. That case gets a
 // rule, not a search: it bows below the row, which is what a flow diagram does anyway.
 
-import { resolveAnchors } from './connector-anchor';
+import { resolveAnchors, resolveAnnotationAnchors } from './connector-anchor';
 import type { Anchor, ConnectorIntent, Point, Rect } from './connector-types';
 
 /** Half a 48px grid step — far enough to read as a deliberate exit, short enough to stay tidy. */
@@ -142,7 +142,9 @@ export interface RouteInput {
  * a relationship rather than as "this label is about that thing".
  */
 export function route(input: RouteInput): Point[] {
-  const anchors = resolveAnchors(input.source, input.target);
+  const anchors = input.intent === 'annotation'
+    ? resolveAnnotationAnchors(input.source, input.target)
+    : resolveAnchors(input.source, input.target);
   const clearance = input.clearance ?? DEFAULT_CLEARANCE;
   let raw: Point[];
   if (input.intent === 'annotation') {
