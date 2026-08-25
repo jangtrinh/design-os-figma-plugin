@@ -10,6 +10,26 @@
 // that invites a non-pure import down the line. shared/ has no such boundary to cross.
 import type { CommandName } from './protocol';
 
+/**
+ * The only commands that can bypass broker mutation admission. This is intentionally
+ * separate from undo-step classification: it describes broker-visible effects, not
+ * whether a plugin command calls `figma.commitUndo()`.
+ */
+export const BROKER_SAFE_READ_COMMANDS: readonly CommandName[] = [
+  'STATUS',
+  'GET_SELECTION',
+  'EXPORT_PNG',
+  'SCAN_DESIGN_SYSTEM',
+  'GET_CORRECTION_MEMORY',
+  'LIST_CONNECTIONS',
+  'VERIFY_CONNECTIONS',
+  'SHADER_GRADIENT_PROBE',
+];
+
+export function isBrokerSafeRead(command: string): command is CommandName {
+  return (BROKER_SAFE_READ_COMMANDS as readonly string[]).includes(command);
+}
+
 // Each successful mutating command becomes its own undo step. Without commitUndo, Figma's
 // default makes an entire agent session ONE ⌘Z. BATCH is absent deliberately: its children
 // commit individually (inside runBatch), which is the granularity a user wants. Read-only

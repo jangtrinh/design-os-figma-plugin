@@ -51,6 +51,7 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 ## Command reference
 
 - `status` — Broker + plugin connection info [--peek [--json]] [--wait [--timeout N]] — --peek reads only the /tmp broker advertisement plus one short broker query; it NEVER spawns a broker. --json is accepted for compatibility but is a no-op: output is always the same single JSON object. --wait blocks (MAY spawn a broker) until a matching plugin registers, printing a figma:// deep link (when one can be built) to stderr immediately; --timeout N is in SECONDS, default 60 — on timeout this exits non-zero with E_NO_PLUGIN instead of the normal payload.
+- `mutation-gate` — <pause|resume|status> --file-key <raw-key>   control the local broker's durable per-file mutation admission gate. The key is passed verbatim and must be a nonempty raw Figma fileKey; this command never derives identity from a filename.
 - `seat` — Probe seat → {seat, bridge, reason} [--seat free|paid skips the probe]
 - `bind` — --file "<name>" --dir <projectDir>   bind a file to a project for panel/idle sync (refuses to guess otherwise) [--list] [--unbind]
 - `get-selection` — Serialize the current selection [--depth 1]

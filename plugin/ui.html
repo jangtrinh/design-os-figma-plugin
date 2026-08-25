@@ -1537,7 +1537,7 @@ body { overflow: hidden; }
       "CLONE_TRAITS"
     ]),
     weaving: /* @__PURE__ */ new Set(["BATCH", "CONNECT", "DISCONNECT", "REROUTE", "RECONCILE"]),
-    working: /* @__PURE__ */ new Set(["EXEC_JS", "SET_CORRECTION_MEMORY", "PROJECT_BIND", "JOB"]),
+    working: /* @__PURE__ */ new Set(["EXEC_JS", "SET_CORRECTION_MEMORY", "PROJECT_BIND", "JOB", "MUTATION_GATE"]),
     listening: /* @__PURE__ */ new Set(["COWORK"])
   };
   var STATUS_BY_STATE = {
@@ -2651,7 +2651,7 @@ body { overflow: hidden; }
     }, 4e3);
     render();
   });
-  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "c2bd0ef" : "dev"}`;
+  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "e945a9d" : "dev"}`;
   replaceIcon(targetRailBtn, "files");
   replaceIcon(syncRailBtn, "refresh-cw");
   replaceIcon(toggleBtn, "chevron-down");

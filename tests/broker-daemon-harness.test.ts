@@ -178,10 +178,10 @@ async function waitFor(
   }
 }
 
-async function helloPlugin(ws: WebSocket, instanceId: string, fileName: string): Promise<void> {
+async function helloPlugin(ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null): Promise<void> {
   ws.send(JSON.stringify({
     type: 'PLUGIN_HELLO',
-    data: { instanceId, fileName, fileKey: null, caps: ['fileGuard'] },
+    data: { instanceId, fileName, fileKey, caps: ['fileGuard'] },
   } satisfies EventMsg));
   // BROKER_HELLO arrives on connect, before HELLO is even processed — SYNC_CONFIG is the
   // registration ack this test waits on, so it never races the plugin being registered.
@@ -281,6 +281,310 @@ afterEach(async () => {
   rmSync(scratchDir, { recursive: true, force: true });
 });
 
+describe('daemon harness — mutation admission', () => {
+  it('routes a targetFileKey only to an exact raw scene key and preserves it through chunk reassembly', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-target-exact', 'Target Exact', 'Raw/Target-Key');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const request = makeRequestFrame(
+      'c_target_chunked', 'SET_TEXT', { nodeId: '1:1', text: 'x'.repeat(1_024) },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Target-Key',
+    );
+    const serialized = JSON.stringify(request);
+    const cut = Math.floor(serialized.length / 2);
+    const jobState = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cli.send(JSON.stringify({ id: request.id, seq: 0, last: false, chunk: serialized.slice(0, cut) }));
+    cli.send(JSON.stringify({ id: request.id, seq: 1, last: true, chunk: serialized.slice(cut) }));
+
+    await jobState;
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === request.id));
+    expect(pluginFrames.frames.find((frame) => (frame as { id?: string }).id === request.id)).toMatchObject({
+      targetFileKey: 'Raw/Target-Key',
+    });
+  });
+
+  it('rejects blank/padded/conflicting target assertions and a mismatched live scene key before ownership', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-target-other', 'Target Other', 'Raw/Other-Key');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+
+    const mismatch = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_mismatch');
+    cli.send(JSON.stringify(makeRequestFrame(
+      'c_target_mismatch', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
+    )));
+    expect((await mismatch).error.code).toBe('E_WRONG_FILE');
+
+    const blank = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_blank');
+    cli.send(JSON.stringify({
+      id: 'c_target_blank', cmd: 'SET_TEXT', params: { nodeId: '1:1', text: 'x' }, v: 1,
+      targetFileKey: '',
+    }));
+    expect((await blank).error.code).toBe('E_INVALID_ARGS');
+
+    const padded = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_padded');
+    cli.send(JSON.stringify({
+      id: 'c_target_padded', cmd: 'SET_TEXT', params: { nodeId: '1:1', text: 'x' }, v: 1,
+      targetFileKey: ' Raw/Expected-Key ',
+    }));
+    expect((await padded).error.code).toBe('E_INVALID_ARGS');
+
+    const conflict = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_conflict');
+    cli.send(JSON.stringify(makeRequestFrame(
+      'c_target_conflict', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, 'Target Other', undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
+    )));
+    expect((await conflict).error.code).toBe('E_INVALID_ARGS');
+    expect(pluginFrames.frames.some((frame) => ['c_target_mismatch', 'c_target_blank', 'c_target_padded', 'c_target_conflict']
+      .includes((frame as { id?: string }).id ?? ''))).toBe(false);
+  });
+
+  it('returns E_FILE_KEY_UNAVAILABLE when a target assertion meets a keyless live plugin', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-target-missing', 'Target Missing', null);
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const reply = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_missing');
+    cli.send(JSON.stringify(makeRequestFrame(
+      'c_target_missing', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
+    )));
+
+    expect((await reply).error.code).toBe('E_FILE_KEY_UNAVAILABLE');
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_missing')).toBe(false);
+  });
+
+  it('returns E_MUTATION_GATE_UNAVAILABLE before missing live identity or job ownership when the gate store is corrupt', async () => {
+    writeFileSync(join(scratchDir, 'mutation-gates.json'), '{ malformed');
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-target-gate-corrupt', 'Target Gate Corrupt', null);
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const cliFrames = collectFrames(cli);
+    const reply = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_gate_corrupt');
+
+    cli.send(JSON.stringify(makeRequestFrame('c_target_gate_corrupt', 'SET_TEXT', { nodeId: '1:1', text: 'x' })));
+
+    expect((await reply).error.code).toBe('E_MUTATION_GATE_UNAVAILABLE');
+    expect(cliFrames.frames.some((frame) => (frame as EventMsg).type === 'JOB_STATE')).toBe(false);
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_gate_corrupt')).toBe(false);
+  });
+
+  it('returns E_MUTATION_GATE_UNAVAILABLE before a mismatched target assertion or job ownership when the gate store is unreadable', async () => {
+    mkdirSync(join(scratchDir, 'mutation-gates.json'));
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-target-gate-unreadable', 'Target Gate Unreadable', 'Raw/Actual-Key');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const cliFrames = collectFrames(cli);
+    const reply = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_gate_unreadable');
+
+    cli.send(JSON.stringify(makeRequestFrame(
+      'c_target_gate_unreadable', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Expected-Key',
+    )));
+
+    expect((await reply).error.code).toBe('E_MUTATION_GATE_UNAVAILABLE');
+    expect(cliFrames.frames.some((frame) => (frame as EventMsg).type === 'JOB_STATE')).toBe(false);
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_gate_unreadable')).toBe(false);
+  });
+
+  it('fails keyless offline mutations immediately, while a keyed mutation and a keyless safe read park for a matching plugin', async () => {
+    const port = await startTestBroker();
+    const keylessCli = await connectSocket(port);
+    const keyless = nextFrame<ReplyErr>(keylessCli, (frame) => (frame as ReplyErr).id === 'c_target_keyless');
+    keylessCli.send(JSON.stringify(makeRequestFrame('c_target_keyless', 'SET_TEXT', { nodeId: '1:1', text: 'x' })));
+    expect((await keyless).error.code).toBe('E_FILE_KEY_UNAVAILABLE');
+
+    const keyedCli = await connectSocket(port);
+    const keyedJob = nextFrame<EventMsg>(keyedCli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    keyedCli.send(JSON.stringify(makeRequestFrame(
+      'c_target_parked', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Parked-Key',
+    )));
+    const safeCli = await connectSocket(port);
+    const safeJob = nextFrame<EventMsg>(safeCli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    safeCli.send(JSON.stringify(makeRequestFrame('c_target_safe_parked', 'GET_SELECTION', {})));
+
+    const plugin = await connectSocket(port);
+    const pluginFrames = collectFrames(plugin);
+    await helloPlugin(plugin, 'p-target-parked', 'Target Parked', 'Raw/Parked-Key');
+    await Promise.all([keyedJob, safeJob]);
+    await waitFor(() => ['c_target_parked', 'c_target_safe_parked'].every((id) =>
+      pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id),
+    ));
+  });
+
+  it('stales parked work after a pause and resume of that same target', async () => {
+    const port = await startTestBroker();
+    const staleCli = await connectSocket(port);
+    const control = await connectSocket(port);
+    const staleReply = nextFrame<ReplyErr>(staleCli, (frame) => (frame as ReplyErr).id === 'c_target_stale');
+    staleCli.send(JSON.stringify(makeRequestFrame(
+      'c_target_stale', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Stale-A',
+    )));
+
+    for (const [id, fileKey, mode] of [
+      ['c_target_pause_a', 'Raw/Stale-A', 'pause'],
+      ['c_target_resume_a', 'Raw/Stale-A', 'resume'],
+    ] as const) {
+      const reply = nextFrame<ReplyOk>(control, (frame) => (frame as ReplyOk).id === id);
+      control.send(JSON.stringify(makeRequestFrame(id, 'MUTATION_GATE', { mode, fileKey })));
+      await reply;
+    }
+
+    const stalePlugin = await connectSocket(port);
+    const stalePluginFrames = collectFrames(stalePlugin);
+    await helloPlugin(stalePlugin, 'p-target-stale', 'Target Stale', 'Raw/Stale-A');
+    expect((await staleReply).error.code).toBe('E_STALE_ADMISSION');
+    expect(stalePluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_stale')).toBe(false);
+  });
+
+  it('keeps a parked target fresh when only an unrelated target transitions', async () => {
+    const port = await startTestBroker();
+    const cli = await connectSocket(port);
+    const control = await connectSocket(port);
+    const freshJob = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cli.send(JSON.stringify(makeRequestFrame(
+      'c_target_fresh', 'SET_TEXT', { nodeId: '1:1', text: 'x' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Fresh-B',
+    )));
+    for (const [id, mode] of [['c_target_pause_c', 'pause'], ['c_target_resume_c', 'resume']] as const) {
+      const reply = nextFrame<ReplyOk>(control, (frame) => (frame as ReplyOk).id === id);
+      control.send(JSON.stringify(makeRequestFrame(id, 'MUTATION_GATE', { mode, fileKey: 'Raw/Unrelated-C' })));
+      await reply;
+    }
+
+    const plugin = await connectSocket(port);
+    const pluginFrames = collectFrames(plugin);
+    await helloPlugin(plugin, 'p-target-fresh', 'Target Fresh', 'Raw/Fresh-B');
+    await freshJob;
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_fresh'));
+  });
+
+  it('keeps a persisted pause across a replacement broker and admits only a fresh post-resume mutation', async () => {
+    const firstPort = await startTestBroker();
+    const firstCli = await connectSocket(firstPort);
+    const paused = nextFrame<ReplyOk>(firstCli, (frame) => (frame as ReplyOk).id === 'c_target_restart_pause');
+    firstCli.send(JSON.stringify(makeRequestFrame('c_target_restart_pause', 'MUTATION_GATE', { mode: 'pause', fileKey: 'Raw/Restart-Key' })));
+    await paused;
+    rmSync(advertisePath, { force: true });
+
+    const replacementPort = await startTestBroker();
+    const plugin = await connectSocket(replacementPort);
+    await helloPlugin(plugin, 'p-target-restart', 'Target Restart', 'Raw/Restart-Key');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(replacementPort);
+    const blocked = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'c_target_restart_blocked');
+    cli.send(JSON.stringify(makeRequestFrame('c_target_restart_blocked', 'SET_TEXT', { nodeId: '1:1', text: 'x' })));
+    expect((await blocked).error.code).toBe('E_MUTATIONS_PAUSED');
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_restart_blocked')).toBe(false);
+
+    const resumed = nextFrame<ReplyOk>(cli, (frame) => (frame as ReplyOk).id === 'c_target_restart_resume');
+    cli.send(JSON.stringify(makeRequestFrame('c_target_restart_resume', 'MUTATION_GATE', { mode: 'resume', fileKey: 'Raw/Restart-Key' })));
+    await resumed;
+    const freshJob = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cli.send(JSON.stringify(makeRequestFrame('c_target_restart_fresh', 'SET_TEXT', { nodeId: '1:1', text: 'x' })));
+    await freshJob;
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_target_restart_fresh'));
+  });
+
+  it('handles a raw-key pause at the broker, then refuses mutations without owning a job or forwarding a frame', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-gate', 'Gate File', 'Raw Gate Key');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const gateFrames = collectFrames(cli);
+    const pauseId = 'c_gate_pause_1';
+
+    cli.send(JSON.stringify(makeRequestFrame(pauseId, 'MUTATION_GATE', { mode: 'pause', fileKey: 'Raw Gate Key' })));
+    await waitFor(() => gateFrames.frames.some((frame) => (frame as { id?: string; type?: string }).id === pauseId || (frame as { type?: string }).type === 'JOB_STATE'));
+    expect(gateFrames.frames.find((frame) => (frame as { id?: string }).id === pauseId)).toMatchObject({
+      ok: true,
+      result: { fileKey: 'Raw Gate Key', state: 'paused' },
+    });
+    expect(gateFrames.frames.some((frame) => (frame as { type?: string }).type === 'JOB_STATE')).toBe(false);
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === pauseId)).toBe(false);
+
+    const mutationId = 'c_gate_mutation_1';
+    const mutationFrames = collectFrames(cli);
+    cli.send(JSON.stringify(makeRequestFrame(mutationId, 'SET_TEXT', { nodeId: '1:1', text: 'blocked' })));
+    await waitFor(() => mutationFrames.frames.some((frame) => (frame as { id?: string; type?: string }).id === mutationId || (frame as { type?: string }).type === 'JOB_STATE'));
+    expect(mutationFrames.frames.find((frame) => (frame as { id?: string }).id === mutationId)).toMatchObject({
+      ok: false,
+      error: { code: 'E_MUTATIONS_PAUSED' },
+    });
+    expect(mutationFrames.frames.some((frame) => (frame as { type?: string }).type === 'JOB_STATE')).toBe(false);
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === mutationId)).toBe(false);
+  });
+
+  it('leaves a running job alone while terminal-cancelling every queued job with a pollable pause reply', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-gate-queue', 'Gate Queue', 'Raw Queue Key');
+    const pluginFrames = collectFrames(plugin);
+    const cliA = await connectSocket(port);
+    const jobA = await sendMutatingJob(cliA, 'c_gate_running');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_gate_running'));
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'c_gate_queued_b');
+    const cliC = await connectSocket(port);
+    const jobC = await sendMutatingJob(cliC, 'c_gate_queued_c');
+
+    const pausedB = nextFrame<ReplyErr>(cliB, (frame) => (frame as ReplyErr).id === 'c_gate_queued_b');
+    const pausedC = nextFrame<ReplyErr>(cliC, (frame) => (frame as ReplyErr).id === 'c_gate_queued_c');
+    cliA.send(JSON.stringify(makeRequestFrame('c_gate_pause_queue', 'MUTATION_GATE', { mode: 'pause', fileKey: 'Raw Queue Key' })));
+    await nextFrame<ReplyOk>(cliA, (frame) => (frame as ReplyOk).id === 'c_gate_pause_queue');
+
+    expect((await pausedB).error.code).toBe('E_MUTATIONS_PAUSED');
+    expect((await pausedC).error.code).toBe('E_MUTATIONS_PAUSED');
+    expect((await pollJob(cliB, jobB, 'c_gate_poll_b')).job.state).toBe('cancelled');
+    const polledC = await pollJob(cliC, jobC, 'c_gate_poll_c');
+    expect(polledC.job.state).toBe('cancelled');
+    expect(polledC.resultFrames?.join('\n')).toContain('E_MUTATIONS_PAUSED');
+    expect((await pollJob(cliA, jobA, 'c_gate_poll_a')).job.state).toBe('running');
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_gate_queued_b')).toBe(false);
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_gate_queued_c')).toBe(false);
+  });
+
+  it('allows only the shared safe-read set through a paused file and ignores caller readOnly claims for executable paths', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-gate-safe-reads', 'Gate Safe Reads', 'Raw Safe Reads');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    cli.send(JSON.stringify(makeRequestFrame('c_gate_pause_reads', 'MUTATION_GATE', { mode: 'pause', fileKey: 'Raw Safe Reads' })));
+    await nextFrame<ReplyOk>(cli, (frame) => (frame as ReplyOk).id === 'c_gate_pause_reads');
+
+    const safeReads = [
+      'STATUS', 'GET_SELECTION', 'EXPORT_PNG', 'SCAN_DESIGN_SYSTEM', 'GET_CORRECTION_MEMORY',
+      'LIST_CONNECTIONS', 'VERIFY_CONNECTIONS', 'SHADER_GRADIENT_PROBE',
+    ] as const;
+    for (const [index, cmd] of safeReads.entries()) {
+      const id = `c_gate_safe_${index}`;
+      cli.send(JSON.stringify(makeRequestFrame(id, cmd, {})));
+      await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id));
+    }
+
+    for (const [index, cmd] of (['EXEC_JS', 'BATCH', 'AUDIT_DS'] as const).entries()) {
+      const id = `c_gate_unsafe_${index}`;
+      cli.send(JSON.stringify(makeRequestFrame(id, cmd, {}, undefined, undefined, undefined, true)));
+      const reply = await nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === id);
+      expect(reply.error.code).toBe('E_MUTATIONS_PAUSED');
+      expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id)).toBe(false);
+    }
+  });
+});
+
 describe('daemon harness — process listeners belong to one daemon lifetime', () => {
   it('restores signal and exception listener counts after BROKER_SHUTDOWN_REQUEST', async () => {
     const events = ['SIGTERM', 'SIGINT', 'uncaughtException'] as const;
@@ -301,7 +605,7 @@ describe('daemon harness — duplicate request ids never overwrite reply ownersh
   it('refuses the second socket and delivers the plugin reply only to the first', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-duplicate-id', 'Duplicate Id File');
+    await helloPlugin(plugin, 'plugin-duplicate-id', 'Duplicate Id File', 'RawDuplicate');
     const pluginFrames = collectFrames(plugin);
     const first = await connectSocket(port);
     const second = await connectSocket(port);
@@ -314,8 +618,8 @@ describe('daemon harness — duplicate request ids never overwrite reply ownersh
     await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id));
 
     second.send(request);
-    await waitFor(() => secondFrames.frames.length > 0);
-    expect(secondFrames.frames[0]).toMatchObject({
+    await waitFor(() => secondFrames.frames.some((frame) => (frame as { id?: string }).id === id));
+    expect(secondFrames.frames.find((frame) => (frame as { id?: string }).id === id)).toMatchObject({
       id,
       ok: false,
       error: { code: 'E_INVALID_ARGS', message: expect.stringContaining('duplicate request id') },
@@ -333,7 +637,7 @@ describe('daemon harness — cancel-then-complete never dispatches the cancelled
   it('a QUEUED job cancelled via `job --cancel` is never resurrected when the running job finishes', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-1', 'F1');
+    await helloPlugin(plugin, 'plugin-1', 'F1', 'RawF1');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
@@ -370,7 +674,7 @@ describe('daemon harness — plugin disconnect fails a queued job, reconnect nev
   it('E_NO_PLUGIN reaches the CLI for both the running and queued job; a same-instanceId reconnect gets nothing', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-2', 'F2');
+    await helloPlugin(plugin, 'plugin-2', 'F2', 'RawF2');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
@@ -395,7 +699,7 @@ describe('daemon harness — plugin disconnect fails a queued job, reconnect nev
 
     // Reconnect with the SAME instanceId — no parked/queued work exists to flush.
     const plugin2 = await connectSocket(port);
-    await helloPlugin(plugin2, 'plugin-2', 'F2');
+    await helloPlugin(plugin2, 'plugin-2', 'F2', 'RawF2');
     const plugin2Frames = collectFrames(plugin2);
     await new Promise((resolve) => setTimeout(resolve, 200));
     const dispatched = plugin2Frames.frames.filter((f) => 'cmd' in (f as Record<string, unknown>));
@@ -407,7 +711,7 @@ describe('daemon harness — a watchdog-failed job answered late returns the tim
   it('the late reply is discarded and counted, the ORIGINAL E_TIMEOUT outcome survives', async () => {
     const port = await startTestBroker({ [WATCHDOG_MS_KEY]: '150' }); // real watchdog, shrunk
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-3', 'F3');
+    await helloPlugin(plugin, 'plugin-3', 'F3', 'RawF3');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
@@ -725,8 +1029,8 @@ describe('daemon harness — routeFromPlugin verifies the reply sender against t
     const port = await startTestBroker();
     const pluginX = await connectSocket(port);
     const pluginY = await connectSocket(port);
-    await helloPlugin(pluginX, 'inst-x', 'FileX');
-    await helloPlugin(pluginY, 'inst-y', 'FileY');
+    await helloPlugin(pluginX, 'inst-x', 'FileX', 'RawFileX');
+    await helloPlugin(pluginY, 'inst-y', 'FileY', 'RawFileY');
 
     const cli = await connectSocket(port);
     const reqId = 'req-sender-verify-1';
@@ -770,8 +1074,8 @@ describe('daemon harness — routeFromPlugin verifies the reply sender against t
     const port = await startTestBroker();
     const pluginX = await connectSocket(port);
     const pluginY = await connectSocket(port);
-    await helloPlugin(pluginX, 'inst-x', 'FileX');
-    await helloPlugin(pluginY, 'inst-y', 'FileY');
+    await helloPlugin(pluginX, 'inst-x', 'FileX', 'RawFileX');
+    await helloPlugin(pluginY, 'inst-y', 'FileY', 'RawFileY');
 
     const cli = await connectSocket(port);
     const reqId = 'req-sender-verify-mismatch-count';
@@ -912,11 +1216,9 @@ describe('daemon harness — SYNC_CONFIG idleMs routes through the binding, neve
 // in-process broker started with its own scratch advertisement path, ephemeral port,
 // and log file, so it never touches a live plugin session's broker discovery.
 describe('daemon harness — admitRequest with an `--instance` (expectedInstance) filter', () => {
-  it('an instanceId matching NO connected plugin → E_NO_PLUGIN names the instanceId, never "open the file panel"', async () => {
-    // A non-matching --instance parks (same as any unmatched filter) until the plugin-wait
-    // window elapses, then answers E_NO_PLUGIN — shrink the window so this test observes
-    // that real deadline instead of the 12s production default (same envMs override
-    // pattern the watchdog tests already use).
+  it('a keyless mutation with an unmatched instance refuses E_FILE_KEY_UNAVAILABLE instead of parking by name', async () => {
+    // The durable mutation gate supersedes the old keyless parking behavior: an instance
+    // name is not a raw fileKey, so it cannot snapshot an admission revision safely.
     const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '200' });
     const plugin = await connectSocket(port);
     await helloPlugin(plugin, 'inst-live', 'FileLive');
@@ -928,17 +1230,16 @@ describe('daemon harness — admitRequest with an `--instance` (expectedInstance
     ));
     const reply = await nextFrame<ReplyErr>(cli, (m) => (m as ReplyOk | ReplyErr).id === reqId);
     expect(reply.ok).toBe(false);
-    expect(reply.error.code).toBe('E_NO_PLUGIN');
-    expect(reply.error.message).toContain('--instance "inst-gone"');
-    expect(reply.error.message).not.toContain('panel');
+    expect(reply.error.code).toBe('E_FILE_KEY_UNAVAILABLE');
+    expect(reply.error.message).toContain('targetFileKey');
   });
 
   it('two plugins sharing the SAME fileName ("Untitled") → --instance routes to the exact one, never the other', async () => {
     const port = await startTestBroker();
     const pluginA = await connectSocket(port);
     const pluginB = await connectSocket(port);
-    await helloPlugin(pluginA, 'inst-a', 'Untitled');
-    await helloPlugin(pluginB, 'inst-b', 'Untitled');
+    await helloPlugin(pluginA, 'inst-a', 'Untitled', 'RawUntitledA');
+    await helloPlugin(pluginB, 'inst-b', 'Untitled', 'RawUntitledB');
     const framesA = collectFrames(pluginA);
     const framesB = collectFrames(pluginB);
 
@@ -962,7 +1263,7 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
   it('a bare `--force-release` on a job still `running` inside the watchdog window is REFUSED — the slot stays held, nothing advances', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-fr1', 'FFR1');
+    await helloPlugin(plugin, 'plugin-fr1', 'FFR1', 'RawFFR1');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
@@ -994,7 +1295,7 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
   it('`--force-release` + `override:true` (the CLI\'s `--force`) overrides the guard — the slot frees, the queued job advances, its result is discarded', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-fr2', 'FFR2');
+    await helloPlugin(plugin, 'plugin-fr2', 'FFR2', 'RawFFR2');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
@@ -1023,7 +1324,7 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
   it('regression: a watchdog-wedged job (state !== "running") still force-releases with a BARE `--force-release`, no `--force` needed', async () => {
     const port = await startTestBroker({ [WATCHDOG_MS_KEY]: '150' }); // real watchdog, shrunk
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-fr3', 'FFR3');
+    await helloPlugin(plugin, 'plugin-fr3', 'FFR3', 'RawFFR3');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
@@ -1056,7 +1357,7 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
   it('an UNBOUND file\'s queued time lands at the broker cwd default, keyed by its own fileSlug', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-cont-1', 'Contention File');
+    await helloPlugin(plugin, 'plugin-cont-1', 'Contention File', 'RawContention');
     const pluginFrames = collectFrames(plugin);
 
     const cli = await connectSocket(port);
@@ -1070,7 +1371,7 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
     const path = join(scratchDir, 'figma-contention.json');
     await waitFor(() => existsSync(path));
     const store = JSON.parse(readFileSync(path, 'utf8')) as ContentionStore;
-    const slug = 'contention-file'; // safeSlug('Contention File') — no fileKey, so fileIdentity falls back to the name slug
+    const slug = 'RawContention';
     const days = store[slug];
     expect(days).toBeDefined();
     const totals = Object.values(days!)[0]!;
@@ -1081,7 +1382,7 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
   it('a BOUND file\'s queued time lands in its OWN project, never the broker cwd default', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-cont-2', 'Bound Contention File');
+    await helloPlugin(plugin, 'plugin-cont-2', 'Bound Contention File', 'RawBoundContention');
 
     const boundProjectDir = mkdtempSync(join(tmpdir(), 'fa-bound-contention-'));
     try {
@@ -1104,7 +1405,7 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
       const cwdDefaultPath = join(scratchDir, 'figma-contention.json');
       await waitFor(() => existsSync(boundPath));
       const store = JSON.parse(readFileSync(boundPath, 'utf8')) as ContentionStore;
-      const slug = 'bound-contention-file';
+    const slug = 'RawBoundContention';
       expect(store[slug]).toBeDefined();
       expect(Object.values(store[slug]!)[0]!.jobCount).toBe(1);
       // Never ALSO written to the broker's own cwd default for this identity.
@@ -1120,7 +1421,7 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
   it('a job cancelled while still QUEUED also write-throughs its own queuedMs (cancelQueued stamps it, not markRunning)', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'plugin-cont-3', 'Cancel Contention File');
+    await helloPlugin(plugin, 'plugin-cont-3', 'Cancel Contention File', 'RawCancelContention');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
@@ -1135,7 +1436,7 @@ describe('daemon harness — a finished job\'s queuedMs write-throughs into the 
     expect((cancelReply.result as { ok: boolean }).ok).toBe(true);
 
     const path = join(scratchDir, 'figma-contention.json');
-    const slug = 'cancel-contention-file';
+    const slug = 'RawCancelContention';
     await waitFor(() => {
       if (!existsSync(path)) return false;
       const store = JSON.parse(readFileSync(path, 'utf8')) as ContentionStore;
@@ -1156,7 +1457,7 @@ function setTarget(ws: WebSocket, instanceId: string): void {
 function clearTarget(ws: WebSocket, instanceId: string): void {
   ws.send(JSON.stringify({ type: 'CLEAR_TARGET', data: { instanceId } } satisfies EventMsg));
 }
-/** A read-only request (GET_SELECTION, IMPLICIT_READ_ONLY) — dispatches immediately, no
+/** A broker-safe read (GET_SELECTION) — dispatches immediately, no
  *  per-file queue to reason about, so a test only has to observe WHICH plugin received it. */
 function sendReadOnlyRequest(ws: WebSocket, reqId: string, expectedInstance?: string): void {
   ws.send(JSON.stringify(makeRequestFrame(reqId, 'GET_SELECTION', {}, undefined, undefined, undefined, undefined, expectedInstance)));

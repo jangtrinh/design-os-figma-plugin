@@ -122,6 +122,16 @@ describe('JobTable — cancelQueued', () => {
     expect((t.byId(rec.jobId) as { state: string }).state).toBe('cancelled');
   });
 
+  it('stores a supplied terminal cancellation reply so the result remains pollable', () => {
+    const t = new JobTable();
+    const rec = t.create(input());
+    const frame = JSON.stringify({ id: rec.requestId, ok: false, error: { code: 'E_MUTATIONS_PAUSED', message: 'paused' } });
+
+    expect(t.cancelQueued(rec.jobId, [frame]).ok).toBe(true);
+    const found = t.byId(rec.jobId) as { state: string; replyFrames: string[] };
+    expect(found).toMatchObject({ state: 'cancelled', replyFrames: [frame] });
+  });
+
   it('refuses a RUNNING job, naming the sandbox reason', () => {
     const t = new JobTable();
     const rec = t.create(input());

@@ -19,7 +19,7 @@ const COMMANDS_BY_STATE = {
     'SET_VARIANT', 'BIND_VARIABLE', 'SET_AUTOLAYOUT', 'SET_CONSTRAINTS', 'CLONE_TRAITS',
   ]),
   weaving: new Set(['BATCH', 'CONNECT', 'DISCONNECT', 'REROUTE', 'RECONCILE']),
-  working: new Set(['EXEC_JS', 'SET_CORRECTION_MEMORY', 'PROJECT_BIND', 'JOB']),
+  working: new Set(['EXEC_JS', 'SET_CORRECTION_MEMORY', 'PROJECT_BIND', 'JOB', 'MUTATION_GATE']),
   listening: new Set(['COWORK']),
 } satisfies Partial<Record<OrbState, ReadonlySet<string>>>;
 

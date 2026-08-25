@@ -111,11 +111,10 @@ export async function scanConventions(
 ): Promise<SectionDNA[]> {
   const code = buildWalkCode(sectionIds, budget);
   // Cold big-file walks can exceed the timeout on the first pass; retry once warm.
-  // `readOnly: true` (concurrency & jobs, backlog 1.1+2.6+4.3) — an aggregate walk, no
-  // writes; EXEC_JS is mutating by default, so this declares itself explicitly rather
-  // than queueing behind another agent's mutation.
+  // Executable source is never an admission bypass, even when this particular walk
+  // intends only to aggregate. It therefore participates in the file mutation FIFO.
   const reply = (await runWithWarmRetry(() =>
-    runner('EXEC_JS', { code, timeoutMs: walkTimeoutMs }, { timeoutMs: walkTimeoutMs + WIRE_MARGIN_MS, readOnly: true }),
+    runner('EXEC_JS', { code, timeoutMs: walkTimeoutMs }, { timeoutMs: walkTimeoutMs + WIRE_MARGIN_MS }),
   )) as { result?: unknown } | null;
   const result = reply && typeof reply === 'object' ? (reply as { result?: unknown }).result : undefined;
   if (!Array.isArray(result)) {

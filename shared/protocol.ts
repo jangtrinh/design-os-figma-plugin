@@ -74,6 +74,9 @@ export const COMMANDS = [
   // comment for why that does not violate the pure-relay rule (a request ADDRESSED TO the
   // broker is not a request being RELAYED).
   'JOB',
+  // Broker-terminal mutation admission control. This is deliberately local to the
+  // broker: it persists per-file pause state without adding a plugin or panel route.
+  'MUTATION_GATE',
   // auto-connect slice 3: BROKER-TERMINAL, same precedent as PROJECT_BIND/JOB —
   // intercepted before `admitRequest`/`forwardToPlugin`, never reaches a plugin. Waits
   // for one designer change-cycle (the broker already watches every EDIT_FEED batch,
@@ -91,6 +94,22 @@ export const COMMANDS = [
   'VERIFY_CONNECTIONS',
 ] as const;
 export type CommandName = (typeof COMMANDS)[number];
+
+/**
+ * Commands answered by the broker itself before plugin relay. They cannot be children of
+ * BATCH because a BATCH is executed by the plugin, which has no broker-local handlers.
+ */
+export const BROKER_TERMINAL_COMMANDS = [
+  'PROJECT_BIND',
+  'JOB',
+  'MUTATION_GATE',
+  'COWORK',
+] as const satisfies readonly CommandName[];
+export type BrokerTerminalCommand = (typeof BROKER_TERMINAL_COMMANDS)[number];
+
+export function isBrokerTerminalCommand(command: string): command is BrokerTerminalCommand {
+  return (BROKER_TERMINAL_COMMANDS as readonly string[]).includes(command);
+}
 
 // ── Envelopes ───────────────────────────────────────────────────────
 export interface RequestMsg {
@@ -127,6 +146,13 @@ export interface RequestMsg {
    */
   expectedInstance?: string;
   /**
+   * An exact raw Figma file key used as a broker-side target assertion. It is additive
+   * and omitted when unset; the broker rejects blank or padded values and never derives
+   * it from a filename, bind cache, or a previous reply. For this P0 contract it is
+   * mutually exclusive with `expectedFile` and `expectedInstance`.
+   */
+  targetFileKey?: string;
+  /**
    * Absolute project root of the CALLER (its cwd, or --dir). The broker records
    * fileIdentity → projectDir from this, so panel/idle sync can apply into the right project
    * instead of the daemon's spawn cwd. Omitted only by a pre-binding CLI.
@@ -134,10 +160,9 @@ export interface RequestMsg {
   projectDir?: string;
   /**
    * Concurrency & jobs (backlog 1.1+2.6+4.3) — caller's DECLARATION that this command only
-   * reads. Skips the per-file mutation queue. TRUSTED, NOT ENFORCED: the plugin sandbox
-   * cannot prove a script is read-only (no reliable static parse), so a mis-declared
-   * mutation will interleave — `--help` says so in those words. Omitted entirely when
-   * unset, exactly like `activity`/`expectedFile`/`projectDir` — an unguarded frame must
+   * reads. The broker honors the declaration only for its exact safe-read allowlist;
+   * every other command remains on the mutation path. Omitted entirely when unset,
+   * exactly like `activity`/`expectedFile`/`projectDir` — an unguarded frame must
    * serialize byte-identically to what a pre-flag CLI sent.
    */
   readOnly?: boolean;
@@ -211,6 +236,23 @@ export interface JobInfo {
   queuedMs?: number;      // time spent waiting — the evidence for the subtree-lock upgrade trigger
   startedAt?: number;
   finishedAt?: number;
+}
+
+export type MutationGateState = 'paused' | 'open';
+
+/** One durable broker gate row. `connected` is a status-only live annotation. */
+export interface MutationGateRow {
+  fileKey: string;
+  state: MutationGateState;
+  lastTransitionRevision: number;
+  connected?: boolean;
+}
+
+/** Missing state is safe-open; an unreadable or failed store is unavailable and fail-closed. */
+export interface MutationGateStoreHealth {
+  state: 'missing' | 'healthy' | 'unavailable';
+  path: string;
+  reason?: string;
 }
 
 // Unsolicited broadcasts (no `id`).
@@ -379,12 +421,13 @@ export type ErrorCode =
   // are different facts for the caller to act on.
   | 'E_JOB_UNKNOWN'
   | 'E_JOB_EXPIRED'
-  // Concurrency & jobs — a `--read-only` EXEC_JS detected to have mutated the scene
-  // anyway. `readOnly` on the envelope is TRUSTED, NOT ENFORCED at the wire
-  // layer (see `RequestMsg.readOnly`'s own comment): the plugin is the one place that
-  // can actually observe whether the script wrote anything, so this is where the
-  // mis-declaration turns from a silent breach into a refusal.
+  // Compatibility code for a plugin-side read-only violation. Broker admission accepts
+  // readOnly only for its explicit safe-read allowlist, never for EXEC_JS source.
   | 'E_READONLY_VIOLATION'
+  | 'E_MUTATIONS_PAUSED'
+  | 'E_MUTATION_GATE_UNAVAILABLE'
+  | 'E_FILE_KEY_UNAVAILABLE'
+  | 'E_STALE_ADMISSION'
   // #35 P2 — a no-flag command with a standing `targetInstancePin` set, whose pinned
   // instance has disconnected. Never falls through to the env pin or recency (Law 1: a
   // standing pin never silently re-points at another plugin) — the caller re-targets via
@@ -474,14 +517,21 @@ export function makeRequestFrame(
   // auto-connect slice 2 — appended, never inserted, so every existing call/test that
   // pads earlier optional positionals with `undefined` keeps addressing the SAME
   // parameter it always did (see broker-daemon-harness.test.ts's own 8-positional
-  // precedent). A 9th positional is already a lot for this signature — the NEXT field
-  // here should be an options object instead, not a 10th slot.
+  // precedent). A 9th positional is already a lot for this signature — the next
+  // optional fields stay appended for compatibility until this becomes an options object.
   agent?: string,
+  targetFileKey?: string,
 ): RequestMsg {
   const frame: RequestMsg = { id, cmd, params, v: PROTOCOL_VERSION };
   if (typeof activity === 'string' && activity.trim() !== '') frame.activity = activity;
   if (typeof expectedFile === 'string' && expectedFile.trim() !== '') frame.expectedFile = expectedFile;
   if (typeof expectedInstance === 'string' && expectedInstance.trim() !== '') frame.expectedInstance = expectedInstance;
+  // The CLI rejects blank/padded `--target-file-key` before this builder; keep the raw direct
+  // caller surface conservative too: an invalid assertion is omitted rather than trimmed
+  // into a different key. The broker still rejects a malformed raw wire field explicitly.
+  if (typeof targetFileKey === 'string' && targetFileKey !== '' && targetFileKey.trim() === targetFileKey) {
+    frame.targetFileKey = targetFileKey;
+  }
   if (typeof projectDir === 'string' && projectDir.trim() !== '') frame.projectDir = projectDir;
   if (typeof agent === 'string' && agent.trim() !== '') frame.agent = agent;
   // Concurrency & jobs — omitted (never `readOnly: false`) when unset, exactly like the

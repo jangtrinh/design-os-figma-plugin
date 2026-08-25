@@ -5,7 +5,7 @@
 // imported outside a live plugin sandbox; see mutating-commands.ts's header).
 import { describe, it, expect } from 'vitest';
 import { COMMANDS, type CommandName } from '../shared/protocol.ts';
-import { MUTATING_COMMANDS } from '../shared/mutating-commands.ts';
+import { BROKER_SAFE_READ_COMMANDS, MUTATING_COMMANDS } from '../shared/mutating-commands.ts';
 
 // Nothing to seal into an undo step: STATUS/GET_SELECTION/SCAN_DESIGN_SYSTEM/AUDIT_DS/
 // GET_CORRECTION_MEMORY/EXPORT_PNG are read-only; HTML_TO_FIGMA never reaches main (arrives as
@@ -19,11 +19,11 @@ import { MUTATING_COMMANDS } from '../shared/mutating-commands.ts';
 // need its own undo step?), a DIFFERENT axis from the concurrency wave's queueing
 // classification: AUDIT_DS is read-only here (nothing to undo — it writes no scene
 // content) but MUTATING for queueing purposes (it moves `figma.currentPage` per page
-// without restoring, which is shared view state) — see admitRequest's own
-// IMPLICIT_READ_ONLY set in broker-daemon.ts for that deliberate asymmetry.
+// without restoring, which is shared view state) — broker admission therefore excludes
+// it from the explicit BROKER_SAFE_READ_COMMANDS allowlist.
 const READ_ONLY_COMMANDS: readonly CommandName[] = [
   'STATUS', 'GET_SELECTION', 'SCAN_DESIGN_SYSTEM', 'AUDIT_DS',
-  'GET_CORRECTION_MEMORY', 'EXPORT_PNG', 'HTML_TO_FIGMA', 'BATCH', 'PROJECT_BIND', 'JOB', 'COWORK',
+  'GET_CORRECTION_MEMORY', 'EXPORT_PNG', 'HTML_TO_FIGMA', 'BATCH', 'PROJECT_BIND', 'JOB', 'MUTATION_GATE', 'COWORK',
   // SHADER_GRADIENT is READ_ONLY for the same reason HTML_TO_FIGMA is: it never reaches
   // main. The UI renders it and posts IMPORT_GRADIENT, and THAT is the mutating half.
   'SHADER_GRADIENT', 'SHADER_GRADIENT_PROBE',
@@ -31,6 +31,22 @@ const READ_ONLY_COMMANDS: readonly CommandName[] = [
 ];
 
 describe('command classification — every COMMANDS entry is MUTATING xor READ_ONLY', () => {
+  it('exports the exact broker-safe read set separately from undo classification', () => {
+    expect(BROKER_SAFE_READ_COMMANDS).toEqual([
+      'STATUS',
+      'GET_SELECTION',
+      'EXPORT_PNG',
+      'SCAN_DESIGN_SYSTEM',
+      'GET_CORRECTION_MEMORY',
+      'LIST_CONNECTIONS',
+      'VERIFY_CONNECTIONS',
+      'SHADER_GRADIENT_PROBE',
+    ]);
+    for (const cmd of ['EXEC_JS', 'BATCH', 'AUDIT_DS']) {
+      expect(BROKER_SAFE_READ_COMMANDS).not.toContain(cmd);
+    }
+  });
+
   it('no command is in both lists', () => {
     const overlap = MUTATING_COMMANDS.filter((c) => READ_ONLY_COMMANDS.includes(c));
     expect(overlap).toEqual([]);

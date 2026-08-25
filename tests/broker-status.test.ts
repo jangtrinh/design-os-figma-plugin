@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { PluginRegistry, WS_OPEN, type RegistrySocket } from '../cli/src/transport/plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage, type BrokerMeta } from '../cli/src/transport/broker-status.ts';
 import type { RouteFilter } from '../cli/src/transport/route-filter.ts';
+import type { MutationGateStatus } from '../cli/src/transport/mutation-admission-gate.ts';
 
 const sock = (): RegistrySocket => ({ readyState: WS_OPEN });
 const META: BrokerMeta = {
@@ -98,6 +99,27 @@ describe('buildBrokerHelloData — jobStatusFor (concurrency & jobs, backlog 1.1
     // An idle file reports null + 0 explicitly — never an omitted key.
     expect(ds.runningJob).toBeNull();
     expect(ds.queueDepth).toBe(0);
+  });
+});
+
+describe('buildBrokerHelloData — persisted mutation gates', () => {
+  it('keeps disconnected rows and adds a live annotation only when an exact raw file key is connected', () => {
+    const { reg, clock } = seed();
+    reg.register(sock(), { instanceId: 'a', fileName: 'Connected', fileKey: 'RawA' });
+    const gates: MutationGateStatus = {
+      health: { state: 'healthy', path: '/tmp/mutation-gates.json' },
+      gates: [
+        { fileKey: 'RawA', state: 'paused', lastTransitionRevision: 2 },
+        { fileKey: 'RawB', state: 'open', lastTransitionRevision: 5 },
+      ],
+    };
+
+    const data = buildBrokerHelloData(reg, META, null, clock, undefined, gates);
+    expect(data.mutationGateStoreHealth).toEqual(gates.health);
+    expect(data.mutationGates).toEqual([
+      { fileKey: 'RawA', state: 'paused', lastTransitionRevision: 2, connected: true },
+      { fileKey: 'RawB', state: 'open', lastTransitionRevision: 5 },
+    ]);
   });
 });
 
