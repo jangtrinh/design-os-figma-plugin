@@ -187,10 +187,10 @@ interface BrokerState {
   jobs: JobTable;
   queues: Map<string, QueueState>;
   // Buffered chunk frames for a CLI-originated request not yet fully admitted — keyed by
-  // CONNECTION first, then by wire request id (stage-4 fix round, minor 6): request ids
-  // (`c_<counter>_<ts>`) are unique only WITHIN one CLI process, so two simultaneous CLI
-  // processes could mint the same id — a flat `Map<string, ...>` would let their frames
-  // merge into one garbled reassembly. Concurrency & jobs §4: a request whose `cmd`/
+  // CONNECTION first, then by wire request id (stage-4 fix round, minor 6). Current ids
+  // carry a random client namespace, but partially assembled frames are still untrusted:
+  // a legacy or malformed client can reuse an id, and a flat `Map<string, ...>` would let
+  // their frames merge into one garbled reassembly. Concurrency & jobs §4: a request whose `cmd`/
   // `readOnly` live inside the not-yet-reassembled JSON must not be labelled with a
   // synthetic pseudo-command; it is buffered until `last`, then reassembled and admitted
   // with its REAL envelope. `lastFrameAt` is the abandoned-entry bound (stage-4 fold,
@@ -946,6 +946,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     from: WebSocket, id: string, rawText: string, cmd?: string, expectedFile?: string,
     expectedInstance?: string, readOnly = false, projectDir?: string, activity?: string,
   ): void => {
+    const duplicateJob = st.jobs.byRequestId(id);
+    const duplicateWaiting = st.waiting.some((request) => request.id === id);
+    if (duplicateJob || duplicateWaiting) {
+      sendReplyErr(from, id, 'E_INVALID_ARGS',
+        `duplicate request id "${id}" is already owned by another request — retry with a fresh client-generated id`);
+      log(`refused duplicate request id ${id}${duplicateJob ? ` (job ${duplicateJob.jobId})` : ' (parked)'}`);
+      return;
+    }
     // #35 P2: the standing runtime pin is consulted BEFORE `resolveRouteFilter` — a
     // per-request `--instance`/`--file` still bypasses it entirely (route-filter.ts's own
     // precedence), but a no-flag command with a pin set must never silently fall through
@@ -1067,9 +1075,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // A chunk belonging to an ALREADY-admitted job (running or queued) is a continuation
     // of a request already fully classified — never re-admitted as a fresh request. The
     // `existing.from === from` check (stage-4 fix round, minor 6) guards the theoretical
-    // collision: a request id minted by a DIFFERENT connection must never be treated as a
-    // continuation of this job — it is a fresh, still-unadmitted request on its own
-    // per-connection buffer instead.
+    // collision or replay: an id received from a DIFFERENT connection must never be
+    // treated as a continuation of this job — it is a fresh, still-unadmitted request on
+    // its own per-connection buffer, where admission can refuse the duplicate safely.
     const existing = st.jobs.byRequestId(id);
     if (existing !== undefined && existing.from === from) {
       if (existing.state === 'running') {
@@ -1146,11 +1154,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
    * against the job's pinned `targetInstanceId` (backlog 2.10 audit) before anything
    * below is allowed to touch `pending`/job state. Pre-fix, this function took only
    * `(id, rawText, final)` and routed on `id` alone: any OTHER connected plugin
-   * instance sending a reply carrying the SAME id (reachable via a CLI-side request-id
-   * collision — ids are minted `c_<counter>_<ts>` per CLI PROCESS, so two concurrent
-   * CLI invocations can collide within the same millisecond) was accepted and forwarded
-   * to whichever CLI was waiting on that id, with no signal it came from the wrong
-   * plugin. A mismatched sender is now discarded outright — same shape as the
+   * instance sending a reply carrying the SAME id was accepted and forwarded to whichever
+   * CLI was waiting on that id, with no signal it came from the wrong plugin. Request ids
+   * now carry a per-process random namespace and admission refuses duplicates, while this
+   * sender check remains defense-in-depth. A mismatched sender is discarded outright — same shape as the
    * already-terminal-job discard below (count + log, never mutate `replyFrames` or
    * `pending`), so the REAL dispatched plugin's reply (or the watchdog timeout) is
    * still what resolves the job.
