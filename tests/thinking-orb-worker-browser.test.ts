@@ -46,5 +46,5 @@ describe('Thinking Orb worker renderer in Chromium', () => {
       () => (window as typeof window & { __mainRafCount: number }).__mainRafCount,
     );
     expect(mainRafCount).toBe(0);
-  });
+  }, BROWSER_SETUP_TIMEOUT_MS);
 });
