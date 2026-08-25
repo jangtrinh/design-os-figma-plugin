@@ -661,6 +661,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   let advertiseRefreshInterval: ReturnType<typeof setInterval> | null = null;
   let idleCheckInterval: ReturnType<typeof setInterval> | null = null;
 
+  function onSigterm(): void { shutdown(0, 'SIGTERM'); }
+  function onSigint(): void { shutdown(0, 'SIGINT'); }
+  function onUncaughtException(err: Error): void {
+    log(`uncaughtException: ${err.stack ?? err.message}`);
+  }
+
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
     // Drop ownership BEFORE unlinking — a refresh-interval tick racing this shutdown
@@ -687,6 +693,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (watchdogInterval) clearInterval(watchdogInterval);
     if (advertiseRefreshInterval) clearInterval(advertiseRefreshInterval);
     if (idleCheckInterval) clearInterval(idleCheckInterval);
+    process.off('SIGTERM', onSigterm);
+    process.off('SIGINT', onSigint);
+    process.off('uncaughtException', onUncaughtException);
     try {
       // Only remove the advertisement if it is still ours (a newer broker may own it).
       const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as BrokerAdvertisement;
@@ -1894,7 +1903,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     else if (Date.now() - st.lastBusyAt > IDLE_SHUTDOWN_MS) shutdown(0, `idle for ${IDLE_SHUTDOWN_MS}ms`);
   }, IDLE_CHECK_MS);
 
-  process.on('SIGTERM', () => shutdown(0, 'SIGTERM'));
-  process.on('SIGINT', () => shutdown(0, 'SIGINT'));
-  process.on('uncaughtException', (err) => log(`uncaughtException: ${err.stack ?? err.message}`));
+  process.on('SIGTERM', onSigterm);
+  process.on('SIGINT', onSigint);
+  process.on('uncaughtException', onUncaughtException);
 }
