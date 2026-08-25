@@ -4557,6 +4557,21 @@
     const sourceSide = horizontal ? dx >= 0 ? "RIGHT" : "LEFT" : dy >= 0 ? "BOTTOM" : "TOP";
     return { source: anchorOn(source, sourceSide), target: anchorOn(target, OPPOSITE[sourceSide]) };
   }
+  function edgeGap(aStart, aEnd, bStart, bEnd) {
+    if (aEnd < bStart) return bStart - aEnd;
+    if (bEnd < aStart) return aStart - bEnd;
+    return 0;
+  }
+  function resolveAnnotationAnchors(source, target) {
+    const horizontalGap = edgeGap(source.x, source.x + source.width, target.x, target.x + target.width);
+    const verticalGap = edgeGap(source.y, source.y + source.height, target.y, target.y + target.height);
+    if (horizontalGap === 0 && verticalGap === 0) return resolveAnchors(source, target);
+    const from = centre(source);
+    const to = centre(target);
+    const vertical = verticalGap > 0 && (horizontalGap === 0 || verticalGap <= horizontalGap);
+    const sourceSide = vertical ? to.y >= from.y ? "BOTTOM" : "TOP" : to.x >= from.x ? "RIGHT" : "LEFT";
+    return { source: anchorOn(source, sourceSide), target: anchorOn(target, OPPOSITE[sourceSide]) };
+  }
 
   // shared/connector-route.ts
   var DEFAULT_CLEARANCE = 24;
@@ -4627,7 +4642,7 @@
     return [source.point, exit, { x: exit.x, y }, { x: entry.x, y }, entry, target.point];
   }
   function route(input) {
-    const anchors = resolveAnchors(input.source, input.target);
+    const anchors = input.intent === "annotation" ? resolveAnnotationAnchors(input.source, input.target) : resolveAnchors(input.source, input.target);
     const clearance = input.clearance ?? DEFAULT_CLEARANCE;
     let raw;
     if (input.intent === "annotation") {
@@ -4642,7 +4657,7 @@
   }
 
   // shared/connector-types.ts
-  var ROUTER_VERSION = 1;
+  var ROUTER_VERSION = 2;
 
   // shared/connector-geometry.ts
   function round2(value) {

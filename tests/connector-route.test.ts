@@ -20,6 +20,44 @@ describe('annotation intent — a straight pointer', () => {
   it('stays two points even on a diagonal, where an elbow would have jogged', () => {
     expect(route({ source: box(0, 0), target: box(400, 300), intent: 'annotation' })).toHaveLength(2);
   });
+
+  it('uses the smaller edge gap when centre distance would choose the wrong axis', () => {
+    const source = box(250, 0);
+    const target = box(0, 200);
+
+    expect(route({ source, target, intent: 'annotation' })).toEqual([
+      { x: 300, y: 100 },
+      { x: 50, y: 200 },
+    ]);
+  });
+
+  it('points vertically above and below when the boxes overlap horizontally', () => {
+    expect(route({ source: box(0, 0), target: box(50, 200), intent: 'annotation' })).toEqual([
+      { x: 50, y: 100 },
+      { x: 100, y: 200 },
+    ]);
+    expect(route({ source: box(50, 200), target: box(0, 0), intent: 'annotation' })).toEqual([
+      { x: 100, y: 200 },
+      { x: 50, y: 100 },
+    ]);
+  });
+
+  it('resolves equal positive edge gaps vertically and keeps the result deterministic', () => {
+    const input = { source: box(0, 0), target: box(200, 200), intent: 'annotation' as const };
+    const expected = [{ x: 50, y: 100 }, { x: 250, y: 200 }];
+
+    expect(route(input)).toEqual(expected);
+    expect(route(input)).toEqual(expected);
+  });
+
+  it('does not change flow routing for the annotation regression geometry', () => {
+    expect(route({ source: box(250, 0), target: box(0, 200), intent: 'flow' })).toEqual([
+      { x: 250, y: 50 },
+      { x: 175, y: 50 },
+      { x: 175, y: 250 },
+      { x: 100, y: 250 },
+    ]);
+  });
 });
 
 describe('flow intent — an orthogonal elbow', () => {
