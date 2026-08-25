@@ -297,6 +297,38 @@ describe('daemon harness — process listeners belong to one daemon lifetime', (
   });
 });
 
+describe('daemon harness — duplicate request ids never overwrite reply ownership', () => {
+  it('refuses the second socket and delivers the plugin reply only to the first', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-duplicate-id', 'Duplicate Id File');
+    const pluginFrames = collectFrames(plugin);
+    const first = await connectSocket(port);
+    const second = await connectSocket(port);
+    const secondFrames = collectFrames(second);
+    const id = 'c_duplicate_1_1000';
+    const request = JSON.stringify(makeRequestFrame(id, 'SET_TEXT', { nodeId: '1:1', text: 'first' }));
+
+    first.send(request);
+    await nextFrame<EventMsg>(first, (msg) => (msg as EventMsg).type === 'JOB_STATE');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id));
+
+    second.send(request);
+    await waitFor(() => secondFrames.frames.length > 0);
+    expect(secondFrames.frames[0]).toMatchObject({
+      id,
+      ok: false,
+      error: { code: 'E_INVALID_ARGS', message: expect.stringContaining('duplicate request id') },
+    });
+
+    const firstReplyPending = nextFrame<ReplyOk>(first, (msg) => (msg as ReplyOk).id === id);
+    plugin.send(JSON.stringify({ id, ok: true, result: { owner: 'first' } } satisfies ReplyOk));
+    const firstReply = await firstReplyPending;
+    expect(firstReply).toMatchObject({ id, ok: true, result: { owner: 'first' } });
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === id)).toHaveLength(1);
+  });
+});
+
 describe('daemon harness — cancel-then-complete never dispatches the cancelled job (BLOCKER 1)', () => {
   it('a QUEUED job cancelled via `job --cancel` is never resurrected when the running job finishes', async () => {
     const port = await startTestBroker();

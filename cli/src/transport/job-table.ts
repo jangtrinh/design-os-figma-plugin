@@ -50,10 +50,10 @@ export function isHealthyRunningJob(
  * accept a reply keyed on `id` alone: it never checked which socket sent it against
  * `job.targetInstanceId` (pinned at admission — see `JobRecord.targetInstanceId`'s own
  * doc). Any OTHER currently-connected plugin instance sending a reply carrying the same
- * `id` — reachable via a request-id collision (ids are minted CLI-process-side as
- * `c_<counter>_<ts>`; two concurrent CLI invocations can collide within the same
- * millisecond) — was routed to the waiting CLI as though it were the real dispatched
- * plugin's answer, with zero signal that it wasn't.
+ * `id` — reachable when a legacy or malformed client reuses another request id — was
+ * routed to the waiting CLI as though it were the real dispatched plugin's answer, with
+ * zero signal that it wasn't. Current clients use a random per-process namespace, and
+ * broker admission independently refuses any duplicate id it has already observed.
  *
  * Deliberately identity-based (instanceId), never raw WebSocket-reference-based: a
  * plugin's own reconnect (Figma iframe reload) replaces its socket in the registry
@@ -167,9 +167,8 @@ export class JobTable {
 
   private mint(): string {
     if (this.mintId) return this.mintId();
-    // Request ids are per-process (`c_<counter>_<ts>`) and CAN collide across processes —
-    // a job id is polled LATER, by a possibly DIFFERENT process, so it must be
-    // broker-unique, not merely process-unique.
+    // Request ids carry a random per-process namespace, but a job id is polled LATER by
+    // a possibly DIFFERENT process, so it must still be broker-minted and broker-unique.
     return `j_${++this.counter}_${this.now()}`;
   }
 

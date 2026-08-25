@@ -2,6 +2,7 @@
 // RequestMsg → await id-correlated ReplyMsg (reassembling chunked replies).
 // Throws CliError {code,message}; timeouts come from shared COMMAND_TIMEOUTS.
 import { unlinkSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
 import {
   BROKER_FILE,
@@ -40,6 +41,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 let requestCounter = 0;
+const requestNamespace = randomBytes(8).toString('hex');
 
 let expectedFile: string | undefined;
 let expectedInstance: string | undefined;
@@ -129,7 +131,7 @@ export function exchange(
   readOnly?: boolean,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const id = makeRequestId(++requestCounter);
+    const id = makeRequestId(++requestCounter, requestNamespace);
     const assembler = new ChunkAssembler();
     let settled = false;
     // Concurrency & jobs (backlog 1.1+2.6+4.3) — the LAST JOB_STATE seen before the reply

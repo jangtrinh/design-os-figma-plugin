@@ -94,7 +94,7 @@ export type CommandName = (typeof COMMANDS)[number];
 
 // ── Envelopes ───────────────────────────────────────────────────────
 export interface RequestMsg {
-  id: string; // `c_<counter>_<ts>` (CLI-generated)
+  id: string; // `c_<random-client-namespace>_<counter>_<ts>` (CLI-generated)
   cmd: CommandName;
   params: unknown;
   v: number; // PROTOCOL_VERSION
@@ -449,8 +449,8 @@ export const RECONNECT_JITTER = 0.25;
 // timeout never fires first. STATUS is exempt (it must report "disconnected" fast).
 export const PLUGIN_WAIT_MS = 12_000;
 
-export function makeRequestId(counter: number): string {
-  return `c_${counter}_${Date.now()}`;
+export function makeRequestId(counter: number, clientNamespace: string, now = Date.now()): string {
+  return `c_${clientNamespace}_${counter}_${now}`;
 }
 
 /**
