@@ -112,9 +112,16 @@ function sendEditFeed(
   } satisfies EventMsg));
 }
 
-function sendCowork(ws: WebSocket, reqId: string, opts: { waitMs: number; timeoutMs: number; expectedFile?: string }): void {
+function sendCowork(
+  ws: WebSocket,
+  reqId: string,
+  opts: { waitMs: number; timeoutMs: number; expectedFile?: string; targetFileKey?: string },
+): void {
   ws.send(JSON.stringify(
-    makeRequestFrame(reqId, 'COWORK', { waitMs: opts.waitMs, timeoutMs: opts.timeoutMs }, undefined, opts.expectedFile),
+    makeRequestFrame(
+      reqId, 'COWORK', { waitMs: opts.waitMs, timeoutMs: opts.timeoutMs },
+      undefined, opts.expectedFile, undefined, undefined, undefined, undefined, opts.targetFileKey,
+    ),
   ));
 }
 
@@ -139,6 +146,27 @@ afterEach(async () => {
 });
 
 describe('cowork — application readiness is checked before waiter creation', () => {
+  it('an exact raw-key cowork watches only B even when A is newer and ready', async () => {
+    const port = await startTestBroker();
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-cw-raw-b', 'Cowork Raw B', 'raw-cowork-b');
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-cw-newer-a', 'Cowork Newer A', 'raw-cowork-a');
+    const cli = await connectSocket(port);
+    const replyPromise = nextFrame<ReplyOk | ReplyErr>(cli, (frame) =>
+      (frame as ReplyOk | ReplyErr).id === 'req-cw-raw-b');
+
+    sendCowork(cli, 'req-cw-raw-b', { waitMs: 30, timeoutMs: 500, targetFileKey: 'raw-cowork-b' });
+    sendEditFeed(pluginA, [ownerEdit('newer-a:1')], { fileKey: 'raw-cowork-a', fileName: 'Cowork Newer A' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    sendEditFeed(pluginB, [ownerEdit('raw-b:1')], { fileKey: 'raw-cowork-b', fileName: 'Cowork Raw B' });
+
+    expect(await replyPromise).toMatchObject({
+      ok: true,
+      result: { cycles: 1, file: 'Cowork Raw B', edits: [{ nodeId: 'raw-b:1' }] },
+    });
+  });
+
   it('unfiltered cowork watches the older ready plugin instead of failing on a newer stale plugin', async () => {
     const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200' });
     const pluginA = await connectSocket(port);
@@ -174,6 +202,89 @@ describe('cowork — application readiness is checked before waiter creation', (
     expect(collected.replies[0]).toMatchObject({ ok: false, error: { code: 'E_APP_UNREADY' } });
 
     sendEditFeed(plugin, [ownerEdit('unready:1')], { fileKey: 'raw-cowork', fileName: 'Cowork Unready', source: 'gapfill' });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(collected.replies).toHaveLength(1);
+  });
+
+  it('fails an exact raw-key unready target before waiter creation even while another file is ready', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '30' });
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-cw-ready-other', 'Cowork Ready Other', 'raw-cowork-ready', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginC = await connectSocket(port);
+    await helloPlugin(pluginC, 'inst-cw-unready-raw-c', 'Cowork Unready Raw C', 'raw-cowork-c', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    pluginA.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: 'cowork-ready-other' } } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cli = await connectSocket(port);
+    const collected = { replies: [] as Array<ReplyOk | ReplyErr> };
+    cli.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as ReplyOk | ReplyErr;
+      if (frame.id === 'req-cw-unready-raw-c') collected.replies.push(frame);
+    });
+
+    sendCowork(cli, 'req-cw-unready-raw-c', {
+      waitMs: 30, timeoutMs: 100, targetFileKey: 'raw-cowork-c',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(collected.replies).toHaveLength(1);
+    expect(collected.replies[0]).toMatchObject({ ok: false, error: { code: 'E_APP_UNREADY' } });
+
+    sendEditFeed(pluginC, [ownerEdit('unready-raw-c:1')], {
+      fileKey: 'raw-cowork-c', fileName: 'Cowork Unready Raw C', source: 'gapfill',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(collected.replies).toHaveLength(1);
+  });
+});
+
+describe('cowork — raw target validation and missing-target refusal', () => {
+  it('rejects blank, padded, non-string, and selector-conflicting targetFileKey values', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-validation', 'Cowork Validation', 'raw-cowork-validation');
+    const cli = await connectSocket(port);
+    const invalidFrames = [
+      { id: 'req-cw-raw-blank', targetFileKey: '' },
+      { id: 'req-cw-raw-padded', targetFileKey: ' raw-cowork-validation ' },
+      { id: 'req-cw-raw-number', targetFileKey: 42 },
+      { id: 'req-cw-raw-file-conflict', targetFileKey: 'raw-cowork-validation', expectedFile: 'Cowork Validation' },
+      { id: 'req-cw-raw-instance-conflict', targetFileKey: 'raw-cowork-validation', expectedInstance: 'inst-cw-validation' },
+    ];
+
+    for (const frame of invalidFrames) {
+      const replyPromise = nextFrame<ReplyErr>(cli, (reply) => (reply as ReplyErr).id === frame.id);
+      cli.send(JSON.stringify({
+        id: frame.id,
+        cmd: 'COWORK',
+        params: { waitMs: 30, timeoutMs: 100 },
+        v: 1,
+        ...frame,
+      }));
+      expect((await replyPromise).error.code).toBe('E_INVALID_ARGS');
+    }
+  });
+
+  it('returns E_NO_PLUGIN for a missing exact raw key and creates no fallback waiter', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-present-a', 'Cowork Present A', 'raw-cowork-present-a');
+    const cli = await connectSocket(port);
+    const collected = { replies: [] as Array<ReplyOk | ReplyErr> };
+    cli.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as ReplyOk | ReplyErr;
+      if (frame.id === 'req-cw-missing-raw') collected.replies.push(frame);
+    });
+
+    sendCowork(cli, 'req-cw-missing-raw', {
+      waitMs: 30, timeoutMs: 100, targetFileKey: 'raw-cowork-missing',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(collected.replies).toHaveLength(1);
+    expect(collected.replies[0]).toMatchObject({ ok: false, error: { code: 'E_NO_PLUGIN' } });
+
+    sendEditFeed(plugin, [ownerEdit('present-a:1')], {
+      fileKey: 'raw-cowork-present-a', fileName: 'Cowork Present A',
+    });
     await new Promise((resolve) => setTimeout(resolve, 130));
     expect(collected.replies).toHaveLength(1);
   });

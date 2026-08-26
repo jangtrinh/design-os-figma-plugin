@@ -917,6 +917,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   };
 
   const nextReadinessProbeId = (): string => `ap_${++readinessProbeCounter}_${Date.now()}`;
+  const parseRequestedTargetFileKey = (targetFileKey: unknown): string | undefined | null =>
+    targetFileKey === undefined
+      ? undefined
+      : exactTargetFileKey(typeof targetFileKey === 'string' ? targetFileKey : null);
   const pluginFileKey = (entry: PluginEntry<WebSocket>): string | null =>
     durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null);
   const isAppReady = (entry: PluginEntry<WebSocket>): boolean =>
@@ -1121,9 +1125,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       log(`refused duplicate request id ${id}${duplicateJob ? ` (job ${duplicateJob.jobId})` : ' (parked)'}`);
       return;
     }
-    const requestedTargetFileKey = targetFileKey === undefined
-      ? undefined
-      : exactTargetFileKey(typeof targetFileKey === 'string' ? targetFileKey : null);
+    const requestedTargetFileKey = parseRequestedTargetFileKey(targetFileKey);
     if (targetFileKey !== undefined && requestedTargetFileKey === null) {
       sendReplyErr(from, id, 'E_INVALID_ARGS', 'targetFileKey must be a nonempty unpadded raw Figma fileKey');
       return;
@@ -1764,11 +1766,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   /**
    * auto-connect slice 3 — `figma-agent cowork`. Broker-terminal (same precedent as
-   * PROJECT_BIND/JOB): resolves a target plugin ONCE using the SAME routing filter
-   * `admitRequest` uses (envelope `expectedFile`/`expectedInstance`, the standing
-   * runtime pin), registers a waiter keyed to that instance's file identity, and
-   * returns immediately — the actual reply is sent later, from `resolveCoworkWaiters`
-   * (piggybacked on the park-sweep interval) once the wait fires or expires.
+   * PROJECT_BIND/JOB): resolves a target plugin ONCE using the SAME selectors
+   * `admitRequest` uses (exact raw key, envelope `expectedFile`/`expectedInstance`,
+   * or the standing runtime pin), registers a waiter keyed to that instance's file
+   * identity, and returns immediately — the actual reply is sent later, from
+   * `resolveCoworkWaiters` (piggybacked on the park-sweep interval) once the wait
+   * fires or expires.
    */
   const handleCowork = (ws: WebSocket, msg: RequestMsg): void => {
     const params = msg.params as { waitMs?: unknown; timeoutMs?: unknown } | null;
@@ -1779,16 +1782,36 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const requestedTimeoutMs = typeof params?.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 600_000;
     const timeoutMs = Math.min(requestedTimeoutMs, COWORK_MAX_TIMEOUT_MS);
 
+    const requestedTargetFileKey = parseRequestedTargetFileKey(msg.targetFileKey);
+    if (msg.targetFileKey !== undefined && requestedTargetFileKey === null) {
+      sendReplyErr(ws, msg.id, 'E_INVALID_ARGS', 'targetFileKey must be a nonempty unpadded raw Figma fileKey');
+      return;
+    }
+    if (requestedTargetFileKey !== undefined && (msg.expectedFile !== undefined || msg.expectedInstance !== undefined)) {
+      sendReplyErr(ws, msg.id, 'E_INVALID_ARGS', 'targetFileKey is mutually exclusive with expectedFile and expectedInstance');
+      return;
+    }
+
     const pin = targetInstancePin;
     const pinLive = pin !== null && st.registry.getByInstanceId(pin)?.ws.readyState === WebSocket.OPEN;
-    const filter = resolveRouteFilter(msg.expectedFile, currentFilter(), msg.expectedInstance, pinLive ? pin : null);
-    const hits = st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind });
-    const target = selectDispatchTarget(filter, hits);
+    const filter: RouteFilter = requestedTargetFileKey === undefined
+      ? resolveRouteFilter(msg.expectedFile, currentFilter(), msg.expectedInstance, pinLive ? pin : null)
+      : { value: null, exact: true, source: 'none', kind: 'name' };
+    const target = requestedTargetFileKey === undefined
+      ? selectDispatchTarget(filter, st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind }))
+      : st.registry.liveEntries().find((entry) => pluginFileKey(entry) === requestedTargetFileKey) ?? null;
     if (!target) {
       // No plugin to watch at all — cowork has nothing to wait ON, unlike an ordinary
       // command (which can park for a not-yet-connected plugin). Fails fast rather than
       // silently waiting out the full budget for a file that was never open.
-      sendReplyErr(ws, msg.id, 'E_NO_PLUGIN', noPluginMessage(st.registry, filter));
+      sendReplyErr(
+        ws,
+        msg.id,
+        'E_NO_PLUGIN',
+        requestedTargetFileKey === undefined
+          ? noPluginMessage(st.registry, filter)
+          : `no live plugin matches targetFileKey ${JSON.stringify(requestedTargetFileKey)}`,
+      );
       return;
     }
     if (!isAppReady(target)) {
