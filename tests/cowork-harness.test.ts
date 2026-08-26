@@ -17,16 +17,19 @@ type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts')
 const CHANGES_DIR_KEY = 'FIGMA_AGENT_CHANGES_DIR';
 const BINDS_FILE_KEY = 'FIGMA_AGENT_BINDS_FILE';
 const UNBOUND_DIR_KEY = 'FIGMA_AGENT_UNBOUND_DIR';
+const APP_READINESS_MS_KEY = 'FIGMA_AGENT_APP_READINESS_MS';
 
 let scratchDir: string;
 let advertisePath: string;
 let scratchLogFile: string;
 let sockets: WebSocket[];
+let priorAppReadinessMs: string | undefined;
 
-async function loadBrokerDaemon(): Promise<BrokerDaemonModule> {
+async function loadBrokerDaemon(env: Record<string, string> = {}): Promise<BrokerDaemonModule> {
   process.env[CHANGES_DIR_KEY] = scratchDir;
   process.env[BINDS_FILE_KEY] = join(scratchDir, 'binds.json');
   process.env[UNBOUND_DIR_KEY] = join(scratchDir, 'unbound-root');
+  for (const [key, value] of Object.entries(env)) process.env[key] = value;
   vi.resetModules();
   return import('../cli/src/transport/broker-daemon.ts');
 }
@@ -37,8 +40,8 @@ function testExit(): (code: number) => never {
   };
 }
 
-async function startTestBroker(): Promise<number> {
-  const mod = await loadBrokerDaemon();
+async function startTestBroker(env: Record<string, string> = {}): Promise<number> {
+  const mod = await loadBrokerDaemon(env);
   await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit(), logFile: scratchLogFile });
   const { readFileSync } = await import('node:fs');
   const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number };
@@ -54,8 +57,11 @@ function connectSocket(port: number): Promise<WebSocket> {
   });
 }
 
-async function helloPlugin(ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null): Promise<void> {
-  ws.send(JSON.stringify({ type: 'PLUGIN_HELLO', data: { instanceId, fileName, fileKey, caps: ['fileGuard'] } }));
+async function helloPlugin(
+  ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null,
+  caps: string[] = ['fileGuard'],
+): Promise<void> {
+  ws.send(JSON.stringify({ type: 'PLUGIN_HELLO', data: { instanceId, fileName, fileKey, caps } }));
   await new Promise<void>((resolvePromise) => {
     const handler = (raw: WebSocket.RawData): void => {
       const msg = JSON.parse(raw.toString()) as { type?: string };
@@ -113,6 +119,7 @@ function sendCowork(ws: WebSocket, reqId: string, opts: { waitMs: number; timeou
 }
 
 beforeEach(() => {
+  priorAppReadinessMs = process.env[APP_READINESS_MS_KEY];
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-cowork-harness-'));
   advertisePath = join(scratchDir, 'broker.json');
   scratchLogFile = join(scratchDir, 'broker.log');
@@ -120,8 +127,56 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  const shutdownSocket = sockets.find((ws) => ws.readyState === WebSocket.OPEN);
+  if (shutdownSocket) {
+    try { shutdownSocket.send(JSON.stringify({ type: 'BROKER_SHUTDOWN_REQUEST' })); } catch { /* already closed */ }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   for (const ws of sockets) { try { ws.terminate(); } catch { /* already closed */ } }
   rmSync(scratchDir, { recursive: true, force: true });
+  if (priorAppReadinessMs === undefined) delete process.env[APP_READINESS_MS_KEY];
+  else process.env[APP_READINESS_MS_KEY] = priorAppReadinessMs;
+});
+
+describe('cowork — application readiness is checked before waiter creation', () => {
+  it('unfiltered cowork watches the older ready plugin instead of failing on a newer stale plugin', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200' });
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-cw-ready-a', 'Cowork Ready A', 'raw-cowork-a', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-cw-stale-b', 'Cowork Stale B', 'raw-cowork-b', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    pluginA.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: 'cowork-ready-a' } } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cli = await connectSocket(port);
+    const reply = nextFrame<ReplyOk | ReplyErr>(cli, (frame) => (frame as ReplyOk | ReplyErr).id === 'req-cw-ready-first');
+    sendCowork(cli, 'req-cw-ready-first', { waitMs: 30, timeoutMs: 500 });
+    sendEditFeed(pluginA, [ownerEdit('ready-a:1')], { fileKey: 'raw-cowork-a', fileName: 'Cowork Ready A' });
+
+    expect(await reply).toMatchObject({ ok: true, result: { cycles: 1, file: 'Cowork Ready A' } });
+  });
+
+  it('fails an exact unready target immediately and a later gap-fill cannot arm a hidden waiter', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '30' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-unready', 'Cowork Unready', 'raw-cowork', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const cli = await connectSocket(port);
+    const collected = { replies: [] as Array<ReplyOk | ReplyErr> };
+    cli.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as ReplyOk | ReplyErr;
+      if (frame.id === 'req-cw-unready') collected.replies.push(frame);
+    });
+
+    sendCowork(cli, 'req-cw-unready', { waitMs: 30, timeoutMs: 100, expectedFile: 'Cowork Unready' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(collected.replies).toHaveLength(1);
+    expect(collected.replies[0]).toMatchObject({ ok: false, error: { code: 'E_APP_UNREADY' } });
+
+    sendEditFeed(plugin, [ownerEdit('unready:1')], { fileKey: 'raw-cowork', fileName: 'Cowork Unready', source: 'gapfill' });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(collected.replies).toHaveLength(1);
+  });
 });
 
 describe('cowork — fires on a genuine owner cycle', () => {

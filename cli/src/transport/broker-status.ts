@@ -2,7 +2,7 @@
 // (`figma-agent status` reads it) and the E_NO_PLUGIN message. Kept out of
 // broker-daemon.ts so both are unit-testable without a live socket.
 import type { PluginRegistry, RegistrySocket } from './plugin-registry.ts';
-import type { JobInfo, MutationGateRow, MutationGateStoreHealth, PluginStatusEntry } from '../../../shared/protocol.ts';
+import { APP_READINESS_VERSION, type JobInfo, type MutationGateRow, type MutationGateStoreHealth, type PluginStatusEntry } from '../../../shared/protocol.ts';
 import type { RouteFilter } from './route-filter.ts';
 import { fileIdentity } from './file-identity.ts';
 
@@ -82,6 +82,7 @@ export function buildBrokerHelloData(
     port: meta.port,
     pid: meta.pid,
     protocolV: meta.protocolV,
+    appReadinessV: APP_READINESS_VERSION,
     // Capability, not a protocol-version bump: a bundled current broker can enforce an
     // exact `targetFileKey` admission assertion while older brokers simply omit it.
     targetFileKeyAdmissionV: 1,

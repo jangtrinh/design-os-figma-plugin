@@ -101,6 +101,12 @@ describe('formatPoll', () => {
     expect(formatPoll({ job: jobInfo({ state: 'running' }) })).toEqual({ job: jobInfo({ state: 'running' }) });
   });
 
+  it('preserves reserved-head cancel guidance state without presenting it as running', () => {
+    const job = jobInfo({ state: 'queued', dispatchState: 'queued-not-dispatched-readiness-wait' });
+    expect(formatPoll({ job })).toEqual({ job });
+    expect(isTerminal(job.state)).toBe(false);
+  });
+
   it('a terminal job with no resultFrames still just reports {job} (defensive)', () => {
     expect(formatPoll({ job: jobInfo({ state: 'done' }) })).toEqual({ job: jobInfo({ state: 'done' }) });
   });

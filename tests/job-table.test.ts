@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   JobTable, JOB_TTL_MS, JOB_FINISHED_CAP, JOB_FRAME_BYTES_CAP, isHealthyRunningJob,
+  toJobInfo,
   type CreateJobInput,
 } from '../cli/src/transport/job-table.ts';
 
@@ -273,6 +274,41 @@ describe('JobTable — markRunning / finish', () => {
       t.finish(other.jobId, true, ['{}']);
       expect(t.byId(other.jobId)).not.toBe('expired'); // not wrongly evicted by phantom cap pressure
     });
+  });
+});
+
+describe('JobTable — readiness dispatch reservation', () => {
+  it('guards queued reservation/running/terminal transitions and never resurrects a settled record', () => {
+    const c = clock();
+    const t = new JobTable(c.now, () => 'j_reserved');
+    const rec = t.create(input());
+
+    expect(t.markDispatchReserved(rec.jobId)).toBe(true);
+    expect(toJobInfo(rec)).toMatchObject({ state: 'queued', dispatchState: 'queued-not-dispatched-readiness-wait' });
+    expect(toJobInfo(rec)).not.toHaveProperty('queuePosition');
+    expect(t.transitionQueuedToRunning(rec.jobId)).toBe(true);
+    expect(toJobInfo(rec)).toMatchObject({ state: 'running' });
+    expect(toJobInfo(rec)).not.toHaveProperty('dispatchState');
+    expect(t.transitionQueuedToRunning(rec.jobId)).toBe(false);
+    expect(t.settleQueued(rec.jobId, 'failed', ['known-not-run'])).toBe(false);
+    expect(rec.state).toBe('running');
+  });
+
+  it('settles a reserved queued head once and status counts only the waiting list behind it', () => {
+    const t = new JobTable(() => 10, () => 'j_reserved');
+    const rec = t.create(input());
+    rec.queuePosition = 1;
+    expect(t.markDispatchReserved(rec.jobId)).toBe(true);
+    expect(t.summaryFor(rec.fileSlug, { slotOwnerId: rec.jobId, waitingDepth: 3 })).toEqual({
+      running: expect.objectContaining({
+        jobId: rec.jobId, state: 'queued', dispatchState: 'queued-not-dispatched-readiness-wait',
+      }),
+      queueDepth: 3,
+    });
+    expect(t.settleQueued(rec.jobId, 'cancelled', ['cancelled'])).toBe(true);
+    expect(t.settleQueued(rec.jobId, 'failed', ['late'])).toBe(false);
+    expect(toJobInfo(rec)).toMatchObject({ state: 'cancelled' });
+    expect(toJobInfo(rec)).not.toHaveProperty('dispatchState');
   });
 });
 

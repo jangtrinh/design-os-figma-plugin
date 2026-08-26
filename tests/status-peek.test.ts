@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { peek } from '../cli/src/transport/broker-peek.ts';
+import { peek, projectReadiness } from '../cli/src/transport/broker-peek.ts';
 import { mutationGatePathFor } from '../cli/src/transport/mutation-admission-gate.ts';
 
 /** Accepts a TCP connection and then says nothing, forever — the ONLY way to
@@ -88,6 +88,11 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  const shutdownSocket = sockets.find((ws) => ws.readyState === WebSocket.OPEN);
+  if (shutdownSocket) {
+    try { shutdownSocket.send(JSON.stringify({ type: 'BROKER_SHUTDOWN_REQUEST' })); } catch { /* already closed */ }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
   for (const ws of sockets) { try { ws.terminate(); } catch { /* already closed */ } }
   rmSync(scratchDir, { recursive: true, force: true });
 });
@@ -140,6 +145,18 @@ describe('peek() — in-process, real broker + fake plugin', () => {
     expect(result.plugins?.[0]).toMatchObject({ fileName: 'Test File', pluginVersion: '0.1.0', protocolV: 1, versionMatch: true, protocolMatch: true });
     expect(result.versionMatch).toBe(true);
     expect(result.protocolMatch).toBe(true);
+    expect(result.broker).toMatchObject({ appReadinessVersion: 1, appReadinessVersionMatch: true });
+    expect(result.plugins?.[0]).toMatchObject({ appReady: true, appState: 'ready', appHeartbeatMode: 'legacy' });
+  });
+
+  it('old and unsupported broker payloads never fabricate readiness', () => {
+    const advertised = { appReady: true, appState: 'ready' as const, appHeartbeatMode: 'correlated' as const, appReadinessAge: 1 };
+    expect(projectReadiness(advertised, undefined)).toEqual({
+      appReady: null, appState: 'unknown', appHeartbeatMode: 'unknown', appReadinessAge: null,
+    });
+    expect(projectReadiness(advertised, 99)).toEqual({
+      appReady: null, appState: 'unknown', appHeartbeatMode: 'unknown', appReadinessAge: null,
+    });
   });
 
   it('a plugin build with no version at all reports versionMatch/protocolMatch null (unknown, not mismatched)', async () => {

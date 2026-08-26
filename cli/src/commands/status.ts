@@ -4,12 +4,12 @@
 // the ACTIVE plugin. Never throws E_NO_PLUGIN: an absent plugin is reported as
 // connected:false so `status` stays a diagnosis tool, not another command that
 // fails when nobody's listening.
-import { PROTOCOL_VERSION } from '../../../shared/protocol.ts';
+import { APP_READINESS_VERSION, PROTOCOL_VERSION } from '../../../shared/protocol.ts';
 import { fileMatches } from '../../../shared/file-match.ts';
 import type { CommandArgs } from '../figma-agent.ts';
 import { fetchBrokerHello, runCommand } from '../transport/broker-client.ts';
 import { ensureBroker } from '../transport/broker-discovery.ts';
-import { peek } from '../transport/broker-peek.ts';
+import { peek, projectReadiness } from '../transport/broker-peek.ts';
 import { waitForPlugin } from '../transport/plugin-wait.ts';
 import { buildDeepLink, type DeepLinkEntry } from '../transport/figma-deep-link.ts';
 import { fileIdentity, readBindCache, readBindMarker } from '../transport/project-bind.ts';
@@ -104,6 +104,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
     uptimeMs: (hello.uptimeMs as number | undefined) ?? null,
     protocolVersion: (hello.protocolV as number | undefined) ?? PROTOCOL_VERSION,
     ...(hello.targetFileKeyAdmissionV === 1 && { targetFileKeyAdmissionV: 1 }),
+    ...(typeof hello.appReadinessV === 'number' && { appReadinessVersion: hello.appReadinessV }),
+    appReadinessVersionMatch: typeof hello.appReadinessV !== 'number'
+      ? null
+      : hello.appReadinessV === APP_READINESS_VERSION,
     // Sender-verification counter (backlog 2.10 / issue #15) — mirrors BROKER_HELLO's
     // own byte-identical-when-zero contract: present only once a cross-instance reply
     // has actually been discarded, so the common (zero) case stays unchanged here too.
@@ -113,7 +117,13 @@ export async function run(args: CommandArgs): Promise<unknown> {
     // without needing to grep the broker log.
     ...(hello.legacyMigrationDeferred === true && { legacyMigrationDeferred: true }),
   };
-  const all = Array.isArray(hello.plugins) ? (hello.plugins as PluginStatusEntryWithJob[]) : [];
+  const readinessVersion = typeof hello.appReadinessV === 'number' ? hello.appReadinessV : undefined;
+  const all = Array.isArray(hello.plugins)
+    ? (hello.plugins as PluginStatusEntryWithJob[]).map((row) => ({
+        ...row,
+        ...projectReadiness(row, readinessVersion),
+      }))
+    : [];
 
   // `--file` must not make the diagnosis self-contradictory: the BROKER_HELLO fields
   // below (activePlugin/pluginConnected/pluginInfo) are computed by the broker from
@@ -142,11 +152,13 @@ export async function run(args: CommandArgs): Promise<unknown> {
       // Raced: the active plugin left between the hello and the STATUS round-trip
       // (E_NO_PLUGIN), or the file the caller named no longer matches what answered
       // (E_WRONG_FILE) — either way `status` stays a diagnosis tool that never fails.
-      if (!(err instanceof CliError && (err.code === 'E_NO_PLUGIN' || err.code === 'E_WRONG_FILE'))) throw err;
-      connected = false;
-      state = 'disconnected';
-      lastHeartbeatAge = null;
-      scene = null;
+      if (!(err instanceof CliError && (err.code === 'E_NO_PLUGIN' || err.code === 'E_WRONG_FILE' || err.code === 'E_APP_UNREADY'))) throw err;
+      if (err.code !== 'E_APP_UNREADY') {
+        connected = false;
+        state = 'disconnected';
+        lastHeartbeatAge = null;
+        scene = null;
+      }
     }
   }
 

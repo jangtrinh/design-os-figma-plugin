@@ -39,6 +39,7 @@ type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts')
 
 const WATCHDOG_MS_KEY = 'FIGMA_AGENT_WATCHDOG_MS';
 const PLUGIN_WAIT_MS_KEY = 'FIGMA_AGENT_PLUGIN_WAIT_MS';
+const APP_READINESS_MS_KEY = 'FIGMA_AGENT_APP_READINESS_MS';
 const CHANGES_DIR_KEY = 'FIGMA_AGENT_CHANGES_DIR';
 const BINDS_FILE_KEY = 'FIGMA_AGENT_BINDS_FILE';
 const UNBOUND_DIR_KEY = 'FIGMA_AGENT_UNBOUND_DIR';
@@ -69,6 +70,7 @@ let advertisePath: string;
 let scratchLogFile: string;
 let sockets: WebSocket[];
 let priorPluginWaitMs: string | undefined;
+let priorAppReadinessMs: string | undefined;
 
 /** Load `broker-daemon.ts` fresh, AFTER the given env vars are set — required for the
  *  module-load-time `envMs(...)` constants (see file header). */
@@ -179,10 +181,13 @@ async function waitFor(
   }
 }
 
-async function helloPlugin(ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null): Promise<void> {
+async function helloPlugin(
+  ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null,
+  caps: string[] = ['fileGuard'],
+): Promise<void> {
   ws.send(JSON.stringify({
     type: 'PLUGIN_HELLO',
-    data: { instanceId, fileName, fileKey, caps: ['fileGuard'] },
+    data: { instanceId, fileName, fileKey, caps },
   } satisfies EventMsg));
   // BROKER_HELLO arrives on connect, before HELLO is even processed — SYNC_CONFIG is the
   // registration ack this test waits on, so it never races the plugin being registered.
@@ -201,16 +206,53 @@ function sendFileInfo(ws: WebSocket, fileName: string, fileKey: string): void {
 /** Send a mutating request and wait for its JOB_STATE — returns the minted jobId, whether
  *  it started running immediately or was queued behind another job on the same file. */
 async function sendMutatingJob(ws: WebSocket, reqId: string): Promise<string> {
+  const jobStatePromise = nextFrame<EventMsg>(ws, (m) => (m as EventMsg).type === 'JOB_STATE');
   ws.send(JSON.stringify(makeRequestFrame(reqId, 'SET_TEXT', { nodeId: '1:1', text: 'x' })));
-  const jobState = await nextFrame<EventMsg>(ws, (m) => (m as EventMsg).type === 'JOB_STATE');
+  const jobState = await jobStatePromise;
   return (jobState.data as unknown as JobInfo).jobId;
 }
 
 async function pollJob(ws: WebSocket, jobId: string, reqId: string): Promise<{ job: JobInfo; resultFrames?: string[]; resultDropped?: boolean; lateReplyCount?: number }> {
+  const replyPromise = nextFrame<ReplyOk | ReplyErr>(ws, (m) => (m as ReplyOk | ReplyErr).id === reqId);
   ws.send(JSON.stringify(makeRequestFrame(reqId, 'JOB', { mode: 'poll', jobId })));
-  const reply = await nextFrame<ReplyOk | ReplyErr>(ws, (m) => (m as ReplyOk | ReplyErr).id === reqId);
+  const reply = await replyPromise;
   if (!reply.ok) throw new Error(`poll failed: ${JSON.stringify(reply.error)}`);
   return reply.result as { job: JobInfo; resultFrames?: string[]; resultDropped?: boolean; lateReplyCount?: number };
+}
+
+async function createReservedHead(prefix: string): Promise<{
+  port: number;
+  plugin: WebSocket;
+  pluginFrames: { frames: WireMsg[] };
+  cliB: WebSocket;
+  cliC: WebSocket;
+  jobB: string;
+  jobC: string;
+  probeId: string;
+}> {
+  const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200', [PLUGIN_WAIT_MS_KEY]: '500' });
+  const plugin = await connectSocket(port);
+  await helloPlugin(plugin, `${prefix}-plugin`, `${prefix} File`, `${prefix}-raw`, ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+  const pluginFrames = collectFrames(plugin);
+  const cliA = await connectSocket(port);
+  const jobA = await sendMutatingJob(cliA, `${prefix}-a`);
+  await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === `${prefix}-a`));
+  const cliB = await connectSocket(port);
+  const jobB = await sendMutatingJob(cliB, `${prefix}-b`);
+  const cliC = await connectSocket(port);
+  const jobC = await sendMutatingJob(cliC, `${prefix}-c`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const release = nextFrame<ReplyOk>(cliA, (frame) => (frame as ReplyOk).id === `${prefix}-release-a`);
+  cliA.send(JSON.stringify(makeRequestFrame(`${prefix}-release-a`, 'JOB', {
+    mode: 'force-release', jobId: jobA, override: true,
+  })));
+  await release;
+  await waitFor(() => pluginFrames.frames.some((frame) => (frame as EventMsg).type === 'APP_PROBE'));
+  const probe = pluginFrames.frames.find((frame) => (frame as EventMsg).type === 'APP_PROBE') as EventMsg;
+  return {
+    port, plugin, pluginFrames, cliB, cliC, jobB, jobC,
+    probeId: (probe.data as { probeId: string }).probeId,
+  };
 }
 
 interface EditInputLike {
@@ -263,6 +305,7 @@ async function bindProject(
 
 beforeEach(() => {
   priorPluginWaitMs = process.env[PLUGIN_WAIT_MS_KEY];
+  priorAppReadinessMs = process.env[APP_READINESS_MS_KEY];
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-broker-harness-'));
   advertisePath = join(scratchDir, 'broker.json');
   scratchLogFile = join(scratchDir, 'broker.log');
@@ -283,6 +326,8 @@ afterEach(async () => {
   rmSync(scratchDir, { recursive: true, force: true });
   if (priorPluginWaitMs === undefined) delete process.env[PLUGIN_WAIT_MS_KEY];
   else process.env[PLUGIN_WAIT_MS_KEY] = priorPluginWaitMs;
+  if (priorAppReadinessMs === undefined) delete process.env[APP_READINESS_MS_KEY];
+  else process.env[APP_READINESS_MS_KEY] = priorAppReadinessMs;
 });
 
 describe('daemon harness — mutation admission', () => {
@@ -1382,6 +1427,207 @@ describe('daemon harness — admitRequest with an `--instance` (expectedInstance
 // exercises the real `handleJobCommand`/`advanceQueue` closures via a real in-process
 // broker, isolated from a live plugin session's broker discovery the same way as above.
 describe('daemon harness — force-release refuses a HEALTHY running job, allows `--force`, never regresses the wedged-unwedge path', () => {
+  it('unfiltered routing sends to older ready A instead of newer stale B without probing B', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200', [PLUGIN_WAIT_MS_KEY]: '500' });
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'plugin-ready-first-a', 'Ready First A', 'Raw-Ready-A', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'plugin-ready-first-b', 'Ready First B', 'Raw-Ready-B', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    // Parsed ACK renews A's app lease without changing the routing-recency order: B
+    // remains newer, so only ready-first selection can choose A.
+    pluginA.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: 'ready-first-renew-a' } } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cli = await connectSocket(port);
+    cli.send(JSON.stringify(makeRequestFrame('req-ready-first', 'GET_SELECTION', {})));
+    await waitFor(() => framesA.frames.some((frame) => (frame as { id?: string }).id === 'req-ready-first')
+      || framesB.frames.some((frame) => (frame as EventMsg).type === 'APP_PROBE'));
+
+    expect(framesA.frames.filter((frame) => (frame as { id?: string }).id === 'req-ready-first')).toHaveLength(1);
+    expect(framesB.frames.filter((frame) => (frame as { id?: string }).id === 'req-ready-first')).toHaveLength(0);
+    expect(framesB.frames.filter((frame) => (frame as EventMsg).type === 'APP_PROBE')).toHaveLength(0);
+  });
+
+  it('ACK wins before later cancel: one send, cancel refusal, one normal completion drain', async () => {
+    const setup = await createReservedHead('race-ack-cancel');
+    setup.plugin.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: setup.probeId } } satisfies EventMsg));
+    await waitFor(() => setup.pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-ack-cancel-b'));
+    expect(setup.pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'race-ack-cancel-b')).toHaveLength(1);
+
+    const cancel = nextFrame<ReplyOk>(setup.cliB, (frame) => (frame as ReplyOk).id === 'race-ack-cancel-late');
+    setup.cliB.send(JSON.stringify(makeRequestFrame('race-ack-cancel-late', 'JOB', { mode: 'cancel', jobId: setup.jobB })));
+    expect((await cancel).result).toMatchObject({ ok: false });
+    expect((await pollJob(setup.cliB, setup.jobB, 'race-ack-cancel-poll-running')).job.state).toBe('running');
+
+    setup.plugin.send(JSON.stringify({ id: 'race-ack-cancel-b', ok: true, result: {} } satisfies ReplyOk));
+    await waitFor(() => setup.pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-ack-cancel-c'));
+    expect(setup.pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'race-ack-cancel-c')).toHaveLength(1);
+    expect((await pollJob(setup.cliB, setup.jobB, 'race-ack-cancel-poll-done')).job.state).toBe('done');
+    expect((await pollJob(setup.cliC, setup.jobC, 'race-ack-cancel-poll-c')).job.state).toBe('running');
+  });
+
+  it('target close beats ACK: both pinned queued jobs settle once and a stale ACK cannot resurrect either', async () => {
+    const setup = await createReservedHead('race-close-ack');
+    const failedB = nextFrame<ReplyErr>(setup.cliB, (frame) => (frame as ReplyErr).id === 'race-close-ack-b');
+    const failedC = nextFrame<ReplyErr>(setup.cliC, (frame) => (frame as ReplyErr).id === 'race-close-ack-c');
+    setup.plugin.terminate();
+    expect((await failedB).error.code).toBe('E_NO_PLUGIN');
+    expect((await failedC).error.code).toBe('E_NO_PLUGIN');
+
+    const replacement = await connectSocket(setup.port);
+    await helloPlugin(replacement, 'race-close-ack-plugin', 'race-close-ack File', 'race-close-ack-raw', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const replacementFrames = collectFrames(replacement);
+    replacement.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: setup.probeId } } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(replacementFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-close-ack-b')).toBe(false);
+    expect(replacementFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-close-ack-c')).toBe(false);
+    expect((await pollJob(setup.cliB, setup.jobB, 'race-close-ack-poll-b')).job.state).toBe('failed');
+    expect((await pollJob(setup.cliC, setup.jobC, 'race-close-ack-poll-c')).job.state).toBe('failed');
+  });
+
+  it('target close beats deadline: expiry callback is stale, with zero frames and no second transition', async () => {
+    const setup = await createReservedHead('race-close-deadline');
+    const failedB = nextFrame<ReplyErr>(setup.cliB, (frame) => (frame as ReplyErr).id === 'race-close-deadline-b');
+    const failedC = nextFrame<ReplyErr>(setup.cliC, (frame) => (frame as ReplyErr).id === 'race-close-deadline-c');
+    setup.plugin.terminate();
+    expect((await failedB).error.code).toBe('E_NO_PLUGIN');
+    expect((await failedC).error.code).toBe('E_NO_PLUGIN');
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect((await pollJob(setup.cliB, setup.jobB, 'race-close-deadline-poll-b')).job.state).toBe('failed');
+    expect((await pollJob(setup.cliC, setup.jobC, 'race-close-deadline-poll-c')).job.state).toBe('failed');
+    expect(setup.pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-close-deadline-b')).toBe(false);
+    expect(setup.pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-close-deadline-c')).toBe(false);
+  });
+
+  it('gate denial beats ACK: typed failures drain once and the old generation cannot send', async () => {
+    const setup = await createReservedHead('race-gate-ack');
+    const failedB = nextFrame<ReplyErr>(setup.cliB, (frame) => (frame as ReplyErr).id === 'race-gate-ack-b');
+    const failedC = nextFrame<ReplyErr>(setup.cliC, (frame) => (frame as ReplyErr).id === 'race-gate-ack-c');
+    const paused = nextFrame<ReplyOk>(setup.cliB, (frame) => (frame as ReplyOk).id === 'race-gate-ack-pause');
+    setup.cliB.send(JSON.stringify(makeRequestFrame('race-gate-ack-pause', 'MUTATION_GATE', {
+      mode: 'pause', fileKey: 'race-gate-ack-raw',
+    })));
+    expect((await paused).result).toMatchObject({ state: 'paused' });
+    expect((await failedB).error.code).toBe('E_MUTATIONS_PAUSED');
+    expect((await failedC).error.code).toBe('E_MUTATIONS_PAUSED');
+    setup.plugin.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: setup.probeId } } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(setup.pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-gate-ack-b')).toBe(false);
+    expect(setup.pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'race-gate-ack-c')).toBe(false);
+    expect((await pollJob(setup.cliB, setup.jobB, 'race-gate-ack-poll-b')).job.state).toBe('failed');
+    expect((await pollJob(setup.cliC, setup.jobC, 'race-gate-ack-poll-c')).job.state).toBe('failed');
+  });
+
+  it('exact unready safe reads probe only the pinned instance, then dispatch once or time out still connected', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200', [PLUGIN_WAIT_MS_KEY]: '500' });
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'plugin-ready-a', 'Ready A', 'Raw-A', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'plugin-unready-b', 'Unready B', 'Raw-B', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    pluginA.send(JSON.stringify({ type: 'FILE_INFO', data: { fileName: 'Ready A', fileKey: 'Raw-A', page: 'Page 1' } } satisfies EventMsg));
+
+    const cli = await connectSocket(port);
+    cli.send(JSON.stringify(makeRequestFrame(
+      'req-ready-exact', 'GET_SELECTION', {}, undefined, undefined, undefined, undefined, undefined, undefined, 'Raw-B',
+    )));
+    await waitFor(() => framesB.frames.some((frame) => (frame as EventMsg).type === 'APP_PROBE'));
+    const probe = framesB.frames.find((frame) => (frame as EventMsg).type === 'APP_PROBE') as EventMsg;
+    expect(framesA.frames.some((frame) => (frame as { id?: string }).id === 'req-ready-exact')).toBe(false);
+    pluginB.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: (probe.data as { probeId: string }).probeId } } satisfies EventMsg));
+    await waitFor(() => framesB.frames.some((frame) => (frame as { id?: string }).id === 'req-ready-exact'));
+    expect(framesB.frames.filter((frame) => (frame as { id?: string }).id === 'req-ready-exact')).toHaveLength(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const timedOut = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'req-unready-timeout');
+    cli.send(JSON.stringify(makeRequestFrame(
+      'req-unready-timeout', 'GET_SELECTION', {}, undefined, undefined, undefined, undefined, undefined, undefined, 'Raw-B',
+    )));
+    expect((await timedOut).error.code).toBe('E_APP_UNREADY');
+    expect(framesA.frames.some((frame) => (frame as { id?: string }).id === 'req-unready-timeout')).toBe(false);
+    expect(framesB.frames.some((frame) => (frame as { id?: string }).id === 'req-unready-timeout')).toBe(false);
+
+    const { hello } = await connectAndAwaitBrokerHello(port);
+    expect(hello.data).toMatchObject({ pluginConnected: true });
+  });
+
+  it('a valid completion renews app readiness and sends the next mutation once through the final dispatch path', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-completion-ready', 'Completion Ready', 'Raw-Completion', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginFrames = collectFrames(plugin);
+    const cliA = await connectSocket(port);
+    const jobA = await sendMutatingJob(cliA, 'req-completion-a');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-completion-a'));
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'req-completion-b');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect((await pollJob(cliA, jobA, 'req-completion-poll-a')).job.state).toBe('running');
+    expect((await pollJob(cliB, jobB, 'req-completion-poll-b')).job.state).toBe('queued');
+
+    plugin.send(JSON.stringify({ id: 'req-completion-a', ok: true, result: {} } satisfies ReplyOk));
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-completion-b'));
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'req-completion-b')).toHaveLength(1);
+    expect((await pollJob(cliB, jobB, 'req-completion-poll-b2')).job.state).toBe('running');
+  });
+
+  it('force-release reserves once; cancel beats deadline and stale-generation ACK while the next deadline drains once', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200', [PLUGIN_WAIT_MS_KEY]: '100' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-reserved', 'Reserved File', 'Raw-Reserved', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginFrames = collectFrames(plugin);
+    const cliA = await connectSocket(port);
+    const jobA = await sendMutatingJob(cliA, 'req-reserved-a');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-reserved-a'));
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'req-reserved-b');
+    const cliC = await connectSocket(port);
+    const jobC = await sendMutatingJob(cliC, 'req-reserved-c');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    cliA.send(JSON.stringify(makeRequestFrame('req-reserved-release-a', 'JOB', {
+      mode: 'force-release', jobId: jobA, override: true,
+    })));
+    await nextFrame<ReplyOk>(cliA, (frame) => (frame as ReplyOk).id === 'req-reserved-release-a');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as EventMsg).type === 'APP_PROBE'));
+    const probeB = pluginFrames.frames.find((frame) => (frame as EventMsg).type === 'APP_PROBE') as EventMsg;
+    const reservedB = await pollJob(cliB, jobB, 'req-reserved-poll-b');
+    expect(reservedB.job).toMatchObject({ state: 'queued', dispatchState: 'queued-not-dispatched-readiness-wait' });
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-reserved-b')).toBe(false);
+
+    const { hello } = await connectAndAwaitBrokerHello(port);
+    const rows = (hello.data as { plugins: Array<{ runningJob?: JobInfo; queueDepth: number }> }).plugins;
+    expect(rows[0]).toMatchObject({ runningJob: { jobId: jobB, state: 'queued' }, queueDepth: 1 });
+
+    for (const override of [false, true]) {
+      const releaseId = `req-reserved-release-b-${String(override)}`;
+      cliB.send(JSON.stringify(makeRequestFrame(releaseId, 'JOB', { mode: 'force-release', jobId: jobB, override })));
+      const refusal = await nextFrame<ReplyOk>(cliB, (frame) => (frame as ReplyOk).id === releaseId);
+      expect(refusal.result).toEqual({
+        ok: false,
+        reason: `job '${jobB}' is queued and has not been dispatched; use: figma-agent job ${jobB} --cancel`,
+      });
+    }
+    expect((await pollJob(cliB, jobB, 'req-reserved-poll-b2')).job).toMatchObject({
+      state: 'queued', dispatchState: 'queued-not-dispatched-readiness-wait',
+    });
+
+    const failedC = nextFrame<ReplyErr>(cliC, (frame) => (frame as ReplyErr).id === 'req-reserved-c');
+    cliB.send(JSON.stringify(makeRequestFrame('req-reserved-cancel-b', 'JOB', { mode: 'cancel', jobId: jobB })));
+    await nextFrame<ReplyOk>(cliB, (frame) => (frame as ReplyOk).id === 'req-reserved-cancel-b');
+    plugin.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: (probeB.data as { probeId: string }).probeId } } satisfies EventMsg));
+    expect((await failedC).error.code).toBe('E_APP_UNREADY');
+    expect((await pollJob(cliB, jobB, 'req-reserved-poll-b3')).job.state).toBe('cancelled');
+    expect((await pollJob(cliC, jobC, 'req-reserved-poll-c')).job.state).toBe('failed');
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-reserved-b')).toBe(false);
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-reserved-c')).toBe(false);
+  });
+
   it('a bare `--force-release` on a job still `running` inside the watchdog window is REFUSED — the slot stays held, nothing advances', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
