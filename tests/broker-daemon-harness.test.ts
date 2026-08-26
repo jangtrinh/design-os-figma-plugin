@@ -1520,6 +1520,29 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     expect(framesB.frames.filter((frame) => (frame as EventMsg).type === 'APP_PROBE')).toHaveLength(0);
   });
 
+  it('unfiltered routing with two unready plugins probes one deterministic target and returns bounded E_APP_UNREADY', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200', [PLUGIN_WAIT_MS_KEY]: '500' });
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'plugin-all-unready-a', 'All Unready A', 'Raw-All-Unready-A', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'plugin-all-unready-b', 'All Unready B', 'Raw-All-Unready-B', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const framesA = collectFrames(pluginA);
+    const framesB = collectFrames(pluginB);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const cli = await connectSocket(port);
+    const startedAt = Date.now();
+    const timedOut = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'req-all-unready');
+    cli.send(JSON.stringify(makeRequestFrame('req-all-unready', 'GET_SELECTION', {})));
+
+    expect((await timedOut).error.code).toBe('E_APP_UNREADY');
+    expect(Date.now() - startedAt).toBeLessThan(HARNESS_WAIT_TIMEOUT_MS);
+    expect(framesA.frames.filter((frame) => (frame as EventMsg).type === 'APP_PROBE')).toHaveLength(0);
+    expect(framesB.frames.filter((frame) => (frame as EventMsg).type === 'APP_PROBE')).toHaveLength(1);
+    expect(framesA.frames.filter((frame) => (frame as { id?: string }).id === 'req-all-unready')).toHaveLength(0);
+    expect(framesB.frames.filter((frame) => (frame as { id?: string }).id === 'req-all-unready')).toHaveLength(0);
+  });
+
   it('ACK wins before later cancel: one send, cancel refusal, one normal completion drain', async () => {
     const setup = await createReservedHead('race-ack-cancel');
     setup.plugin.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: setup.probeId } } satisfies EventMsg));
