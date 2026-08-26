@@ -12,7 +12,7 @@
 // The daemon (broker-daemon.ts) owns the single instance and is the only caller that
 // ever touches a real WebSocket.
 import type WebSocket from 'ws';
-import type { JobInfo } from '../../../shared/protocol.ts';
+import type { JobInfo, JobRecovery } from '../../../shared/protocol.ts';
 
 export const JOB_TTL_MS = 10 * 60_000;               // finished results stay retrievable this long — BEST EFFORT
 export const JOB_FINISHED_CAP = 200;                 // hard cap on FINISHED records; live jobs are NEVER capped
@@ -26,6 +26,23 @@ const FINISHED_STATES = new Set<JobInfo['state']>(['done', 'failed', 'cancelled'
  *  comparison is written once, not re-derived at each call site. */
 export function isFinishedState(state: JobInfo['state']): boolean {
   return FINISHED_STATES.has(state);
+}
+
+export function isPollSettledState(state: JobInfo['state']): boolean {
+  return isFinishedState(state) || state === 'outcome-unknown';
+}
+
+export function isReplyDiscardState(state: JobInfo['state']): boolean {
+  return isPollSettledState(state);
+}
+
+function recoveryFor(jobId: string): JobRecovery {
+  return {
+    kind: 'inspect-and-force-release',
+    command: `figma-agent job ${jobId} --force-release`,
+    requiresCanvasInspection: true,
+    retryAllowed: false,
+  };
 }
 
 /**
@@ -135,6 +152,8 @@ export function toJobInfo(rec: JobRecord): JobInfo {
   if (rec.startedAt !== undefined) info.startedAt = rec.startedAt;
   if (rec.finishedAt !== undefined) info.finishedAt = rec.finishedAt;
   if (rec.dispatchState !== undefined) info.dispatchState = rec.dispatchState;
+  if (rec.uncertaintyReason !== undefined) info.uncertaintyReason = rec.uncertaintyReason;
+  if (rec.recovery !== undefined) info.recovery = rec.recovery;
   return info;
 }
 
@@ -227,6 +246,32 @@ export class JobTable {
     this.transitionQueuedToRunning(jobId);
   }
 
+  /** Only an actually-running dispatch can lose a reply channel after execution may start. */
+  markOutcomeUnknown(jobId: string, reason: string): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'running') return false;
+    rec.state = 'outcome-unknown';
+    rec.uncertaintyReason = reason;
+    rec.recovery = recoveryFor(jobId);
+    return true;
+  }
+
+  /**
+   * Make an inspected unknown outcome retention-eligible after its queue slot is released.
+   * The daemon must call this only after synchronously removing the live queue pointer.
+   */
+  settleOutcomeUnknownRelease(jobId: string): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'outcome-unknown' || rec.forceReleased === true) return false;
+    rec.forceReleased = true;
+    rec.finishedAt = this.now();
+    delete rec.recovery;
+    this.finishedOrder.push(jobId);
+    this.enforceFinishedCap();
+    this.enforceByteBudget();
+    return true;
+  }
+
   /**
    * Store the verbatim reply and finish the job — called even when no CLI is listening.
    *
@@ -246,7 +291,7 @@ export class JobTable {
   finish(jobId: string, ok: boolean, rawReply: string[]): void {
     const rec = this.jobs.get(jobId);
     if (!rec) return;
-    if (FINISHED_STATES.has(rec.state)) {
+    if (isReplyDiscardState(rec.state)) {
       rec.lateReplyCount = (rec.lateReplyCount ?? 0) + 1;
       return;
     }

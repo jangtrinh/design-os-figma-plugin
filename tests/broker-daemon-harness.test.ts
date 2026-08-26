@@ -837,15 +837,15 @@ describe('daemon harness — cancel-then-complete never dispatches the cancelled
   });
 });
 
-describe('daemon harness — plugin disconnect fails a queued job, reconnect never re-dispatches it (BLOCKER 2)', () => {
-  it('E_NO_PLUGIN reaches the CLI for both the running and queued job; a same-instanceId reconnect gets nothing', async () => {
+describe('daemon harness — actual transport loss preserves dispatched mutation uncertainty', () => {
+  it('holds the unknown slot, fails queued work, discards late reply, then bare force-release advances once', async () => {
     const port = await startTestBroker();
     const plugin = await connectSocket(port);
     await helloPlugin(plugin, 'plugin-2', 'F2', 'RawF2');
     const pluginFrames = collectFrames(plugin);
 
     const cliA = await connectSocket(port);
-    await sendMutatingJob(cliA, 'req-a2'); // dispatched immediately — RUNNING
+    const jobA = await sendMutatingJob(cliA, 'req-a2'); // dispatched immediately — RUNNING
     await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-a2'));
 
     const cliB = await connectSocket(port);
@@ -856,13 +856,28 @@ describe('daemon harness — plugin disconnect fails a queued job, reconnect nev
     plugin.terminate(); // the disconnect
     const [replyA, replyB] = await Promise.all([errA, errB]);
     expect(replyA.ok).toBe(false);
-    expect(replyA.error.code).toBe('E_NO_PLUGIN');
+    expect(replyA.error).toEqual({
+      code: 'E_OUTCOME_UNKNOWN',
+      message: expect.stringContaining('canvas may or may not have changed'),
+      jobId: jobA,
+      recovery: {
+        kind: 'inspect-and-force-release',
+        command: `figma-agent job ${jobA} --force-release`,
+        requiresCanvasInspection: true,
+        retryAllowed: false,
+      },
+    });
     expect(replyB.ok).toBe(false);
     expect(replyB.error.code).toBe('E_NO_PLUGIN');
 
     // Job B's own record reads 'failed' — never left dangling in a resurrectable state.
     const polledB = await pollJob(cliB, jobB, 'req-poll-b2');
     expect(polledB.job.state).toBe('failed');
+    const polledA = await pollJob(cliA, jobA, 'req-poll-a2');
+    expect(polledA.job).toMatchObject({
+      state: 'outcome-unknown', jobId: jobA,
+      recovery: { command: `figma-agent job ${jobA} --force-release`, retryAllowed: false },
+    });
 
     // Reconnect with the SAME instanceId — no parked/queued work exists to flush.
     const plugin2 = await connectSocket(port);
@@ -871,6 +886,60 @@ describe('daemon harness — plugin disconnect fails a queued job, reconnect nev
     await new Promise((resolve) => setTimeout(resolve, 200));
     const dispatched = plugin2Frames.frames.filter((f) => 'cmd' in (f as Record<string, unknown>));
     expect(dispatched).toHaveLength(0);
+    const { hello: heldStatus } = await connectAndAwaitBrokerHello(port);
+    const heldPlugin = (heldStatus.data as { plugins: Array<{ instanceId: string; runningJob?: JobInfo }> })
+      .plugins.find((entry) => entry.instanceId === 'plugin-2');
+    expect(heldPlugin?.runningJob).toMatchObject({ jobId: jobA, state: 'outcome-unknown' });
+
+    const cliC = await connectSocket(port);
+    const jobC = await sendMutatingJob(cliC, 'req-c2');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(plugin2Frames.frames.some((frame) => (frame as { id?: string }).id === 'req-c2')).toBe(false);
+
+    plugin2.send(JSON.stringify({ id: 'req-a2', ok: true, result: { late: true } } satisfies ReplyOk));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect((await pollJob(cliA, jobA, 'req-poll-a2-late')).lateReplyCount).toBe(1);
+    expect((await pollJob(cliC, jobC, 'req-poll-c2')).job.state).toBe('queued');
+
+    const releasePending = nextFrame<ReplyOk>(cliA, (frame) => (frame as ReplyOk).id === 'req-release-a2');
+    cliA.send(JSON.stringify(makeRequestFrame('req-release-a2', 'JOB', {
+      mode: 'force-release', jobId: jobA, override: false,
+    }, 'Inspect then force-release')));
+    expect((await releasePending).result).toEqual({ ok: true });
+    await waitFor(() => plugin2Frames.frames.some((frame) => (frame as { id?: string }).id === 'req-c2'));
+    expect(plugin2Frames.frames.filter((frame) => (frame as { id?: string }).id === 'req-c2')).toHaveLength(1);
+    const releasedA = await pollJob(cliA, jobA, 'req-poll-a2-released');
+    expect(releasedA.job).toMatchObject({
+      jobId: jobA, state: 'outcome-unknown', finishedAt: expect.any(Number),
+      uncertaintyReason: 'plugin transport disconnected after dispatch',
+    });
+    expect(releasedA.job).not.toHaveProperty('recovery');
+    expect((await pollJob(cliC, jobC, 'req-poll-c2-owner')).job.state).toBe('running');
+    const secondReleasePending = nextFrame<ReplyOk>(cliA, (frame) => (frame as ReplyOk).id === 'req-release-a2-again');
+    cliA.send(JSON.stringify(makeRequestFrame('req-release-a2-again', 'JOB', {
+      mode: 'force-release', jobId: jobA, override: false,
+    }, 'Duplicate release')));
+    expect((await secondReleasePending).result).toMatchObject({ ok: false });
+    expect(plugin2Frames.frames.filter((frame) => (frame as { id?: string }).id === 'req-c2')).toHaveLength(1);
+  });
+
+  it('keeps a dispatched broker-safe read as a normal E_NO_PLUGIN failure', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-read-loss', 'Read Loss', 'RawReadLoss');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const statePending = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cli.send(JSON.stringify(makeRequestFrame('req-read-loss', 'GET_SELECTION', {})));
+    const jobId = ((await statePending).data as unknown as JobInfo).jobId;
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-read-loss'));
+
+    const failurePending = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === 'req-read-loss');
+    plugin.terminate();
+    expect((await failurePending).error).toEqual({
+      code: 'E_NO_PLUGIN', message: 'Figma plugin disconnected mid-request',
+    });
+    expect((await pollJob(cli, jobId, 'req-read-loss-poll')).job.state).toBe('failed');
   });
 });
 
@@ -1574,6 +1643,9 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-completion-b'));
     expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'req-completion-b')).toHaveLength(1);
     expect((await pollJob(cliB, jobB, 'req-completion-poll-b2')).job.state).toBe('running');
+    const completedA = await pollJob(cliA, jobA, 'req-completion-poll-a2');
+    expect(completedA.job.state).toBe('done');
+    expect(completedA.lateReplyCount).toBeUndefined();
   });
 
   it('force-release reserves once; cancel beats deadline and stale-generation ACK while the next deadline drains once', async () => {

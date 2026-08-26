@@ -13,8 +13,8 @@ import WebSocket, { WebSocketServer } from 'ws';
 import {
   BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, COWORK_MAX_TIMEOUT_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS,
   LOOPBACK_HOST, PLUGIN_PONG_TIMEOUT_MS, PLUGIN_WAIT_MS, PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
-  type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type ReplyErr, type ReplyOk, type RequestMsg,
-  type WireMsg,
+  type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type JobRecovery, type ReplyErr, type ReplyOk,
+  type RequestMsg, type WireMsg,
 } from '../../../shared/protocol.ts';
 import {
   cleanupOrphanedAdvertisementTempFiles, isPidAlive, readAdvertisement, selfBuildMtime, writeAdvertisement,
@@ -49,7 +49,8 @@ import {
   resolveProjectDir, writeBindCache, writeBindMarker, type Binding,
 } from './project-bind.ts';
 import {
-  JobTable, isFinishedState, isHealthyRunningJob, isReplyFromDispatchedInstance, toJobInfo, type JobRecord,
+  JobTable, isFinishedState, isHealthyRunningJob, isReplyDiscardState, isReplyFromDispatchedInstance, toJobInfo,
+  type JobRecord,
 } from './job-table.ts';
 import { createWaiter as createCoworkWaiter, onEdits as feedCoworkWaiter, tick as tickCoworkWaiter, type CoworkWaiterState } from './cowork-waiter.ts';
 import {
@@ -273,8 +274,14 @@ function replyOk(frames: readonly string[]): boolean {
   }
 }
 
-function sendReplyErr(ws: WebSocket, id: string, code: ErrorCode, message: string): void {
-  const reply: ReplyErr = { id, ok: false, error: { code, message } };
+function sendReplyErr(
+  ws: WebSocket,
+  id: string,
+  code: ErrorCode,
+  message: string,
+  details?: { jobId?: string; recovery?: JobRecovery },
+): void {
+  const reply: ReplyErr = { id, ok: false, error: { code, message, ...details } };
   try {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(reply));
   } catch { /* client already gone */ }
@@ -299,9 +306,10 @@ function sendReplyOk(ws: WebSocket, id: string, result: unknown): void {
  */
 export function buildForceReleaseAuditLine(
   jobId: string, cmd: string, fileSlug: string, override: boolean, activity: string | undefined,
+  priorState?: JobInfo['state'],
 ): string {
   const requester = activity ?? 'unlabeled request';
-  return `job ${jobId} (${cmd}) force-released${override ? ' via --force override' : ''} — requested by "${requester}" — "${fileSlug}"'s mutation slot freed; any later reply from that script is discarded`;
+  return `job ${jobId} (${cmd})${priorState ? ` [${priorState}]` : ''} force-released${override ? ' via --force override' : ''} — requested by "${requester}" — "${fileSlug}"'s mutation slot freed; any later reply from that script is discarded`;
 }
 
 /** A FIFO slot owner that has not sent is cancelled, never force-released. */
@@ -1496,7 +1504,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (client && client.readyState === WebSocket.OPEN) {
       try { client.send(rawText); } catch { /* requester vanished */ }
     }
-    if (job && isFinishedState(job.state)) {
+    if (job && isReplyDiscardState(job.state)) {
       // Closing round (R1+R2 unified, reviewer Q1) — this job is ALREADY terminal
       // (force-released, watchdog-timed-out, or a genuine prior finish): this frame is
       // the actual pollution site the old code had — `job.replyFrames.push(rawText)` ran
@@ -1617,15 +1625,18 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         });
         return;
       }
+      const priorState = rec.state;
       // The audited exit from a BLOCKED slot (phase 01's watchdog leaves it held on
       // purpose): record the override on the job, finish it for reporting if it was
       // still `running` (the watchdog may not have fired yet), then advance the queue —
       // never automatic, and the message states plainly that a later reply is discarded.
-      rec.forceReleased = true;
       if (rec.state === 'running') {
+        rec.forceReleased = true;
         st.jobs.finish(jobId, false, [errReplyFrame(rec.requestId, 'E_TIMEOUT',
           'force-released — the script may still be running; its result (if any) is discarded and unverified')]);
         recordContention(rec);
+      } else if (rec.state !== 'outcome-unknown') {
+        rec.forceReleased = true;
       }
       // Stage-4 fix round (M4, ruling Q1) — "discarded means discarded": if the wedged
       // script DOES eventually reply, `routeFromPlugin` must not forward it to a CLI that
@@ -1635,9 +1646,19 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       st.pending.delete(rec.requestId);
       st.dispatchedTo.delete(rec.requestId);
       drainFileQueue(rec.fileSlug, rec.jobId);
+      // Unknown evidence becomes retention-eligible only AFTER the synchronous drain
+      // removed q.running. Before this line TTL/cap/frame shedding cannot erase the live
+      // slot holder; after it, the consumed recovery command is removed and normal
+      // bounded retention applies.
+      if (priorState === 'outcome-unknown' && !st.jobs.settleOutcomeUnknownRelease(jobId)) {
+        const reason = `job '${jobId}' slot was released, but unknown-outcome retention settlement failed`;
+        log(`invariant failure: ${reason}`);
+        sendReplyErr(ws, msg.id, 'E_PLUGIN_ERROR', reason);
+        return;
+      }
       // Audited: every force-release (allowed-wedged or `--force` override) logs WHO asked
       // and WHY, never silently — the requester's own `activity` label on this request.
-      log(buildForceReleaseAuditLine(jobId, rec.cmd, rec.fileSlug, override, msg.activity));
+      log(buildForceReleaseAuditLine(jobId, rec.cmd, rec.fileSlug, override, msg.activity, priorState));
       sendReplyOk(ws, msg.id, { ok: true });
       return;
     }
@@ -1682,7 +1703,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           ...(rec.resultDropped === true && { resultDropped: true }),
           ...(rec.lateReplyCount !== undefined && rec.lateReplyCount > 0 && { lateReplyCount: rec.lateReplyCount }),
         }
-      : { job: info });
+      : {
+          job: info,
+          ...(rec.lateReplyCount !== undefined && rec.lateReplyCount > 0 && { lateReplyCount: rec.lateReplyCount }),
+        });
   };
 
   /** Broker-terminal durable pause/open control. It intentionally uses only the raw
@@ -1807,20 +1831,42 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (target !== ws) continue;
       const client = st.pending.get(id);
       const msg = 'Figma plugin disconnected mid-request';
-      if (client) sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
       // Actual-send jobs own a `dispatchedTo` route. Finish the record for polling and
       // drain only if it owns the active FIFO slot; ordinary queued jobs are handled by
       // the pinned reservation/waiting-list scans after registry removal below.
       const job = st.jobs.byRequestId(id);
       if (job) {
-        st.jobs.finish(job.jobId, false, [errReplyFrame(id, 'E_NO_PLUGIN', msg)]);
-        recordContention(job);
-        const q = st.queues.get(job.fileSlug);
-        if (q && q.running === job.jobId) {
-          drainFileQueue(job.fileSlug, job.jobId);
-        } else if (q) {
-          st.queues.set(job.fileSlug, removeFromQueue(q, job.jobId));
+        if (job.state === 'running' && !job.readOnly) {
+          const reason = 'plugin transport disconnected after dispatch';
+          if (st.jobs.markOutcomeUnknown(job.jobId, reason)) {
+            recordContention(job);
+            if (client) {
+              sendReplyErr(
+                client,
+                id,
+                'E_OUTCOME_UNKNOWN',
+                `${reason}; the canvas may or may not have changed. Inspect the canvas, then force-release the held slot.`,
+                { jobId: job.jobId, recovery: job.recovery },
+              );
+            }
+          }
+        } else {
+          if (client) sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
+          if (job.state === 'queued') {
+            st.jobs.settleQueued(job.jobId, 'failed', [errReplyFrame(id, 'E_NO_PLUGIN', msg)]);
+          } else {
+            st.jobs.finish(job.jobId, false, [errReplyFrame(id, 'E_NO_PLUGIN', msg)]);
+          }
+          recordContention(job);
+          const q = st.queues.get(job.fileSlug);
+          if (q && q.running === job.jobId) {
+            drainFileQueue(job.fileSlug, job.jobId);
+          } else if (q) {
+            st.queues.set(job.fileSlug, removeFromQueue(q, job.jobId));
+          }
         }
+      } else if (client) {
+        sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
       }
       st.pending.delete(id);
       st.dispatchedTo.delete(id);

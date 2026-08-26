@@ -43,6 +43,10 @@ export function isTerminal(state: JobInfo['state']): boolean {
   return state === 'done' || state === 'failed' || state === 'cancelled';
 }
 
+export function isPollSettled(state: JobInfo['state']): boolean {
+  return isTerminal(state) || state === 'outcome-unknown';
+}
+
 async function pollOnce(jobId: string): Promise<PollReply> {
   return (await runCommand('JOB', { mode: 'poll', jobId })) as PollReply;
 }
@@ -84,6 +88,27 @@ export function unwrapResult(frames: string[]): { ok: boolean; result?: unknown;
  *  exactly what the original command would have printed, plus the job envelope. */
 export function formatPoll(reply: PollReply): unknown {
   const { job, resultFrames, resultDropped, lateReplyCount } = reply;
+  if (job.state === 'outcome-unknown') {
+    const released = job.finishedAt !== undefined;
+    return {
+      job,
+      error: {
+        code: 'E_OUTCOME_UNKNOWN',
+        message: released
+          ? `${job.uncertaintyReason ?? 'plugin transport was lost after dispatch'}; ` +
+            'canvas inspection and slot release are complete. The slot is no longer held, ' +
+            'the canvas outcome remains unknown, and automatic retry is forbidden.'
+          : `${job.uncertaintyReason ?? 'plugin transport was lost after dispatch'}; ` +
+            'the canvas may or may not have changed. Inspect the canvas, then force-release the held slot.',
+        jobId: job.jobId,
+        ...(!released && job.recovery !== undefined && { recovery: job.recovery }),
+      },
+      ...(typeof lateReplyCount === 'number' && lateReplyCount > 0 && {
+        lateReplyCount,
+        lateReplyWarning: `${lateReplyCount} late reply frame(s) arrived after the outcome became uncertain and were discarded`,
+      }),
+    };
+  }
   if (!isTerminal(job.state) || resultFrames === undefined) return { job };
   // Closing round (R1+R2 unified) — merged onto whichever shape below applies; a late
   // reply is orthogonal to the job's own (already-final) outcome, never overriding it.
@@ -125,7 +150,7 @@ export async function waitForJob(
   const deadline = Date.now() + waitTimeoutMs;
   for (;;) {
     const reply = await poll(jobId);
-    if (isTerminal(reply.job.state)) return formatPoll(reply);
+    if (isPollSettled(reply.job.state)) return formatPoll(reply);
     if (Date.now() >= deadline) {
       return {
         job: reply.job,

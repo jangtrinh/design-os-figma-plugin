@@ -41,4 +41,12 @@ describe('buildForceReleaseAuditLine — the requester is never silent', () => {
     expect(overridden).toContain('--force override');
     expect(bare).not.toContain('--force override');
   });
+
+  it('records outcome-unknown as the inspected prior state', () => {
+    const line = buildForceReleaseAuditLine(
+      'j_1_1', 'EXEC_JS', 'fileA', false, 'Inspect then force-release', 'outcome-unknown',
+    );
+    expect(line).toContain('[outcome-unknown]');
+    expect(line).toContain('Inspect then force-release');
+  });
 });

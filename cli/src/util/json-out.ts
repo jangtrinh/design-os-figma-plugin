@@ -39,6 +39,7 @@ export function printErrorJson(err: unknown, fileContext?: FileContext): never {
           // E_TIMEOUT that confirmed a real job exists, so a caller (or a script driving
           // this CLI) can poll `figma-agent job <id>` without re-parsing the message.
           ...(err.jobId !== undefined ? { jobId: err.jobId } : {}),
+          ...(err.recovery !== undefined ? { recovery: err.recovery } : {}),
         }
       : { code: 'E_INTERNAL', message: err instanceof Error ? err.message : String(err) };
   const payload = fileContext ? { error, fileContext } : { error };
