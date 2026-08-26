@@ -48,7 +48,7 @@ function recoveryFor(jobId: string): JobRecovery {
 /**
  * Whether a job is a HEALTHY, still-running slot holder — the watchdog has not (yet)
  * declared it wedged. A job the watchdog already timed out has `state !== 'running'`
- * (the watchdog calls `finish()`) even though it may still hold its file's mutation
+ * (the watchdog calls `finishHeld()`) even though it may still hold its file's mutation
  * slot; that job is NOT healthy, and force-releasing it is the legitimate unwedge path.
  * Only a job still genuinely `running`, with a `startedAt` inside the watchdog window,
  * counts as healthy — the one case `job --force-release` (without `--force`) must refuse.
@@ -124,8 +124,12 @@ export interface JobRecord extends JobInfo {
    * *why* the result is gone rather than returning nothing.
    */
   resultDropped?: boolean;
-  /** Set by `job <id> --force-release` (phase 02) — an audited override, never automatic. */
+  /** Set after an audited command or transport-close path safely releases the held slot. */
   forceReleased?: boolean;
+  /** Internal only: terminal evidence for a mutation slot that remains live. It is not
+   *  retention-eligible until the daemon's audited release has synchronously removed
+   *  that slot from its file queue. */
+  retentionHeld?: boolean;
   /** Internal only (never serialized onto the wire — see `toJobInfo`): when this record
    *  was created, the basis `queuedMs` is measured from. */
   createdAt: number;
@@ -302,6 +306,39 @@ export class JobTable {
     this.finishedOrder.push(jobId);
     this.enforceFinishedCap();
     this.enforceByteBudget();
+  }
+
+  /**
+   * Record a watchdog timeout (or an explicit override) while the file queue still owns
+   * this job. The terminal outcome remains pollable, but cannot enter TTL/cap/frame
+   * retention yet: evicting it would orphan the queue's live owner id. Only the daemon's
+   * audited release may call `settleHeldTerminalRelease` after draining that queue.
+   */
+  finishHeld(jobId: string, ok: boolean, rawReply: string[]): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'running') return false;
+    rec.state = ok ? 'done' : 'failed';
+    rec.finishedAt = this.now();
+    rec.replyFrames = rawReply;
+    rec.retentionHeld = true;
+    delete rec.dispatchState;
+    return true;
+  }
+
+  /**
+   * Enroll a previously-held terminal record only after its queue owner was synchronously
+   * released. TTL starts here rather than at the watchdog/override observation time.
+   */
+  settleHeldTerminalRelease(jobId: string): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.retentionHeld !== true || !isFinishedState(rec.state)) return false;
+    rec.forceReleased = true;
+    rec.finishedAt = this.now();
+    delete rec.retentionHeld;
+    this.finishedOrder.push(jobId);
+    this.enforceFinishedCap();
+    this.enforceByteBudget();
+    return true;
   }
 
   /** Refuses a RUNNING job — the sandbox cannot interrupt a live `eval`. */

@@ -18,12 +18,14 @@ const CHANGES_DIR_KEY = 'FIGMA_AGENT_CHANGES_DIR';
 const BINDS_FILE_KEY = 'FIGMA_AGENT_BINDS_FILE';
 const UNBOUND_DIR_KEY = 'FIGMA_AGENT_UNBOUND_DIR';
 const APP_READINESS_MS_KEY = 'FIGMA_AGENT_APP_READINESS_MS';
+const PLUGIN_WAIT_MS_KEY = 'FIGMA_AGENT_PLUGIN_WAIT_MS';
 
 let scratchDir: string;
 let advertisePath: string;
 let scratchLogFile: string;
 let sockets: WebSocket[];
 let priorAppReadinessMs: string | undefined;
+let priorPluginWaitMs: string | undefined;
 
 async function loadBrokerDaemon(env: Record<string, string> = {}): Promise<BrokerDaemonModule> {
   process.env[CHANGES_DIR_KEY] = scratchDir;
@@ -81,6 +83,26 @@ function nextFrame<T extends WireMsg | EventMsg>(ws: WebSocket, predicate?: (m: 
   });
 }
 
+function nextFrameByDeadline<T extends WireMsg | EventMsg>(
+  ws: WebSocket, predicate: (m: WireMsg) => boolean, deadlineMs: number,
+): Promise<T | undefined> {
+  return new Promise((resolvePromise) => {
+    const handler = (raw: WebSocket.RawData): void => {
+      const msg = JSON.parse(raw.toString()) as WireMsg;
+      if (predicate(msg)) {
+        clearTimeout(timer);
+        ws.off('message', handler);
+        resolvePromise(msg as T);
+      }
+    };
+    const timer = setTimeout(() => {
+      ws.off('message', handler);
+      resolvePromise(undefined);
+    }, deadlineMs);
+    ws.on('message', handler);
+  });
+}
+
 interface EditInputLike {
   op: 'created' | 'updated' | 'deleted';
   nodeId: string;
@@ -127,6 +149,7 @@ function sendCowork(
 
 beforeEach(() => {
   priorAppReadinessMs = process.env[APP_READINESS_MS_KEY];
+  priorPluginWaitMs = process.env[PLUGIN_WAIT_MS_KEY];
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-cowork-harness-'));
   advertisePath = join(scratchDir, 'broker.json');
   scratchLogFile = join(scratchDir, 'broker.log');
@@ -143,6 +166,8 @@ afterEach(async () => {
   rmSync(scratchDir, { recursive: true, force: true });
   if (priorAppReadinessMs === undefined) delete process.env[APP_READINESS_MS_KEY];
   else process.env[APP_READINESS_MS_KEY] = priorAppReadinessMs;
+  if (priorPluginWaitMs === undefined) delete process.env[PLUGIN_WAIT_MS_KEY];
+  else process.env[PLUGIN_WAIT_MS_KEY] = priorPluginWaitMs;
 });
 
 describe('cowork — application readiness is checked before waiter creation', () => {
@@ -239,7 +264,9 @@ describe('cowork — application readiness is checked before waiter creation', (
 
 describe('cowork — raw target validation and missing-target refusal', () => {
   it('rejects blank, padded, non-string, and selector-conflicting targetFileKey values', async () => {
-    const port = await startTestBroker();
+    // The broker's park sweep is min(500ms, pluginWait/8); 800ms gives a 100ms
+    // sweep, so the no-second-reply observation covers at least two intervals.
+    const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '800' });
     const plugin = await connectSocket(port);
     await helloPlugin(plugin, 'inst-cw-validation', 'Cowork Validation', 'raw-cowork-validation');
     const cli = await connectSocket(port);
@@ -261,6 +288,17 @@ describe('cowork — raw target validation and missing-target refusal', () => {
         ...frame,
       }));
       expect((await replyPromise).error.code).toBe('E_INVALID_ARGS');
+
+      const noSecondReply = nextFrameByDeadline<ReplyErr>(
+        cli, (reply) => (reply as ReplyErr).id === frame.id, 250,
+      );
+      sendEditFeed(plugin, [ownerEdit(`${frame.id}:live`)], {
+        fileKey: 'raw-cowork-validation', fileName: 'Cowork Validation', source: 'live',
+      });
+      sendEditFeed(plugin, [ownerEdit(`${frame.id}:gapfill`)], {
+        fileKey: 'raw-cowork-validation', fileName: 'Cowork Validation', source: 'gapfill',
+      });
+      expect(await noSecondReply).toBeUndefined();
     }
   });
 

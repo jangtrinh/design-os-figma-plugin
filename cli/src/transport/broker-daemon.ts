@@ -1615,7 +1615,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // unless the requester passes `--force`: freeing its slot while its script may still
       // be mid-mutation lets the NEXT queued mutation dispatch into the same file while the
       // first is still executing — genuinely concurrent writes. A watchdog-wedged job
-      // (`state !== 'running'`, because the watchdog already called `finish()`) is not
+      // (`state !== 'running'`, because the watchdog already called `finishHeld()`) is not
       // healthy and keeps unwedging with a bare `--force-release`, exactly as before.
       const now = Date.now();
       const override = params?.override === true;
@@ -1633,12 +1633,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // still `running` (the watchdog may not have fired yet), then advance the queue —
       // never automatic, and the message states plainly that a later reply is discarded.
       if (rec.state === 'running') {
-        rec.forceReleased = true;
-        st.jobs.finish(jobId, false, [errReplyFrame(rec.requestId, 'E_TIMEOUT',
-          'force-released — the script may still be running; its result (if any) is discarded and unverified')]);
+        if (!st.jobs.finishHeld(jobId, false, [errReplyFrame(rec.requestId, 'E_TIMEOUT',
+          'force-released — the script may still be running; its result (if any) is discarded and unverified')])) {
+          const reason = `job '${jobId}' could not be recorded as a held terminal before release`;
+          log(`invariant failure: ${reason}`);
+          sendReplyErr(ws, msg.id, 'E_PLUGIN_ERROR', reason);
+          return;
+        }
         recordContention(rec);
-      } else if (rec.state !== 'outcome-unknown') {
-        rec.forceReleased = true;
       }
       // Stage-4 fix round (M4, ruling Q1) — "discarded means discarded": if the wedged
       // script DOES eventually reply, `routeFromPlugin` must not forward it to a CLI that
@@ -1654,6 +1656,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // bounded retention applies.
       if (priorState === 'outcome-unknown' && !st.jobs.settleOutcomeUnknownRelease(jobId)) {
         const reason = `job '${jobId}' slot was released, but unknown-outcome retention settlement failed`;
+        log(`invariant failure: ${reason}`);
+        sendReplyErr(ws, msg.id, 'E_PLUGIN_ERROR', reason);
+        return;
+      }
+      if (priorState !== 'outcome-unknown' && !st.jobs.settleHeldTerminalRelease(jobId)) {
+        const reason = `job '${jobId}' slot was released, but terminal retention settlement failed`;
         log(`invariant failure: ${reason}`);
         sendReplyErr(ws, msg.id, 'E_PLUGIN_ERROR', reason);
         return;
@@ -1859,7 +1867,21 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // the pinned reservation/waiting-list scans after registry removal below.
       const job = st.jobs.byRequestId(id);
       if (job) {
-        if (job.state === 'running' && !job.readOnly) {
+        if (job.retentionHeld === true) {
+          if (client) sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
+          const q = st.queues.get(job.fileSlug);
+          if (q?.running !== job.jobId) {
+            log(`invariant failure: held job ${job.jobId} disconnected without owning "${job.fileSlug}"'s mutation slot`);
+          } else {
+            // The watchdog already recorded this job's E_TIMEOUT and contention once.
+            // Close is the second, audited release path: remove the live queue owner
+            // first, then make the preserved evidence retention-eligible from now.
+            drainFileQueue(job.fileSlug, job.jobId);
+            if (!st.jobs.settleHeldTerminalRelease(job.jobId)) {
+              log(`invariant failure: held job ${job.jobId} disconnected after queue release but retention settlement failed`);
+            }
+          }
+        } else if (job.state === 'running' && !job.readOnly) {
           const reason = 'plugin transport disconnected after dispatch';
           if (st.jobs.markOutcomeUnknown(job.jobId, reason)) {
             recordContention(job);
@@ -2388,7 +2410,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (job.startedAt === undefined || now - job.startedAt < WATCHDOG_TIMEOUT_MS) continue;
       const msg = `no reply within ${WATCHDOG_TIMEOUT_MS}ms — the script may still be running; ` +
         `this file's mutation slot stays blocked until 'figma-agent job ${job.jobId} --force-release'`;
-      st.jobs.finish(job.jobId, false, [errReplyFrame(job.requestId, 'E_TIMEOUT', msg)]);
+      st.jobs.finishHeld(job.jobId, false, [errReplyFrame(job.requestId, 'E_TIMEOUT', msg)]);
       recordContention(job);
       log(`watchdog: job ${job.jobId} (${job.cmd}) timed out — slot for "${job.fileSlug}" stays blocked`);
       // Deliberately do not drain here — see the comment above.

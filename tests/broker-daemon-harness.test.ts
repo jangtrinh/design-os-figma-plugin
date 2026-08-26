@@ -28,6 +28,7 @@ import WebSocket from 'ws';
 import { makeRequestFrame } from '../shared/protocol.ts';
 import type { EventMsg, JobInfo, ReplyErr, ReplyOk, WireMsg } from '../shared/protocol.ts';
 import type { ContentionStore } from '../cli/src/transport/contention-log.ts';
+import { JOB_TTL_MS } from '../cli/src/transport/job-table.ts';
 import { envMs } from '../cli/src/transport/protocol-helpers.ts';
 
 // Scoped to THIS file only (vitest's own default 5_000ms stays the ceiling everywhere
@@ -980,6 +981,58 @@ describe('daemon harness — a watchdog-failed job answered late returns the tim
     expect(parsed.ok).toBe(false);
     expect(parsed.error.code).toBe('E_TIMEOUT');
   });
+
+  it('releases a watchdog-held slot once on transport close without fabricating a late reply, then expires it from release time', async () => {
+    let controlledNow = 1_000_000;
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => controlledNow);
+    try {
+      const port = await startTestBroker({ [WATCHDOG_MS_KEY]: '150', [PLUGIN_WAIT_MS_KEY]: '800' });
+      const plugin = await connectSocket(port);
+      await helloPlugin(plugin, 'plugin-watchdog-close', 'Watchdog Close', 'RawWatchdogClose');
+      const pluginFrames = collectFrames(plugin);
+      const cliA = await connectSocket(port);
+      const jobA = await sendMutatingJob(cliA, 'req-watchdog-close-a');
+      await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-watchdog-close-a'));
+
+      const cliB = await connectSocket(port);
+      const jobB = await sendMutatingJob(cliB, 'req-watchdog-close-b');
+      controlledNow += 151;
+      await waitFor(async () => (await pollJob(cliA, jobA, 'req-watchdog-close-watchdog')).job.state === 'failed');
+
+      const held = await pollJob(cliA, jobA, 'req-watchdog-close-held');
+      expect(held.resultFrames).toHaveLength(1);
+      expect(JSON.parse(held.resultFrames![0]!) as ReplyErr).toMatchObject({
+        ok: false,
+        error: { code: 'E_TIMEOUT' },
+      });
+      expect(held.lateReplyCount).toBeUndefined();
+
+      const closeA = nextFrame<ReplyErr>(cliA, (m) => (m as ReplyErr).id === 'req-watchdog-close-a');
+      const closeB = nextFrame<ReplyErr>(cliB, (m) => (m as ReplyErr).id === 'req-watchdog-close-b');
+      plugin.terminate();
+      expect((await closeA).error.code).toBe('E_NO_PLUGIN');
+      expect((await closeB).error.code).toBe('E_NO_PLUGIN');
+
+      const afterClose = await pollJob(cliA, jobA, 'req-watchdog-close-after');
+      expect(afterClose.resultFrames).toEqual(held.resultFrames);
+      expect(afterClose.lateReplyCount).toBeUndefined();
+      expect((await pollJob(cliB, jobB, 'req-watchdog-close-b-after')).job.state).toBe('failed');
+      expect(pluginFrames.frames.filter((f) => (f as { id?: string }).id === 'req-watchdog-close-b')).toHaveLength(0);
+
+      const contentionPath = join(scratchDir, 'figma-contention.json');
+      await waitFor(() => existsSync(contentionPath));
+      const contention = JSON.parse(readFileSync(contentionPath, 'utf8')) as ContentionStore;
+      expect(Object.values(contention.RawWatchdogClose!)[0]!.jobCount).toBe(2);
+
+      controlledNow += JOB_TTL_MS + 1;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const expired = nextFrame<ReplyErr>(cliA, (m) => (m as ReplyErr).id === 'req-watchdog-close-expired');
+      cliA.send(JSON.stringify(makeRequestFrame('req-watchdog-close-expired', 'JOB', { mode: 'poll', jobId: jobA })));
+      expect((await expired).error.code).toBe('E_JOB_EXPIRED');
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
 });
 
 describe('daemon harness — EDIT_FEED routes through the binding index, never the broker\'s spawn cwd (backlog 5.7)', () => {
@@ -1521,7 +1574,15 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
   });
 
   it('unfiltered routing with two unready plugins probes one deterministic target and returns bounded E_APP_UNREADY', async () => {
-    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200', [PLUGIN_WAIT_MS_KEY]: '500' });
+    const readinessLeaseMs = 200;
+    const pluginWaitMs = 500;
+    // The response is driven by the broker's readiness waiter, not this harness's
+    // unrelated 20s observation ceiling. Retain room for one contended event-loop turn.
+    const schedulingToleranceMs = 3_000;
+    const port = await startTestBroker({
+      [APP_READINESS_MS_KEY]: String(readinessLeaseMs),
+      [PLUGIN_WAIT_MS_KEY]: String(pluginWaitMs),
+    });
     const pluginA = await connectSocket(port);
     await helloPlugin(pluginA, 'plugin-all-unready-a', 'All Unready A', 'Raw-All-Unready-A', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
     const pluginB = await connectSocket(port);
@@ -1536,7 +1597,7 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     cli.send(JSON.stringify(makeRequestFrame('req-all-unready', 'GET_SELECTION', {})));
 
     expect((await timedOut).error.code).toBe('E_APP_UNREADY');
-    expect(Date.now() - startedAt).toBeLessThan(HARNESS_WAIT_TIMEOUT_MS);
+    expect(Date.now() - startedAt).toBeLessThanOrEqual(pluginWaitMs + schedulingToleranceMs);
     expect(framesA.frames.filter((frame) => (frame as EventMsg).type === 'APP_PROBE')).toHaveLength(0);
     expect(framesB.frames.filter((frame) => (frame as EventMsg).type === 'APP_PROBE')).toHaveLength(1);
     expect(framesA.frames.filter((frame) => (frame as { id?: string }).id === 'req-all-unready')).toHaveLength(0);
@@ -1671,6 +1732,49 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     expect(completedA.lateReplyCount).toBeUndefined();
   });
 
+  it('keeps a dispatched mutation running after its open socket readiness lease expires, then accepts the pinned reply and advances once', async () => {
+    const readinessLeaseMs = 200;
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: String(readinessLeaseMs) });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'plugin-open-socket-expiry', 'Open Socket Expiry', 'Raw-Open-Socket-Expiry', [
+      'fileGuard', 'correlatedHeartbeatV1', 'appProbeV1',
+    ]);
+    const pluginFrames = collectFrames(plugin);
+    const cliA = await connectSocket(port);
+    const jobA = await sendMutatingJob(cliA, 'req-open-socket-expiry-a');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-open-socket-expiry-a'));
+    const cliB = await connectSocket(port);
+    const jobB = await sendMutatingJob(cliB, 'req-open-socket-expiry-b');
+
+    // No WebSocket close: application readiness may age out, but its in-flight reply
+    // route remains pinned to this still-open plugin instance.
+    await new Promise((resolve) => setTimeout(resolve, readinessLeaseMs + 50));
+    const { hello: staleHello } = await connectAndAwaitBrokerHello(port);
+    const stalePlugin = (staleHello.data as { plugins: Array<{ instanceId: string; state: string; appReadinessAge: number; runningJob?: JobInfo }> })
+      .plugins.find((entry) => entry.instanceId === 'plugin-open-socket-expiry');
+    expect(stalePlugin).toMatchObject({
+      state: 'connected', runningJob: { jobId: jobA, state: 'running' },
+    });
+    expect(stalePlugin?.appReadinessAge).toBeGreaterThan(readinessLeaseMs);
+    expect((await pollJob(cliA, jobA, 'req-open-socket-expiry-poll-a-stale')).job.state).toBe('running');
+    expect((await pollJob(cliB, jobB, 'req-open-socket-expiry-poll-b-stale')).job.state).toBe('queued');
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'req-open-socket-expiry-a')).toHaveLength(1);
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'req-open-socket-expiry-b')).toHaveLength(0);
+
+    const completed = nextFrame<ReplyOk>(cliA, (frame) => (frame as ReplyOk).id === 'req-open-socket-expiry-a');
+    plugin.send(JSON.stringify({ id: 'req-open-socket-expiry-a', ok: true, result: { settled: true } } satisfies ReplyOk));
+    expect((await completed).result).toEqual({ settled: true });
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-open-socket-expiry-b'));
+
+    const settledA = await pollJob(cliA, jobA, 'req-open-socket-expiry-poll-a-settled');
+    expect(settledA.job).toMatchObject({ jobId: jobA, state: 'done' });
+    expect(settledA.job.state).not.toBe('outcome-unknown');
+    expect(settledA.lateReplyCount).toBeUndefined();
+    expect((await pollJob(cliB, jobB, 'req-open-socket-expiry-poll-b-running')).job.state).toBe('running');
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'req-open-socket-expiry-a')).toHaveLength(1);
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === 'req-open-socket-expiry-b')).toHaveLength(1);
+  });
+
   it('force-release reserves once; cancel beats deadline and stale-generation ACK while the next deadline drains once', async () => {
     const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200', [PLUGIN_WAIT_MS_KEY]: '100' });
     const plugin = await connectSocket(port);
@@ -1780,6 +1884,7 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     const polledA = await pollJob(cliA, jobA, 'req-fr2-poll-a');
     expect(polledA.job.state).toBe('failed');
     await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr2-b'));
+    expect(pluginFrames.frames.filter((f) => (f as { id?: string }).id === 'req-fr2-b')).toHaveLength(1);
     const polledB = await pollJob(cliB, jobB, 'req-fr2-poll-b');
     expect(polledB.job.state).toBe('running');
   });
@@ -1804,6 +1909,11 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
 
     const cliB = await connectSocket(port);
     const jobB = await sendMutatingJob(cliB, 'req-fr3-b'); // QUEUED — slot still held by wedged job A
+    expect((await pollJob(cliA, jobA, 'req-fr3-poll-held')).job).toMatchObject({
+      jobId: jobA,
+      state: 'failed',
+    });
+    expect((await pollJob(cliB, jobB, 'req-fr3-poll-queued')).job.state).toBe('queued');
 
     cliA.send(JSON.stringify(makeRequestFrame('req-fr3-release', 'JOB', { mode: 'force-release', jobId: jobA })));
     const reply = await nextFrame<ReplyOk>(cliA, (m) => (m as ReplyOk).id === 'req-fr3-release');
@@ -1811,6 +1921,7 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     expect((reply.result as { ok: boolean }).ok).toBe(true); // allowed WITHOUT --force — the legitimate unwedge path, unregressed
 
     await waitFor(() => pluginFrames.frames.some((f) => (f as { id?: string }).id === 'req-fr3-b'));
+    expect(pluginFrames.frames.filter((f) => (f as { id?: string }).id === 'req-fr3-b')).toHaveLength(1);
     const polledB = await pollJob(cliB, jobB, 'req-fr3-poll-b');
     expect(polledB.job.state).toBe('running');
   });

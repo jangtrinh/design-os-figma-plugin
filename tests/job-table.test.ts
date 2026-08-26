@@ -83,6 +83,39 @@ describe('JobTable — the finished cap', () => {
     expect(t.byId(ids[ids.length - 1]!)).not.toBe('expired');
   });
 
+  it('does not cap-evict a watchdog-failed slot owner before its audited release', () => {
+    const t = new JobTable();
+    const held = t.create(input({ requestId: 'watchdog-held' }));
+    t.markRunning(held.jobId);
+    t.finishHeld(held.jobId, false, ['{"error":"E_TIMEOUT"}']);
+
+    for (let i = 0; i < JOB_FINISHED_CAP + 5; i++) {
+      const rec = t.create(input({ requestId: `finished-${i}` }));
+      t.finish(rec.jobId, true, ['{}']);
+    }
+
+    expect(t.byId(held.jobId)).toBe(held);
+    expect(t.summaryFor(held.fileSlug, held.jobId).running).toMatchObject({
+      jobId: held.jobId,
+      state: 'failed',
+    });
+  });
+
+  it('cap-evicts a released watchdog-failed record normally', () => {
+    const t = new JobTable();
+    const held = t.create(input({ requestId: 'watchdog-released' }));
+    t.markRunning(held.jobId);
+    t.finishHeld(held.jobId, false, ['{"error":"E_TIMEOUT"}']);
+    expect(t.settleHeldTerminalRelease(held.jobId)).toBe(true);
+
+    for (let i = 0; i < JOB_FINISHED_CAP; i++) {
+      const rec = t.create(input({ requestId: `finished-after-release-${i}` }));
+      t.finish(rec.jobId, true, ['{}']);
+    }
+
+    expect(t.byId(held.jobId)).toBe('expired');
+  });
+
   it('never evicts a queued or running job to enforce the cap', () => {
     const t = new JobTable();
     const running = t.create(input({ requestId: 'keep-me' }));
@@ -170,6 +203,31 @@ describe('JobTable — summaryFor (per-file view for `status`)', () => {
     const summaryIdle = t.summaryFor('fileC', null);
     expect(summaryIdle.running).toBeNull();
     expect(summaryIdle.queueDepth).toBe(0);
+  });
+
+  it('does not TTL-evict a watchdog-failed slot owner, then starts retention from audited release time', () => {
+    const c = clock(100);
+    const t = new JobTable(c.now);
+    const held = t.create(input({ requestId: 'watchdog-held' }));
+    t.markRunning(held.jobId);
+    t.finishHeld(held.jobId, false, ['{"error":"E_TIMEOUT"}']);
+
+    c.advance(JOB_TTL_MS * 2);
+    expect(t.sweep()).toBe(0);
+    expect(t.byId(held.jobId)).toBe(held);
+    expect(t.summaryFor(held.fileSlug, held.jobId).running).toMatchObject({
+      jobId: held.jobId,
+      state: 'failed',
+    });
+
+    const releasedAt = c.now();
+    expect(t.settleHeldTerminalRelease(held.jobId)).toBe(true);
+    expect(held.finishedAt).toBe(releasedAt);
+    c.advance(JOB_TTL_MS - 1);
+    expect(t.sweep()).toBe(0);
+    c.advance(2);
+    expect(t.sweep()).toBe(1);
+    expect(t.byId(held.jobId)).toBe('expired');
   });
 
   it('a watchdog-timed-out job (state now "failed") still reports as running when the CALLER\'s queue pointer says so', () => {
