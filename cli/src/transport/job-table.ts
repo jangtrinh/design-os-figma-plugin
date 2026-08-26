@@ -12,7 +12,7 @@
 // The daemon (broker-daemon.ts) owns the single instance and is the only caller that
 // ever touches a real WebSocket.
 import type WebSocket from 'ws';
-import type { JobInfo } from '../../../shared/protocol.ts';
+import type { JobInfo, JobRecovery } from '../../../shared/protocol.ts';
 
 export const JOB_TTL_MS = 10 * 60_000;               // finished results stay retrievable this long — BEST EFFORT
 export const JOB_FINISHED_CAP = 200;                 // hard cap on FINISHED records; live jobs are NEVER capped
@@ -28,10 +28,27 @@ export function isFinishedState(state: JobInfo['state']): boolean {
   return FINISHED_STATES.has(state);
 }
 
+export function isPollSettledState(state: JobInfo['state']): boolean {
+  return isFinishedState(state) || state === 'outcome-unknown';
+}
+
+export function isReplyDiscardState(state: JobInfo['state']): boolean {
+  return isPollSettledState(state);
+}
+
+function recoveryFor(jobId: string): JobRecovery {
+  return {
+    kind: 'inspect-and-force-release',
+    command: `figma-agent job ${jobId} --force-release`,
+    requiresCanvasInspection: true,
+    retryAllowed: false,
+  };
+}
+
 /**
  * Whether a job is a HEALTHY, still-running slot holder — the watchdog has not (yet)
  * declared it wedged. A job the watchdog already timed out has `state !== 'running'`
- * (the watchdog calls `finish()`) even though it may still hold its file's mutation
+ * (the watchdog calls `finishHeld()`) even though it may still hold its file's mutation
  * slot; that job is NOT healthy, and force-releasing it is the legitimate unwedge path.
  * Only a job still genuinely `running`, with a `startedAt` inside the watchdog window,
  * counts as healthy — the one case `job --force-release` (without `--force`) must refuse.
@@ -94,6 +111,10 @@ export interface JobRecord extends JobInfo {
    * it waited.
    */
   targetInstanceId: string;
+  /** Immutable raw identity and gate revision captured at admission for mutation
+   *  revalidation when this job eventually owns the FIFO slot. */
+  targetFileKey?: string;
+  admissionRevision?: number;
   /** Reply frame(s), verbatim and in order (a chunked reply arrives as many). */
   replyFrames: string[];
   readOnly: boolean;
@@ -103,8 +124,12 @@ export interface JobRecord extends JobInfo {
    * *why* the result is gone rather than returning nothing.
    */
   resultDropped?: boolean;
-  /** Set by `job <id> --force-release` (phase 02) — an audited override, never automatic. */
+  /** Set after an audited command or transport-close path safely releases the held slot. */
   forceReleased?: boolean;
+  /** Internal only: terminal evidence for a mutation slot that remains live. It is not
+   *  retention-eligible until the daemon's audited release has synchronously removed
+   *  that slot from its file queue. */
+  retentionHeld?: boolean;
   /** Internal only (never serialized onto the wire — see `toJobInfo`): when this record
    *  was created, the basis `queuedMs` is measured from. */
   createdAt: number;
@@ -130,6 +155,9 @@ export function toJobInfo(rec: JobRecord): JobInfo {
   if (rec.queuedMs !== undefined) info.queuedMs = rec.queuedMs;
   if (rec.startedAt !== undefined) info.startedAt = rec.startedAt;
   if (rec.finishedAt !== undefined) info.finishedAt = rec.finishedAt;
+  if (rec.dispatchState !== undefined) info.dispatchState = rec.dispatchState;
+  if (rec.uncertaintyReason !== undefined) info.uncertaintyReason = rec.uncertaintyReason;
+  if (rec.recovery !== undefined) info.recovery = rec.recovery;
   return info;
 }
 
@@ -148,6 +176,8 @@ export interface CreateJobInput {
   requestFrames: string[];
   from: WebSocket | null;
   targetInstanceId: string;
+  targetFileKey?: string;
+  admissionRevision?: number;
 }
 
 export class JobTable {
@@ -182,6 +212,8 @@ export class JobTable {
       requestFrames: input.requestFrames,
       from: input.from,
       targetInstanceId: input.targetInstanceId,
+      ...(input.targetFileKey !== undefined && { targetFileKey: input.targetFileKey }),
+      ...(input.admissionRevision !== undefined && { admissionRevision: input.admissionRevision }),
       replyFrames: [],
       readOnly: input.readOnly,
       createdAt: this.now(),
@@ -193,13 +225,55 @@ export class JobTable {
 
   /** Stamps `queuedMs` from `createdAt` — the evidence for the subtree-lock upgrade
    *  trigger (locked decision 6: revisit only when this measures > 5 min/day for real). */
-  markRunning(jobId: string): void {
+  markDispatchReserved(jobId: string): boolean {
     const rec = this.jobs.get(jobId);
-    if (!rec) return;
+    if (!rec || rec.state !== 'queued') return false;
+    rec.dispatchState = 'queued-not-dispatched-readiness-wait';
+    delete rec.queuePosition;
+    return true;
+  }
+
+  transitionQueuedToRunning(jobId: string): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'queued') return false;
     rec.state = 'running';
     rec.startedAt = this.now();
     rec.queuedMs = rec.startedAt - rec.createdAt;
     delete rec.queuePosition;
+    delete rec.dispatchState;
+    return true;
+  }
+
+  /** Compatibility wrapper for existing callers/tests; new daemon dispatch paths use
+   *  the guarded boolean transition directly. */
+  markRunning(jobId: string): void {
+    this.transitionQueuedToRunning(jobId);
+  }
+
+  /** Only an actually-running dispatch can lose a reply channel after execution may start. */
+  markOutcomeUnknown(jobId: string, reason: string): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'running') return false;
+    rec.state = 'outcome-unknown';
+    rec.uncertaintyReason = reason;
+    rec.recovery = recoveryFor(jobId);
+    return true;
+  }
+
+  /**
+   * Make an inspected unknown outcome retention-eligible after its queue slot is released.
+   * The daemon must call this only after synchronously removing the live queue pointer.
+   */
+  settleOutcomeUnknownRelease(jobId: string): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'outcome-unknown' || rec.forceReleased === true) return false;
+    rec.forceReleased = true;
+    rec.finishedAt = this.now();
+    delete rec.recovery;
+    this.finishedOrder.push(jobId);
+    this.enforceFinishedCap();
+    this.enforceByteBudget();
+    return true;
   }
 
   /**
@@ -221,16 +295,50 @@ export class JobTable {
   finish(jobId: string, ok: boolean, rawReply: string[]): void {
     const rec = this.jobs.get(jobId);
     if (!rec) return;
-    if (FINISHED_STATES.has(rec.state)) {
+    if (isReplyDiscardState(rec.state)) {
       rec.lateReplyCount = (rec.lateReplyCount ?? 0) + 1;
       return;
     }
     rec.state = ok ? 'done' : 'failed';
     rec.finishedAt = this.now();
     rec.replyFrames = rawReply;
+    delete rec.dispatchState;
     this.finishedOrder.push(jobId);
     this.enforceFinishedCap();
     this.enforceByteBudget();
+  }
+
+  /**
+   * Record a watchdog timeout (or an explicit override) while the file queue still owns
+   * this job. The terminal outcome remains pollable, but cannot enter TTL/cap/frame
+   * retention yet: evicting it would orphan the queue's live owner id. Only the daemon's
+   * audited release may call `settleHeldTerminalRelease` after draining that queue.
+   */
+  finishHeld(jobId: string, ok: boolean, rawReply: string[]): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'running') return false;
+    rec.state = ok ? 'done' : 'failed';
+    rec.finishedAt = this.now();
+    rec.replyFrames = rawReply;
+    rec.retentionHeld = true;
+    delete rec.dispatchState;
+    return true;
+  }
+
+  /**
+   * Enroll a previously-held terminal record only after its queue owner was synchronously
+   * released. TTL starts here rather than at the watchdog/override observation time.
+   */
+  settleHeldTerminalRelease(jobId: string): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.retentionHeld !== true || !isFinishedState(rec.state)) return false;
+    rec.forceReleased = true;
+    rec.finishedAt = this.now();
+    delete rec.retentionHeld;
+    this.finishedOrder.push(jobId);
+    this.enforceFinishedCap();
+    this.enforceByteBudget();
+    return true;
   }
 
   /** Refuses a RUNNING job — the sandbox cannot interrupt a live `eval`. */
@@ -241,15 +349,23 @@ export class JobTable {
       return { ok: false, reason: 'the plugin sandbox cannot interrupt a running script — only a QUEUED job can be cancelled' };
     }
     if (rec.state !== 'queued') return { ok: false, reason: `job is already ${rec.state}` };
-    rec.state = 'cancelled';
+    return this.settleQueued(jobId, 'cancelled', replyFrames) ? { ok: true } : { ok: false, reason: `job is already ${rec.state}` };
+  }
+
+  /** Known-not-dispatched settlement. It can never overwrite running or terminal work. */
+  settleQueued(jobId: string, state: 'failed' | 'cancelled', replyFrames: string[]): boolean {
+    const rec = this.jobs.get(jobId);
+    if (!rec || rec.state !== 'queued') return false;
+    rec.state = state;
     rec.finishedAt = this.now();
     rec.queuedMs = rec.finishedAt - rec.createdAt;
     rec.replyFrames = replyFrames;
     delete rec.queuePosition;
+    delete rec.dispatchState;
     this.finishedOrder.push(jobId);
     this.enforceFinishedCap();
     this.enforceByteBudget();
-    return { ok: true };
+    return true;
   }
 
   /** Three answers, not two: `'expired'` (aged out / capped) is a different fact from
@@ -280,13 +396,16 @@ export class JobTable {
    * Wire-safe (`toJobInfo`) — `running` must never carry the record's own `from`
    * WebSocket onto a JSON envelope.
    */
-  summaryFor(fileSlug: string, runningJobId: string | null): { running: JobInfo | null; queueDepth: number } {
-    const runningRec = runningJobId !== null ? this.jobs.get(runningJobId) : undefined;
-    let queueDepth = 0;
-    for (const rec of this.jobs.values()) {
-      if (rec.fileSlug === fileSlug && rec.state === 'queued') queueDepth++;
-    }
-    return { running: runningRec ? toJobInfo(runningRec) : null, queueDepth };
+  summaryFor(
+    _fileSlug: string,
+    queue: { slotOwnerId: string | null; waitingDepth: number } | string | null,
+  ): { running: JobInfo | null; queueDepth: number } {
+    const slotOwnerId = typeof queue === 'object' && queue !== null ? queue.slotOwnerId : queue;
+    const runningRec = slotOwnerId !== null ? this.jobs.get(slotOwnerId) : undefined;
+    const waitingDepth = typeof queue === 'object' && queue !== null
+      ? queue.waitingDepth
+      : [...this.jobs.values()].filter((rec) => rec.fileSlug === _fileSlug && rec.state === 'queued' && rec.jobId !== slotOwnerId).length;
+    return { running: runningRec ? toJobInfo(runningRec) : null, queueDepth: waitingDepth };
   }
 
   /** Every currently RUNNING job, across all files — the watchdog's own sweep target

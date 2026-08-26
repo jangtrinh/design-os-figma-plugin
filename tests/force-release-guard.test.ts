@@ -6,7 +6,21 @@
 // mechanics, advanceQueue) is exercised by the daemon harness (tests/broker-daemon-
 // harness.test.ts) instead, since it needs the real closures.
 import { describe, expect, it } from 'vitest';
-import { buildForceReleaseAuditLine } from '../cli/src/transport/broker-daemon.ts';
+import { buildForceReleaseAuditLine, reservedForceReleaseReason } from '../cli/src/transport/broker-daemon.ts';
+
+describe('reservedForceReleaseReason', () => {
+  it('refuses a reserved queued head with the exact cancel command', () => {
+    expect(reservedForceReleaseReason('j_1_1', 'queued', 'j_1_1')).toBe(
+      "job 'j_1_1' is queued and has not been dispatched; use: figma-agent job j_1_1 --cancel",
+    );
+  });
+
+  it('does not classify waiting, running, or terminal jobs as reserved', () => {
+    expect(reservedForceReleaseReason('j_1_1', 'queued', 'j_other')).toBeNull();
+    expect(reservedForceReleaseReason('j_1_1', 'running', 'j_1_1')).toBeNull();
+    expect(reservedForceReleaseReason('j_1_1', 'failed', 'j_1_1')).toBeNull();
+  });
+});
 
 describe('buildForceReleaseAuditLine — the requester is never silent', () => {
   it('includes the requester\'s activity label', () => {
@@ -26,5 +40,13 @@ describe('buildForceReleaseAuditLine — the requester is never silent', () => {
     const bare = buildForceReleaseAuditLine('j_1_1', 'EXEC_JS', 'fileA', false, 'Force-release · j_1_1');
     expect(overridden).toContain('--force override');
     expect(bare).not.toContain('--force override');
+  });
+
+  it('records outcome-unknown as the inspected prior state', () => {
+    const line = buildForceReleaseAuditLine(
+      'j_1_1', 'EXEC_JS', 'fileA', false, 'Inspect then force-release', 'outcome-unknown',
+    );
+    expect(line).toContain('[outcome-unknown]');
+    expect(line).toContain('Inspect then force-release');
   });
 });

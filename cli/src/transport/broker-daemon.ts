@@ -12,9 +12,9 @@ import { join } from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
   BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, COWORK_MAX_TIMEOUT_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS,
-  LOOPBACK_HOST, PLUGIN_WAIT_MS, PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
-  type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type ReplyErr, type ReplyOk, type RequestMsg,
-  type WireMsg,
+  LOOPBACK_HOST, PLUGIN_PONG_TIMEOUT_MS, PLUGIN_WAIT_MS, PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
+  type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type JobRecovery, type ReplyErr, type ReplyOk,
+  type RequestMsg, type WireMsg,
 } from '../../../shared/protocol.ts';
 import {
   cleanupOrphanedAdvertisementTempFiles, isPidAlive, readAdvertisement, selfBuildMtime, writeAdvertisement,
@@ -23,7 +23,7 @@ import {
   ChunkAssembler, deleteConnectionChunk, envMs, getConnectionChunks, isChunkMsg, isEventMsg, isReplyMsg, isRequestMsg,
   parseWireMsg, rawToString, sendWireMsg, sweepAbandonedChunks, type ChunkBuffers,
 } from './protocol-helpers.ts';
-import { PluginRegistry, suspectedZombie, type PluginEntry } from './plugin-registry.ts';
+import { PluginRegistry, appReadiness, suspectedZombie, type PluginEntry } from './plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage } from './broker-status.ts';
 import { MutationAdmissionGate, mutationGatePathFor } from './mutation-admission-gate.ts';
 import { durableFileKey, exactTargetFileKey } from './file-identity.ts';
@@ -49,7 +49,8 @@ import {
   resolveProjectDir, writeBindCache, writeBindMarker, type Binding,
 } from './project-bind.ts';
 import {
-  JobTable, isFinishedState, isHealthyRunningJob, isReplyFromDispatchedInstance, toJobInfo, type JobRecord,
+  JobTable, isFinishedState, isHealthyRunningJob, isReplyDiscardState, isReplyFromDispatchedInstance, toJobInfo,
+  type JobRecord,
 } from './job-table.ts';
 import { createWaiter as createCoworkWaiter, onEdits as feedCoworkWaiter, tick as tickCoworkWaiter, type CoworkWaiterState } from './cowork-waiter.ts';
 import {
@@ -75,6 +76,7 @@ let activeLogFile: string = LOG_FILE;
 const IDLE_SHUTDOWN_MS = envMs('FIGMA_AGENT_IDLE_SHUTDOWN_MS', BROKER_IDLE_SHUTDOWN_MS);
 const HEARTBEAT_MS = envMs('FIGMA_AGENT_HEARTBEAT_MS', HEARTBEAT_INTERVAL_MS);
 const PLUGIN_WAIT_TIMEOUT_MS = envMs('FIGMA_AGENT_PLUGIN_WAIT_MS', PLUGIN_WAIT_MS);
+const APP_READINESS_LEASE_MS = envMs('FIGMA_AGENT_APP_READINESS_MS', PLUGIN_PONG_TIMEOUT_MS);
 // Idle check cadence scales with the (possibly shrunk) idle window so a 5s test
 // override actually fires within a few seconds, not the fixed 60s of production.
 const IDLE_CHECK_MS = Math.min(60_000, Math.max(500, Math.floor(IDLE_SHUTDOWN_MS / 3)));
@@ -138,10 +140,26 @@ interface ParkedRequest {
   activity?: string;
   /** Exact raw assertion captured before a mutation parks; never inferred at flush. */
   targetFileKey?: string;
+  /** Original caller selector; distinct from the observed mutation key above. */
+  requestedTargetFileKey?: string;
   /** Target-local gate revision that was open when this parked mutation was admitted. */
   admissionRevision?: number;
   /** Audit timestamp of that parking admission; no durable parked job is ever created. */
   admittedAt?: number;
+  /** Set only after an exact live instance was resolved but lacked fresh app evidence. */
+  targetInstanceId?: string;
+  observedFileKey?: string | null;
+  readinessProbeId?: string;
+  awaitingReadiness?: true;
+}
+
+interface DispatchReservation {
+  generation: number;
+  targetInstanceId: string;
+  targetFileKey: string;
+  admissionRevision: number;
+  probeId?: string;
+  deadline?: number;
 }
 
 /**
@@ -206,6 +224,7 @@ interface BrokerState {
   // request. Broker-terminal (never forwarded, never queued) — same precedent as
   // `waiting` above, but fed by EDIT_FEED batches instead of plugin availability.
   coworkWaiters: CoworkWaiterEntry[];
+  dispatchReservations: Map<string, DispatchReservation>;
 }
 
 function log(line: string): void {
@@ -255,8 +274,14 @@ function replyOk(frames: readonly string[]): boolean {
   }
 }
 
-function sendReplyErr(ws: WebSocket, id: string, code: ErrorCode, message: string): void {
-  const reply: ReplyErr = { id, ok: false, error: { code, message } };
+function sendReplyErr(
+  ws: WebSocket,
+  id: string,
+  code: ErrorCode,
+  message: string,
+  details?: { jobId?: string; recovery?: JobRecovery },
+): void {
+  const reply: ReplyErr = { id, ok: false, error: { code, message, ...details } };
   try {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(reply));
   } catch { /* client already gone */ }
@@ -281,9 +306,19 @@ function sendReplyOk(ws: WebSocket, id: string, result: unknown): void {
  */
 export function buildForceReleaseAuditLine(
   jobId: string, cmd: string, fileSlug: string, override: boolean, activity: string | undefined,
+  priorState?: JobInfo['state'],
 ): string {
   const requester = activity ?? 'unlabeled request';
-  return `job ${jobId} (${cmd}) force-released${override ? ' via --force override' : ''} — requested by "${requester}" — "${fileSlug}"'s mutation slot freed; any later reply from that script is discarded`;
+  return `job ${jobId} (${cmd})${priorState ? ` [${priorState}]` : ''} force-released${override ? ' via --force override' : ''} — requested by "${requester}" — "${fileSlug}"'s mutation slot freed; any later reply from that script is discarded`;
+}
+
+/** A FIFO slot owner that has not sent is cancelled, never force-released. */
+export function reservedForceReleaseReason(
+  jobId: string, state: JobInfo['state'], slotOwnerId: string | null,
+): string | null {
+  return state === 'queued' && slotOwnerId === jobId
+    ? `job '${jobId}' is queued and has not been dispatched; use: figma-agent job ${jobId} --cancel`
+    : null;
 }
 
 /**
@@ -504,7 +539,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     bindIndex, knownProjectDirs: new Set(usableDirs),
     jobs: new JobTable(), queues: new Map(), pendingChunks: new Map(),
     awaitingReconnect: initialAwaitingReconnect,
-    coworkWaiters: [],
+    coworkWaiters: [], dispatchReservations: new Map(),
   };
   // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
   // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
@@ -530,6 +565,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // this daemon run (a closure local, not module-level) so it never leaks across daemon
   // instances started back-to-back within the same test process.
   let senderMismatchCount = 0;
+  let dispatchGeneration = 0;
+  let readinessProbeCounter = 0;
 
   // Live-sync idle-commit (spec 004 P4): the idle window sent to each plugin, and a
   // debounce so a double-click never launches two overlapping `ui figma reconcile
@@ -851,23 +888,6 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const errReplyFrame = (id: string, code: ErrorCode, message: string): string =>
     JSON.stringify({ id, ok: false, error: { code, message } } satisfies ReplyErr);
 
-  /** Finalize a not-yet-running mutation after a gate denial. The same stored frame is
-   * delivered live and remains available through JOB polling. */
-  const cancelQueuedForGate = (job: JobRecord, code: ErrorCode, message: string): boolean => {
-    const frame = errReplyFrame(job.requestId, code, message);
-    const result = st.jobs.cancelQueued(job.jobId, [frame]);
-    if (!result.ok) return false;
-    const q = st.queues.get(job.fileSlug);
-    if (q && q.running !== job.jobId) st.queues.set(job.fileSlug, removeFromQueue(q, job.jobId));
-    recordContention(job);
-    if (job.from && job.from.readyState === WebSocket.OPEN) {
-      try { job.from.send(frame); } catch { /* requester vanished */ }
-    }
-    st.pending.delete(job.requestId);
-    st.dispatchedTo.delete(job.requestId);
-    return true;
-  };
-
   /**
    * Write-through a finished job's `queuedMs` into its durable contention counter — the
    * ONE seam every `st.jobs.finish`/`cancelQueued` call site below routes through, right
@@ -891,6 +911,112 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     for (const frame of frames) ws.send(frame);
   };
 
+  const sendAppProbe = (ws: WebSocket, probeId: string): void => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    try { sendEvent(ws, 'APP_PROBE', { probeId }); } catch { /* close path settles ownership */ }
+  };
+
+  const nextReadinessProbeId = (): string => `ap_${++readinessProbeCounter}_${Date.now()}`;
+  const parseRequestedTargetFileKey = (targetFileKey: unknown): string | undefined | null =>
+    targetFileKey === undefined
+      ? undefined
+      : exactTargetFileKey(typeof targetFileKey === 'string' ? targetFileKey : null);
+  const pluginFileKey = (entry: PluginEntry<WebSocket>): string | null =>
+    durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null);
+  const isAppReady = (entry: PluginEntry<WebSocket>): boolean =>
+    appReadiness(entry, Date.now(), APP_READINESS_LEASE_MS).appReady === true;
+  const selectDispatchTarget = (
+    filter: RouteFilter, hits: PluginEntry<WebSocket>[],
+  ): PluginEntry<WebSocket> | null => filter.source === 'none'
+    ? hits.find(isAppReady) ?? hits[0] ?? null
+    : hits[0] ?? null;
+
+  type ReservationFailure = { state: 'failed'; code: ErrorCode; message: string } | { state: 'cancelled' };
+  type DispatchClaim =
+    | { kind: 'claimed'; job: JobRecord; targetWs: WebSocket }
+    | { kind: 'wait'; targetWs: WebSocket }
+    | { kind: 'failure'; failure: ReservationFailure }
+    | { kind: 'noop' };
+  const failedReservation = (code: ErrorCode, message: string): ReservationFailure =>
+    ({ state: 'failed', code, message });
+  const failedClaim = (code: ErrorCode, message: string): DispatchClaim =>
+    ({ kind: 'failure', failure: failedReservation(code, message) });
+
+  const claimDispatchReservation = (jobId: string, generation: number): DispatchClaim => {
+    const reservation = st.dispatchReservations.get(jobId);
+    if (!reservation || reservation.generation !== generation) return { kind: 'noop' };
+    const job = st.jobs.byId(jobId);
+    const q = job !== 'unknown' && job !== 'expired' ? st.queues.get(job.fileSlug) : undefined;
+    if (job === 'unknown' || job === 'expired' || job.state !== 'queued' || q?.running !== jobId) return { kind: 'noop' };
+    const entry = st.registry.getByInstanceId(reservation.targetInstanceId);
+    if (!entry || entry.ws.readyState !== WebSocket.OPEN) {
+      return failedClaim('E_NO_PLUGIN', 'Figma plugin disconnected while this job was queued');
+    }
+    const currentKey = pluginFileKey(entry);
+    if (currentKey === null || currentKey !== reservation.targetFileKey) {
+      return failedClaim('E_WRONG_FILE', `selected plugin key no longer matches targetFileKey ${JSON.stringify(reservation.targetFileKey)}`);
+    }
+    const admission = mutationGate.admit(reservation.targetFileKey);
+    if (!admission.ok) return failedClaim(admission.error.code, admission.error.message);
+    if (admission.lastTransitionRevision > reservation.admissionRevision) {
+      return failedClaim(
+        'E_STALE_ADMISSION',
+        `queued mutation for ${JSON.stringify(reservation.targetFileKey)} became stale after gate revision ${reservation.admissionRevision}`,
+      );
+    }
+    if (!isAppReady(entry)) return { kind: 'wait', targetWs: entry.ws };
+    if (!st.jobs.transitionQueuedToRunning(jobId)) return { kind: 'noop' };
+    st.dispatchReservations.delete(jobId);
+    return { kind: 'claimed', job, targetWs: entry.ws };
+  };
+
+  let drainFileQueue: (fileSlug: string, finishedJobId: string) => void;
+
+  const settleKnownNotDispatched = (
+    job: JobRecord,
+    state: 'failed' | 'cancelled',
+    frames: string[],
+  ): boolean => {
+    if (!st.jobs.settleQueued(job.jobId, state, frames)) return false;
+    recordContention(job);
+    if (frames.length > 0 && job.from?.readyState === WebSocket.OPEN) {
+      try { job.from.send(frames[0]!); } catch { /* requester vanished */ }
+    }
+    st.pending.delete(job.requestId);
+    st.dispatchedTo.delete(job.requestId);
+    return true;
+  };
+
+  const settleDispatchReservation = (jobId: string, generation: number, failure: ReservationFailure): boolean => {
+    const reservation = st.dispatchReservations.get(jobId);
+    if (!reservation || reservation.generation !== generation) return false;
+    const job = st.jobs.byId(jobId);
+    if (job === 'unknown' || job === 'expired') return false;
+    const q = st.queues.get(job.fileSlug);
+    if (q?.running !== jobId || job.state !== 'queued') return false;
+    const frames = failure.state === 'cancelled'
+      ? []
+      : [errReplyFrame(job.requestId, failure.code, failure.message)];
+    if (!settleKnownNotDispatched(job, failure.state, frames)) return false;
+    st.dispatchReservations.delete(jobId);
+    drainFileQueue(job.fileSlug, jobId);
+    return true;
+  };
+
+  /** Finalize an ordinary waiting-list mutation after a gate/transport denial. */
+  const settleWaitingJob = (
+    job: JobRecord,
+    code: ErrorCode,
+    message: string,
+    state: 'failed' | 'cancelled' = 'failed',
+  ): boolean => {
+    const frame = errReplyFrame(job.requestId, code, message);
+    if (!settleKnownNotDispatched(job, state, [frame])) return false;
+    const q = st.queues.get(job.fileSlug);
+    if (q && q.running !== job.jobId) st.queues.set(job.fileSlug, removeFromQueue(q, job.jobId));
+    return true;
+  };
+
   const dispatchJob = (job: JobRecord, targetWs: WebSocket): void => {
     try {
       sendFrames(targetWs, job.requestFrames);
@@ -901,60 +1027,79 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (job.from && job.from.readyState === WebSocket.OPEN) sendReplyErr(job.from, job.requestId, 'E_PLUGIN_ERROR', msg);
       st.pending.delete(job.requestId);
       st.dispatchedTo.delete(job.requestId);
-      advanceQueue(job);
+      drainFileQueue(job.fileSlug, job.jobId);
     }
   };
 
-  /**
-   * A job finished (or was dequeued and immediately failed) — pop the next mutating job
-   * queued behind it on the SAME file, if any, and dispatch it. `JobRecord.targetInstanceId`
-   * is PINNED and never re-resolved by filter/recency at dequeue: a queued mutation must
-   * land in the file it was admitted for, never whichever file became most-recent while it
-   * waited (risk register: a queued job cannot be re-routed at dequeue). A vanished pinned
-   * target FAILS the job instead — recursing to keep draining the queue.
-   *
-   * Stage-4 fix round (BLOCKER 1) — `completeSkippingStale` (not plain `complete`) so a
-   * popped entry already resolved by some OTHER path (cancelled via `job --cancel`,
-   * already failed while queued via `handleClose`) is never resurrected: `markRunning` +
-   * dispatching a job the caller was told would not run was the exact bug. Defense in
-   * depth alongside the explicit dequeue those two paths now also do — this guard is what
-   * catches anything that resolves a queued job's state WITHOUT remembering to also call
-   * `removeFromQueue`.
-   */
-  const advanceQueue = (finishedJob: JobRecord): void => {
-    const q = st.queues.get(finishedJob.fileSlug) ?? emptyQueue();
-    const isStillQueued = (id: string): boolean => {
-      const rec = st.jobs.byId(id);
-      return rec !== 'unknown' && rec !== 'expired' && rec.state === 'queued';
-    };
-    const { q: nextQ, next } = completeSkippingStale(q, finishedJob.jobId, isStillQueued);
-    st.queues.set(finishedJob.fileSlug, nextQ);
-    if (next === null) return;
-    const nextJob = st.jobs.byId(next);
-    if (nextJob === 'unknown' || nextJob === 'expired') return; // defensive; should not happen
-    const entry = st.registry.getByInstanceId(nextJob.targetInstanceId);
-    if (!entry || entry.ws.readyState !== WebSocket.OPEN) {
-      const msg = 'Figma plugin disconnected while this job was queued';
-      const frame = errReplyFrame(nextJob.requestId, 'E_NO_PLUGIN', msg);
-      st.jobs.finish(nextJob.jobId, false, [frame]);
-      recordContention(nextJob);
-      if (nextJob.from && nextJob.from.readyState === WebSocket.OPEN) {
-        try { nextJob.from.send(frame); } catch { /* requester vanished */ }
-      }
-      st.pending.delete(nextJob.requestId);
-      st.dispatchedTo.delete(nextJob.requestId);
-      advanceQueue(nextJob);
+  /** Claim and synchronously send one reserved FIFO head, or leave/settle it exactly once. */
+  const tryDispatchPinnedJob = (jobId: string, generation: number): void => {
+    const claim = claimDispatchReservation(jobId, generation);
+    if (claim.kind === 'noop') return;
+    if (claim.kind === 'failure') {
+      settleDispatchReservation(jobId, generation, claim.failure);
       return;
     }
-    if (!nextJob.readOnly) {
-      const admission = mutationGate.admit(nextJob.fileSlug);
-      if (!admission.ok) {
-        if (cancelQueuedForGate(nextJob, admission.error.code, admission.error.message)) advanceQueue(nextJob);
-        return;
+    if (claim.kind === 'wait') {
+      const reservation = st.dispatchReservations.get(jobId);
+      if (!reservation || reservation.generation !== generation) return;
+      if (reservation.probeId === undefined) {
+        reservation.probeId = nextReadinessProbeId();
+        reservation.deadline = Date.now() + PLUGIN_WAIT_TIMEOUT_MS;
+        if (!st.jobs.markDispatchReserved(jobId)) return;
+        sendAppProbe(claim.targetWs, reservation.probeId);
       }
+      return;
     }
-    st.jobs.markRunning(nextJob.jobId);
-    dispatchJob(nextJob, entry.ws);
+    // No await may enter this sequence: map assignment is proof that the following
+    // synchronous send owns this exact target.
+    st.dispatchedTo.set(claim.job.requestId, claim.targetWs);
+    dispatchJob(claim.job, claim.targetWs);
+  };
+
+  const reserveDispatch = (job: JobRecord): DispatchReservation | null => {
+    if (job.targetFileKey === undefined || job.admissionRevision === undefined) return null;
+    const reservation = {
+      generation: ++dispatchGeneration,
+      targetInstanceId: job.targetInstanceId,
+      targetFileKey: job.targetFileKey,
+      admissionRevision: job.admissionRevision,
+    } satisfies DispatchReservation;
+    st.dispatchReservations.set(job.jobId, reservation);
+    return reservation;
+  };
+
+  const drainRequests: Array<{ fileSlug: string; finishedJobId: string }> = [];
+  let drainingQueues = false;
+  drainFileQueue = (fileSlug: string, finishedJobId: string): void => {
+    drainRequests.push({ fileSlug, finishedJobId });
+    if (drainingQueues) return;
+    drainingQueues = true;
+    try {
+      while (drainRequests.length > 0) {
+        const current = drainRequests.shift()!;
+        const q = st.queues.get(current.fileSlug) ?? emptyQueue();
+        const isStillQueued = (id: string): boolean => {
+          const rec = st.jobs.byId(id);
+          return rec !== 'unknown' && rec !== 'expired' && rec.state === 'queued';
+        };
+        const { q: nextQ, next } = completeSkippingStale(q, current.finishedJobId, isStillQueued);
+        st.queues.set(current.fileSlug, nextQ);
+        if (next === null) continue;
+        const nextJob = st.jobs.byId(next);
+        if (nextJob === 'unknown' || nextJob === 'expired') continue;
+        const reservation = reserveDispatch(nextJob);
+        if (reservation === null) {
+          const frame = errReplyFrame(nextJob.requestId, 'E_FILE_KEY_UNAVAILABLE', 'queued mutation lost its raw fileKey admission identity');
+          if (settleKnownNotDispatched(nextJob, 'failed', [frame])) {
+            drainRequests.push({ fileSlug: nextJob.fileSlug, finishedJobId: nextJob.jobId });
+          }
+          continue;
+        }
+        tryDispatchPinnedJob(nextJob.jobId, reservation.generation);
+      }
+    } finally {
+      drainingQueues = false;
+    }
   };
 
   /**
@@ -970,6 +1115,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     from: WebSocket, id: string, rawText: string, cmd?: string, expectedFile?: string,
     expectedInstance?: string, targetFileKey?: unknown, _readOnly = false, projectDir?: string, activity?: string,
     parkedAdmission?: { targetFileKey: string; admissionRevision: number; admittedAt: number },
+    parkedTarget?: { targetInstanceId: string; observedFileKey: string | null },
   ): void => {
     const duplicateJob = st.jobs.byRequestId(id);
     const duplicateWaiting = st.waiting.some((request) => request.id === id);
@@ -979,9 +1125,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       log(`refused duplicate request id ${id}${duplicateJob ? ` (job ${duplicateJob.jobId})` : ' (parked)'}`);
       return;
     }
-    const requestedTargetFileKey = targetFileKey === undefined
-      ? undefined
-      : exactTargetFileKey(typeof targetFileKey === 'string' ? targetFileKey : null);
+    const requestedTargetFileKey = parseRequestedTargetFileKey(targetFileKey);
     if (targetFileKey !== undefined && requestedTargetFileKey === null) {
       sendReplyErr(from, id, 'E_INVALID_ARGS', 'targetFileKey must be a nonempty unpadded raw Figma fileKey');
       return;
@@ -1017,15 +1161,18 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const filter: RouteFilter = requestedTargetFileKey === undefined
       ? resolveRouteFilter(expectedFile, currentFilter(), expectedInstance, pinLive ? pin : null)
       : { value: null, exact: true, source: 'none', kind: 'name' };
-    let targetWs = st.dispatchedTo.get(id);
-    if (targetWs && targetWs.readyState !== WebSocket.OPEN) targetWs = undefined;
-    if (requestedTargetFileKey !== undefined) {
+    let targetWs: WebSocket | undefined;
+    if (parkedTarget !== undefined) {
+      const exact = st.registry.getByInstanceId(parkedTarget.targetInstanceId);
+      const currentKey = exact ? pluginFileKey(exact) : null;
+      if (exact && exact.ws.readyState === WebSocket.OPEN && currentKey === parkedTarget.observedFileKey) targetWs = exact.ws;
+    } else if (requestedTargetFileKey !== undefined) {
       // The caller's key is a routing assertion, never canonical evidence: only the
       // currently registered exact scene key may select a plugin. A live keyless plugin
       // or different key is unrelated — leave the request unresolved so exact-key parking
       // can wait for the asserted file without emitting a false wrong-file refusal.
       const live = st.registry.liveEntries();
-      const exact = live.find((entry) => durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null) === requestedTargetFileKey);
+      const exact = live.find((entry) => pluginFileKey(entry) === requestedTargetFileKey);
       if (exact) {
         targetWs = exact.ws;
       }
@@ -1042,7 +1189,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           `or target one exactly with --instance <id> (e.g. --instance ${hits[0].instanceId})`);
         return;
       }
-      const target = hits[0] ?? null;
+      const target = selectDispatchTarget(filter, hits);
       targetWs = target?.ws;
       // A plugin that predates the guard would ignore expectedFile and run anyway; refuse BEFORE
       // forwarding rather than discovering it from a reply that has already mutated a file. Only
@@ -1093,7 +1240,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       st.waiting.push({
         id, from, rawText, deadline: Date.now() + PLUGIN_WAIT_TIMEOUT_MS, filter, projectDir,
         cmd, readOnly: isReadOnly, activity,
-        ...(requestedTargetFileKey !== undefined && requestedTargetFileKey !== null && { targetFileKey: requestedTargetFileKey }),
+        ...(requestedTargetFileKey !== undefined && requestedTargetFileKey !== null && {
+          targetFileKey: requestedTargetFileKey, requestedTargetFileKey,
+        }),
         ...(admissionRevision !== undefined && { admissionRevision, admittedAt: parkedAt }),
       });
       log(`parked ${id}${cmd ? ` (${cmd})` : ''}${requestedTargetFileKey ? ` [targetFileKey=${JSON.stringify(requestedTargetFileKey)} rev=${admissionRevision ?? 'safe-read'} at=${parkedAt}]` : filter.value ? ` [${filter.source}="${filter.value}"]` : ''} — awaiting ${requestedTargetFileKey || filter.value ? 'matching ' : ''}plugin (${st.waiting.length} queued)`);
@@ -1108,7 +1257,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       return;
     }
 
-    const rawFileKey = durableFileKey((targetEntry.scene.fileKey as string | null | undefined) ?? null);
+    const rawFileKey = pluginFileKey(targetEntry);
     if (requestedTargetFileKey !== undefined) {
       if (rawFileKey === null) {
         sendReplyErr(from, id, 'E_FILE_KEY_UNAVAILABLE', 'targetFileKey cannot be verified because the selected plugin has no raw fileKey');
@@ -1119,6 +1268,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         return;
       }
     }
+    let admissionRevision: number | undefined;
     if (!isReadOnly) {
       const admission = mutationGate.admit(rawFileKey);
       if (!admission.ok) {
@@ -1132,11 +1282,32 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           `parked mutation for ${JSON.stringify(parkedAdmission.targetFileKey)} became stale after gate revision ${parkedAdmission.admissionRevision} (parked at ${parkedAdmission.admittedAt})`);
         return;
       }
+      admissionRevision = parkedAdmission?.admissionRevision ?? admission.lastTransitionRevision;
+    }
+
+    if (!isAppReady(targetEntry)) {
+      if (!isReadOnly && rawFileKey === null) {
+        sendReplyErr(from, id, 'E_FILE_KEY_UNAVAILABLE', 'an app-unready mutation requires the selected plugin to expose a raw fileKey');
+        return;
+      }
+      const probeId = nextReadinessProbeId();
+      sendAppProbe(targetWs, probeId);
+      const parkedAt = Date.now();
+      st.waiting.push({
+        id, from, rawText, deadline: parkedAt + PLUGIN_WAIT_TIMEOUT_MS, filter, projectDir,
+        cmd, readOnly: isReadOnly, activity, targetInstanceId: targetEntry.instanceId,
+        observedFileKey: rawFileKey, readinessProbeId: probeId, awaitingReadiness: true,
+        ...(!isReadOnly && rawFileKey !== null && admissionRevision !== undefined
+          ? { targetFileKey: rawFileKey, admissionRevision, admittedAt: parkedAt }
+          : {}),
+        ...(requestedTargetFileKey !== undefined ? { requestedTargetFileKey } : {}),
+      });
+      log(`parked ${id}${cmd ? ` (${cmd})` : ''} for app readiness on [${targetEntry.instanceId}]`);
+      return;
     }
 
     recordRequestBinding(targetWs, projectDir);
     st.pending.set(id, from);
-    st.dispatchedTo.set(id, targetWs);
 
     const fileSlug = rawFileKey ?? fileIdentity(
       null,
@@ -1145,6 +1316,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const job = st.jobs.create({
       requestId: id, cmd: cmd ?? '(unknown)', fileSlug, readOnly: isReadOnly,
       requestFrames: [rawText], from, targetInstanceId: targetEntry.instanceId,
+      ...(!isReadOnly && rawFileKey !== null && admissionRevision !== undefined
+        ? { targetFileKey: rawFileKey, admissionRevision }
+        : {}),
       ...(activity !== undefined && { activity }),
     });
     // JOB_STATE — sent BEFORE any timeout can fire, so a CLI that gives up waiting still
@@ -1152,7 +1326,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     sendEvent(from, 'JOB_STATE', toJobInfo(job) as unknown as Record<string, unknown>);
 
     if (isReadOnly) {
-      st.jobs.markRunning(job.jobId);
+      if (!st.jobs.transitionQueuedToRunning(job.jobId)) return;
+      st.dispatchedTo.set(id, targetWs);
       dispatchJob(job, targetWs);
       return;
     }
@@ -1162,13 +1337,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const { q: nextQ, startNow } = enqueueJob(q, job.jobId);
     st.queues.set(fileSlug, nextQ);
     if (startNow) {
-      const admission = mutationGate.admit(rawFileKey);
-      if (!admission.ok) {
-        if (cancelQueuedForGate(job, admission.error.code, admission.error.message)) advanceQueue(job);
-        return;
-      }
-      st.jobs.markRunning(job.jobId);
-      dispatchJob(job, targetWs);
+      const reservation = reserveDispatch(job);
+      if (reservation !== null) tryDispatchPinnedJob(job.jobId, reservation.generation);
     } else {
       const pos = queuePosition(nextQ, job.jobId);
       if (pos !== undefined) {
@@ -1241,27 +1411,50 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // interleaving window, so two mutations parked together must still serialise correctly
   // once their plugin connects — the synchronous loop below guarantees that (the first
   // admits and dispatches/marks running, the second admits into the now-non-empty queue).
-  const flushWaiting = (): void => {
+  type ReadinessSignal = { targetInstanceId: string; probeId?: string };
+
+  const waitingTargetIsReady = (request: ParkedRequest, signal?: ReadinessSignal): boolean => {
+    if (request.targetInstanceId !== undefined) {
+      const pinned = st.registry.getByInstanceId(request.targetInstanceId);
+      const signalMatches = request.awaitingReadiness !== true || signal === undefined
+        || (signal.targetInstanceId === request.targetInstanceId
+          && (signal.probeId === undefined || signal.probeId === request.readinessProbeId));
+      return signalMatches
+        && pinned !== null
+        && pinned.ws.readyState === WebSocket.OPEN
+        && pluginFileKey(pinned) === request.observedFileKey
+        && isAppReady(pinned);
+    }
+    if (request.requestedTargetFileKey === undefined) {
+      return st.registry.selectTarget(request.filter.value, {
+        exact: request.filter.exact,
+        kind: request.filter.kind,
+      }) !== null;
+    }
+    return st.registry.liveEntries().some((entry) =>
+      pluginFileKey(entry) === request.requestedTargetFileKey,
+    );
+  };
+
+  const flushWaiting = (signal?: ReadinessSignal): void => {
     if (st.waiting.length === 0) return;
     const queued = st.waiting;
     st.waiting = [];
     let delivered = 0;
     for (const req of queued) {
       if (req.from.readyState !== WebSocket.OPEN) continue; // CLI gone — drop silently
-      const targetExists = req.targetFileKey === undefined
-        ? st.registry.selectTarget(req.filter.value, { exact: req.filter.exact, kind: req.filter.kind }) !== null
-        : st.registry.liveEntries().some((entry) =>
-          durableFileKey((entry.scene.fileKey as string | null | undefined) ?? null) === req.targetFileKey,
-        );
-      if (targetExists) {
+      if (waitingTargetIsReady(req, signal)) {
         const flagValue = req.filter.source === 'flag' ? req.filter.value ?? undefined : undefined;
         admitRequest(
           req.from, req.id, req.rawText, req.cmd,
           req.filter.kind === 'name' ? flagValue : undefined,
           req.filter.kind === 'instance' ? flagValue : undefined,
-          req.targetFileKey, req.readOnly === true, req.projectDir, req.activity,
+          req.requestedTargetFileKey, req.readOnly === true, req.projectDir, req.activity,
           req.targetFileKey !== undefined && req.admissionRevision !== undefined && req.admittedAt !== undefined
             ? { targetFileKey: req.targetFileKey, admissionRevision: req.admissionRevision, admittedAt: req.admittedAt }
+            : undefined,
+          req.targetInstanceId !== undefined
+            ? { targetInstanceId: req.targetInstanceId, observedFileKey: req.observedFileKey ?? null }
             : undefined,
         );
         delivered++;
@@ -1270,6 +1463,20 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       }
     }
     if (delivered > 0) log(`flushed ${delivered} parked request(s)`);
+  };
+
+  const resumeReadiness = (ws: WebSocket, msg: WireMsg): void => {
+    const entry = st.registry.getByWs(ws);
+    if (!entry) return;
+    const probeId = isEventMsg(msg) && msg.type === 'APP_PROBE_ACK' && typeof msg.data.probeId === 'string'
+      ? msg.data.probeId
+      : undefined;
+    for (const [jobId, reservation] of [...st.dispatchReservations]) {
+      if (reservation.targetInstanceId !== entry.instanceId) continue;
+      if (probeId !== undefined && reservation.probeId !== probeId) continue;
+      tryDispatchPinnedJob(jobId, reservation.generation);
+    }
+    flushWaiting({ targetInstanceId: entry.instanceId, ...(probeId !== undefined && { probeId }) });
   };
 
   /**
@@ -1299,14 +1506,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (client && client.readyState === WebSocket.OPEN) {
       try { client.send(rawText); } catch { /* requester vanished */ }
     }
-    if (job && isFinishedState(job.state)) {
+    if (job && isReplyDiscardState(job.state)) {
       // Closing round (R1+R2 unified, reviewer Q1) — this job is ALREADY terminal
       // (force-released, watchdog-timed-out, or a genuine prior finish): this frame is
       // the actual pollution site the old code had — `job.replyFrames.push(rawText)` ran
       // UNCONDITIONALLY here, mutating the array in place before `finish()`'s own guard
       // ever got a chance to see it, so a late chunk corrupted `replyFrames` regardless
       // of that guard. Never touch `replyFrames` for a terminal job, never re-run
-      // finish()/advanceQueue a second time — count + log only, "discarded" stays true.
+      // finish/drain a second time — count + log only, "discarded" stays true.
       job.lateReplyCount = (job.lateReplyCount ?? 0) + 1;
       log(`late reply frame for terminal job ${job.jobId} (${job.state}) discarded, ` +
         `${Buffer.byteLength(rawText, 'utf8')} bytes (lateReplyCount=${job.lateReplyCount})`);
@@ -1322,7 +1529,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         const ok = replyOk(job.replyFrames);
         st.jobs.finish(job.jobId, ok, job.replyFrames);
         recordContention(job);
-        advanceQueue(job);
+        drainFileQueue(job.fileSlug, job.jobId);
       }
     }
     if (final) {
@@ -1364,6 +1571,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     }
 
     if (mode === 'cancel') {
+      const reservation = st.dispatchReservations.get(jobId);
+      if (reservation) {
+        const ok = settleDispatchReservation(jobId, reservation.generation, { state: 'cancelled' });
+        sendReplyOk(ws, msg.id, ok ? { ok: true } : { ok: false, reason: 'job is no longer queued for dispatch' });
+        return;
+      }
       const result = st.jobs.cancelQueued(jobId);
       // Stage-4 fix round (BLOCKER 1) — `cancelQueued` only marks the RECORD `cancelled`;
       // it does not touch the file's own QueueState. Without this, the job stayed in
@@ -1386,6 +1599,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (rec === 'unknown') { sendReplyOk(ws, msg.id, { ok: false, reason: `no such job '${jobId}'` }); return; }
       if (rec === 'expired') { sendReplyOk(ws, msg.id, { ok: false, reason: `job '${jobId}' already expired — nothing to release` }); return; }
       const q = st.queues.get(rec.fileSlug);
+      const reservedReason = reservedForceReleaseReason(jobId, rec.state, q?.running ?? null);
+      if (reservedReason !== null) {
+        sendReplyOk(ws, msg.id, {
+          ok: false,
+          reason: reservedReason,
+        });
+        return;
+      }
       if (!q || q.running !== jobId) {
         sendReplyOk(ws, msg.id, { ok: false, reason: `job '${jobId}' is not the one blocking "${rec.fileSlug}"'s mutation slot` });
         return;
@@ -1394,7 +1615,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // unless the requester passes `--force`: freeing its slot while its script may still
       // be mid-mutation lets the NEXT queued mutation dispatch into the same file while the
       // first is still executing — genuinely concurrent writes. A watchdog-wedged job
-      // (`state !== 'running'`, because the watchdog already called `finish()`) is not
+      // (`state !== 'running'`, because the watchdog already called `finishHeld()`) is not
       // healthy and keeps unwedging with a bare `--force-release`, exactly as before.
       const now = Date.now();
       const override = params?.override === true;
@@ -1406,14 +1627,19 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         });
         return;
       }
+      const priorState = rec.state;
       // The audited exit from a BLOCKED slot (phase 01's watchdog leaves it held on
       // purpose): record the override on the job, finish it for reporting if it was
       // still `running` (the watchdog may not have fired yet), then advance the queue —
       // never automatic, and the message states plainly that a later reply is discarded.
-      rec.forceReleased = true;
       if (rec.state === 'running') {
-        st.jobs.finish(jobId, false, [errReplyFrame(rec.requestId, 'E_TIMEOUT',
-          'force-released — the script may still be running; its result (if any) is discarded and unverified')]);
+        if (!st.jobs.finishHeld(jobId, false, [errReplyFrame(rec.requestId, 'E_TIMEOUT',
+          'force-released — the script may still be running; its result (if any) is discarded and unverified')])) {
+          const reason = `job '${jobId}' could not be recorded as a held terminal before release`;
+          log(`invariant failure: ${reason}`);
+          sendReplyErr(ws, msg.id, 'E_PLUGIN_ERROR', reason);
+          return;
+        }
         recordContention(rec);
       }
       // Stage-4 fix round (M4, ruling Q1) — "discarded means discarded": if the wedged
@@ -1423,10 +1649,26 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // (below) keeps the late frame out of the poll result regardless.
       st.pending.delete(rec.requestId);
       st.dispatchedTo.delete(rec.requestId);
-      advanceQueue(rec);
+      drainFileQueue(rec.fileSlug, rec.jobId);
+      // Unknown evidence becomes retention-eligible only AFTER the synchronous drain
+      // removed q.running. Before this line TTL/cap/frame shedding cannot erase the live
+      // slot holder; after it, the consumed recovery command is removed and normal
+      // bounded retention applies.
+      if (priorState === 'outcome-unknown' && !st.jobs.settleOutcomeUnknownRelease(jobId)) {
+        const reason = `job '${jobId}' slot was released, but unknown-outcome retention settlement failed`;
+        log(`invariant failure: ${reason}`);
+        sendReplyErr(ws, msg.id, 'E_PLUGIN_ERROR', reason);
+        return;
+      }
+      if (priorState !== 'outcome-unknown' && !st.jobs.settleHeldTerminalRelease(jobId)) {
+        const reason = `job '${jobId}' slot was released, but terminal retention settlement failed`;
+        log(`invariant failure: ${reason}`);
+        sendReplyErr(ws, msg.id, 'E_PLUGIN_ERROR', reason);
+        return;
+      }
       // Audited: every force-release (allowed-wedged or `--force` override) logs WHO asked
       // and WHY, never silently — the requester's own `activity` label on this request.
-      log(buildForceReleaseAuditLine(jobId, rec.cmd, rec.fileSlug, override, msg.activity));
+      log(buildForceReleaseAuditLine(jobId, rec.cmd, rec.fileSlug, override, msg.activity, priorState));
       sendReplyOk(ws, msg.id, { ok: true });
       return;
     }
@@ -1471,7 +1713,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           ...(rec.resultDropped === true && { resultDropped: true }),
           ...(rec.lateReplyCount !== undefined && rec.lateReplyCount > 0 && { lateReplyCount: rec.lateReplyCount }),
         }
-      : { job: info });
+      : {
+          job: info,
+          ...(rec.lateReplyCount !== undefined && rec.lateReplyCount > 0 && { lateReplyCount: rec.lateReplyCount }),
+        });
   };
 
   /** Broker-terminal durable pause/open control. It intentionally uses only the raw
@@ -1505,11 +1750,16 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       return;
     }
     if (transition.state === 'paused') {
+      for (const [jobId, reservation] of [...st.dispatchReservations]) {
+        if (reservation.targetFileKey !== fileKey) continue;
+        settleDispatchReservation(jobId, reservation.generation,
+          failedReservation('E_MUTATIONS_PAUSED', `mutations are paused for fileKey ${JSON.stringify(fileKey)}`));
+      }
       const q = st.queues.get(fileKey);
       for (const jobId of [...(q?.waiting ?? [])]) {
         const job = st.jobs.byId(jobId);
         if (job !== 'unknown' && job !== 'expired') {
-          cancelQueuedForGate(job, 'E_MUTATIONS_PAUSED', `mutations are paused for fileKey ${JSON.stringify(fileKey)}`);
+          settleWaitingJob(job, 'E_MUTATIONS_PAUSED', `mutations are paused for fileKey ${JSON.stringify(fileKey)}`, 'cancelled');
         }
       }
     }
@@ -1524,11 +1774,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   /**
    * auto-connect slice 3 — `figma-agent cowork`. Broker-terminal (same precedent as
-   * PROJECT_BIND/JOB): resolves a target plugin ONCE using the SAME routing filter
-   * `admitRequest` uses (envelope `expectedFile`/`expectedInstance`, the standing
-   * runtime pin), registers a waiter keyed to that instance's file identity, and
-   * returns immediately — the actual reply is sent later, from `resolveCoworkWaiters`
-   * (piggybacked on the park-sweep interval) once the wait fires or expires.
+   * PROJECT_BIND/JOB): resolves a target plugin ONCE using the SAME selectors
+   * `admitRequest` uses (exact raw key, envelope `expectedFile`/`expectedInstance`,
+   * or the standing runtime pin), registers a waiter keyed to that instance's file
+   * identity, and returns immediately — the actual reply is sent later, from
+   * `resolveCoworkWaiters` (piggybacked on the park-sweep interval) once the wait
+   * fires or expires.
    */
   const handleCowork = (ws: WebSocket, msg: RequestMsg): void => {
     const params = msg.params as { waitMs?: unknown; timeoutMs?: unknown } | null;
@@ -1539,16 +1790,41 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const requestedTimeoutMs = typeof params?.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 600_000;
     const timeoutMs = Math.min(requestedTimeoutMs, COWORK_MAX_TIMEOUT_MS);
 
+    const requestedTargetFileKey = parseRequestedTargetFileKey(msg.targetFileKey);
+    if (msg.targetFileKey !== undefined && requestedTargetFileKey === null) {
+      sendReplyErr(ws, msg.id, 'E_INVALID_ARGS', 'targetFileKey must be a nonempty unpadded raw Figma fileKey');
+      return;
+    }
+    if (requestedTargetFileKey !== undefined && (msg.expectedFile !== undefined || msg.expectedInstance !== undefined)) {
+      sendReplyErr(ws, msg.id, 'E_INVALID_ARGS', 'targetFileKey is mutually exclusive with expectedFile and expectedInstance');
+      return;
+    }
+
     const pin = targetInstancePin;
     const pinLive = pin !== null && st.registry.getByInstanceId(pin)?.ws.readyState === WebSocket.OPEN;
-    const filter = resolveRouteFilter(msg.expectedFile, currentFilter(), msg.expectedInstance, pinLive ? pin : null);
-    const hits = st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind });
-    const target = hits[0] ?? null;
+    const filter: RouteFilter = requestedTargetFileKey === undefined
+      ? resolveRouteFilter(msg.expectedFile, currentFilter(), msg.expectedInstance, pinLive ? pin : null)
+      : { value: null, exact: true, source: 'none', kind: 'name' };
+    const target = requestedTargetFileKey === undefined
+      ? selectDispatchTarget(filter, st.registry.matching(filter.value, { exact: filter.exact, kind: filter.kind }))
+      : st.registry.liveEntries().find((entry) => pluginFileKey(entry) === requestedTargetFileKey) ?? null;
     if (!target) {
       // No plugin to watch at all — cowork has nothing to wait ON, unlike an ordinary
       // command (which can park for a not-yet-connected plugin). Fails fast rather than
       // silently waiting out the full budget for a file that was never open.
-      sendReplyErr(ws, msg.id, 'E_NO_PLUGIN', noPluginMessage(st.registry, filter));
+      sendReplyErr(
+        ws,
+        msg.id,
+        'E_NO_PLUGIN',
+        requestedTargetFileKey === undefined
+          ? noPluginMessage(st.registry, filter)
+          : `no live plugin matches targetFileKey ${JSON.stringify(requestedTargetFileKey)}`,
+      );
+      return;
+    }
+    if (!isAppReady(target)) {
+      sendReplyErr(ws, msg.id, 'E_APP_UNREADY',
+        `the plugin open in "${target.scene.fileName ?? '?'}" is transport-connected but application-unready; focus the file and retry cowork`);
       return;
     }
 
@@ -1586,38 +1862,80 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (target !== ws) continue;
       const client = st.pending.get(id);
       const msg = 'Figma plugin disconnected mid-request';
-      if (client) sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
-      // Concurrency & jobs — finish the JOB too (not just reply the client that's still
-      // waiting): this is the ONLY place a dispatched job's plugin target vanishing is
-      // discovered, so a poll must get a real answer instead of hanging forever.
-      //
-      // Stage-4 fix round (BLOCKER 2, reviewer ruling Q2: FAIL + DEQUEUE, no reconnect-
-      // hold window) — `dispatchedTo` is set at ADMISSION for every job (queued or
-      // running), so this loop also catches a job whose pinned target disconnected while
-      // it was STILL QUEUED, never yet dispatched. `advanceQueue` only does anything for
-      // the file's CURRENTLY RUNNING job (`completeQueue`'s own no-op guard on a
-      // running-id mismatch) — for a queued one it silently did nothing, leaving the
-      // now-failed entry sitting in `q.waiting` until a LATER completion popped and
-      // resurrected it (dispatching a mutation whose CLI already got E_NO_PLUGIN). Ruled:
-      // no reconnect grace window — a re-admitted CLI retry re-enters cleanly. So: the
-      // RUNNING job still goes through `advanceQueue` (pops + dispatches next); a STILL-
-      // QUEUED one is instead removed directly from that file's queue.
+      // Actual-send jobs own a `dispatchedTo` route. Finish the record for polling and
+      // drain only if it owns the active FIFO slot; ordinary queued jobs are handled by
+      // the pinned reservation/waiting-list scans after registry removal below.
       const job = st.jobs.byRequestId(id);
       if (job) {
-        st.jobs.finish(job.jobId, false, [errReplyFrame(id, 'E_NO_PLUGIN', msg)]);
-        recordContention(job);
-        const q = st.queues.get(job.fileSlug);
-        if (q && q.running === job.jobId) {
-          advanceQueue(job);
-        } else if (q) {
-          st.queues.set(job.fileSlug, removeFromQueue(q, job.jobId));
+        if (job.retentionHeld === true) {
+          if (client) sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
+          const q = st.queues.get(job.fileSlug);
+          if (q?.running !== job.jobId) {
+            log(`invariant failure: held job ${job.jobId} disconnected without owning "${job.fileSlug}"'s mutation slot`);
+          } else {
+            // The watchdog already recorded this job's E_TIMEOUT and contention once.
+            // Close is the second, audited release path: remove the live queue owner
+            // first, then make the preserved evidence retention-eligible from now.
+            drainFileQueue(job.fileSlug, job.jobId);
+            if (!st.jobs.settleHeldTerminalRelease(job.jobId)) {
+              log(`invariant failure: held job ${job.jobId} disconnected after queue release but retention settlement failed`);
+            }
+          }
+        } else if (job.state === 'running' && !job.readOnly) {
+          const reason = 'plugin transport disconnected after dispatch';
+          if (st.jobs.markOutcomeUnknown(job.jobId, reason)) {
+            recordContention(job);
+            if (client) {
+              sendReplyErr(
+                client,
+                id,
+                'E_OUTCOME_UNKNOWN',
+                `${reason}; the canvas may or may not have changed. Inspect the canvas, then force-release the held slot.`,
+                { jobId: job.jobId, recovery: job.recovery },
+              );
+            }
+          }
+        } else {
+          if (client) sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
+          if (job.state === 'queued') {
+            st.jobs.settleQueued(job.jobId, 'failed', [errReplyFrame(id, 'E_NO_PLUGIN', msg)]);
+          } else {
+            st.jobs.finish(job.jobId, false, [errReplyFrame(id, 'E_NO_PLUGIN', msg)]);
+          }
+          recordContention(job);
+          const q = st.queues.get(job.fileSlug);
+          if (q && q.running === job.jobId) {
+            drainFileQueue(job.fileSlug, job.jobId);
+          } else if (q) {
+            st.queues.set(job.fileSlug, removeFromQueue(q, job.jobId));
+          }
         }
+      } else if (client) {
+        sendReplyErr(client, id, 'E_NO_PLUGIN', msg);
       }
       st.pending.delete(id);
       st.dispatchedTo.delete(id);
     }
     const removedId = st.registry.removeByWs(ws);
     if (removedId !== null) {
+      for (const [jobId, reservation] of [...st.dispatchReservations]) {
+        if (reservation.targetInstanceId !== removedId) continue;
+        settleDispatchReservation(jobId, reservation.generation,
+          failedReservation('E_NO_PLUGIN', 'Figma plugin disconnected while this job was queued'));
+      }
+      for (const q of st.queues.values()) {
+        for (const jobId of [...q.waiting]) {
+          const job = st.jobs.byId(jobId);
+          if (job === 'unknown' || job === 'expired' || job.targetInstanceId !== removedId) continue;
+          settleWaitingJob(job, 'E_NO_PLUGIN', 'Figma plugin disconnected while this job was queued');
+        }
+      }
+      const survivingParked: ParkedRequest[] = [];
+      for (const request of st.waiting) {
+        if (request.targetInstanceId !== removedId) { survivingParked.push(request); continue; }
+        sendReplyErr(request.from, request.id, 'E_NO_PLUGIN', 'Figma plugin disconnected while waiting for application readiness');
+      }
+      st.waiting = survivingParked;
       const remaining = st.registry.size();
       log(`plugin [${removedId}] disconnected (${remaining} still connected)`);
       // #35 P2: a pin must never keep pointing at a plugin that just left — Law 1 applies
@@ -1676,6 +1994,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // this is the APP-liveness sensor (zombie-watchdog observability), distinct from
     // the transport-only `touch` the raw WS 'pong' handler below uses.
     const isPlugin = st.registry.touchApp(ws);
+    if (isPlugin) resumeReadiness(ws, msg);
     if (isChunkMsg(msg)) {
       // Reply-side chunks (plugin → broker) pass straight to routeFromPlugin, which now
       // accumulates every frame onto the job record itself (concurrency & jobs, backlog
@@ -1764,12 +2083,20 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // is the cheapest correct place to also answer it — main.ts gates
         // `setRelaunchData` on this flag instead of writing to every unbound document.
         sendEvent(ws, 'SYNC_CONFIG', { idleMs: helloBound ? readIdleMsFor(helloBound) : idleMs, bound: Boolean(helloBound) });
-        flushWaiting(); // deliver any requests parked during the reconnect gap
+        flushWaiting({ targetInstanceId: instanceId }); // HELLO is fresh app evidence
         broadcastPeers();
+      } else if (msg.type === 'APP_PROBE_ACK') {
+        // touchApp + resumeReadiness above own the correlated wake-up. The ACK is
+        // broker-local control traffic and is never broadcast to CLI clients.
       } else if (msg.type === 'PING') {
         // App-level heartbeat from the plugin — answer so it knows the socket lives.
         if (isPlugin) {
-          try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'PONG', data: { t: Date.now() } } satisfies EventMsg)); }
+          try {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({
+              type: 'PONG',
+              data: { t: Date.now(), ...(typeof msg.data.probeId === 'string' && { probeId: msg.data.probeId }) },
+            } satisfies EventMsg));
+          }
           catch { /* plugin vanished */ }
         }
       } else if (msg.type === 'FILE_INFO') {
@@ -1784,7 +2111,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           // The UI relay can register before main's first FILE_INFO carries its raw key.
           // A valid scene-identity update is therefore another exact-target readiness
           // transition, after the existing broadcast/promotion/persistence side effects.
-          flushWaiting();
+          const instanceId = st.registry.getByWs(ws)?.instanceId;
+          if (instanceId !== undefined) flushWaiting({ targetInstanceId: instanceId });
         }
       } else if (msg.type === 'DOC_CHANGE') {
         // Live-sync capture: append the plugin's coalesced batch to the change log.
@@ -1915,7 +2243,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // purpose (see `JobTable.summaryFor`'s own doc for why that distinction matters).
   const jobStatusFor = (fileSlug: string): { runningJob: JobInfo | null; queueDepth: number } => {
     const q = st.queues.get(fileSlug) ?? emptyQueue();
-    const { running, queueDepth } = st.jobs.summaryFor(fileSlug, q.running);
+    const { running, queueDepth } = st.jobs.summaryFor(fileSlug, {
+      slotOwnerId: q.running,
+      waitingDepth: q.waiting.length,
+    });
     return { runningJob: running, queueDepth };
   };
 
@@ -2018,6 +2349,13 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // caller; a sweep that never runs breaks it silently.
     st.jobs.sweep();
     sweepAbandonedChunks(st.pendingChunks, now, PARK_SWEEP_INTERVAL_MS);
+    for (const [jobId, reservation] of [...st.dispatchReservations]) {
+      if (reservation.deadline === undefined || now <= reservation.deadline) continue;
+      settleDispatchReservation(jobId, reservation.generation, failedReservation(
+        'E_APP_UNREADY',
+        `the pinned plugin stayed application-unready beyond the ${PLUGIN_WAIT_TIMEOUT_MS}ms readiness deadline`,
+      ));
+    }
     // auto-connect slice 3 — same "must run every tick, unconditionally" reasoning as
     // the two calls above: cowork waits are the UNCOMMON case, so gating this behind
     // `st.waiting`'s own early-return would make it effectively dead code too.
@@ -2037,17 +2375,19 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const survivors: ParkedRequest[] = [];
     for (const req of st.waiting) {
       if (req.from.readyState !== WebSocket.OPEN) continue; // CLI gone — drop silently
-      if (now >= req.deadline) {
+      if (req.awaitingReadiness === true ? now > req.deadline : now >= req.deadline) {
         // The request's OWN filter, not the env pin — otherwise a timed-out --file
         // request blames FIGMA_AGENT_FILE (or prints the generic message) instead of
         // naming the flag the caller actually used.
         sendReplyErr(
           req.from,
           req.id,
-          'E_NO_PLUGIN',
-          req.targetFileKey === undefined
-            ? noPluginMessage(st.registry, req.filter)
-            : `no plugin matching targetFileKey ${JSON.stringify(req.targetFileKey)} connected before the wait deadline`,
+          req.awaitingReadiness === true ? 'E_APP_UNREADY' : 'E_NO_PLUGIN',
+          req.awaitingReadiness === true
+            ? `the pinned plugin stayed application-unready beyond the ${PLUGIN_WAIT_TIMEOUT_MS}ms readiness deadline`
+            : req.requestedTargetFileKey === undefined
+              ? noPluginMessage(st.registry, req.filter)
+              : `no plugin matching targetFileKey ${JSON.stringify(req.requestedTargetFileKey)} connected before the wait deadline`,
         );
       } else {
         survivors.push(req);
@@ -2070,10 +2410,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (job.startedAt === undefined || now - job.startedAt < WATCHDOG_TIMEOUT_MS) continue;
       const msg = `no reply within ${WATCHDOG_TIMEOUT_MS}ms — the script may still be running; ` +
         `this file's mutation slot stays blocked until 'figma-agent job ${job.jobId} --force-release'`;
-      st.jobs.finish(job.jobId, false, [errReplyFrame(job.requestId, 'E_TIMEOUT', msg)]);
+      st.jobs.finishHeld(job.jobId, false, [errReplyFrame(job.requestId, 'E_TIMEOUT', msg)]);
       recordContention(job);
       log(`watchdog: job ${job.jobId} (${job.cmd}) timed out — slot for "${job.fileSlug}" stays blocked`);
-      // Deliberately NO advanceQueue(job) here — see the comment above.
+      // Deliberately do not drain here — see the comment above.
     }
   }, Math.min(30_000, Math.max(1_000, Math.floor(WATCHDOG_TIMEOUT_MS / 4))));
 

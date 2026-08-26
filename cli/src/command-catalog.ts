@@ -60,7 +60,8 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + '<jobId> --force-release [--force]   poll/wait/cancel/list a job the CLI stopped waiting for '
       + '(backlog 1.1+2.6+4.3) — --force-release refuses a HEALTHY still-running job unless --force is '
       + 'also passed — --force overrides the guard and discards its result, unverified; a '
-      + 'watchdog-wedged job still unwedges without --force',
+      + 'watchdog-wedged job still unwedges without --force. An outcome-unknown job requires '
+      + 'canvas inspection, then a bare --force-release; never retry it automatically.',
   },
   {
     name: 'scan-design-system',

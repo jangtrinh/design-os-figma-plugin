@@ -188,7 +188,11 @@ export function exchange(
         if (reply.fileContext) lastFileContext = reply.fileContext;
         finish(() => {
           if (reply.ok) resolve(reply.result);
-          else reject(new CliError(reply.error.code, reply.error.message, { rolledBack: (reply.error as WireError).rolledBack }));
+          else reject(new CliError(reply.error.code, reply.error.message, {
+            rolledBack: (reply.error as WireError).rolledBack,
+            jobId: reply.error.jobId ?? (reply.error.code === 'E_OUTCOME_UNKNOWN' ? lastJob?.jobId : undefined),
+            recovery: reply.error.recovery,
+          }));
         });
       }
     });

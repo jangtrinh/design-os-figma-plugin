@@ -3,6 +3,35 @@
 // relatively; esbuild inlines it per bundle.
 
 export const PROTOCOL_VERSION = 1;
+export const APP_READINESS_VERSION = 1;
+
+export const PLUGIN_CAPABILITIES = [
+  'fileGuard',
+  'correlatedHeartbeatV1',
+  'appProbeV1',
+] as const;
+export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
+export type AppHeartbeatMode = 'correlated' | 'legacy' | 'unknown';
+export type AppState = 'probing' | 'ready' | 'suspect' | 'unready' | 'unknown';
+
+export interface BrokerHelloData {
+  appReadinessV?: typeof APP_READINESS_VERSION;
+  [key: string]: unknown;
+}
+
+export interface PluginHelloData {
+  caps?: readonly PluginCapability[];
+  [key: string]: unknown;
+}
+
+export interface HeartbeatData {
+  t: number;
+  probeId?: string;
+}
+
+export interface AppProbeData {
+  probeId: string;
+}
 
 // Broker binds the first free port in this range (broker model: ONE daemon owns
 // the port; plugin + every CLI invocation connect as WS clients).
@@ -194,11 +223,20 @@ export interface ReplyOk {
   fileContext?: FileContext;
 }
 
+export interface JobRecovery {
+  kind: 'inspect-and-force-release';
+  command: string;
+  requiresCanvasInspection: true;
+  retryAllowed: false;
+}
+
 /** Reply error payload. `rolledBack` is set by EXEC_JS --undo-group. */
 export interface WireError {
   code: ErrorCode;
   message: string;
   rolledBack?: boolean;
+  jobId?: string;
+  recovery?: JobRecovery;
 }
 
 export interface ReplyErr {
@@ -228,7 +266,7 @@ export type ReplyMsg = ReplyOk | ReplyErr;
 // even time out.
 export interface JobInfo {
   jobId: string;
-  state: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  state: 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'outcome-unknown';
   cmd: string;
   activity?: string;
   fileSlug: string;       // which file's per-file FIFO queue it belongs to
@@ -236,6 +274,9 @@ export interface JobInfo {
   queuedMs?: number;      // time spent waiting — the evidence for the subtree-lock upgrade trigger
   startedAt?: number;
   finishedAt?: number;
+  dispatchState?: 'queued-not-dispatched-readiness-wait';
+  uncertaintyReason?: string;
+  recovery?: JobRecovery;
 }
 
 export type MutationGateState = 'paused' | 'open';
@@ -302,6 +343,7 @@ export interface EventMsg {
   // its own jobId. `data` is a `JobInfo`.
   type:
     | 'BROKER_HELLO' | 'PLUGIN_HELLO' | 'FILE_INFO' | 'PLUGIN_GONE' | 'PING' | 'PONG'
+    | 'APP_PROBE' | 'APP_PROBE_ACK'
     | 'DOC_CHANGE' | 'SYNC_CONFIG' | 'SYNC_REQUEST' | 'SYNC_RESULT' | 'PEERS' | 'EDIT_FEED'
     | 'JOB_STATE' | 'SET_TARGET' | 'CLEAR_TARGET';
   data: Record<string, unknown>;
@@ -377,6 +419,11 @@ export interface PluginStatusEntry {
    */
   pluginVersion?: string;
   protocolV?: number;
+  /** Additive application-readiness facts; absent means an older broker. */
+  appReady?: boolean | null;
+  appState?: AppState;
+  appHeartbeatMode?: AppHeartbeatMode;
+  appReadinessAge?: number | null;
 }
 
 // Chunked transport for payloads > CHUNK_LIMIT (both directions).
@@ -428,6 +475,8 @@ export type ErrorCode =
   | 'E_MUTATION_GATE_UNAVAILABLE'
   | 'E_FILE_KEY_UNAVAILABLE'
   | 'E_STALE_ADMISSION'
+  | 'E_APP_UNREADY'
+  | 'E_OUTCOME_UNKNOWN'
   // #35 P2 — a no-flag command with a standing `targetInstancePin` set, whose pinned
   // instance has disconnected. Never falls through to the env pin or recency (Law 1: a
   // standing pin never silently re-points at another plugin) — the caller re-targets via
@@ -576,6 +625,8 @@ export interface ConnectionStatePayload {
   port?: number;
   /** ms since the last broker PONG, present while `connected`. */
   lastPongAge?: number;
+  /** Additive application-heartbeat state; absent preserves the legacy payload. */
+  appState?: AppState;
   protocolVersion: number;
 }
 

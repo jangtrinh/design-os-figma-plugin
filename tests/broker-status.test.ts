@@ -33,6 +33,20 @@ describe('buildBrokerHelloData — plugins list + activePlugin', () => {
     expect(d).toMatchObject({ port: 9410, pid: 4242, protocolV: 1, uptimeMs: 5000 });
   });
 
+  it('advertises readiness v1 while preserving connected transport for a stale app', () => {
+    let t = 1_000;
+    const reg = new PluginRegistry<RegistrySocket>(() => t);
+    reg.register(sock(), { instanceId: 'legacy', fileName: 'Idle', caps: ['fileGuard'] });
+    t += 25_001;
+    const d = buildBrokerHelloData(reg, META, null, () => t);
+    expect(d.appReadinessV).toBe(1);
+    expect(d.pluginConnected).toBe(true);
+    expect(d.pluginState).toBe('connected');
+    expect((d.plugins as Array<Record<string, unknown>>)[0]).toMatchObject({
+      state: 'connected', appReady: false, appState: 'unready', appHeartbeatMode: 'legacy', appReadinessAge: 25_001,
+    });
+  });
+
   it('two files → both listed; activePlugin + legacy mirror track the most-recent', () => {
     let t = 1_000;
     const reg = new PluginRegistry<RegistrySocket>(() => t);

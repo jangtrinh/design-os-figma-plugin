@@ -92,7 +92,10 @@ whole session. Arbitrary scripts run inside a bracket that **undoes itself on er
 reports `rolledBack: true` only when the rollback actually completed. Mutations are **jobs**:
 one runs per file at a time, the rest queue in order, reads bypass the queue. A timeout tells
 you the work was *not* cancelled and hands you a job id to poll; cancel actually cancels; a
-reply that arrives after a job was killed is discarded, never served. Nothing is ever lost
+reply that arrives after a job was killed is discarded, never served. If transport drops
+after a mutation was dispatched, its outcome is unknown: poll the job, inspect the canvas,
+then run the reported bare `job <id> --force-release` command. Never retry that mutation
+automatically. Nothing is ever lost
 silently — every eviction, prune, and rotation leaves a counter, an archive, or an audit
 record. Every error lands in `design/figma-errors.jsonl` with its full untruncated reason —
 a log written for the agent that caused it, so it can read and fix — and `figma-agent errors`
@@ -101,12 +104,23 @@ reads it back without ever crashing on a bad line.
 ### Multiple files, one broker
 
 Several open Figma files stay connected at once — they no longer evict each other. Commands
-route to the most-recently-active file, or pin to one with `FIGMA_AGENT_FILE`. Several
+without a target prefer a ready file; set `FIGMA_AGENT_FILE` to pin the default by name.
+Exact `--file`/`--instance` targets never fall through to a different file. If the exact
+target is connected but app-unready, the broker probes only that target, then dispatches
+once after readiness returns or fails with bounded `E_APP_UNREADY`. Several
 *agents* can share one file too: pass `--agent claude` (or set `FIGMA_AGENT_ID`) and the
 panel's activity feed labels each entry with the harness that sent it, so a designer
 watching the canvas can tell who just did that. Omit it and the wire frame is byte-identical
 to what a pre-flag CLI sent — the panel's own `cli` default is applied when the row renders,
 never stamped onto the request.
+
+`status` reports transport and application state separately. `state: "connected"` means
+the WebSocket is open; `appState: "ready"` means the Figma app recently answered, while
+`"unready"` means an open socket whose app is silent or background-throttled.
+`appHeartbeatMode: "legacy"` identifies an older compatibility heartbeat; incomplete or
+unsupported readiness advertises `"unknown"` instead of guessing. Readiness gates only
+agent dispatch: manual Figma edits remain available and continue through the existing
+change feed and reconnect gap-fill.
 
 ## Install / build
 

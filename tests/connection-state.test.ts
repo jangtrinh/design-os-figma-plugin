@@ -3,7 +3,7 @@
 // through; the payload shape is the contract the P2 panel redesign consumes.
 import { describe, it, expect } from 'vitest';
 import {
-  makeStatePayload, reduceConnState, PROTOCOL_VERSION,
+  makeStatePayload, PLUGIN_CAPABILITIES, reduceConnState, PROTOCOL_VERSION,
   type ConnectionState,
 } from '../shared/protocol.ts';
 
@@ -36,6 +36,11 @@ describe('reduceConnState — disconnected→probing→handshake→connected', (
 });
 
 describe('makeStatePayload — the UI contract', () => {
+  it('keeps protocol v1 while advertising additive heartbeat capabilities', () => {
+    expect(PROTOCOL_VERSION).toBe(1);
+    expect(PLUGIN_CAPABILITIES).toEqual(['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+  });
+
   it('stamps type + protocolVersion and echoes the state', () => {
     const p = makeStatePayload('connected', { brokerUrl: 'ws://localhost:9410', port: 9410 });
     expect(p.type).toBe('CONN_STATE');
@@ -51,5 +56,21 @@ describe('makeStatePayload — the UI contract', () => {
     const p = makeStatePayload('probing', { detail: 'probing localhost:9411…' });
     expect(p.since).toBeGreaterThanOrEqual(before);
     expect(p.detail).toBe('probing localhost:9411…');
+  });
+
+  it('carries additive application state through handshake and readiness', () => {
+    expect(makeStatePayload('handshake', { appState: 'probing' }).appState).toBe('probing');
+    expect(makeStatePayload('connected', { appState: 'ready' }).appState).toBe('ready');
+  });
+
+  it('preserves the legacy payload shape when application state is omitted', () => {
+    const payload = makeStatePayload('handshake', { since: 123, brokerUrl: 'ws://localhost:9410' });
+    expect(payload).toEqual({
+      type: 'CONN_STATE',
+      state: 'handshake',
+      since: 123,
+      protocolVersion: PROTOCOL_VERSION,
+      brokerUrl: 'ws://localhost:9410',
+    });
   });
 });
