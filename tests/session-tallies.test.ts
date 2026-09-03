@@ -53,6 +53,22 @@ describe('createSessionTallies', () => {
     expect(onEvict).toHaveBeenCalledWith('i1', { relayDroppedFrames: 1, replayedBatches: 0 });
   });
 
+  it('a tally TOUCHED after newer ones survives — the victim is the least recently USED', () => {
+    // A window left open while another reloads the plugin over and over is exactly the
+    // session whose losses matter most; evicting it by CREATION order would hand `status`
+    // a `complete: true` for a session that demonstrably dropped frames.
+    const tallies = createSessionTallies({ max: 3 });
+    tallies.recordRelayDrops('long_lived', 5);
+    tallies.recordRelayDrops('a', 1);
+    tallies.recordRelayDrops('b', 1);
+    tallies.countReplayedBatch('long_lived'); // still in use
+
+    tallies.recordRelayDrops('c', 1);
+
+    expect(tallies.get('long_lived')?.relayDroppedFrames).toBe(5);
+    expect(tallies.get('a')).toBeNull(); // the genuinely stalest one goes instead
+  });
+
   it('a malformed or negative report is refused rather than stored as a number nobody measured', () => {
     const tallies = createSessionTallies();
     tallies.recordRelayDrops('i1', -3);

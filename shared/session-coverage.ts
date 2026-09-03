@@ -20,9 +20,13 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<string>(COVERAGE_GAP_KINDS);
  */
 export const COVERAGE_SEE_TARGETS = [
   'changes',
-  'status.gapfill',
-  'status.captureErrors',
-  'status.perf',
+  // Rooted at the `figma-agent status` REPLY, every one of them — the plugin's own STATUS
+  // blocks arrive on the reply under `plugin`, so `status.gapfill` would send a reader to
+  // a key that does not exist while the broker rows' `status.plugins[]…` resolved fine.
+  // One prefix, one root.
+  'status.plugin.gapfill',
+  'status.plugin.captureErrors',
+  'status.plugin.perf',
   'status.plugins',
   'status.pluginsAll',
   'status.plugins[].relayDroppedFrames',
@@ -30,6 +34,11 @@ export const COVERAGE_SEE_TARGETS = [
   'status.plugins[].replayedBatches',
   'status.pluginsAll[].replayedBatches',
 ] as const;
+
+/** The `see` vocabulary as a TYPE, not just a list: `coverageRow` takes this, so a typo
+ *  (`status.plugin.gapFill`) or a drifted template in a row builder fails `tsc` instead of
+ *  shipping a pointer that resolves to nothing. */
+export type CoverageSeeTarget = typeof COVERAGE_SEE_TARGETS[number];
 
 /**
  * One coverage row, or `null` when there is nothing to report.
@@ -40,7 +49,9 @@ export const COVERAGE_SEE_TARGETS = [
  * returns null rather than throwing: "this did not happen" is the normal case, and every
  * feeder is allowed to hand in its zero.
  */
-export function coverageRow(kind: CoverageGapKind, count: number, see: string): CoverageGap | null {
+export function coverageRow(
+  kind: CoverageGapKind, count: number, see: CoverageSeeTarget,
+): CoverageGap | null {
   if (!KNOWN_KINDS.has(kind)) throw new Error(`unknown coverage gap kind: ${String(kind)}`);
   if (!Number.isFinite(count) || !Number.isInteger(count)) {
     throw new Error(`coverage gap count must be a whole number, got ${String(count)}`);

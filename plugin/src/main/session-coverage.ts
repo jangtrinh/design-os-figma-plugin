@@ -39,7 +39,7 @@ export function buildPluginCoverage({ gapfill, capture, perf }: PluginCoverageIn
     coverageRow(
       'baseline-missing',
       gapfill && (gapfill.baselineWrittenAt === null || gapfill.baselineFirstRun === true) ? 1 : 0,
-      'status.gapfill',
+      'status.plugin.gapfill',
     ),
     // Pages that reported WITHOUT a per-node diff. The two counters behind this overlap by
     // an amount the walk does not record (`pagesTopLevelOnly` covers pages with a previous
@@ -50,26 +50,29 @@ export function buildPluginCoverage({ gapfill, capture, perf }: PluginCoverageIn
     coverageRow(
       'pages-top-level-only',
       gapfill ? Math.max(gapfill.pagesTopLevelOnly, gapfill.pagesTruncated) : 0,
-      'status.gapfill',
+      'status.plugin.gapfill',
     ),
-    coverageRow('pages-read-errors', gapfill?.pagesWithReadErrors ?? 0, 'status.gapfill'),
+    coverageRow('pages-read-errors', gapfill?.pagesWithReadErrors ?? 0, 'status.plugin.gapfill'),
     // An eviction is a deletion of another file's stored baseline: that file's next
     // session has nothing to diff against, and this is the only place it is ever said.
-    coverageRow('baseline-evicted', gapfill?.baselineEvicted?.length ?? 0, 'status.gapfill'),
-    // Gap-fill failures include "page walk failed on <page>" — that page's edits went
-    // unreported, so a session with one cannot claim to account for everything even when
-    // a baseline later landed. The messages themselves stay in `status.gapfill.errors`.
-    coverageRow('gapfill-errors', gapfill?.errorCount ?? 0, 'status.gapfill'),
+    coverageRow('baseline-evicted', gapfill?.baselineEvicted?.length ?? 0, 'status.plugin.gapfill'),
+    // Every gap-fill failure this session, whatever it was: a page walk that threw (that
+    // page's edits went unreported), a stored baseline REFUSED because it belongs to
+    // another file or would not parse (nothing was diffed against), a write that was
+    // withheld. The row does not claim which — it claims that gap-fill could not do its
+    // job, so the session cannot say it accounts for everything even when a baseline later
+    // landed. The messages themselves stay in `status.plugin.gapfill.errors`.
+    coverageRow('gapfill-errors', gapfill?.errorCount ?? 0, 'status.plugin.gapfill'),
     // A changed node with no resolvable page was filed under the current one — the feed
     // carries those frames under a guessed page name.
     coverageRow('page-fallbacks', capture?.pageFallbacks ?? 0, 'changes'),
-    coverageRow('capture-errors', capture?.errorCount ?? 0, 'status.captureErrors'),
+    coverageRow('capture-errors', capture?.errorCount ?? 0, 'status.plugin.captureErrors'),
     // `capture.pluginDataChangesDropped` deliberately gets NO row: those entries are the
     // plugin's own bookkeeping echo (a property change whose every property is
     // `pluginData`), not a designer edit this session failed to see — it stays readable
     // on STATUS as its own counter.
     // Nodes dropped mid-walk because their properties threw: absent from the walk, so
     // absent from what any diff built on it could report.
-    coverageRow('property-read-errors', perf?.propertyReadErrors ?? 0, 'status.perf'),
+    coverageRow('property-read-errors', perf?.propertyReadErrors ?? 0, 'status.plugin.perf'),
   ], { booted });
 }

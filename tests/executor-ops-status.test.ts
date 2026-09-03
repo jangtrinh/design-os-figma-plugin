@@ -232,7 +232,7 @@ describe('opStatus — the session coverage statement', () => {
     const coverage = opStatus([], 0, toGapfillStatus(stats), captureStats(), perf).coverage;
     expect(coverage).toEqual({
       complete: false,
-      gaps: [{ kind: 'baseline-missing', count: 1, see: 'status.gapfill' }],
+      gaps: [{ kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' }],
     });
   });
 
@@ -244,8 +244,8 @@ describe('opStatus — the session coverage statement', () => {
       .coverage as { complete: boolean | null; gaps: { kind: string; count: number }[] };
     expect(coverage.complete).toBe(false);
     expect(coverage.gaps).toEqual([
-      { kind: 'baseline-missing', count: 1, see: 'status.gapfill' },
-      { kind: 'gapfill-errors', count: 1, see: 'status.gapfill' },
+      { kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' },
+      { kind: 'gapfill-errors', count: 1, see: 'status.plugin.gapfill' },
       { kind: 'page-fallbacks', count: 2, see: 'changes' },
     ]);
   });

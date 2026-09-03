@@ -78,11 +78,16 @@ describe('the emitted skill points at the session coverage statement', () => {
   it('the connect protocol tells an agent to read `coverage` first, and what null means', () => {
     const skill = renderSkill();
     expect(skill).toContain('On connect read `coverage` first');
+    // WHERE it lives, and where it does not: `status --peek` is step 1 of this same
+    // protocol and carries no coverage at all.
+    expect(skill).toContain('`plugin.coverage` on `figma-agent status`');
+    expect(skill).toContain('`status --peek` does not carry it');
     expect(skill).toContain('`complete:false` lists what this session cannot');
     // `null` has THREE causes and only one of them is about the plugin's boot — an agent
     // that reads it as "still booting" would sit waiting for a connection that never was.
     expect(skill).toContain('nothing is connected, the STATUS round-trip failed');
     expect(skill).toContain('check `connected` first');
-    expect(skill).toContain("each row's `see` names");
+    expect(skill).toContain("each row's `see` is a");
+    expect(skill).toContain('path on that same reply');
   });
 });

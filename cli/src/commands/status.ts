@@ -142,8 +142,14 @@ export async function run(args: CommandArgs): Promise<unknown> {
   let connected = wantedFile ? plugins.length > 0 : hello.pluginConnected === true;
   let state = (hello.pluginState as string | undefined) ?? (connected ? 'connected' : 'disconnected');
   let lastHeartbeatAge = (hello.lastHeartbeatAge as number | null | undefined) ?? null;
-  let scene: Record<string, unknown> | null =
-    hello.pluginInfo && typeof hello.pluginInfo === 'object' ? (hello.pluginInfo as Record<string, unknown>) : null;
+  // The broker's own active-target scene (the registry's scene for the instance the STATUS
+  // round-trip reaches). Kept in its own const because `scene` below is merged with the
+  // reply and nulled on a race, while the coverage roll-up needs the ACTIVE instance's
+  // `fileKey` — the one thing that tells two same-named files apart.
+  const activePluginInfo = hello.pluginInfo && typeof hello.pluginInfo === 'object'
+    ? (hello.pluginInfo as Record<string, unknown>)
+    : null;
+  let scene: Record<string, unknown> | null = activePluginInfo;
 
   // Enrich the ACTIVE plugin with a live STATUS round-trip (user, pluginVersion…).
   if (connected) {
@@ -174,12 +180,31 @@ export async function run(args: CommandArgs): Promise<unknown> {
   // The rows are attributed by FILE, not by instance: the STATUS round-trip's reply
   // carries no instance id, and two windows open on one file write to the same per-file
   // feed anyway. Everything else connected is another file whose edits are not in view.
-  const fileRows = activePlugin === null ? [] : plugins.filter((p) => p.fileName === activePlugin);
+  //
+  // Attribution is by IDENTITY, never by name: `Untitled` is Figma's default file name, so
+  // two connected files routinely share one, and a name-keyed roll-up would tell a clean
+  // session it lost the other file's frames. `fileIdentity` is this package's one canonical
+  // chain — raw fileKey when present, else a slug of the name (file-identity.ts). Honest
+  // limit: two KEYLESS files sharing a name still collapse into a single identity, because
+  // a name is genuinely all either of them has.
+  const activeKeySource = wantedFile
+    ? plugins[0] ?? null                    // the file the caller asked about
+    // NOT the first row whose NAME matches: with two `Untitled`s that picks whichever
+    // connected first, which is not necessarily the one that answered.
+    : activePluginInfo;
+  const activeId = activePlugin === null || activeKeySource === null
+    ? null
+    : fileIdentity(
+        typeof activeKeySource.fileKey === 'string' ? activeKeySource.fileKey : null,
+        typeof activeKeySource.fileName === 'string' ? activeKeySource.fileName : activePlugin,
+      );
+  const fileRows = activeId === null
+    ? []
+    : plugins.filter((p) => fileIdentity(p.fileKey, p.fileName) === activeId);
   // Other FILES, not other sessions: two windows open on one other file are one file whose
-  // edits are missing from this view. Identity falls back the same way the rest of this CLI
-  // does (name, then key) so a nameless connection still counts as something.
+  // edits are missing from this view.
   const otherFiles = new Set(
-    all.filter((p) => p.fileName !== activePlugin).map((p) => p.fileName ?? p.fileKey ?? '?'),
+    all.map((p) => fileIdentity(p.fileKey, p.fileName)).filter((id) => id !== activeId),
   ).size;
   const coverage = mergeCoverage(
     readSessionCoverage((scene ?? {}).coverage),

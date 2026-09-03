@@ -58,7 +58,7 @@ describe('sessionCoverage — `complete` is a claim, not a default', () => {
 
   it('booted with no rows → true; booted with any row → false', () => {
     expect(sessionCoverage([], { booted: true })).toEqual({ complete: true, gaps: [] });
-    expect(sessionCoverage([coverageRow('capture-errors', 1, 'status.captureErrors')], { booted: true }).complete)
+    expect(sessionCoverage([coverageRow('capture-errors', 1, 'status.plugin.captureErrors')], { booted: true }).complete)
       .toBe(false);
   });
 });
@@ -80,7 +80,7 @@ describe('buildPluginCoverage — what the plugin main thread alone can state', 
   it('a session that wrote no baseline says so, and cannot be complete', () => {
     const coverage = buildPluginCoverage({ gapfill: gapfill({ baselineWrittenAt: null }), perf: perf() });
     expect(coverage.complete).toBe(false);
-    expect(coverage.gaps).toContainEqual({ kind: 'baseline-missing', count: 1, see: 'status.gapfill' });
+    expect(coverage.gaps).toContainEqual({ kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' });
   });
 
   it('a first-ever session on a file is a gap, even though it wrote a baseline', () => {
@@ -88,7 +88,7 @@ describe('buildPluginCoverage — what the plugin main thread alone can state', 
     // `baselineWrittenAt` is set and only this flag records that NOTHING was diffed.
     const coverage = buildPluginCoverage({ gapfill: gapfill({ baselineFirstRun: true }), perf: perf() });
     expect(coverage.complete).toBe(false);
-    expect(coverage.gaps).toEqual([{ kind: 'baseline-missing', count: 1, see: 'status.gapfill' }]);
+    expect(coverage.gaps).toEqual([{ kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' }]);
   });
 
   it('a caller that supplies nothing claims nothing', () => {
@@ -106,13 +106,13 @@ describe('buildPluginCoverage — what the plugin main thread alone can state', 
     });
     expect(coverage.complete).toBe(false);
     expect(coverage.gaps).toEqual([
-      { kind: 'pages-top-level-only', count: 2, see: 'status.gapfill' },
-      { kind: 'pages-read-errors', count: 4, see: 'status.gapfill' },
-      { kind: 'baseline-evicted', count: 2, see: 'status.gapfill' },
-      { kind: 'gapfill-errors', count: 3, see: 'status.gapfill' },
+      { kind: 'pages-top-level-only', count: 2, see: 'status.plugin.gapfill' },
+      { kind: 'pages-read-errors', count: 4, see: 'status.plugin.gapfill' },
+      { kind: 'baseline-evicted', count: 2, see: 'status.plugin.gapfill' },
+      { kind: 'gapfill-errors', count: 3, see: 'status.plugin.gapfill' },
       { kind: 'page-fallbacks', count: 5, see: 'changes' },
-      { kind: 'capture-errors', count: 6, see: 'status.captureErrors' },
-      { kind: 'property-read-errors', count: 7, see: 'status.perf' },
+      { kind: 'capture-errors', count: 6, see: 'status.plugin.captureErrors' },
+      { kind: 'property-read-errors', count: 7, see: 'status.plugin.perf' },
     ]);
   });
 
@@ -122,7 +122,7 @@ describe('buildPluginCoverage — what the plugin main thread alone can state', 
     // sum nor either alone is the true number of pages. The larger of the two is the
     // biggest number both counters support; `status.gapfill` carries the exact pair.
     const coverage = buildPluginCoverage({ gapfill: gapfill({ pagesTruncated: 9, pagesTopLevelOnly: 2 }), perf: perf() });
-    expect(coverage.gaps).toEqual([{ kind: 'pages-top-level-only', count: 9, see: 'status.gapfill' }]);
+    expect(coverage.gaps).toEqual([{ kind: 'pages-top-level-only', count: 9, see: 'status.plugin.gapfill' }]);
   });
 
 });

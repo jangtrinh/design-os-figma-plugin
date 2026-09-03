@@ -18,6 +18,7 @@ import {
   type FileBaseline,
 } from '../plugin/src/main/gapfill-baseline-store.ts';
 import { createGapfillStats, toGapfillStatus } from '../plugin/src/main/gapfill-status.ts';
+import { buildPluginCoverage } from '../plugin/src/main/session-coverage.ts';
 
 interface FakeNode {
   id: string; name: string; type: string; x: number; y: number;
@@ -490,6 +491,34 @@ describe('runGapfillDiff — the baseline must belong to THIS file', () => {
     // The key collision itself is unchanged: B now owns the key and A will read
     // baseline-missing next boot. An honest under-report each way, never a wrong diff.
     expect(storedBaseline(store, key).fileName).toBe('VSF / PCP');
+  });
+
+  it('the coverage an agent sees for that case: two true rows, one cause', async () => {
+    // A foreign baseline is `baseline: null` PLUS a recorded error, so the boot takes the
+    // first-run path AND records failures. Both rows are true — nothing was diffed, and
+    // gap-fill did refuse a stored value — and this pins the shape so a later change cannot
+    // quietly drop either one. The error COUNT is 2 for the one condition: the foreign
+    // value is refused twice, once by the boot read and once by the write's own read-back;
+    // the messages themselves stay in `status.plugin.gapfill.errors`.
+    const pagesA = [fakePage('pA', 'Screens', [fakeNode('a1')])];
+    installFigma({ pages: pagesA, fileKey: null, fileName: 'VSF - PCP' });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(pagesA, store, createGapfillStats());
+
+    installFigma({ pages: [fakePage('pB', 'Cover', [fakeNode('b1')])], fileKey: null, fileName: 'VSF / PCP' });
+    const stats = createGapfillStats();
+    await runGapfillDiff([fakePage('pB', 'Cover', [fakeNode('b1')])], store, stats);
+
+    const perf = createPerfStats();
+    markBootComplete(perf);
+    const coverage = buildPluginCoverage({ gapfill: toGapfillStatus(stats), perf: toPerfStatus(perf) });
+    expect(coverage).toEqual({
+      complete: false,
+      gaps: [
+        { kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' },
+        { kind: 'gapfill-errors', count: 2, see: 'status.plugin.gapfill' },
+      ],
+    });
   });
 
   it('a KEYED file keeps its baseline across a RENAME — the fileKey, not the name, is the identity', async () => {

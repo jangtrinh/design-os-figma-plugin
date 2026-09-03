@@ -46,6 +46,6 @@ export function brokerCoverageRows(
     coverageRow(
       'replayed-batches', sum(fileRows, 'replayedBatches'), `status.${pluginsField}[].replayedBatches`,
     ),
-    coverageRow('other-files-connected', Math.max(0, otherFiles), `status.${pluginsField}`),
+    coverageRow('other-files-connected', otherFiles, `status.${pluginsField}`),
   ];
 }

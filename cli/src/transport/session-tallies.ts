@@ -49,7 +49,15 @@ export function createSessionTallies(
 
   function entryFor(instanceId: string): SessionTally {
     const existing = tallies.get(instanceId);
-    if (existing) return existing;
+    if (existing) {
+      // Re-insert so this instance moves to the young end: the cap must evict the least
+      // recently USED session, not the oldest created one. A window left open while
+      // another reloads the plugin repeatedly is precisely the session whose losses matter,
+      // and dropping its tally would hand `status` a `complete: true` it did not earn.
+      tallies.delete(instanceId);
+      tallies.set(instanceId, existing);
+      return existing;
+    }
     const fresh: SessionTally = { relayDroppedFrames: 0, replayedBatches: 0 };
     tallies.set(instanceId, fresh);
     // Eviction is a deletion of a real record: whoever asks for the evicted instance's

@@ -71,8 +71,11 @@ function connectSocket(port: number): Promise<WebSocket> {
  *  (`undefined` = an older bundle that has no coverage statement at all). */
 async function helloPlugin(
   ws: WebSocket, instanceId: string, fileName: string, coverage?: SessionCoverage,
+  fileKey: string | null = null,
 ): Promise<void> {
-  ws.send(JSON.stringify({ type: 'PLUGIN_HELLO', data: { instanceId, fileName, caps: ['fileGuard'] } }));
+  ws.send(JSON.stringify({
+    type: 'PLUGIN_HELLO', data: { instanceId, fileName, fileKey, caps: ['fileGuard'] },
+  }));
   await new Promise<void>((resolve) => {
     const handler = (raw: WebSocket.RawData): void => {
       if ((JSON.parse(raw.toString()) as { type?: string }).type === 'SYNC_CONFIG') {
@@ -229,6 +232,52 @@ describe('figma-agent status — plugin.coverage', () => {
       .toEqual([{ kind: 'other-files-connected', count: 1, see: 'status.pluginsAll' }]);
   });
 
+  it('two OTHER files that share a name are two files — the key tells them apart', async () => {
+    const mod = await loadBrokerDaemon();
+    await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
+    const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number; pid: number };
+    vi.mocked(ensureBroker).mockResolvedValue({
+      port: ad.port, pid: ad.pid, protocolV: 1, buildMtime: 0, startedAt: Date.now(), lastSeen: Date.now(),
+    });
+    // `Untitled` is Figma's default file name, so two of them at once is an ordinary
+    // desktop state, not a contrived one.
+    const clean: SessionCoverage = { complete: true, gaps: [] };
+    await helloPlugin(await connectSocket(ad.port), 'p_a', 'Untitled', clean, 'KEY_A');
+    await helloPlugin(await connectSocket(ad.port), 'p_b', 'Untitled', clean, 'KEY_B');
+    await helloPlugin(await connectSocket(ad.port), 'p_active', 'Design File', clean, 'KEY_ACTIVE');
+    await settle();
+
+    const result = await run(fakeArgs()) as { plugin: { coverage: SessionCoverage } };
+    expect(result.plugin.coverage.gaps)
+      .toEqual([{ kind: 'other-files-connected', count: 2, see: 'status.plugins' }]);
+  });
+
+  it("a same-named OTHER file's losses never land on the active session's statement", async () => {
+    const mod = await loadBrokerDaemon();
+    await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
+    const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number; pid: number };
+    vi.mocked(ensureBroker).mockResolvedValue({
+      port: ad.port, pid: ad.pid, protocolV: 1, buildMtime: 0, startedAt: Date.now(), lastSeen: Date.now(),
+    });
+    const clean: SessionCoverage = { complete: true, gaps: [] };
+    // The LOSSY one connects FIRST, so a name-keyed roll-up that happens to pick the first
+    // matching row cannot pass this by luck of insertion order.
+    const lossy = await connectSocket(ad.port);
+    await helloPlugin(lossy, 'p_lossy', 'Untitled', clean, 'KEY_OTHER');
+    lossy.send(JSON.stringify({
+      type: 'PLUGIN_RELAY_STATS',
+      data: { dropped: { frames: 7, chars: 70 }, sessionTotal: { frames: 7, chars: 70 } },
+    }));
+    await settle();
+    await helloPlugin(await connectSocket(ad.port), 'p_active', 'Untitled', clean, 'KEY_ACTIVE');
+    await settle();
+
+    const result = await run(fakeArgs()) as { plugin: { coverage: SessionCoverage } };
+    // The active session lost nothing; the other file's 7 frames stay on ITS plugins[] row.
+    expect(result.plugin.coverage.gaps)
+      .toEqual([{ kind: 'other-files-connected', count: 1, see: 'status.plugins' }]);
+  });
+
   it('relay frames the plugin lost before connecting ride the same statement', async () => {
     const mod = await loadBrokerDaemon();
     await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
@@ -258,18 +307,18 @@ describe('figma-agent status — plugin.coverage', () => {
 function resolveTarget(target: string, result: Record<string, unknown>): unknown {
   const segments = target.split('.');
   if (segments[0] !== 'status') return undefined;
-  for (const root of [result, (result as { plugin?: unknown }).plugin]) {
-    let cursor: unknown = root;
-    for (const segment of segments.slice(1)) {
-      const isList = segment.endsWith('[]');
-      const key = isList ? segment.slice(0, -2) : segment;
-      cursor = (cursor as Record<string, unknown> | undefined)?.[key];
-      if (isList) cursor = Array.isArray(cursor) ? cursor[0] : undefined;
-      if (cursor === undefined) break;
-    }
-    if (cursor !== undefined) return cursor;
+  // ONE root: the reply itself. Accepting `result.plugin` as a second root would let
+  // `status.gapfill` and `status.plugin.gapfill` both "resolve", which is exactly the
+  // ambiguity a pointer must not have — the agent following it has one place to look.
+  let cursor: unknown = result;
+  for (const segment of segments.slice(1)) {
+    const isList = segment.endsWith('[]');
+    const key = isList ? segment.slice(0, -2) : segment;
+    cursor = (cursor as Record<string, unknown> | undefined)?.[key];
+    if (isList) cursor = Array.isArray(cursor) ? cursor[0] : undefined;
+    if (cursor === undefined) return undefined;
   }
-  return undefined;
+  return cursor;
 }
 
 describe('every `see` target names something that exists', () => {
