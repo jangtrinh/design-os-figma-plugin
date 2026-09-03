@@ -31,7 +31,12 @@ export const SKILL_CONNECT_PROTOCOL = `## Connect protocol
    version (an older bundle) — treat that as unknown, not as a mismatch. Plain \`status\`
    does not compute these fields itself — read them from \`--peek\`.
 4. If nothing is connected, the human's remaining step is opening the plugin panel in
-   Figma desktop — this CLI cannot do that for them.`;
+   Figma desktop — this CLI cannot do that for them.
+5. On connect read \`coverage\` first — it is \`plugin.coverage\` on \`figma-agent status\`
+   (\`status --peek\` does not carry it). \`complete:false\` lists what this session cannot
+   account for; \`complete:null\` means nothing is connected, the STATUS round-trip failed,
+   or the plugin's boot has not finished — check \`connected\` first; each row's \`see\` is a
+   path on that same reply (\`status.plugin.gapfill\`, \`status.plugins[]…\`) or a command.`;
 
 export const SKILL_WORKFLOW = `## Typical workflow
 

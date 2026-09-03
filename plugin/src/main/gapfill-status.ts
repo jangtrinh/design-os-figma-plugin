@@ -33,6 +33,11 @@ export interface GapfillStats {
   evicted: string[];
   errorCount: number;
   firstError: string | null;
+  /** True when THIS boot found no usable baseline at all and started one (the `!prev`
+   *  path in edit-gapfill.ts): it walked, wrote, and diffed nothing. `baselineWrittenAt`
+   *  is set by that same path, so without this flag a first-ever session is
+   *  indistinguishable from one that diffed a full history. */
+  baselineFirstRun: boolean;
   /** True once this session's boot found a stored baseline it could NOT read. Every later
    *  write in the session is withheld: the stored value is the only record of the window
    *  the plugin was closed, and the unreadable notice promised it would be diffed on the
@@ -45,7 +50,8 @@ export function createGapfillStats(): GapfillStats {
     pagesDiffed: 0, pagesTruncated: 0, pagesTopLevelOnly: 0, pagesWithReadErrors: 0, deletedRechecked: 0,
     baselineWrittenAt: null, baselineBytes: 0,
     legacyCleared: 0, staleBaselinesCleared: 0,
-    evicted: [], errorCount: 0, firstError: null, bootBaselineUnreadable: false,
+    evicted: [], errorCount: 0, firstError: null,
+    baselineFirstRun: false, bootBaselineUnreadable: false,
   };
 }
 
@@ -73,6 +79,7 @@ export function toGapfillStatus(stats: GapfillStats): GapfillStatus {
     ...(stats.deletedRechecked > 0 && { deletedRechecked: stats.deletedRechecked }),
     ...(stats.legacyCleared > 0 && { legacyCleared: stats.legacyCleared }),
     ...(stats.staleBaselinesCleared > 0 && { staleBaselinesCleared: stats.staleBaselinesCleared }),
+    ...(stats.baselineFirstRun && { baselineFirstRun: true as const }),
     ...(stats.evicted.length > 0 && { baselineEvicted: [...stats.evicted] }),
     ...(stats.firstError !== null && { errors: [stats.firstError], errorCount: stats.errorCount }),
   };

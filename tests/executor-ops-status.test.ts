@@ -187,3 +187,66 @@ describe('toGapfillStatus — the coverage a session actually delivered', () => 
     expect(toGapfillStatus(stats).staleBaselinesCleared).toBe(1);
   });
 });
+
+// The session coverage statement (session-coverage.ts) rides STATUS. Unlike every
+// present-only-when-meaningful counter above it is ALWAYS present: an agent is told to
+// read `coverage` FIRST on connect, and an absent block there would read as "nothing to
+// report" when it actually means "this build could not say". `complete: null` is that
+// second sentence, said out loud.
+describe('opStatus — the session coverage statement', () => {
+  const captureStats = (over: Partial<DocumentChangeCaptureStats> = {}): DocumentChangeCaptureStats => ({
+    pluginDataChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null, ...over,
+  });
+  const perf = {
+    bootLoadAllPagesMs: 120, pageLoadAsyncMaxMs: 0, bootWalkMs: 900,
+    bootWalkMaxSliceMs: 31, bootSlices: 42, idleWalkMs: 0, idleWalkMaxSliceMs: 0,
+  };
+
+  it('is always present — a caller that supplies no feeders claims nothing, out loud', () => {
+    installMockFigma();
+    expect(opStatus().coverage).toEqual({ complete: null, gaps: [] });
+  });
+
+  it('boot still running (no perf block) → null, even with a written baseline and zero gaps', () => {
+    installMockFigma();
+    const stats = createGapfillStats();
+    stats.baselineWrittenAt = '2026-09-04T00:00:00.000Z';
+    expect(opStatus([], 0, toGapfillStatus(stats), captureStats()).coverage)
+      .toEqual({ complete: null, gaps: [] });
+  });
+
+  it('a booted session that DIFFED a prior baseline and lost nothing claims completeness', () => {
+    installMockFigma();
+    const stats = createGapfillStats();
+    stats.pagesDiffed = 4;                                   // a prior baseline was there
+    stats.baselineWrittenAt = '2026-09-04T00:00:00.000Z';    // and this session refreshed it
+    expect(opStatus([], 0, toGapfillStatus(stats), captureStats(), perf).coverage)
+      .toEqual({ complete: true, gaps: [] });
+  });
+
+  it('a FIRST-EVER session on a file cannot be complete — it wrote a baseline but diffed none', () => {
+    installMockFigma();
+    const stats = createGapfillStats();
+    stats.baselineFirstRun = true;                           // the `!prev` boot path
+    stats.baselineWrittenAt = '2026-09-04T00:00:00.000Z';    // written by that same path
+    const coverage = opStatus([], 0, toGapfillStatus(stats), captureStats(), perf).coverage;
+    expect(coverage).toEqual({
+      complete: false,
+      gaps: [{ kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' }],
+    });
+  });
+
+  it('the same session with no baseline written can never be complete, and says which kind', () => {
+    installMockFigma();
+    const stats = createGapfillStats();
+    recordGapfillError(stats, 'page walk failed on "Home"');
+    const coverage = opStatus([], 0, toGapfillStatus(stats), captureStats({ pageFallbacks: 2 }), perf)
+      .coverage as { complete: boolean | null; gaps: { kind: string; count: number }[] };
+    expect(coverage.complete).toBe(false);
+    expect(coverage.gaps).toEqual([
+      { kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' },
+      { kind: 'gapfill-errors', count: 1, see: 'status.plugin.gapfill' },
+      { kind: 'page-fallbacks', count: 2, see: 'changes' },
+    ]);
+  });
+});

@@ -499,6 +499,11 @@ export interface GapfillStatus {
    *  while the sliced walk yielded. Left for the next session instead of reported as a
    *  deletion. Present only when > 0. */
   deletedRechecked?: number;
+  /** True when this boot found no usable baseline and STARTED one — it walked, wrote, and
+   *  diffed nothing. Present only when true. Read it next to `baselineWrittenAt`, which
+   *  that same path sets: a first-ever session on a file has a fresh baseline and no
+   *  history behind it, and the window before it was never accounted for. */
+  baselineFirstRun?: true;
   /** ISO timestamp of the last baseline write that SUCCEEDED, else null. */
   baselineWrittenAt: string | null;
   /** Serialized size of that baseline. 0 while none has landed. */
@@ -540,6 +545,74 @@ export interface PerfStatus {
    *  host that refuses the read. Present only when non-zero: a dropped node would otherwise
    *  read as a deletion in the next session's diff with nothing to explain it. */
   propertyReadErrors?: number;
+}
+
+// ── STATUS: the session coverage statement ──────────────────────────
+/**
+ * The closed vocabulary of things a session can fail to account for. Closed on purpose:
+ * an agent reading `coverage` must be able to branch on a fixed set of kinds, and a
+ * free-text kind would turn a machine-readable statement back into a log line. The
+ * builders refuse a kind outside this list (shared/session-coverage.ts) — the READER
+ * keeps an unknown one it received, because a row from a newer plugin is still a gap and
+ * dropping it would quietly inflate the answer.
+ *
+ * The first group is what the plugin's main thread knows about its own session; the
+ * second is what only the broker can see (the CLI appends those in `status`).
+ */
+export const COVERAGE_GAP_KINDS = [
+  /** No baseline could be diffed against this boot (unreadable, foreign, or the first
+   *  session on this file) — the window while the plugin was closed was never accounted
+   *  for, whether or not a fresh baseline has since been written. */
+  'baseline-missing',
+  'pages-top-level-only',
+  'pages-read-errors',
+  'baseline-evicted',
+  'gapfill-errors',
+  'page-fallbacks',
+  'capture-errors',
+  'property-read-errors',
+  /** Protocol FRAMES the relay dropped before it could connect — the relay's own unit, and
+   *  it buffers two per edit batch (a DOC_CHANGE and an EDIT_FEED), so this is not a count
+   *  of edits or of batches. */
+  'relay-dropped-frames',
+  'other-files-connected',
+  /** Capture BATCHES that reached the broker late, after an outage. One batch is counted
+   *  once, on its EDIT_FEED frame, even though the same batch also travels as DOC_CHANGE. */
+  'replayed-batches',
+] as const;
+
+export type CoverageGapKind = typeof COVERAGE_GAP_KINDS[number];
+
+/**
+ * One gap: a KIND, how many of it, and where the detail lives. `see` is drawn from a
+ * closed list of things that actually exist (shared/session-coverage.ts's
+ * `COVERAGE_SEE_TARGETS`): a CLI command name (`changes`) or a field path on the
+ * `figma-agent status` reply this row is printed in (`status.gapfill`,
+ * `status.plugins[].relayDroppedFrames`). Never a timestamp, a node id or a message:
+ * those belong to the place `see` points at, and a status payload that grows with the
+ * session is one nobody re-reads.
+ */
+export interface CoverageGap {
+  kind: string;
+  count: number;
+  see: string;
+}
+
+/**
+ * What this session can and cannot account for.
+ *
+ * `complete` is `true` ONLY when every count is zero, boot has actually finished, and a
+ * baseline landed — `null` means "boot has not finished, so nobody can say yet", and is
+ * the honest answer a pre-boot session gives instead of a default. `gaps` carries only
+ * rows with a count above zero, so `complete: true` and an empty `gaps` always agree.
+ *
+ * Present on the STATUS reply once main.ts supplies its feeders, and ALWAYS present on
+ * `figma-agent status`'s `plugin` object — a missing coverage block there would read as
+ * "nothing to report" when it actually means "this build could not say".
+ */
+export interface SessionCoverage {
+  complete: boolean | null;
+  gaps: CoverageGap[];
 }
 
 // ── Multi-plugin registry (P4) ──────────────────────────────────────
@@ -606,6 +679,22 @@ export interface PluginStatusEntry {
    */
   pluginVersion?: string;
   protocolV?: number;
+  /**
+   * Session coverage the BROKER observed for this instance, and only it:
+   *  · `relayDroppedFrames` — protocol FRAMES the relay lost before it could connect (the
+   *    latest `sessionTotal` a PLUGIN_RELAY_STATS reported; a re-report REPLACES the tally
+   *    rather than summing, because the frame carries the whole session's total). Frames,
+   *    not edits: the relay buffers two per edit batch.
+   *  · `replayedBatches` — capture BATCHES that reached this broker late, after an outage.
+   *    Counted once per batch, on its EDIT_FEED frame only, though the same batch also
+   *    travels as a DOC_CHANGE.
+   * Both present only once above zero, the same present-only-when-meaningful contract as
+   * `senderMismatchCount`/`reHelloCount` above, so a clean session's payload stays
+   * byte-identical to before these fields existed. `figma-agent status` turns them into
+   * `relay-dropped-frames` / `replayed-batches` coverage rows.
+   */
+  relayDroppedFrames?: number;
+  replayedBatches?: number;
   /** Additive application-readiness facts; absent means an older broker. */
   appReady?: boolean | null;
   appState?: AppState;

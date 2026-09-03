@@ -3,6 +3,27 @@
   // shared/protocol.ts
   var DEFAULT_IDLE_MS = 3e5;
   var MIN_IDLE_MS = 1e3;
+  var COVERAGE_GAP_KINDS = [
+    /** No baseline could be diffed against this boot (unreadable, foreign, or the first
+     *  session on this file) — the window while the plugin was closed was never accounted
+     *  for, whether or not a fresh baseline has since been written. */
+    "baseline-missing",
+    "pages-top-level-only",
+    "pages-read-errors",
+    "baseline-evicted",
+    "gapfill-errors",
+    "page-fallbacks",
+    "capture-errors",
+    "property-read-errors",
+    /** Protocol FRAMES the relay dropped before it could connect — the relay's own unit, and
+     *  it buffers two per edit batch (a DOC_CHANGE and an EDIT_FEED), so this is not a count
+     *  of edits or of batches. */
+    "relay-dropped-frames",
+    "other-files-connected",
+    /** Capture BATCHES that reached the broker late, after an outage. One batch is counted
+     *  once, on its EDIT_FEED frame, even though the same batch also travels as DOC_CHANGE. */
+    "replayed-batches"
+  ];
   var CHUNK_LIMIT = 512 * 1024;
   var CONTEXT_SCHEMA = "context/1";
   var DEFAULT_COWORK_TIMEOUT_SECONDS = 600;
@@ -364,6 +385,7 @@
       evicted: [],
       errorCount: 0,
       firstError: null,
+      baselineFirstRun: false,
       bootBaselineUnreadable: false
     };
   }
@@ -385,6 +407,7 @@
       ...stats.deletedRechecked > 0 && { deletedRechecked: stats.deletedRechecked },
       ...stats.legacyCleared > 0 && { legacyCleared: stats.legacyCleared },
       ...stats.staleBaselinesCleared > 0 && { staleBaselinesCleared: stats.staleBaselinesCleared },
+      ...stats.baselineFirstRun && { baselineFirstRun: true },
       ...stats.evicted.length > 0 && { baselineEvicted: [...stats.evicted] },
       ...stats.firstError !== null && { errors: [stats.firstError], errorCount: stats.errorCount }
     };
@@ -707,6 +730,7 @@
       return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
     }
     if (!prev) {
+      stats.baselineFirstRun = true;
       const firstRun = /* @__PURE__ */ new Map();
       for (const page of pages) {
         await yieldToHost();
@@ -4052,6 +4076,71 @@
     };
   }
 
+  // shared/session-coverage.ts
+  var KNOWN_KINDS = new Set(COVERAGE_GAP_KINDS);
+  function coverageRow(kind, count, see) {
+    if (!KNOWN_KINDS.has(kind)) throw new Error(`unknown coverage gap kind: ${String(kind)}`);
+    if (!Number.isFinite(count) || !Number.isInteger(count)) {
+      throw new Error(`coverage gap count must be a whole number, got ${String(count)}`);
+    }
+    if (count <= 0) return null;
+    return { kind, count, see };
+  }
+  function sessionCoverage(rows, opts) {
+    const gaps = rows.filter((row) => row !== null);
+    return { complete: opts.booted ? gaps.length === 0 : null, gaps };
+  }
+
+  // plugin/src/main/session-coverage.ts
+  function buildPluginCoverage({ gapfill, capture: capture2, perf }) {
+    const booted = perf !== void 0;
+    return sessionCoverage([
+      // The window while the plugin was closed was never diffed against anything — the one
+      // failure that used to look identical to a healthy session. TWO ways to get here, and
+      // the second is why `baselineWrittenAt` alone is not the test: no baseline was written
+      // at all, OR this boot found none to diff and STARTED one (`baselineFirstRun`), which
+      // sets `baselineWrittenAt` on the way out and would otherwise read as full health.
+      coverageRow(
+        "baseline-missing",
+        gapfill && (gapfill.baselineWrittenAt === null || gapfill.baselineFirstRun === true) ? 1 : 0,
+        "status.plugin.gapfill"
+      ),
+      // Pages that reported WITHOUT a per-node diff. The two counters behind this overlap by
+      // an amount the walk does not record (`pagesTopLevelOnly` covers pages with a previous
+      // fingerprint whichever side was over the cap; `pagesTruncated` covers pages over it
+      // this session, fingerprint or not), so their sum would double-count and either alone
+      // can be too small. The larger is the biggest number both counters support — a lower
+      // bound, deliberately, with the exact pair one hop away in `status.gapfill`.
+      coverageRow(
+        "pages-top-level-only",
+        gapfill ? Math.max(gapfill.pagesTopLevelOnly, gapfill.pagesTruncated) : 0,
+        "status.plugin.gapfill"
+      ),
+      coverageRow("pages-read-errors", gapfill?.pagesWithReadErrors ?? 0, "status.plugin.gapfill"),
+      // An eviction is a deletion of another file's stored baseline: that file's next
+      // session has nothing to diff against, and this is the only place it is ever said.
+      coverageRow("baseline-evicted", gapfill?.baselineEvicted?.length ?? 0, "status.plugin.gapfill"),
+      // Every gap-fill failure this session, whatever it was: a page walk that threw (that
+      // page's edits went unreported), a stored baseline REFUSED because it belongs to
+      // another file or would not parse (nothing was diffed against), a write that was
+      // withheld. The row does not claim which — it claims that gap-fill could not do its
+      // job, so the session cannot say it accounts for everything even when a baseline later
+      // landed. The messages themselves stay in `status.plugin.gapfill.errors`.
+      coverageRow("gapfill-errors", gapfill?.errorCount ?? 0, "status.plugin.gapfill"),
+      // A changed node with no resolvable page was filed under the current one — the feed
+      // carries those frames under a guessed page name.
+      coverageRow("page-fallbacks", capture2?.pageFallbacks ?? 0, "changes"),
+      coverageRow("capture-errors", capture2?.errorCount ?? 0, "status.plugin.captureErrors"),
+      // `capture.pluginDataChangesDropped` deliberately gets NO row: those entries are the
+      // plugin's own bookkeeping echo (a property change whose every property is
+      // `pluginData`), not a designer edit this session failed to see — it stays readable
+      // on STATUS as its own counter.
+      // Nodes dropped mid-walk because their properties threw: absent from the walk, so
+      // absent from what any diff built on it could report.
+      coverageRow("property-read-errors", perf?.propertyReadErrors ?? 0, "status.plugin.perf")
+    ], { booted });
+  }
+
   // plugin/src/main/executor-ops.ts
   var PLUGIN_VERSION = "0.1.0";
   var LAYOUT_MODE_MAP = {
@@ -4191,7 +4280,14 @@
       // walk took 40 ms" is a claim only the finished walk can make. Once present it stays,
       // zeros included — a session that walked nothing (an unreadable baseline skips the
       // walk) must be distinguishable from one that walked slowly.
-      ...perf && { perf }
+      ...perf && { perf },
+      // The session coverage statement (session-coverage.ts) — the one field on this
+      // payload that is ALWAYS present, deliberately breaking the byte-identical contract
+      // every counter above keeps. The skill tells an agent to read `coverage` first on
+      // connect, and a block that appears only when something went wrong would make its
+      // absence mean two different things (nothing lost / this build cannot say). It says
+      // the second one out loud instead: `complete: null`.
+      coverage: buildPluginCoverage({ gapfill, capture: capture2, perf })
     };
   }
   function opGetSelection(params) {

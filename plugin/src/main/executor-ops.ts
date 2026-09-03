@@ -12,6 +12,7 @@ import { loadBestFont } from './executor-fonts';
 import { withCode } from './executor-styles';
 import { applyAutoLayout } from './executor-frame';
 import { serializeNode } from './serialize-node';
+import { buildPluginCoverage } from './session-coverage';
 
 export const PLUGIN_VERSION = '0.1.0';
 
@@ -154,6 +155,13 @@ export function opStatus(
     // zeros included — a session that walked nothing (an unreadable baseline skips the
     // walk) must be distinguishable from one that walked slowly.
     ...(perf && { perf }),
+    // The session coverage statement (session-coverage.ts) — the one field on this
+    // payload that is ALWAYS present, deliberately breaking the byte-identical contract
+    // every counter above keeps. The skill tells an agent to read `coverage` first on
+    // connect, and a block that appears only when something went wrong would make its
+    // absence mean two different things (nothing lost / this build cannot say). It says
+    // the second one out loud instead: `complete: null`.
+    coverage: buildPluginCoverage({ gapfill, capture, perf }),
   };
 }
 
