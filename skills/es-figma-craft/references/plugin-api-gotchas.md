@@ -76,3 +76,13 @@ Every entry: real incident → symptom → fix. Written for `exec-js` (design:os
 - **Sub-pixel rendering eats glyphs at scale <1** (`~` → `-`). Critical text is verified from node `characters`, never from an exported image.
 - **Language/copy sweeps need the FULL regex including UPPERCASE diacritics** — ALL-CAPS Vietnamese headers passed lowercase-only regexes for weeks. Generalize: any content-audit regex must cover the full case/diacritic space of the target language.
 - **Non-current-page findAll is slow (5–7s) and can time out** — single-pass sweeps, `findAllWithCriteria`, or an indexed scan; never nested per-node findAll loops.
+
+## Class G — Added 2026-09-03 (VSF-PCP MCP Gateway / LLM Routing / IAM Agent tools campaign)
+
+- **`combineAsVariants` halves FILL-sized variants** — a frame with `layoutSizingHorizontal='FILL'` becomes a FILL child of the new set's auto-layout and shrinks to 1/N. Pin `FIXED` + explicit width on every variant BEFORE combining; inputs must already be COMPONENTs (`createComponentFromNode` first).
+- **`resetOverrides()` on a table cell / KeyValue also resets sizing to the master's** (FILL → master width) — re-apply `layoutSizingHorizontal='FILL'` after every reset; and cells lifted from a donor screen usually carry typography overrides you cannot see in a PNG (text 20h vs 17h) — reset all cells of a lifted table, then re-set props.
+- **`swapComponent` on a Button's icon slot drops the master's stroke paint** — the swapped icon renders in the icon master's own colour (a pink Plus on a red primary button). Capture the vector `strokes` of the SAME Button variant's master icon and reassign after the swap. Ghost/compact variants name the slot after the icon (`Icon / Plus`), not `Leading icon`.
+- **Popovers inside a component are painted over by later siblings and clipped by any ancestor `clipsContent`** (Body/slot inside a shell instance you cannot change) — dropdown/popover demos live on the ARTBOARD WRAPPER (like dialogs/scrims), anchored via `absoluteBoundingBox` of the trigger.
+- **`findOne(n => n.type==='TEXT')` is depth-first and can return a nested slot's text before the node's own** — locate by `children.find` / exact path when a cell has a swapped slot.
+- **Owner-edit feed attribution is per-plugin-session**: with two agent sessions on one file, the other session's mutations show up as `actor:owner`. Trust only entries whose `changedProps` are human-shaped (move/opacity/fills/resize of notes) and cross-check against your own script timestamps.
+- **Broker idle flap**: the first CLI call after ~1–2 min idle can fail with a "disconnected mutation" error while the plugin is fine; parallel CLI invocations restart the broker. One call at a time, `status --wait` before each batch.

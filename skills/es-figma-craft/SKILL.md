@@ -1,5 +1,5 @@
 ---
-name: es-figma-craft
+name: es:figma-craft
 description: "Generic Figma canvas engineering discipline — the battle-tested workflow, laws, and Plugin-API failure-mode catalog for building/editing Figma files programmatically (design:os figma-agent CLI or use_figma MCP). Use for ANY project's Figma build/edit/componentize/verify work. Distilled from the VSF-PCP campaigns (2026-06 → 2026-08): every rule here paid for by a real incident."
 user-invocable: true
 when_to_use: "Invoke before ANY programmatic Figma mutation session in ANY project — screen builds, component minting, variant sets, table builds, master edits, batch sweeps. Pairs with a thin per-project adapter (see references/project-adapter-template.md). Skip only for pure read-only diagnosis of a single node."
@@ -7,11 +7,11 @@ category: user
 keywords: [figma, design-os, figma-agent, exec-js, use_figma, plugin-api, component, variant, verification, pipeline]
 metadata:
   author: jang
-  version: "1.0.0"
-  lineage: "Consolidated 2026-08-07 from VSF-PCP figma-idp-rebuild references + design-os supervised update + figma-agent backlog + 25 memory entries"
+  version: "1.1.0"
+  lineage: "Consolidated 2026-08-07 from VSF-PCP figma-idp-rebuild references + design-os supervised update + figma-agent backlog + 25 memory entries; 1.1.0 (2026-09-03) adds screen-composition, drawer-decision-tree, section-presentation + gates 9–10 from the MCP Gateway / LLM Routing / IAM campaigns"
 ---
 
-# es-figma-craft — Figma canvas engineering, project-agnostic
+# es:figma-craft — Figma canvas engineering, project-agnostic
 
 **This file is the router.** It holds the pipeline, the laws, and a load-table. Details live in exactly one reference each — load on demand.
 
@@ -70,6 +70,9 @@ Full thinking layer (8 operating gates + rationale): [operating-gates.md](refere
 | [pipeline.md](references/pipeline.md) | Every build — per-phase detail, MCP/call budgeting |
 | [plugin-api-gotchas.md](references/plugin-api-gotchas.md) | Before writing ANY exec-js / use_figma script — 6 classes of API failure modes with fixes |
 | [component-system.md](references/component-system.md) | Any componentize / variant / table / shell decision — ladder, extraction heuristics, column-first tables, shell+slot, template-first |
+| [screen-composition.md](references/screen-composition.md) | Building any full screen — shell + slot anatomy, lift masters from live instances, state axes, overlays in wrapper frames, icon-swap carve-out, helper-library contract |
+| [drawer-decision-tree.md](references/drawer-decision-tree.md) | Composing any drawer/dialog body — derive the tree from the file, width tiers, purpose rows A–E, forbidden list |
+| [section-presentation.md](references/section-presentation.md) | Placing screens in a section, notes, tags, archiving, data-coherence gate, owner-mockup → DS rebuild |
 | [verification-protocol.md](references/verification-protocol.md) | Closing any batch — the 3-layer verify, false-green catalog, sweep disciplines |
 | [build-script-standard.md](references/build-script-standard.md) | Writing any mutation script — the canonical script anatomy (guards → idempotency → spec constants → mutate → assert → structured return) + anti-pattern table |
 | [script-helpers.md](references/script-helpers.md) | Writing any mutation script — copy the fail-loud helper block + ordering laws + the guards (effective-visibility, live counts, safe delete, blast radius) |
