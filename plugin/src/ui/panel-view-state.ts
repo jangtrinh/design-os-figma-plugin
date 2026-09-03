@@ -1,4 +1,3 @@
-import type { ConnectionState } from '../../../shared/protocol';
 import { pushActivity, resolveActivity, type ActivityRecord, type ActivityResult } from './activity-feed';
 
 export const VIEW_KEY_LIMIT = 64;
@@ -26,6 +25,8 @@ export class BoundedKeySet {
   get unresolvedCount(): number { return this.keys.size + this.overflow; }
   get overflowCount(): number { return this.overflow; }
   values(): string[] { return [...this.keys]; }
+  /** The user says they have seen them. The keys go, the overflow counter goes with them —
+   *  the failures themselves stay in the edit feed and in `figma-agent errors`. */
   acknowledge(): void { this.keys.clear(); this.overflow = 0; }
 }
 
@@ -55,29 +56,4 @@ export function landTerminalActivity(
     result: patch.result, errorCode: patch.code, nodeName: patch.nodeName,
     sentence: `Late result for request ${patch.id} — ${detail}`,
   });
-}
-
-export type ConnectionForceKind = 'onboarding' | 'probe-timeout' | 'connection-lost';
-export interface ConnectionForce {
-  key: string;
-  kind: ConnectionForceKind;
-}
-
-/** Semantic keys make the 10-second threshold distinct from the earlier onboarding view. */
-export function connectionForce(
-  state: ConnectionState,
-  ageMs: number,
-  hadConnection: boolean,
-  transitionId: number,
-): ConnectionForce | null {
-  if (state === 'probing' && ageMs >= 10_000) {
-    return { key: `probe-timeout:${transitionId}`, kind: 'probe-timeout' };
-  }
-  if (state === 'disconnected' && hadConnection) {
-    return { key: `connection-lost:${transitionId}`, kind: 'connection-lost' };
-  }
-  if (!hadConnection && (state === 'disconnected' || state === 'probing')) {
-    return { key: `onboarding:${transitionId}`, kind: 'onboarding' };
-  }
-  return null;
 }
