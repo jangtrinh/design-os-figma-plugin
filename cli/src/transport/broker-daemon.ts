@@ -35,6 +35,7 @@ import {
   toAwaitingReconnectStatus, writeLastPluginsAtomic, type AwaitingReconnectEntry, type LastPluginRecord,
 } from './last-plugins-log.ts';
 import { pinDisconnected, resolveRouteFilter, type RouteFilter } from './route-filter.ts';
+import { formatAmbiguousFileMessage } from './ambiguous-file-error.ts';
 import {
   appendChangeFrames, changeLogPathFor, migrateLegacyUnboundChanges, migrateStagedChanges,
   unboundStagingPath, unboundStagingRoot,
@@ -1255,10 +1256,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // is how a command lands in the file the caller did not name. (--instance can never hit
       // this branch: kind:'instance' matches 0 or 1 entries by construction.)
       if (filter.source === 'flag' && hits.length > 1) {
-        const ids = hits.map((e) => `${e.scene.fileName ?? '(unnamed)'}#${e.instanceId}`).join(', ');
-        sendReplyErr(from, id, 'E_INVALID_ARGS',
-          `--file "${filter.value}" matches ${hits.length} connected files [${ids}] — close one panel, rename the files apart, ` +
-          `or target one exactly with --instance <id> (e.g. --instance ${hits[0].instanceId})`);
+        sendReplyErr(from, id, 'E_INVALID_ARGS', formatAmbiguousFileMessage(filter.value!, hits));
         return;
       }
       const target = selectDispatchTarget(filter, hits);

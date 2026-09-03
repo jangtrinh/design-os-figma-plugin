@@ -23,6 +23,7 @@ vi.mock('../cli/src/transport/broker-discovery.ts', async (importOriginal) => {
 
 const { ensureBroker } = await import('../cli/src/transport/broker-discovery.ts');
 const { run } = await import('../cli/src/commands/status.ts');
+const { setExpectedFile } = await import('../cli/src/transport/broker-client.ts');
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -298,6 +299,40 @@ describe('figma-agent status — plugin.coverage', () => {
       complete: false,
       gaps: [{ kind: 'relay-dropped-frames', count: 5, see: 'status.plugins[].relayDroppedFrames' }],
     });
+  });
+});
+
+describe('figma-agent status — ambiguous --file diagnoses instead of failing', () => {
+  afterEach(() => { setExpectedFile(undefined); });
+
+  it('two files sharing a name diagnose as ambiguous instead of failing the round-trip', async () => {
+    const mod = await loadBrokerDaemon();
+    await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
+    const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number; pid: number };
+    vi.mocked(ensureBroker).mockResolvedValue({
+      port: ad.port, pid: ad.pid, protocolV: 1, buildMtime: 0, startedAt: Date.now(), lastSeen: Date.now(),
+    });
+    const clean: SessionCoverage = { complete: true, gaps: [] };
+    await helloPlugin(await connectSocket(ad.port), 'p_a', 'Untitled', clean, 'KEY_A');
+    await helloPlugin(await connectSocket(ad.port), 'p_b', 'Untitled', clean, 'KEY_B');
+    await settle();
+
+    // Production wiring: figma-agent.ts's main() calls `setExpectedFile(args.str('file'))`
+    // once per process, which is what makes the STATUS round-trip below carry `expectedFile`
+    // and hit the broker's ROUTE ambiguity refusal — `run(fakeArgs({file}))` alone does not.
+    setExpectedFile('Untitled');
+    const result = await run(fakeArgs({ file: 'Untitled' })) as {
+      plugin: { connected: boolean; state: string; ambiguous?: number; coverage: SessionCoverage };
+      plugins: unknown[];
+      pluginsAll: unknown[];
+    };
+
+    expect(result.plugin.connected).toBe(false);
+    expect(result.plugin.state).toBe('ambiguous');
+    expect(result.plugin.ambiguous).toBe(2);
+    expect(result.plugins).toHaveLength(2);
+    expect(result.pluginsAll).toHaveLength(2);
+    expect(result.plugin.coverage.complete).toBeNull();
   });
 });
 

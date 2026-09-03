@@ -14,6 +14,7 @@ import { waitForPlugin } from '../transport/plugin-wait.ts';
 import { buildDeepLink, type DeepLinkEntry } from '../transport/figma-deep-link.ts';
 import { fileIdentity, readBindCache, readBindMarker } from '../transport/project-bind.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
+import { isAmbiguousFileErrorMessage } from '../transport/ambiguous-file-error.ts';
 import { mergeCoverage, readSessionCoverage } from '../../../shared/session-coverage.ts';
 import { brokerCoverageRows } from '../transport/broker-coverage-rows.ts';
 
@@ -142,6 +143,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
   let connected = wantedFile ? plugins.length > 0 : hello.pluginConnected === true;
   let state = (hello.pluginState as string | undefined) ?? (connected ? 'connected' : 'disconnected');
   let lastHeartbeatAge = (hello.lastHeartbeatAge as number | null | undefined) ?? null;
+  // Present only when the STATUS round-trip below refuses with the broker's "--file
+  // matched more than one connected file" shape: the number of matching rows
+  // (== `plugins.length`, computed the same way the broker's own routing matched them).
+  let ambiguous: number | undefined;
   // The broker's own active-target scene (the registry's scene for the instance the STATUS
   // round-trip reaches). Kept in its own const because `scene` below is merged with the
   // reply and nulled on a race, while the coverage roll-up needs the ACTIVE instance's
@@ -158,10 +163,23 @@ export async function run(args: CommandArgs): Promise<unknown> {
       if (s && typeof s === 'object') scene = { ...(scene ?? {}), ...(s as Record<string, unknown>) };
     } catch (err) {
       // Raced: the active plugin left between the hello and the STATUS round-trip
-      // (E_NO_PLUGIN), or the file the caller named no longer matches what answered
-      // (E_WRONG_FILE) — either way `status` stays a diagnosis tool that never fails.
-      if (!(err instanceof CliError && (err.code === 'E_NO_PLUGIN' || err.code === 'E_WRONG_FILE' || err.code === 'E_APP_UNREADY'))) throw err;
-      if (err.code !== 'E_APP_UNREADY') {
+      // (E_NO_PLUGIN), the file the caller named no longer matches what answered
+      // (E_WRONG_FILE), or --file named more than one connected file (the broker's
+      // E_INVALID_ARGS ambiguity refusal, matched by `isAmbiguousFileErrorMessage`) — none of these
+      // are a reason for `status` to fail; it stays a diagnosis tool that reports what it
+      // found instead of throwing.
+      const ambiguousRefusal = err instanceof CliError && err.code === 'E_INVALID_ARGS'
+        && isAmbiguousFileErrorMessage(err.message);
+      if (!(err instanceof CliError && (err.code === 'E_NO_PLUGIN' || err.code === 'E_WRONG_FILE' || err.code === 'E_APP_UNREADY' || ambiguousRefusal))) throw err;
+      if (ambiguousRefusal) {
+        // New, documented `plugin.state` value: distinct from 'disconnected' — nobody left,
+        // the caller's --file just could not pick ONE of `plugins.length` live matches.
+        ambiguous = plugins.length;
+        connected = false;
+        state = 'ambiguous';
+        lastHeartbeatAge = null;
+        scene = null;
+      } else if (err.code !== 'E_APP_UNREADY') {
         connected = false;
         state = 'disconnected';
         lastHeartbeatAge = null;
@@ -215,7 +233,11 @@ export async function run(args: CommandArgs): Promise<unknown> {
 
   // Legacy compat shim: `plugin` mirrors the ACTIVE plugin so design-os `_status_text`
   // and older consumers (which read `plugin.connected`) keep working unchanged.
-  const plugin = { connected, state, lastHeartbeatAge, ...(scene ?? {}), coverage };
+  const plugin = {
+    connected, state, lastHeartbeatAge,
+    ...(ambiguous !== undefined && { ambiguous }),
+    ...(scene ?? {}), coverage,
+  };
 
   // Keep the full list available when `--file` filtered `plugins[]`, so the user can
   // still see what IS connected even though it doesn't match what they asked about.
