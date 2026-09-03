@@ -13,7 +13,8 @@
 // memory cap would cost a second full copy of the payload. For this traffic (JSON with
 // mostly ASCII keys) the two are within a rounding error of each other.
 
-/** Frame count / character cost of everything this session dropped. Session-cumulative. */
+/** Frame count / character cost of dropped frames. Used both for the session-cumulative
+ *  total and for the not-yet-reported delta. */
 export interface PreOpenDrops {
   frames: number;
   chars: number;
@@ -74,6 +75,16 @@ export interface PreOpenBuffer {
   readonly chars: number;
   /** A copy of the session-cumulative drop tally — never the live object. */
   readonly dropped: PreOpenDrops;
+  /** A copy of the drops NOT yet confirmed as reported to a broker. This — not the
+   *  session total — is what a report owes, and it is the relay that owns it: nothing
+   *  acknowledges a report, and the broker cannot remember one either, because a
+   *  reconnect deletes its registry entry for this instance before the next handshake
+   *  arrives. The iframe outlives that, so the accumulator does too. */
+  readonly unreported: PreOpenDrops;
+  /** Forget the delta a report actually delivered. SUBTRACTS rather than zeroing: a
+   *  failed capture write can re-buffer frames and evict others DURING the same flush,
+   *  and that new loss has not been reported by the frame just confirmed. */
+  confirmReported(reported: PreOpenDrops): void;
 }
 
 /**
@@ -87,6 +98,10 @@ export interface HandshakeBatch {
   control: string[];
   /** What the buffer held through the gap, in arrival order. */
   captures: string[];
+  /** The delta the stats frame claims, or null when there is no stats frame. The flush
+   *  hands this back to `confirmReported` once the write has actually landed — building
+   *  the batch is not delivery, so building it must not clear anything. */
+  reported: PreOpenDrops | null;
 }
 
 /**
@@ -94,22 +109,31 @@ export interface HandshakeBatch {
  * REGISTERED plugin, so a capture that overtook its own PLUGIN_HELLO would arrive for a
  * plugin the broker has never heard of.
  *
- * The tally travels as its OWN event and only when something was actually lost. It is
- * NOT a hello field: a broker strips a fixed set of protocol keys out of the hello
- * payload and treats the rest as scene identity, so a growing tally riding the hello
- * would make every reconnect look like a scene change to a broker that predates it —
- * resetting the flapper streak its zombie watchdog counts on, precisely during the
- * connection trouble that produced the drops. An unknown event type costs that same
- * broker nothing. The tally is session-cumulative and therefore re-sent on every
- * reconnect; the broker logs the increment it has not already recorded.
+ * The tally travels as its OWN event and only when there is a loss this relay has not yet
+ * had a report of confirmed. It is NOT a hello field: a broker strips a fixed set of
+ * protocol keys out of the hello payload and treats the rest as scene identity, so a
+ * growing tally riding the hello would make every reconnect look like a scene change to a
+ * broker that predates it — resetting the flapper streak its zombie watchdog counts on,
+ * precisely during the connection trouble that produced the drops. That older broker
+ * re-broadcasts the unknown event to its CLI clients, which ignore event types they do
+ * not know.
+ *
+ * The frame carries BOTH halves: `dropped`, the delta owed, and `sessionTotal`, so a log
+ * reader can sum deltas and still see where the session stands. The broker keeps no
+ * baseline of its own — a reconnect destroys its registry entry for this instance before
+ * the next handshake lands, so a baseline there would be erased by exactly the event it
+ * exists for and every reconnect would re-log the same total.
  */
 export function handshakeBatch(helloData: Record<string, unknown>, buffer: PreOpenBuffer): HandshakeBatch {
-  const dropped = buffer.dropped;
   const control = [JSON.stringify({ type: 'PLUGIN_HELLO', data: helloData })];
-  if (dropped.frames > 0) {
-    control.push(JSON.stringify({ type: 'PLUGIN_RELAY_STATS', data: { preOpenDropped: dropped } }));
+  const unreported = buffer.unreported;
+  const reported = unreported.frames > 0 ? unreported : null;
+  if (reported) {
+    control.push(JSON.stringify({
+      type: 'PLUGIN_RELAY_STATS', data: { dropped: reported, sessionTotal: buffer.dropped },
+    }));
   }
-  return { control, captures: buffer.drain() };
+  return { control, captures: buffer.drain(), reported };
 }
 
 export function createPreOpenBuffer(limits: Partial<PreOpenBufferLimits> = {}): PreOpenBuffer {
@@ -118,6 +142,7 @@ export function createPreOpenBuffer(limits: Partial<PreOpenBufferLimits> = {}): 
   const frames: string[] = [];
   let chars = 0;
   const dropped: PreOpenDrops = { frames: 0, chars: 0 };
+  const unreported: PreOpenDrops = { frames: 0, chars: 0 };
 
   return {
     enqueue(json) {
@@ -131,6 +156,8 @@ export function createPreOpenBuffer(limits: Partial<PreOpenBufferLimits> = {}): 
         chars -= oldest.length;
         dropped.frames += 1;
         dropped.chars += oldest.length;
+        unreported.frames += 1;
+        unreported.chars += oldest.length;
       }
     },
     drain() {
@@ -142,5 +169,10 @@ export function createPreOpenBuffer(limits: Partial<PreOpenBufferLimits> = {}): 
     get size() { return frames.length; },
     get chars() { return chars; },
     get dropped() { return { ...dropped }; },
+    get unreported() { return { ...unreported }; },
+    confirmReported(confirmed) {
+      unreported.frames = Math.max(0, unreported.frames - confirmed.frames);
+      unreported.chars = Math.max(0, unreported.chars - confirmed.chars);
+    },
   };
 }

@@ -155,3 +155,72 @@ describe('flushHandshake — the handshake, then the gap, then the heartbeat', (
     expect(started).toBe(true);
   });
 });
+
+// Nothing on the wire acknowledges a drop report, so "sent" is the only acknowledgement
+// the relay will ever get — and it is the relay, not the broker, that has to remember
+// what is still owed: a reconnect deletes the broker's registry entry for this instance
+// before the new handshake arrives, so a baseline kept there would be erased by exactly
+// the event it exists for.
+describe('flushHandshake — a drop is only forgotten once a write of it actually landed', () => {
+  const dropOne = (buffer: ReturnType<typeof createPreOpenBuffer>): void => {
+    buffer.enqueue(editFeed(1));
+    buffer.enqueue(editFeed(2)); // evicts frame 1 under maxFrames: 1
+  };
+
+  it('clears the accumulator after the stats frame is written to an OPEN socket', () => {
+    const buffer = createPreOpenBuffer({ maxFrames: 1 });
+    dropOne(buffer);
+    const socket = fakeSocket(SOCKET_OPEN);
+
+    flushHandshake({
+      socket, batch: handshakeBatch(hello, buffer), buffer, onFlushed: () => { /* not under test */ },
+    });
+
+    expect(socket.sent.map((json) => JSON.parse(json).type)).toContain('PLUGIN_RELAY_STATS');
+    expect(handshakeBatch(hello, buffer).reported, 'the next handshake owes nothing').toBeNull();
+  });
+
+  it('keeps the accumulator when the socket is not OPEN at send time — send() discards in silence', () => {
+    for (const state of [SOCKET_CLOSING, SOCKET_CLOSED, SOCKET_CONNECTING]) {
+      const buffer = createPreOpenBuffer({ maxFrames: 1 });
+      dropOne(buffer);
+      const socket = fakeSocket(state);
+
+      const outcome = flushHandshake({
+        socket, batch: handshakeBatch(hello, buffer), buffer, onFlushed: () => { /* not under test */ },
+      });
+
+      expect(socket.sent, String(state)).toEqual([]);
+      expect(outcome, String(state)).toEqual({ sent: 0, reBuffered: 1 });
+      expect(handshakeBatch(hello, buffer).reported, String(state)).toEqual({ frames: 1, chars: editFeed(1).length });
+    }
+  });
+
+  it('keeps the accumulator when the host throws out of send', () => {
+    const buffer = createPreOpenBuffer({ maxFrames: 1 });
+    dropOne(buffer);
+    const socket = fakeSocket(SOCKET_OPEN, () => { throw new Error('socket went away'); });
+
+    flushHandshake({
+      socket, batch: handshakeBatch(hello, buffer), buffer, onFlushed: () => { /* not under test */ },
+    });
+
+    expect(handshakeBatch(hello, buffer).reported).toEqual({ frames: 1, chars: editFeed(1).length });
+  });
+
+  it('counts a drop caused by re-buffering the captures it could not send', () => {
+    const buffer = createPreOpenBuffer({ maxFrames: 1 });
+    buffer.enqueue(editFeed(1)); // held, nothing dropped yet
+    const batch = handshakeBatch(hello, buffer);
+    expect(batch.reported).toBeNull();
+    const socket = fakeSocket(SOCKET_OPEN, (json) => {
+      if (json === editFeed(1)) throw new Error('socket went away');
+    });
+
+    flushHandshake({ socket, batch, buffer, onFlushed: () => { /* not under test */ } });
+    buffer.enqueue(editFeed(2)); // the re-queued frame 1 is now the one evicted
+
+    expect(handshakeBatch(hello, buffer).reported, 'a loss created during the flush is still owed')
+      .toEqual({ frames: 1, chars: editFeed(1).length });
+  });
+});

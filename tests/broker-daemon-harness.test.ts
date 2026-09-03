@@ -2351,33 +2351,63 @@ describe('daemon harness — a replayed capture is filed at its CAPTURE time, ne
   });
 });
 
-describe('daemon harness — the relay drop tally is logged as a delta, never the same total twice', () => {
-  it('logs each report\'s increment and stays silent on a re-report of a tally already recorded', async () => {
+// The delta is the RELAY's to compute: it knows which drops it has already had
+// acknowledged by a successful write, and that knowledge survives a socket close because
+// it lives in the iframe, not in the broker. The broker keeps NO baseline — a reconnect
+// destroys the registry entry (handleClose → removeByWs) before the new HELLO lands, so
+// any per-instance memory kept here would be erased by the very reconnect it was written
+// for. It logs exactly what the frame carries: the delta, and the session total beside it.
+describe('daemon harness — each connection reports its own delta, and the log shows deltas', () => {
+  it('logs the delta of every report across a real close-and-reconnect, never a repeated total', async () => {
     const port = await startTestBroker();
-    const plugin = await connectSocket(port);
-    await helloPlugin(plugin, 'inst-drops-1', 'Drop File');
+    const first = await connectSocket(port);
+    await helloPlugin(first, 'inst-drops-1', 'Drop File');
 
-    const stats = (frames: number, chars: number): void => {
-      plugin.send(JSON.stringify({
-        type: 'PLUGIN_RELAY_STATS', data: { preOpenDropped: { frames, chars } },
+    const stats = (ws: WebSocket, dropped: [number, number], sessionTotal: [number, number]): void => {
+      ws.send(JSON.stringify({
+        type: 'PLUGIN_RELAY_STATS',
+        data: {
+          dropped: { frames: dropped[0], chars: dropped[1] },
+          sessionTotal: { frames: sessionTotal[0], chars: sessionTotal[1] },
+        },
       } satisfies EventMsg));
     };
 
-    stats(5, 40);
-    await waitFor(() => /lost 5 capture frame\(s\)/.test(readFileSync(scratchLogFile, 'utf8')));
-    stats(9, 100);
-    await waitFor(() => /lost 4 capture frame\(s\)/.test(readFileSync(scratchLogFile, 'utf8')));
-    stats(9, 100); // the plugin re-sends its cumulative tally on every reconnect
+    stats(first, [5, 40], [5, 40]);
+    await waitFor(() => /dropped 5 frame\(s\)/.test(readFileSync(scratchLogFile, 'utf8')));
+
+    // The reconnect this accounting exists for: Figma backgrounds the tab, the socket
+    // CLOSES, and the panel comes back on a new socket with the same instanceId.
+    first.close();
+    await waitFor(() => /plugin \[inst-drops-1\] disconnected/.test(readFileSync(scratchLogFile, 'utf8')));
+
+    const second = await connectSocket(port);
+    await helloPlugin(second, 'inst-drops-1', 'Drop File');
+    stats(second, [4, 60], [9, 100]); // 4 new drops; the session has now lost 9 in total
+    await waitFor(() => /dropped 4 frame\(s\)/.test(readFileSync(scratchLogFile, 'utf8')));
     await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
 
-    const lines = readFileSync(scratchLogFile, 'utf8').split('\n').filter((l) => l.includes('capture frame(s)'));
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain('lost 5 capture frame(s) (40 chars)');
-    expect(lines[1]).toContain('lost 4 capture frame(s) (60 chars)');
-    expect(lines[1], 'the session total is named alongside the increment').toContain('9');
+    const lines = readFileSync(scratchLogFile, 'utf8').split('\n').filter((l) => l.includes('frame(s) /'));
+    expect(lines, 'one line per report, and the reconnect did not re-print the first one').toHaveLength(2);
+    expect(lines[0]).toContain('dropped 5 frame(s) / 40 chars before the socket opened (session total 5/40)');
+    expect(lines[1]).toContain('dropped 4 frame(s) / 60 chars before the socket opened (session total 9/100)');
     // The handshake itself never carried the tally, so the registration line cannot
     // double-log it.
-    expect(readFileSync(scratchLogFile, 'utf8')).not.toContain('preOpenDropped');
+    expect(readFileSync(scratchLogFile, 'utf8')).not.toContain('sessionTotal');
+  });
+
+  it('a connection with nothing new to report logs nothing at all', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-drops-2', 'Drop File 2');
+
+    plugin.send(JSON.stringify({
+      type: 'PLUGIN_RELAY_STATS',
+      data: { dropped: { frames: 0, chars: 0 }, sessionTotal: { frames: 7, chars: 70 } },
+    } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+
+    expect(readFileSync(scratchLogFile, 'utf8')).not.toContain('frame(s) /');
   });
 
   it('an event type this broker has never heard of is ignored without disturbing the connection', async () => {

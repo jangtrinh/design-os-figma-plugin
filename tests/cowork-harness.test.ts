@@ -513,7 +513,7 @@ describe('cowork — a replayed batch is history, and never resolves a live wait
       data: {
         edits: [ownerEdit('gap:1'), ownerEdit('gap:2')], fileKey: 'raw-cowork-replay',
         fileName: 'Cowork Replay', source: 'live',
-        capturedAt: Date.now() - 30 * 60_000, replayed: true,
+        capturedAt: Date.now() - 10 * 60_000, replayed: true,
       },
     } satisfies EventMsg));
 
@@ -525,5 +525,29 @@ describe('cowork — a replayed batch is history, and never resolves a live wait
     const reply = await replyPromise;
     expect(reply).toMatchObject({ ok: true, result: { cycles: 1, edits: [{ nodeId: 'live:1' }] } });
     expect((reply as ReplyOk).result as { edits: unknown[] }).toMatchObject({ edits: [{ nodeId: 'live:1' }] });
+  });
+
+  // …but a blip is not history. A supersede race can replay a batch captured a fraction
+  // of a second ago; within the waiter's own quiet window the designer demonstrably IS
+  // working, and telling the waiter otherwise reports less than the truth. The age of
+  // the capture decides, not the `replayed` flag alone.
+  it('counts a replay captured inside the quiet window as live activity', async () => {
+    const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '800' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-blip', 'Cowork Blip', 'raw-cowork-blip');
+    const cli = await connectSocket(port);
+    const replyPromise = nextFrame<ReplyOk | ReplyErr>(cli, (m) => (m as ReplyOk | ReplyErr).id === 'req-cw-blip');
+
+    sendCowork(cli, 'req-cw-blip', { waitMs: 800, timeoutMs: 20_000 });
+    plugin.send(JSON.stringify({
+      type: 'EDIT_FEED',
+      data: {
+        edits: [ownerEdit('blip:1')], fileKey: 'raw-cowork-blip', fileName: 'Cowork Blip', source: 'live',
+        capturedAt: Date.now() - 500, replayed: true, // half a second old: inside waitMs
+      },
+    } satisfies EventMsg));
+
+    const reply = await replyPromise;
+    expect(reply).toMatchObject({ ok: true, result: { cycles: 1, edits: [{ nodeId: 'blip:1' }] } });
   });
 });

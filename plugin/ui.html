@@ -2671,7 +2671,7 @@ body { overflow: hidden; }
     }, 4e3);
     render();
   });
-  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "bdb05dc" : "dev"}`;
+  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "f52c89c" : "dev"}`;
   replaceIcon(targetRailBtn, "files");
   replaceIcon(syncRailBtn, "refresh-cw");
   replaceIcon(toggleBtn, "chevron-down");
@@ -2780,12 +2780,16 @@ body { overflow: hidden; }
     return typeof type === "string" && BUFFERED_EVENT_TYPES.has(type);
   }
   function handshakeBatch(helloData, buffer) {
-    const dropped = buffer.dropped;
     const control = [JSON.stringify({ type: "PLUGIN_HELLO", data: helloData })];
-    if (dropped.frames > 0) {
-      control.push(JSON.stringify({ type: "PLUGIN_RELAY_STATS", data: { preOpenDropped: dropped } }));
+    const unreported = buffer.unreported;
+    const reported = unreported.frames > 0 ? unreported : null;
+    if (reported) {
+      control.push(JSON.stringify({
+        type: "PLUGIN_RELAY_STATS",
+        data: { dropped: reported, sessionTotal: buffer.dropped }
+      }));
     }
-    return { control, captures: buffer.drain() };
+    return { control, captures: buffer.drain(), reported };
   }
   function createPreOpenBuffer(limits = {}) {
     const maxFrames = limits.maxFrames ?? PRE_OPEN_MAX_FRAMES;
@@ -2793,6 +2797,7 @@ body { overflow: hidden; }
     const frames = [];
     let chars = 0;
     const dropped = { frames: 0, chars: 0 };
+    const unreported = { frames: 0, chars: 0 };
     return {
       enqueue(json) {
         frames.push(json);
@@ -2803,6 +2808,8 @@ body { overflow: hidden; }
           chars -= oldest.length;
           dropped.frames += 1;
           dropped.chars += oldest.length;
+          unreported.frames += 1;
+          unreported.chars += oldest.length;
         }
       },
       drain() {
@@ -2819,6 +2826,13 @@ body { overflow: hidden; }
       },
       get dropped() {
         return { ...dropped };
+      },
+      get unreported() {
+        return { ...unreported };
+      },
+      confirmReported(confirmed) {
+        unreported.frames = Math.max(0, unreported.frames - confirmed.frames);
+        unreported.chars = Math.max(0, unreported.chars - confirmed.chars);
       }
     };
   }
@@ -2844,6 +2858,7 @@ body { overflow: hidden; }
     const { socket, batch, buffer, onFlushed } = params;
     let sent = 0;
     const write = (json) => {
+      if (socket.readyState !== SOCKET_OPEN) return false;
       try {
         socket.send(json);
         sent += 1;
@@ -2854,6 +2869,7 @@ body { overflow: hidden; }
     };
     let from = batch.captures.length;
     if (batch.control.every(write)) {
+      if (batch.reported) buffer.confirmReported(batch.reported);
       from = batch.captures.findIndex((frame) => !write(frame));
       if (from === -1) from = batch.captures.length;
     } else {

@@ -33,26 +33,54 @@ export interface PluginHelloData {
  *  out of the hello payload and treats the REST as scene identity, so a broker predating
  *  this report would read a growing tally as a changing scene and reset the flapper
  *  streak its zombie watchdog counts on — exactly while the plugin is dropping frames.
- *  An unknown event type costs that same broker nothing. */
+ *  That older broker instead re-broadcasts the unknown event to its CLI clients, which
+ *  ignore event types they do not know (see broker-client.ts's event branch). */
 export interface PreOpenDroppedReport {
   frames: number;
   chars: number;
 }
 
-/**
- * Read a `preOpenDropped` report off a PLUGIN_RELAY_STATS payload. Returns null when the
- * field is absent and for any malformed or zero report, so a reader can treat a non-null
- * result as "this plugin lost something worth logging". The tally is session-cumulative
- * and re-sent on every reconnect (nothing acknowledges it), so the reader owns
- * de-duplication — see `PluginRegistry.reportPreOpenDropped`.
- */
-export function readPreOpenDropped(data: unknown): PreOpenDroppedReport | null {
-  const raw = (data as { preOpenDropped?: unknown } | null | undefined)?.preOpenDropped;
+/** One PLUGIN_RELAY_STATS report: what is NEW since the relay's last confirmed report,
+ *  and where the whole iframe session stands. The delta is computed by the RELAY, which
+ *  clears its accumulator only once a write of the report actually landed on an OPEN
+ *  socket. The broker keeps no baseline of its own, deliberately: a reconnect closes the
+ *  socket first, and `handleClose` deletes the registry entry before the new HELLO
+ *  arrives, so any per-instance memory here would be erased by exactly the event a
+ *  de-duplicating baseline exists for — and every reconnect would re-log the same total. */
+export interface RelayDropStats {
+  dropped: PreOpenDroppedReport;
+  sessionTotal: PreOpenDroppedReport;
+}
+
+function readDropTally(raw: unknown): PreOpenDroppedReport | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const { frames, chars } = raw as { frames?: unknown; chars?: unknown };
   if (typeof frames !== 'number' || !Number.isFinite(frames) || frames <= 0) return null;
   const size = typeof chars === 'number' && Number.isFinite(chars) && chars >= 0 ? chars : 0;
   return { frames: Math.floor(frames), chars: Math.floor(size) };
+}
+
+/**
+ * Read a PLUGIN_RELAY_STATS payload. Returns null when the `dropped` delta is absent,
+ * malformed or zero, so a reader can treat a non-null result as "this plugin lost
+ * something NEW worth logging".
+ *
+ * A `sessionTotal` that is missing, malformed, or smaller than the delta falls back to
+ * the delta: the smallest session total consistent with this frame IS the delta, so the
+ * log states a number the frame actually supports instead of a prettier guess.
+ */
+export function readRelayDropStats(data: unknown): RelayDropStats | null {
+  const payload = data as { dropped?: unknown; sessionTotal?: unknown } | null | undefined;
+  const dropped = readDropTally(payload?.dropped);
+  if (!dropped) return null;
+  const total = readDropTally(payload?.sessionTotal) ?? dropped;
+  return {
+    dropped,
+    sessionTotal: {
+      frames: Math.max(total.frames, dropped.frames),
+      chars: Math.max(total.chars, dropped.chars),
+    },
+  };
 }
 
 /**
@@ -409,10 +437,11 @@ export interface EventMsg {
   // the CLI. See broker-daemon.ts's broker-local PROJECT_BIND handler.)
   //
   // PLUGIN_RELAY_STATS: plugin → broker, sent right behind PLUGIN_HELLO and ONLY when the
-  // relay's pre-connect buffer had to drop something. Payload shape:
-  // { preOpenDropped: PreOpenDroppedReport }. Deliberately not a hello field — see
-  // `PreOpenDroppedReport` above for why a growing tally inside the hello payload would
-  // read as a changing scene to a broker that predates it.
+  // relay's pre-connect buffer had dropped something it has not yet had a report of
+  // confirmed on the wire. Payload shape: `RelayDropStats` — the new delta plus the
+  // session total. Deliberately not a hello field — see `PreOpenDroppedReport` above for
+  // why a growing tally inside the hello payload would read as a changing scene to a
+  // broker that predates it.
   //
   // JOB_STATE (concurrency & jobs, backlog 1.1+2.6+4.3): broker → the waiting CLI, sent the
   // moment a mutating request is admitted ("your request is job X, currently queued at

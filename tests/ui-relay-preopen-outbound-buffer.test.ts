@@ -132,35 +132,44 @@ describe('handshakeBatch — the handshake goes first, then the gap in order', (
     expect(batch).toEqual({
       control: [JSON.stringify({ type: 'PLUGIN_HELLO', data: hello })],
       captures: [editFeed(1), editFeed(2)],
+      reported: null,
     });
     expect(buffer.size, 'the buffer is handed over, not copied').toBe(0);
   });
 
   it('a handshake with nothing to report is exactly the hello frame, and nothing else', () => {
     const batch = handshakeBatch(hello, createPreOpenBuffer());
-    expect(batch).toEqual({ control: [JSON.stringify({ type: 'PLUGIN_HELLO', data: hello })], captures: [] });
-    expect(batch.control[0]).not.toContain('preOpenDropped');
+    expect(batch).toEqual({
+      control: [JSON.stringify({ type: 'PLUGIN_HELLO', data: hello })], captures: [], reported: null,
+    });
+    expect(batch.control[0]).not.toContain('dropped');
   });
 
   // The tally travels as its OWN event rather than as a PLUGIN_HELLO field: the hello
   // payload is scene identity to every broker that reads it, and a broker predating this
   // change would have kept a growing tally IN the scene — making each handshake look
   // like a scene change and silently resetting the flapper streak the zombie watchdog
-  // counts on. An unknown event type costs an older broker nothing.
-  it('reports the tally as PLUGIN_RELAY_STATS, right behind an unchanged handshake', () => {
+  // counts on. That older broker re-broadcasts the unknown event to its CLI clients,
+  // which ignore event types they do not know.
+  it('reports the delta as PLUGIN_RELAY_STATS, right behind an unchanged handshake', () => {
     const buffer = createPreOpenBuffer({ maxFrames: 1 });
     buffer.enqueue(editFeed(1));
     buffer.enqueue(editFeed(2));
 
-    const { control, captures } = handshakeBatch(hello, buffer);
+    const { control, captures, reported } = handshakeBatch(hello, buffer);
 
     expect(JSON.parse(control[0] as string), 'the hello shape never changes').toEqual({
       type: 'PLUGIN_HELLO', data: hello,
     });
     expect(JSON.parse(control[1] as string)).toEqual({
       type: 'PLUGIN_RELAY_STATS',
-      data: { preOpenDropped: { frames: 1, chars: editFeed(1).length } },
+      data: {
+        dropped: { frames: 1, chars: editFeed(1).length },
+        sessionTotal: { frames: 1, chars: editFeed(1).length },
+      },
     });
+    expect(reported, 'what the flush must clear once this frame is actually written')
+      .toEqual({ frames: 1, chars: editFeed(1).length });
     expect(captures, 'what survived the cap still ships').toEqual([editFeed(2)]);
   });
 
@@ -169,5 +178,30 @@ describe('handshakeBatch — the handshake goes first, then the gap in order', (
     buffer.enqueue(editFeed(1));
 
     expect(handshakeBatch(hello, buffer).control.some((f) => f.includes('PLUGIN_RELAY_STATS'))).toBe(false);
+  });
+
+  // The reconnect the accounting exists for: nothing acknowledges the report, so the
+  // relay only forgets a drop once a write of it succeeded (see socket-adoption.ts).
+  it('re-reports the same delta until it is confirmed, then only what is new', () => {
+    const buffer = createPreOpenBuffer({ maxFrames: 1 });
+    buffer.enqueue(editFeed(1));
+    buffer.enqueue(editFeed(2)); // 1 dropped
+
+    const first = handshakeBatch(hello, buffer);
+    expect(first.reported).toEqual({ frames: 1, chars: editFeed(1).length });
+
+    // The write never landed, so a second handshake owes the same delta again.
+    const second = handshakeBatch(hello, buffer);
+    expect(second.reported).toEqual({ frames: 1, chars: editFeed(1).length });
+
+    buffer.confirmReported(second.reported as { frames: number; chars: number });
+    expect(handshakeBatch(hello, buffer).reported, 'a confirmed delta is never reported twice').toBeNull();
+
+    buffer.enqueue(editFeed(3));
+    buffer.enqueue(editFeed(4)); // one more drop, after the confirmation
+    const third = handshakeBatch(hello, buffer);
+    expect(third.reported, 'only the new loss').toEqual({ frames: 1, chars: editFeed(3).length });
+    expect(JSON.parse(third.control[1] as string).data.sessionTotal, 'the session total keeps counting')
+      .toEqual({ frames: 2, chars: editFeed(1).length + editFeed(3).length });
   });
 });

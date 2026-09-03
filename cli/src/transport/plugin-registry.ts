@@ -10,7 +10,6 @@ import {
   type AppState,
   type PluginScene,
   type PluginStatusEntry,
-  type PreOpenDroppedReport,
 } from '../../../shared/protocol.ts';
 import { fileMatches } from '../../../shared/file-match.ts';
 import { envMs } from './protocol-helpers.ts';
@@ -93,13 +92,6 @@ export interface PluginEntry<S extends RegistrySocket = RegistrySocket> {
   /** Readiness capabilities as advertised by this HELLO. Kept separate from scene
    *  identity so capability negotiation cannot accidentally influence file matching. */
   appHeartbeatMode: AppHeartbeatMode;
-  /** The largest pre-connect drop tally already written to the broker log for this
-   *  instance. The plugin re-sends its session-cumulative tally on every reconnect
-   *  (nothing acknowledges the report, so it has to stay idempotent), which is exactly
-   *  why the LOG has to remember: without this, one loss followed by five reconnects
-   *  prints the same total five times and a reader summing the log over-counts.
-   *  Undefined until this instance reports for the first time. */
-  preOpenDroppedLogged?: PreOpenDroppedReport;
 }
 
 // HELLO payload keys that are protocol plumbing, not scene identity.
@@ -239,10 +231,6 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
       pluginVersion: typeof data.pluginVersion === 'string' ? data.pluginVersion : undefined,
       protocolV: typeof data.protocolV === 'number' ? data.protocolV : undefined,
       appHeartbeatMode: heartbeatMode(data),
-      // Carried across a reconnect on purpose (unlike pluginVersion above): the tally
-      // belongs to the plugin's iframe session, and the same instanceId IS that session,
-      // so a reconnect re-reporting an already-logged total must stay silent.
-      preOpenDroppedLogged: existing?.preOpenDroppedLogged,
     });
     return { instanceId: id, replaced: existing !== undefined, superseded };
   }
@@ -301,22 +289,6 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
     entry.activitySeq = ++this.activitySeqCounter;
     entry.sameSceneStreak = 0;
     return true;
-  }
-
-  /**
-   * Record this instance's latest session-cumulative pre-connect drop tally and return
-   * only what is NEW since its last recorded report — the increment the broker log
-   * should show. Returns null when the report adds nothing (a re-report of a tally
-   * already logged, a tally that went backwards, or a socket that is not a registered
-   * plugin), so a caller can log unconditionally on a non-null result.
-   */
-  reportPreOpenDropped(ws: S, report: PreOpenDroppedReport): PreOpenDroppedReport | null {
-    const entry = this.getByWs(ws);
-    if (!entry) return null;
-    const logged = entry.preOpenDroppedLogged ?? { frames: 0, chars: 0 };
-    if (report.frames <= logged.frames) return null;
-    entry.preOpenDroppedLogged = report;
-    return { frames: report.frames - logged.frames, chars: Math.max(0, report.chars - logged.chars) };
   }
 
   getByWs(ws: S): PluginEntry<S> | null {

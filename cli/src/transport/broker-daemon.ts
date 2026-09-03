@@ -13,7 +13,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import {
   BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, COWORK_MAX_TIMEOUT_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS,
   LOOPBACK_HOST, PLUGIN_PONG_TIMEOUT_MS, PLUGIN_WAIT_MS, PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
-  readCapturedAt, readPreOpenDropped, readReplayed,
+  readCapturedAt, readRelayDropStats, readReplayed,
   type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type JobRecovery, type ReplyErr, type ReplyOk,
   type RequestMsg, type WireMsg,
 } from '../../../shared/protocol.ts';
@@ -2124,18 +2124,18 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // handshake so the loss is recorded HERE too — the panel is the only other place
         // that knows, and it dies with the iframe.
         //
-        // The plugin's tally is session-cumulative and re-sent on every reconnect
-        // (nothing acknowledges it, so its report has to stay idempotent). The registry
-        // remembers what has already been logged for this instance and hands back only
-        // the increment, so five reconnects after one loss no longer print the same
-        // total five times.
+        // This broker keeps NO baseline per instance and computes nothing: the frame
+        // already carries the delta the relay has not yet had confirmed on the wire, plus
+        // the session total for context. A baseline kept here would be erased by the very
+        // reconnect it exists for — the socket closes first, and `handleClose` deletes the
+        // registry entry before the new HELLO arrives — so every reconnect would re-log
+        // the whole session total as if it were fresh loss.
         if (isPlugin) {
-          const report = readPreOpenDropped(msg.data);
-          const entry = st.registry.getByWs(ws);
-          const delta = report ? st.registry.reportPreOpenDropped(ws, report) : null;
-          if (report && delta) {
-            log(`plugin [${entry?.instanceId ?? '?'}] lost ${delta.frames} capture frame(s) ` +
-                `(${delta.chars} chars) while no broker was reachable — ${report.frames} this session`);
+          const stats = readRelayDropStats(msg.data);
+          if (stats) {
+            const id = st.registry.getByWs(ws)?.instanceId ?? '?';
+            log(`plugin [${id}] dropped ${stats.dropped.frames} frame(s) / ${stats.dropped.chars} chars ` +
+                `before the socket opened (session total ${stats.sessionTotal.frames}/${stats.sessionTotal.chars})`);
           }
         }
       } else if (msg.type === 'APP_PROBE_ACK') {
@@ -2239,18 +2239,28 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           // recorded. Ignoring `source: 'gapfill'` / agent-only batches is
           // cowork-waiter.ts's own job (`onEdits`), not re-checked here.
           //
-          // A REPLAYED batch is deliberately excluded here. Its frames
-          // still carry `source: 'live'` (they were live when captured), so without this
-          // check a cowork session started AFTER an outage would be told that edits made
-          // before it even began are its own. The durable feed still records every one of
-          // them, dated to capture; only the "is the designer working right now" signal
-          // refuses to count history as activity.
-          if (st.coworkWaiters.length > 0 && !readReplayed(data)) {
+          // A REPLAYED batch is decided by the AGE of its capture, not by the replay flag
+          // alone. Its frames still carry `source: 'live'` (they were live when
+          // captured), so a cowork session started AFTER an outage must not be told that
+          // edits made before it even began are its own — but a supersede race can replay
+          // a batch captured a fraction of a second ago, and inside the waiter's own quiet
+          // window the designer demonstrably IS working. Older than that window and it is
+          // history: the durable feed still records every frame, dated to capture; only
+          // the "is the designer working right now" signal refuses to count it.
+          if (st.coworkWaiters.length > 0) {
             const edits = Array.isArray(data.edits) ? (data.edits as EditInput[]) : [];
             const source: EditSource = data.source === 'gapfill' ? 'gapfill' : 'live';
             const editNow = Date.now();
+            // `readCapturedAt` (not `captureTimestamp`) — the append above already logged
+            // any refusal, and this must not double-count it. A refused stamp reads back
+            // as broker-now, so it is treated exactly as the feed dated it: as arriving now.
+            const replayAgeMs = readReplayed(data)
+              ? Math.max(0, editNow - readCapturedAt(data, editNow).ts)
+              : null;
             for (const waiter of st.coworkWaiters) {
-              if (waiter.fileIdentity === identity) feedCoworkWaiter(waiter.state, { edits, source }, editNow);
+              if (waiter.fileIdentity !== identity) continue;
+              if (replayAgeMs !== null && replayAgeMs > waiter.state.quietMs) continue;
+              feedCoworkWaiter(waiter.state, { edits, source }, editNow);
             }
           }
         }

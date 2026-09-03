@@ -74,8 +74,14 @@ export interface FlushOutcome {
  * synchronous so `readyState` cannot change part-way through it. It covers only a host
  * that throws out of `send` at all, and it exists so such a throw re-queues the captures
  * it could not confirm instead of losing them. Control frames are never re-queued: the
- * next connection mints its own hello, and its own stats report from the same
- * (unchanged) tally.
+ * next connection mints its own hello, and its own stats report from a tally that is
+ * cleared only by the confirmation below.
+ *
+ * That confirmation is the drop report's only acknowledgement. Nothing on the wire acks
+ * it, so "written to a socket that was OPEN and did not throw" is as much delivery as the
+ * relay can observe — and it is checked HERE rather than trusted from the adopt-time
+ * guard, because this function is also the one place a dead socket could silently swallow
+ * the report and make the loss vanish from both the panel's next report and the log.
  */
 export function flushHandshake<S extends AdoptableSocket>(params: {
   socket: S;
@@ -86,6 +92,10 @@ export function flushHandshake<S extends AdoptableSocket>(params: {
   const { socket, batch, buffer, onFlushed } = params;
   let sent = 0;
   const write = (json: string): boolean => {
+    // `send()` on a CLOSING/CLOSED socket discards in silence (per WHATWG it only throws
+    // while CONNECTING), so a readyState check is the only way to tell a write that
+    // landed from one that evaporated.
+    if (socket.readyState !== SOCKET_OPEN) return false;
     try {
       socket.send(json);
       sent += 1;
@@ -97,6 +107,8 @@ export function flushHandshake<S extends AdoptableSocket>(params: {
 
   let from = batch.captures.length; // nothing left to re-queue unless a write fails
   if (batch.control.every(write)) {
+    // Every control frame landed, so the stats frame among them did too.
+    if (batch.reported) buffer.confirmReported(batch.reported);
     from = batch.captures.findIndex((frame) => !write(frame));
     if (from === -1) from = batch.captures.length;
   } else {
