@@ -6,6 +6,7 @@
 // EXEC_JS in executor-exec-js.ts.)
 
 import type { FigmaExportNode } from '../../../shared/figma-payload-types';
+import type { GapfillStatus } from '../../../shared/protocol';
 import { loadBestFont } from './executor-fonts';
 import { withCode } from './executor-styles';
 import { applyAutoLayout } from './executor-frame';
@@ -84,7 +85,11 @@ async function appendToParent(node: SceneNode, params: Params): Promise<void> {
   if (typeof params.y === 'number') node.y = params.y;
 }
 
-export function opStatus(bootSkipped: readonly string[] = [], readOnlyViolations = 0): Record<string, unknown> {
+export function opStatus(
+  bootSkipped: readonly string[] = [],
+  readOnlyViolations = 0,
+  gapfill?: GapfillStatus,
+): Record<string, unknown> {
   return {
     fileName: figma.root.name,
     page: figma.currentPage.name,
@@ -115,6 +120,13 @@ export function opStatus(bootSkipped: readonly string[] = [], readOnlyViolations
     // to before the field existed; a non-zero count makes a real pattern visible instead
     // of vanishing into a silently-applied mutation.
     ...(readOnlyViolations > 0 && { readOnlyViolations }),
+    // Reconnect gap-fill's own session record (shared/protocol.ts's GapfillStatus). Unlike
+    // the two counters above this block is ALWAYS present once main.ts supplies it, even
+    // when every number is zero: "the baseline was never written" is precisely the fact
+    // that stayed invisible while the feature was silently broken, so it must have a
+    // reading of its own rather than an absence that looks like health. Caller-supplied —
+    // this function never re-derives what gap-fill did.
+    ...(gapfill && { gapfill }),
   };
 }
 
