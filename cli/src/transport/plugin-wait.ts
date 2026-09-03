@@ -19,6 +19,14 @@ export interface WaitOptions {
   fileFilter?: string | null;
   /** `--instance` — matched exactly; beats `fileFilter` when both are somehow set. */
   instanceFilter?: string | null;
+  /**
+   * How `fileFilter` is compared against a registered plugin's fileName. Default: the
+   * slug equality above (what `status --wait` pairs with its deep-link lookup). The
+   * pre-dispatch admission wait passes the broker's OWN dispatch comparison instead
+   * (`fileMatches(…, exact)`), because a wait satisfied by a plugin the broker will not
+   * route to would hand back the very refusal the wait exists to prevent.
+   */
+  matchFile?: (actual: string | null | undefined, filter: string) => boolean;
   pollIntervalMs?: number;
   /** Called once, the first time a poll finds no matching plugin — the moment a caller
    *  should tell the human it is actually waiting (never fired when the first poll hits). */
@@ -37,16 +45,18 @@ export interface WaitResult {
 
 const DEFAULT_POLL_MS = 500;
 
+function slugEquals(actual: string | null | undefined, filter: string): boolean {
+  return fileIdentity(null, actual ?? null) === fileIdentity(null, filter);
+}
+
 function matchesFilter(
   plugins: readonly PluginStatusEntry[],
   fileFilter?: string | null,
   instanceFilter?: string | null,
+  matchFile: (actual: string | null | undefined, filter: string) => boolean = slugEquals,
 ): boolean {
   if (instanceFilter) return plugins.some((p) => p.instanceId === instanceFilter);
-  if (fileFilter) {
-    const wantedSlug = fileIdentity(null, fileFilter);
-    return plugins.some((p) => fileIdentity(null, p.fileName ?? null) === wantedSlug);
-  }
+  if (fileFilter) return plugins.some((p) => matchFile(p.fileName, fileFilter));
   return plugins.length > 0;
 }
 
@@ -71,7 +81,7 @@ export async function waitForPlugin(opts: WaitOptions): Promise<WaitResult> {
       hello = null;
     }
     const plugins = Array.isArray(hello?.plugins) ? (hello.plugins as PluginStatusEntry[]) : [];
-    if (matchesFilter(plugins, opts.fileFilter, opts.instanceFilter)) {
+    if (matchesFilter(plugins, opts.fileFilter, opts.instanceFilter, opts.matchFile)) {
       return { registered: true, waitedMs: now() - startedAt, hello: hello ?? undefined };
     }
     if (now() >= deadline) {

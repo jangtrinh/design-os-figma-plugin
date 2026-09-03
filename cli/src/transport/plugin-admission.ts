@@ -7,6 +7,7 @@
 // used to fail while the plugin was one reconnect tick away. Projects patched this by
 // prepending `status --wait --timeout 60 &&` to every mutating call; this module is that
 // step built in. Same poll loop as `status --wait` (plugin-wait.ts), same 60s default.
+import { fileMatches } from '../../../shared/file-match.ts';
 import { isBrokerSafeRead } from '../../../shared/mutating-commands.ts';
 import { isBrokerTerminalCommand } from '../../../shared/protocol.ts';
 import { waitForPlugin, type WaitOptions, type WaitResult } from './plugin-wait.ts';
@@ -51,7 +52,10 @@ function describeTarget(opts: WaitOptions): string {
  * plugin never comes — never a silent fall-through to the broker's less specific refusal.
  */
 export async function awaitPluginAdmission(opts: WaitOptions): Promise<WaitResult> {
-  const result = await waitForPlugin(opts);
+  // ONE predicate for "will the broker route --file to this plugin": the broker's own
+  // exact comparison (route-filter.ts → shared/file-match.ts). A looser match here would
+  // pass the wait and still collect E_FILE_KEY_UNAVAILABLE at dispatch.
+  const result = await waitForPlugin({ matchFile: (actual, filter) => fileMatches(actual, filter, true), ...opts });
   if (result.registered) return result;
   const seconds = Math.round(opts.timeoutMs / 1_000);
   throw new CliError(

@@ -189,6 +189,29 @@ describe('awaitPluginAdmission — bounded wait with an injected hello reader', 
     expect(polls).toBe(2);
   });
 
+  // The wait must use the broker's OWN dispatch comparison (shared/file-match.ts, exact):
+  // a looser match would let the wait pass for a plugin the broker then refuses to route
+  // to — E_FILE_KEY_UNAVAILABLE, the exact error this feature exists to remove.
+  it('--file "VSF PCP" is NOT satisfied by a plugin named "VSF - PCP" (dispatch would not route to it)', async () => {
+    let now = 0;
+    await expect(awaitPluginAdmission({
+      port: 1, timeoutMs: 1_000, pollIntervalMs: 100, fileFilter: 'VSF PCP',
+      now: () => now, sleep: async (ms) => { now += ms; },
+      fetchHello: async () => ({ plugins: [{ instanceId: 'p1', fileName: 'VSF - PCP' }] }),
+    })).rejects.toMatchObject({ code: 'E_NO_PLUGIN' });
+  });
+
+  it('--file "VSF - PCP" (and its case-insensitive, trimmed spelling) IS satisfied by that plugin', async () => {
+    for (const filter of ['VSF - PCP', '  vsf - pcp ']) {
+      const result = await awaitPluginAdmission({
+        port: 1, timeoutMs: 1_000, fileFilter: filter,
+        sleep: async () => { throw new Error('must not wait'); },
+        fetchHello: async () => ({ plugins: [{ instanceId: 'p1', fileName: 'VSF - PCP' }] }),
+      });
+      expect(result.registered).toBe(true);
+    }
+  });
+
   it('the default bound matches the project hook it replaces (status --wait --timeout 60)', () => {
     expect(PLUGIN_ADMISSION_WAIT_SECONDS).toBe(60);
   });
