@@ -16,7 +16,7 @@ import {
 import { coalesceEdits, type EditInput, type EditOrigin } from '../../../shared/edit-feed';
 import { classifyActor, type ActorState } from './edit-actor';
 import {
-  enclosingName, resolveComponentIdentity, type EditIdentityCache,
+  enclosingName, resolveComponentIdentity, type CachedIdentity, type EditIdentityCache,
 } from './change-node-identity';
 import { pageOf } from './page-of-node';
 
@@ -44,8 +44,10 @@ export interface DocumentChangeCaptureDeps<TBatch> {
   post: (message: { type: string; data: unknown }) => void;
   /** N component-level changes were posted — main.ts's idle-prompt count. */
   noteComponentChanges: (count: number) => void;
-  /** At least one widened edit was posted — main.ts's gap-fill baseline dirty flag. */
-  noteEdits: () => void;
+  /** This page has an edit the stored gap-fill baseline does not know about yet. main.ts
+   *  keeps the set; the next idle re-walks exactly these pages and carries every other
+   *  page's entry forward, so a one-frame edit costs one page instead of the document. */
+  notePageDirty: (pageId: string) => void;
   /** This batch was real activity — push the idle debounce out. */
   armIdle: () => void;
 }
@@ -85,23 +87,29 @@ export function createDocumentChangeCapture<TBatch>(
     pluginDataChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null,
   };
 
+  /** WHERE an edit happened: the name the feed files it under AND the id the idle re-walk
+   *  needs. One resolution, so the two can never disagree about the same edit. */
+  interface EditPage { name: string; id: string }
+
   /** The page for a LIVE node: its own chain first, then the last page this session saw it
    *  on, then — counted, never silent — the page the designer is currently looking at. */
-  function resolvedPage(node: SceneNode, remembered: string | undefined): string {
+  function resolvedPage(node: SceneNode, remembered: CachedIdentity | undefined): EditPage {
     const own = pageOf(node);
-    if (own) return own.name;
-    if (remembered !== undefined) return remembered;
+    if (own) return { name: own.name, id: own.id };
+    if (remembered !== undefined) return { name: remembered.page, id: remembered.pageId };
     stats.pageFallbacks += 1;
-    return figma.currentPage.name;
+    return { name: figma.currentPage.name, id: figma.currentPage.id };
   }
 
   /** The page for a REMOVED node: the identity cache is its only record (a RemovedNode
    *  carries no parent chain to walk), so a node this session never saw degrades to the
-   *  current page — same guess, same counter, as the live-node fallback above. */
-  function resolvedRemovedPage(remembered: string | undefined): string {
-    if (remembered !== undefined) return remembered;
+   *  current page — same guess, same counter, as the live-node fallback above. The cost of
+   *  a wrong guess is bounded: that page's baseline simply is not refreshed this idle, so
+   *  the next boot re-reports the edit (a duplicate), never loses it. */
+  function resolvedRemovedPage(remembered: CachedIdentity | undefined): EditPage {
+    if (remembered !== undefined) return { name: remembered.page, id: remembered.pageId };
     stats.pageFallbacks += 1;
-    return figma.currentPage.name;
+    return { name: figma.currentPage.name, id: figma.currentPage.id };
   }
 
   /** Every failure counts; the first message is kept because it describes the cause. */
@@ -195,24 +203,29 @@ export function createDocumentChangeCapture<TBatch>(
         // A delete carries no parent chain at all, so the cache is the only record of where
         // the node lived; a node this session never saw degrades to the current page —
         // counted the same as the live-node substitution below, never silently.
-        ? resolvedRemovedPage(known?.page)
+        ? resolvedRemovedPage(known)
         // A live node resolves through its OWN chain, at any depth. Only a node with no page
         // in it (detached, or reparented out mid-batch) reaches a substitute: the last page
         // this session saw it on, else — as the final resort — the current page, which is a
         // guess and is counted as one rather than passed off as a resolved fact.
-        : resolvedPage(node, known?.page);
+        : resolvedPage(node, known);
+      deps.notePageDirty(page.id);
       edits.push({
         op,
         nodeId: node.id,
         nodeName: removed ? known?.name ?? null : node.name,
         nodeType: node.type,
         parentName,
-        page,
+        page: page.name,
         changedProps,
         origin: dc.origin as EditOrigin,
         actor: classifyActor(node.id, op, now, deps.actorState()),
       });
-      if (!removed) deps.identity.remember(node.id, { name: node.name, type: node.type, parentName, page });
+      if (!removed) {
+        deps.identity.remember(node.id, {
+          name: node.name, type: node.type, parentName, page: page.name, pageId: page.id,
+        });
+      }
     }
 
     if (connectorTouched.length > 0) deps.noteChangedNodes(connectorTouched);
@@ -237,7 +250,6 @@ export function createDocumentChangeCapture<TBatch>(
           fileName: figma.root.name, source: 'live',
         },
       });
-      deps.noteEdits();
     }
 
     // Either kind of activity pushes the idle-commit prompt (and the gap-fill snapshot

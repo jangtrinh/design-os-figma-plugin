@@ -3,29 +3,36 @@
 //
 // These used to be "untestable outside a live sandbox". They are not: the only real figma
 // dependencies are a key/value store (now injected) and a page walk (now a fake page whose
-// `findAll` returns a fixture tree). What the live sandbox alone can still prove is the
+// `children` are a fixture tree). What the live sandbox alone can still prove is the
 // canvas walk itself — everything else is exercised here, including the refusal path that
 // a permissive mock would have hidden.
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  clearLegacyGapfillDocumentData, runGapfillDiff, snapshotPage, writeBaseline,
-  SNAPSHOT_NODE_CAP_PER_PAGE, type NodeSnapshot,
+  clearLegacyGapfillDocumentData, runGapfillDiff, snapshotPageBounded, writeBaseline,
+  SNAPSHOT_NODE_CAP_PER_PAGE, SNAPSHOT_SLICE_SIZE,
 } from '../plugin/src/main/edit-gapfill.ts';
+import type { NodeSnapshot } from '../plugin/src/main/page-walk-bounded.ts';
+import { createPerfStats, markBootComplete, toPerfStatus } from '../plugin/src/main/perf-stats.ts';
 import {
-  BASELINE_KEY_PREFIX, baselineKeyFor, createMemoryBaselineStore,
+  BASELINE_KEY_PREFIX, baselineKeyFor, createMemoryBaselineStore, legacyBaselineKeyFor,
   type FileBaseline,
 } from '../plugin/src/main/gapfill-baseline-store.ts';
 import { createGapfillStats, toGapfillStatus } from '../plugin/src/main/gapfill-status.ts';
 
-interface FakeNode { id: string; name: string; type: string; x: number; y: number; parent: { id: string } | null }
-
-function fakeNode(id: string, over: Partial<FakeNode> = {}): FakeNode {
-  return { id, name: `Node ${id}`, type: 'FRAME', x: 0, y: 0, parent: null, ...over };
+interface FakeNode {
+  id: string; name: string; type: string; x: number; y: number;
+  width: number; height: number; children: FakeNode[];
 }
 
-/** A `PageNode`-shaped stub: `findAll` is the only member `snapshotPage` touches. */
+function fakeNode(id: string, over: Partial<FakeNode> = {}): FakeNode {
+  return { id, name: `Node ${id}`, type: 'FRAME', x: 0, y: 0, width: 10, height: 10, children: [], ...over };
+}
+
+/** A `PageNode`-shaped stub. The walk reads `children` and descends it itself — the page
+ *  no longer hands over a pre-materialised `findAll` array, which is the whole point:
+ *  the node cap now bounds the WORK, not just what is kept. */
 function fakePage(id: string, name: string, nodes: FakeNode[]): PageNode {
-  return { id, name, findAll: () => nodes } as unknown as PageNode;
+  return { id, name, type: 'PAGE', children: nodes } as unknown as PageNode;
 }
 
 interface DocData { [key: string]: string }
@@ -174,7 +181,7 @@ describe('writeBaseline — a truncated page stores no records', () => {
     installFigma({ pages });
     const store = createMemoryBaselineStore();
 
-    await writeBaseline(pages, snapshotPage, store, createGapfillStats());
+    await writeBaseline(pages, snapshotPageBounded, store, createGapfillStats());
 
     const baseline = storedBaseline(store, baselineKeyFor('FILEKEY1', 'Test File'));
     const big = baseline.pages.find((p) => p.id === 'big')!;
@@ -188,7 +195,7 @@ describe('writeBaseline — a truncated page stores no records', () => {
     const pages = [oversizedPage()];
     installFigma({ pages });
     const store = createMemoryBaselineStore();
-    await writeBaseline(pages, snapshotPage, store, createGapfillStats());
+    await writeBaseline(pages, snapshotPageBounded, store, createGapfillStats());
 
     const stats = createGapfillStats();
     const edits = await runGapfillDiff(pages, store, stats);
@@ -202,7 +209,7 @@ describe('writeBaseline — a truncated page stores no records', () => {
 
 describe('writeBaseline — the storage quota REFUSAL', () => {
   function otherFileBaseline(writtenAt: string): FileBaseline {
-    return { writtenAt, writtenBy: 'Owner', pages: [{ id: 'x', name: 'X', truncated: false, records: [] }] };
+    return { writtenAt, writtenBy: 'Owner', pages: [{ id: 'x', name: 'X', truncated: false, top: [], records: [] }] };
   }
 
   it('a refusal evicts the OLDEST other file\'s baseline, retries once, and succeeds', async () => {
@@ -216,7 +223,7 @@ describe('writeBaseline — the storage quota REFUSAL', () => {
     // store at "one neighbour + us": with BOTH neighbours resident the write must be
     // refused, and it must fit the moment one of them is evicted.
     const probe = createMemoryBaselineStore();
-    await writeBaseline(pages, snapshotPage, probe, createGapfillStats());
+    await writeBaseline(pages, snapshotPageBounded, probe, createGapfillStats());
     const ourBytes = JSON.stringify(probe.map.get(baselineKeyFor('FILEKEY1', 'Test File'))).length;
     const quotaBytes = JSON.stringify(neighbour).length + ourBytes;
 
@@ -225,7 +232,7 @@ describe('writeBaseline — the storage quota REFUSAL', () => {
     seeded.map.set(newKey, otherFileBaseline('2030-01-01T00:00:00.000Z'));
     const stats = createGapfillStats();
 
-    await writeBaseline(pages, snapshotPage, seeded, stats);
+    await writeBaseline(pages, snapshotPageBounded, seeded, stats);
 
     expect(seeded.map.has(oldKey)).toBe(false); // the oldest went
     expect(seeded.map.has(newKey)).toBe(true); // the newer one stayed
@@ -243,7 +250,7 @@ describe('writeBaseline — the storage quota REFUSAL', () => {
     await store.map.set(`${BASELINE_KEY_PREFIX}old-file`, otherFileBaseline('2020-01-01T00:00:00.000Z'));
     const stats = createGapfillStats();
 
-    await expect(writeBaseline(pages, snapshotPage, store, stats)).resolves.toBeUndefined();
+    await expect(writeBaseline(pages, snapshotPageBounded, store, stats)).resolves.toBeUndefined();
 
     expect(store.map.has(baselineKeyFor('FILEKEY1', 'Test File'))).toBe(false);
     expect(stats.baselineWrittenAt).toBeNull(); // never claims a write that did not land
@@ -259,7 +266,7 @@ describe('writeBaseline — the storage quota REFUSAL', () => {
     const store = createMemoryBaselineStore({ quotaBytes: 10 });
     const stats = createGapfillStats();
 
-    await writeBaseline(pages, snapshotPage, store, stats);
+    await writeBaseline(pages, snapshotPageBounded, store, stats);
 
     expect(stats.firstError).toContain('no other baseline to evict');
     expect(toGapfillStatus(stats).baselineEvicted).toBeUndefined();
@@ -331,14 +338,40 @@ describe('clearLegacyGapfillDocumentData — the pre-clientStorage document keys
   });
 });
 
-describe('snapshotPage — the walk that feeds every record', () => {
-  it('normalizes coordinates and carries the parent id', () => {
-    const page = fakePage('p1', 'Screens', [fakeNode('child', { x: 10.26, y: 3.1, parent: { id: 'p1' } })]);
-    const { records, truncated } = snapshotPage(page);
+describe('snapshotPageBounded — the walk that feeds every record', () => {
+  it('normalizes coordinates and carries the parent id taken from the DFS stack', async () => {
+    const page = fakePage('p1', 'Screens', [fakeNode('child', { x: 10.26, y: 3.1 })]);
+    const { records, truncated } = await snapshotPageBounded(page);
     expect(truncated).toBe(false);
     expect(records).toEqual<NodeSnapshot[]>([
       { id: 'child', name: 'Node child', type: 'FRAME', x: 10.5, y: 3, parent: 'p1' },
     ]);
+  });
+
+  it('stores a top-level fingerprint for EVERY page, cap or no cap', async () => {
+    const page = fakePage('p1', 'Screens', [fakeNode('a', { width: 320, height: 200, children: [fakeNode('a1')] })]);
+    const { top } = await snapshotPageBounded(page);
+    expect(top).toEqual([['a', 'Node a', 'FRAME', 0, 0, 320, 200, 1]]);
+  });
+
+  it('times the walk into perf, including the per-page loadAsync experiment', async () => {
+    const page = fakePage('p1', 'Screens', [fakeNode('a')]);
+    let loads = 0;
+    (page as unknown as { loadAsync: () => Promise<void> }).loadAsync = async () => { loads += 1; };
+    const perf = createPerfStats();
+
+    await snapshotPageBounded(page, perf, 'boot');
+
+    expect(loads).toBe(1); // the experiment ran, once, before the walk
+    expect(perf.bootSlices).toBe(1);
+    expect(perf.bootWalkMs).toBeGreaterThanOrEqual(0);
+    expect(perf.pageLoadAsyncMaxMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('a page with no loadAsync (an older host) still walks', async () => {
+    const perf = createPerfStats();
+    const walk = await snapshotPageBounded(fakePage('p1', 'Screens', [fakeNode('a')]), perf, 'boot');
+    expect(walk.records).toHaveLength(1);
   });
 });
 
@@ -399,7 +432,7 @@ describe('writeBaseline — a read that REJECTS must not overwrite the previous 
     store.map.set(key, previous);
     const stats = createGapfillStats();
 
-    await writeBaseline(pages, snapshotPage, store, stats);
+    await writeBaseline(pages, snapshotPageBounded, store, stats);
 
     expect(store.map.get(key)).toBe(previous); // byte-identical, not re-written
     expect(stats.baselineWrittenAt).toBeNull();
@@ -412,7 +445,7 @@ describe('writeBaseline — a read that REJECTS must not overwrite the previous 
     const store = createMemoryBaselineStore();
     const stats = createGapfillStats();
 
-    await writeBaseline(pages, snapshotPage, store, stats);
+    await writeBaseline(pages, snapshotPageBounded, store, stats);
 
     expect(store.map.has(baselineKeyFor('FILEKEY1', 'Test File'))).toBe(true);
     expect(stats.baselineWrittenAt).not.toBeNull();
@@ -420,10 +453,8 @@ describe('writeBaseline — a read that REJECTS must not overwrite the previous 
   });
 
   it('a rejecting get skips this boot honestly: one baseline-unreadable notice, no walk, no write', async () => {
-    const page = fakePage('p1', 'Screens', [fakeNode('a')]);
     let walks = 0;
-    const originalFindAll = page.findAll.bind(page);
-    page.findAll = ((...args: Parameters<typeof originalFindAll>) => { walks += 1; return originalFindAll(...args); }) as typeof page.findAll;
+    const page = { id: 'p1', name: 'Screens', type: 'PAGE', get children() { walks += 1; return []; } } as unknown as PageNode;
     const pages = [page];
     installFigma({ pages });
     const key = baselineKeyFor('FILEKEY1', 'Test File');
@@ -456,7 +487,7 @@ describe('writeBaseline — a read that REJECTS must not overwrite the previous 
 
     await runGapfillDiff(pages, store, stats);
     delete opts.getError; // reads recover mid-session (e.g. after the idle window)
-    await writeBaseline(pages, snapshotPage, store, stats);
+    await writeBaseline(pages, snapshotPageBounded, store, stats);
 
     expect(store.map.get(key)).toBe(previous);
     expect(stats.baselineWrittenAt).toBeNull();
@@ -471,7 +502,8 @@ describe('runGapfillDiff — one page whose walk THROWS', () => {
     const store = createMemoryBaselineStore();
     await runGapfillDiff(first, store, createGapfillStats());
 
-    const throwing = { id: 'p2', name: 'Archive', findAll: () => { throw new Error('page not loaded'); } } as unknown as PageNode;
+    const throwing = { id: 'p2', name: 'Archive', type: 'PAGE' } as unknown as PageNode;
+    Object.defineProperty(throwing, 'children', { get: () => { throw new Error('page not loaded'); } });
     const pages2 = [fakePage('p1', 'Screens', [fakeNode('a')]), throwing];
     installFigma({ pages: pages2 });
     const stats = createGapfillStats();
@@ -482,7 +514,138 @@ describe('runGapfillDiff — one page whose walk THROWS', () => {
     expect(stats.pagesDiffed).toBe(1);
     expect(stats.firstError).toContain('Archive');
     const stored = storedBaseline(store, baselineKeyFor('FILEKEY1', 'Test File'));
-    expect(stored.pages.find((p) => p.id === 'p2')!.records).toEqual([['c', 'Node c', 'FRAME', 0, 0, null]]);
+    expect(stored.pages.find((p) => p.id === 'p2')!.records).toEqual([['c', 'Node c', 'FRAME', 0, 0, 'p2']]);
+  });
+});
+
+describe('runGapfillDiff — a page whose walk could not read every node', () => {
+  /** A node that refuses its `name`. The walk's per-node guard wraps the record push AND
+   *  the `children` read, so this node AND its whole subtree are absent from the walk —
+   *  which a diff run against the previous session would report as deletions. */
+  function hostileNode(id: string, children: FakeNode[] = []): FakeNode {
+    const n = fakeNode(id, { children });
+    Object.defineProperty(n, 'name', { get: () => { throw new Error('stale node reference'); } });
+    return n;
+  }
+
+  it('emits ONE notice, no deletions, and keeps the previous baseline entry verbatim', async () => {
+    const before = [fakePage('p1', 'Screens', [fakeNode('a', { children: [fakeNode('b'), fakeNode('c')] })])];
+    installFigma({ pages: before });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(before, store, createGapfillStats());
+    const key = baselineKeyFor('FILEKEY1', 'Test File');
+    const kept = storedBaseline(store, key).pages.find((p) => p.id === 'p1')!.records;
+
+    const after = [fakePage('p1', 'Screens', [hostileNode('a', [fakeNode('b'), fakeNode('c')])])];
+    installFigma({ pages: after });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(after, store, stats);
+
+    expect(edits.filter((e) => e.op === 'deleted')).toEqual([]); // a, b and c are all still there
+    expect(edits.map((e) => e.changedProps)).toEqual([['walk-errors']]);
+    expect(edits[0]!.nodeName).toBe('Screens');
+    expect(stats.pagesWithReadErrors).toBe(1);
+    expect(toGapfillStatus(stats).pagesWithReadErrors).toBe(1);
+    expect(stats.firstError).toContain('Screens');
+    // The baseline is NOT overwritten with the walk that lost those nodes — otherwise the
+    // next session reads them as freshly created when they come back.
+    expect(storedBaseline(store, key).pages.find((p) => p.id === 'p1')!.records).toEqual(kept);
+  });
+
+  it('a page that read cleanly still reports while another page could not be read', async () => {
+    const before = [fakePage('p1', 'Screens', [fakeNode('a')]), fakePage('p2', 'Specs', [fakeNode('b'), fakeNode('gone')])];
+    installFigma({ pages: before });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(before, store, createGapfillStats());
+
+    const after = [fakePage('p1', 'Screens', [hostileNode('a')]), fakePage('p2', 'Specs', [fakeNode('b')])];
+    installFigma({ pages: after });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(after, store, stats);
+
+    expect(edits.filter((e) => e.op === 'deleted').map((e) => e.nodeId)).toEqual(['gone']);
+    expect(stats.pagesDiffed).toBe(1); // the unreadable page was NOT diffed, and does not claim to be
+  });
+
+  it('a TOP-LEVEL frame that refuses to be read costs the page its coarse diff, not a fake deletion', async () => {
+    const CAP = SNAPSHOT_NODE_CAP_PER_PAGE;
+    const filler = () => fakeNode('bulk', { children: Array.from({ length: CAP + 1 }, (_, i) => fakeNode(`filler${i}`)) });
+    const before = [fakePage('big', 'Everything', [fakeNode('hero', { name: 'Hero' }), filler()])];
+    installFigma({ pages: before });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(before, store, createGapfillStats());
+
+    const after = [fakePage('big', 'Everything', [hostileNode('hero'), filler()])];
+    installFigma({ pages: after });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(after, store, stats);
+
+    expect(edits.filter((e) => e.op === 'deleted')).toEqual([]);
+    expect(edits.map((e) => e.changedProps)).toEqual([['walk-errors']]);
+    expect(stats.pagesTopLevelOnly).toBe(0); // nothing was covered, and it never claims to be
+  });
+});
+
+describe('runGapfillDiff — a node that is missing from the walk but still in the file', () => {
+  /** The walk now spans macrotask yields, so the scene can change under it: a node
+   *  reparented from a not-yet-walked region into an already-walked one is absent from
+   *  `records` with nothing thrown and nothing counted. Every `deleted` candidate is
+   *  therefore looked up before it is reported. */
+  const alive = (ids: readonly string[]) => async (id: string) => ids.includes(id);
+
+  it('does not report a deletion for a node the host can still find', async () => {
+    const before = [fakePage('p1', 'Screens', [fakeNode('a'), fakeNode('moved')])];
+    installFigma({ pages: before });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(before, store, createGapfillStats());
+
+    const after = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages: after });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(after, store, stats, createPerfStats(), { nodeExists: alive(['moved']) });
+
+    expect(edits.filter((e) => e.op === 'deleted')).toEqual([]);
+    expect(stats.deletedRechecked).toBe(1);
+    expect(toGapfillStatus(stats).deletedRechecked).toBe(1);
+  });
+
+  it('a node the host cannot find IS reported deleted — the check only suppresses survivors', async () => {
+    const before = [fakePage('p1', 'Screens', [fakeNode('a'), fakeNode('gone')])];
+    installFigma({ pages: before });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(before, store, createGapfillStats());
+
+    const after = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages: after });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(after, store, stats, createPerfStats(), { nodeExists: alive([]) });
+
+    expect(edits.filter((e) => e.op === 'deleted').map((e) => e.nodeId)).toEqual(['gone']);
+    expect(stats.deletedRechecked).toBe(0);
+    expect(toGapfillStatus(stats).deletedRechecked).toBeUndefined(); // present only when non-zero
+  });
+
+  it('a TOP-LEVEL frame on an oversized page is cross-checked the same way', async () => {
+    const CAP = SNAPSHOT_NODE_CAP_PER_PAGE;
+    const filler = () => fakeNode('bulk', { children: Array.from({ length: CAP + 1 }, (_, i) => fakeNode(`filler${i}`)) });
+    const before = [fakePage('big', 'Everything', [fakeNode('hero'), fakeNode('moved'), filler()])];
+    installFigma({ pages: before });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(before, store, createGapfillStats());
+
+    const after = [fakePage('big', 'Everything', [fakeNode('hero'), filler()])];
+    installFigma({ pages: after });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(after, store, stats, createPerfStats(), { nodeExists: alive(['moved']) });
+
+    expect(edits.filter((e) => e.op === 'deleted')).toEqual([]);
+    expect(stats.deletedRechecked).toBe(1);
   });
 });
 
@@ -494,7 +657,7 @@ describe('writeBaseline — the writtenAt stamp eviction ranks by', () => {
     const at = Date.parse('2026-09-03T10:15:00.000Z');
     const stats = createGapfillStats();
 
-    await writeBaseline(pages, snapshotPage, store, stats, () => at);
+    await writeBaseline(pages, snapshotPageBounded, store, stats, () => at);
 
     const stored = storedBaseline(store, baselineKeyFor('FILEKEY1', 'Test File'));
     expect(stored.writtenAt).toBe('2026-09-03T10:15:00.000Z');
@@ -509,11 +672,11 @@ describe('writeBaseline — the writtenAt stamp eviction ranks by', () => {
     const datedKey = `${BASELINE_KEY_PREFIX}dated-file`;
     const neighbour: FileBaseline = {
       writtenAt: 'not-a-date', writtenBy: 'Owner', fileKey: 'OTHER', fileName: 'Other',
-      pages: [{ id: 'x', name: 'X', truncated: false, records: [] }],
+      pages: [{ id: 'x', name: 'X', truncated: false, top: [], records: [] }],
     };
 
     const probe = createMemoryBaselineStore();
-    await writeBaseline(pages, snapshotPage, probe, createGapfillStats());
+    await writeBaseline(pages, snapshotPageBounded, probe, createGapfillStats());
     const ourBytes = JSON.stringify(probe.map.get(baselineKeyFor('FILEKEY1', 'Test File'))).length;
     const quotaBytes = JSON.stringify(neighbour).length + ourBytes;
 
@@ -522,10 +685,285 @@ describe('writeBaseline — the writtenAt stamp eviction ranks by', () => {
     seeded.map.set(datedKey, { ...neighbour, writtenAt: '2020-01-01T00:00:00.000Z' });
     const stats = createGapfillStats();
 
-    await writeBaseline(pages, snapshotPage, seeded, stats);
+    await writeBaseline(pages, snapshotPageBounded, seeded, stats);
 
     expect(seeded.map.has(undatedKey)).toBe(false); // undated = unusable = cheapest to lose
     expect(seeded.map.has(datedKey)).toBe(true);
     expect(toGapfillStatus(stats).baselineEvicted).toEqual([undatedKey]);
+  });
+});
+
+describe('the baseline VERSION — a value from the previous shape is never diffed', () => {
+  it('a v2 value reads as baseline-missing, is deleted once the v3 write lands, and is COUNTED', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a'), fakeNode('b')])];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    const legacyKey = legacyBaselineKeyFor('FILEKEY1', 'Test File');
+    // A perfectly VALID value of the previous shape: same file, same pages, no `top`.
+    // Diffing it would mix two record vocabularies and report facts neither shape states.
+    await store.set(legacyKey, {
+      writtenAt: '2026-01-01T00:00:00.000Z', writtenBy: 'Owner',
+      fileKey: 'FILEKEY1', fileName: 'Test File',
+      pages: [{ id: 'p1', name: 'Screens', truncated: false, records: [['a', 'Node a', 'FRAME', 0, 0, 'p1']] }],
+    });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(pages, store, stats);
+
+    expect(edits.map((e) => e.changedProps)).toEqual([['baseline-missing']]);
+    expect(edits.filter((e) => e.op === 'created' || e.op === 'deleted')).toEqual([]);
+    expect(store.map.has(legacyKey)).toBe(false); // the stale value is not left to rot
+    expect(stats.staleBaselinesCleared).toBe(1); // and its removal is on the record
+    expect(toGapfillStatus(stats).staleBaselinesCleared).toBe(1);
+    expect(store.map.has(baselineKeyFor('FILEKEY1', 'Test File'))).toBe(true);
+  });
+
+  it('a file with no stale value pays nothing and reports no cleanup', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    const stats = createGapfillStats();
+
+    await runGapfillDiff(pages, store, stats);
+
+    expect(stats.staleBaselinesCleared).toBe(0);
+    expect(toGapfillStatus(stats).staleBaselinesCleared).toBeUndefined();
+  });
+});
+
+describe('a page over the node cap still reports — the top-level signal', () => {
+  const CAP = SNAPSHOT_NODE_CAP_PER_PAGE;
+
+  /** `frames` top-level frames plus enough filler INSIDE the first one to blow the cap. */
+  function hugePage(frames: FakeNode[]): PageNode {
+    const filler = Array.from({ length: CAP + 1 }, (_, i) => fakeNode(`filler${i}`));
+    return fakePage('big', 'Everything', [...frames, fakeNode('bulk', { children: filler })]);
+  }
+
+  async function seed(frames: FakeNode[]) {
+    const pages = [hugePage(frames)];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(pages, store, createGapfillStats());
+    return store;
+  }
+
+  it('the stored baseline keeps the top-level fingerprint even though it keeps no records', async () => {
+    const store = await seed([fakeNode('hero', { name: 'Hero' })]);
+    const stored = storedBaseline(store, baselineKeyFor('FILEKEY1', 'Test File'));
+    const bigPage = stored.pages.find((p) => p.id === 'big')!;
+    expect(bigPage.truncated).toBe(true);
+    expect('records' in bigPage).toBe(false); // unchanged: records for a truncated page buy nothing
+    expect(bigPage.top!.map((t) => t[0])).toEqual(['hero', 'bulk']);
+  });
+
+  it('reports created, deleted, renamed, moved and subtree-changed TOP-LEVEL frames', async () => {
+    const store = await seed([
+      fakeNode('keep', { name: 'Keep' }),
+      fakeNode('rename', { name: 'Before' }),
+      fakeNode('move', { name: 'Move' }),
+      fakeNode('grow', { name: 'Grow', children: [fakeNode('g1')] }),
+      fakeNode('resized', { name: 'Resized' }),
+      fakeNode('gone', { name: 'Gone' }),
+    ]);
+
+    const after = [
+      fakeNode('keep', { name: 'Keep' }),
+      fakeNode('rename', { name: 'After' }),
+      fakeNode('move', { name: 'Move', x: 400, y: 20 }),
+      fakeNode('grow', { name: 'Grow', children: [fakeNode('g1'), fakeNode('g2')] }),
+      fakeNode('resized', { name: 'Resized', width: 320 }),
+      fakeNode('fresh', { name: 'Fresh' }),
+    ];
+    const pages = [hugePage(after)];
+    installFigma({ pages });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(pages, store, stats);
+
+    const byId = new Map(edits.map((e) => [e.nodeId, e]));
+    expect(byId.get('fresh')!.op).toBe('created');
+    expect(byId.get('gone')!.op).toBe('deleted');
+    expect(byId.get('rename')!.changedProps).toEqual(['name']);
+    expect(byId.get('move')!.changedProps).toEqual(['x', 'y']);
+    expect(byId.get('grow')!.changedProps).toEqual(['subtree']); // an edit INSIDE the frame
+    expect(byId.get('resized')!.changedProps).toEqual(['width']); // a resize is NOT a contents change
+    expect(byId.has('keep')).toBe(false); // an unchanged frame is still never a frame in the feed
+    expect(byId.has('bulk')).toBe(false); // nor is the container whose children blew the cap
+    // The truncation notice stays: the page IS over the cap, and this signal is top-level only.
+    expect(byId.get('truncated:big')!.changedProps).toEqual(['truncated']);
+    expect(stats.pagesTruncated).toBe(1);
+    expect(stats.pagesTopLevelOnly).toBe(1);
+    expect(toGapfillStatus(stats).pagesTopLevelOnly).toBe(1);
+  });
+
+  it('a rename AND an inner edit on the same frame keeps both facts, one per frame', async () => {
+    const store = await seed([fakeNode('f', { name: 'Before', children: [fakeNode('c1')] })]);
+    const pages = [hugePage([fakeNode('f', { name: 'After', children: [fakeNode('c1'), fakeNode('c2')] })])];
+    installFigma({ pages });
+
+    const edits = await runGapfillDiff(pages, store, createGapfillStats());
+
+    // Merged onto one frame the rename outranks the subtree fact and its sentence is never
+    // rendered — on a truncated page, where this is the only signal, that fact would be lost.
+    const frames = edits.filter((e) => e.nodeId === 'f');
+    expect(frames.map((e) => e.changedProps)).toEqual([['name'], ['subtree']]);
+    expect(frames.every((e) => e.op === 'updated')).toBe(true);
+  });
+
+  it('the FIRST session over the cap has no previous fingerprint and invents no facts', async () => {
+    const pages = [hugePage([fakeNode('hero')])];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    // A baseline exists for the file, but not for this page — nothing to compare against.
+    await store.set(baselineKeyFor('FILEKEY1', 'Test File'), {
+      writtenAt: '2026-01-01T00:00:00.000Z', writtenBy: 'Owner',
+      fileKey: 'FILEKEY1', fileName: 'Test File',
+      pages: [{ id: 'other', name: 'Other', truncated: false, top: [], records: [] }],
+    });
+    const stats = createGapfillStats();
+
+    const edits = await runGapfillDiff(pages, store, stats);
+
+    expect(edits.filter((e) => e.nodeId === 'hero')).toEqual([]); // never "created"
+    expect(stats.pagesTopLevelOnly).toBe(0); // nothing was covered, and it does not claim to be
+  });
+});
+
+describe('the idle write walks only the pages that CHANGED', () => {
+  it('re-walks a dirty page, carries every other page forward verbatim, and writes once', async () => {
+    const pages = [
+      fakePage('p1', 'Screens', [fakeNode('a')]),
+      fakePage('p2', 'Specs', [fakeNode('b')]),
+      fakePage('p3', 'Archive', [fakeNode('c')]),
+    ];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(pages, store, createGapfillStats());
+
+    const edited = [
+      fakePage('p1', 'Screens', [fakeNode('a')]),
+      fakePage('p2', 'Specs', [fakeNode('b'), fakeNode('b2')]),
+      fakePage('p3', 'Archive', [fakeNode('c')]),
+    ];
+    installFigma({ pages: edited });
+    const walked: string[] = [];
+    const stats = createGapfillStats();
+
+    await writeBaseline(
+      edited,
+      (page) => { walked.push(page.id); return snapshotPageBounded(page); },
+      store, stats, Date.now, new Set(['p2']),
+    );
+
+    expect(walked).toEqual(['p2']); // one edit, one page walked — the other two cost nothing
+    const stored = storedBaseline(store, baselineKeyFor('FILEKEY1', 'Test File'));
+    expect(stored.pages.map((p) => p.id)).toEqual(['p1', 'p2', 'p3']);
+    expect(stored.pages.find((p) => p.id === 'p2')!.records).toHaveLength(2); // the fresh walk
+    expect(stored.pages.find((p) => p.id === 'p3')!.records).toEqual([['c', 'Node c', 'FRAME', 0, 0, 'p3']]);
+  });
+
+  it('a page the stored baseline has never heard of is walked even when it is not dirty', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(pages, store, createGapfillStats());
+
+    // p2 is missing from the baseline (its boot walk failed). Left unwalked forever, the
+    // next boot would read its whole tree as freshly created.
+    const withNewPage = [...pages, fakePage('p2', 'Specs', [fakeNode('b')])];
+    installFigma({ pages: withNewPage });
+    const walked: string[] = [];
+
+    await writeBaseline(
+      withNewPage,
+      (page) => { walked.push(page.id); return snapshotPageBounded(page); },
+      store, createGapfillStats(), Date.now, new Set<string>(),
+    );
+
+    expect(walked).toEqual(['p2']);
+  });
+});
+
+describe('the perf block STATUS reports', () => {
+  /** A clock that hands out KNOWN stamps in call order, so every number below is an exact
+   *  arithmetic consequence rather than "at least zero" — which is trivially true of a
+   *  counter that is never updated at all. */
+  function pinnedClock(stamps: readonly number[]): () => number {
+    let i = 0;
+    return () => stamps[Math.min(i++, stamps.length - 1)]!;
+  }
+
+  /** Enough nodes to force three synchronous slices at the real slice size. */
+  const manyNodes = (n: number) => Array.from({ length: n }, (_, i) => fakeNode(`n${i}`));
+  const hop = () => Promise.resolve();
+
+  it('is absent until boot has completed, then carries the walk numbers', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')]), fakePage('p2', 'Specs', [fakeNode('b')])];
+    installFigma({ pages });
+    const perf = createPerfStats();
+    expect(toPerfStatus(perf)).toBeUndefined();
+
+    await runGapfillDiff(pages, createMemoryBaselineStore(), createGapfillStats(), perf);
+    markBootComplete(perf);
+
+    const status = toPerfStatus(perf)!;
+    expect(status.bootSlices).toBe(2); // one slice per page, both under the slice size
+    expect(status.idleWalkMs).toBe(0); // no idle write has happened yet, and it says so
+    expect('propertyReadErrors' in status).toBe(false); // present only once non-zero
+  });
+
+  it('reports the WORST synchronous slice, the slice count and the total, all to the millisecond', async () => {
+    const pages = [
+      fakePage('p1', 'Screens', manyNodes(2 * SNAPSHOT_SLICE_SIZE + 1)), // three slices
+      fakePage('p2', 'Specs', [fakeNode('b')]),                          // one slice
+    ];
+    installFigma({ pages });
+    const perf = createPerfStats();
+    // p1: walk starts at 0 · slices measure 12, 37 and 5 ms · the walk ends at 100.
+    // p2: starts at 200 · one 6 ms slice · ends at 210.
+    const now = pinnedClock([0, 0, 12, 20, 57, 60, 65, 100, 200, 200, 206, 210]);
+
+    await runGapfillDiff(pages, createMemoryBaselineStore(), createGapfillStats(), perf, { walk: { now, hop } });
+    markBootComplete(perf);
+
+    const status = toPerfStatus(perf)!;
+    expect(status.bootSlices).toBe(4);
+    expect(status.bootWalkMaxSliceMs).toBe(37); // the worst chunk — NOT the mean of four
+    expect(status.bootWalkMs).toBe(110);        // 100 + 10, hops included
+    expect(status.idleWalkMaxSliceMs).toBe(0);  // no idle walk has happened, and it says so
+  });
+
+  it('an IDLE walk lands in the idle numbers, never in the boot ones', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const perf = createPerfStats();
+    const now = pinnedClock([0, 0, 8, 30]);
+
+    await writeBaseline(
+      pages,
+      (page) => snapshotPageBounded(page, perf, 'idle', { now, hop }),
+      createMemoryBaselineStore(), createGapfillStats(),
+    );
+    markBootComplete(perf);
+
+    const status = toPerfStatus(perf)!;
+    expect(status.idleWalkMaxSliceMs).toBe(8);
+    expect(status.idleWalkMs).toBe(30);
+    expect(status.bootWalkMs).toBe(0);
+    expect(status.bootSlices).toBe(0);
+  });
+
+  it('counts a node whose properties refused to be read, so a dropped node is never silent', async () => {
+    const hostile = fakeNode('bad');
+    Object.defineProperty(hostile, 'name', { get: () => { throw new Error('stale node reference'); } });
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a', { children: [hostile] })])];
+    installFigma({ pages });
+    const perf = createPerfStats();
+
+    await runGapfillDiff(pages, createMemoryBaselineStore(), createGapfillStats(), perf);
+    markBootComplete(perf);
+
+    expect(toPerfStatus(perf)!.propertyReadErrors).toBe(1);
   });
 });

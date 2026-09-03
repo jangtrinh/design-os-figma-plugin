@@ -9,25 +9,31 @@
 // just `figma.currentPage`: a page nobody visited is exactly where a closed-window edit
 // hides.
 //
-// Split cleanly into a PURE core (diff, merge, record codec, write decision — no figma
-// access, unit-tested in tests/edit-gapfill.test.ts) and the figma-dependent walk/read/
-// write halves, which are exercised through an injected store and fake pages in
-// tests/edit-gapfill-baseline.test.ts.
-import type { EditInput, EditOp } from '../../../shared/edit-feed';
+// This file is the FIGMA-DEPENDENT half: the page walk, the clientStorage read/write and
+// the boot diff's control flow, exercised through an injected store and fake pages in
+// tests/edit-gapfill-baseline.test.ts. The pure half — diff, record codec, notice frames,
+// write decision — lives in gapfill-diff.ts and is unit-tested directly.
+import type { EditInput } from '../../../shared/edit-feed';
 import {
-  baselineKeyFor, readFileBaseline, writeFileBaseline,
-  type BaselineIdentity, type BaselinePage, type BaselineRecord, type BaselineStore, type FileBaseline,
+  baselineKeyFor, clearStaleBaseline, legacyBaselineKeyFor, readFileBaseline, writeFileBaseline,
+  type BaselineIdentity, type BaselinePage, type BaselineStore, type FileBaseline,
 } from './gapfill-baseline-store';
+import {
+  baselineMissingNotice, baselineUnreadableNotice, deletedPageIds, diffSnapshots, diffTopLevel,
+  fromBaselineRecord, gapfillEditsForPage, pageDeletedNotice, pageWasTruncated, resolveBaselinePage,
+  snapshotProviderFrom, truncatedNotice, walkErrorsNotice, withoutSurvivingNodes,
+  type GapfillDiff, type PageSnapshotResult,
+} from './gapfill-diff';
 import { recordGapfillError, recordGapfillEviction, type GapfillStats } from './gapfill-status';
+import {
+  normalizeSnapshotCoord, walkPageSliced, type NodeSnapshot, type SlicedWalkTiming,
+} from './page-walk-bounded';
+import {
+  createPerfStats, recordPageLoadAsync, recordWalk, type PerfStats, type WalkPhase,
+} from './perf-stats';
 
-export interface NodeSnapshot {
-  id: string;
-  name: string;
-  type: string;
-  x: number;
-  y: number;
-  parent: string | null;
-}
+export { normalizeSnapshotCoord };
+export type { NodeSnapshot, PageSnapshotResult };
 
 /** The pre-clientStorage baseline: a manifest plus per-page chunks written into
  *  `figma.root`'s sharedPluginData. Cleared once, never read — the write path that
@@ -42,196 +48,15 @@ const LEGACY_CHUNK_PREFIX = 'figma-edit-snap-';
  *  is the honest answer). */
 export const SNAPSHOT_NODE_CAP_PER_PAGE = 4_000;
 
-// ── Pure core (unit-tested directly, no figma access) ───────────────────────────────
-
-/** Rounds to 0.5px — a sub-pixel re-layout must not churn the baseline or spuriously
- *  report a "moved" node between two sessions. */
-export function normalizeSnapshotCoord(n: number): number {
-  return Math.round(n * 2) / 2;
-}
-
-export function toBaselineRecord(rec: NodeSnapshot): BaselineRecord {
-  return [rec.id, rec.name, rec.type, rec.x, rec.y, rec.parent];
-}
-
-export function fromBaselineRecord(rec: BaselineRecord): NodeSnapshot {
-  return { id: rec[0], name: rec[1], type: rec[2], x: rec[3], y: rec[4], parent: rec[5] };
-}
-
-/** Boot-path seam: `runGapfillDiff` has ALREADY walked every page once for its diff, so
- *  the baseline write must reuse those results instead of walking the whole document a
- *  second time (the double walk was measured as the boot freeze on large files). Reusing
- *  the PRE-diff snapshot is also the correct baseline: an edit made while the diff is
- *  yielding must NOT be baked into the baseline it was absent from, or the next session's
- *  gap-fill would never report it. Pure — unit-tested directly. */
-export function snapshotProviderFrom<P extends { id: string }, R>(
-  precomputed: ReadonlyMap<string, R>,
-  fallback: (page: P) => R,
-): (page: P) => R {
-  return (page) => precomputed.get(page.id) ?? fallback(page);
-}
+/** Nodes per SYNCHRONOUS slice of a page walk. At the measured ≈ 50 µs/node this is
+ *  ≈ 25–30 ms of held thread — inside the 50 ms "no visible stall" budget with room for a
+ *  slower machine. */
+export const SNAPSHOT_SLICE_SIZE = 500;
 
 /** One macrotask hop between per-page walks, so the boot diff never holds the plugin's
  *  single thread for the whole document at once (the UI-freeze half of the boot cost). */
 function yieldToHost(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-const MOVE_EPSILON = 0.5;
-
-export interface RecordPair { prev: NodeSnapshot; next: NodeSnapshot }
-
-/** Diff two snapshots of the SAME page: id present→absent = deleted, absent→present =
- *  created, same id different `name` = renamed, same id different `x`|`y` (> 0.5px) =
- *  moved. A node that changed BOTH appears in `renamed` AND `moved` — each is its own
- *  real, independent fact; neither list drops it for the other (the caller, which knows
- *  the wire format, is what merges them into one `updated` EditInput — see
- *  `runGapfillDiff`). Pure — no figma access, fully unit-tested. */
-export interface GapfillDiff {
-  created: NodeSnapshot[];
-  deleted: NodeSnapshot[];
-  renamed: RecordPair[];
-  moved: RecordPair[];
-}
-
-export function diffSnapshots(prev: readonly NodeSnapshot[], next: readonly NodeSnapshot[]): GapfillDiff {
-  const prevById = new Map(prev.map((n) => [n.id, n]));
-  const nextIds = new Set(next.map((n) => n.id));
-  const created: NodeSnapshot[] = [];
-  const deleted: NodeSnapshot[] = [];
-  const renamed: RecordPair[] = [];
-  const moved: RecordPair[] = [];
-
-  for (const n of next) {
-    const p = prevById.get(n.id);
-    if (!p) { created.push(n); continue; }
-    if (p.name !== n.name) renamed.push({ prev: p, next: n });
-    if (Math.abs(p.x - n.x) > MOVE_EPSILON || Math.abs(p.y - n.y) > MOVE_EPSILON) moved.push({ prev: p, next: n });
-  }
-  for (const p of prev) {
-    if (!nextIds.has(p.id)) deleted.push(p);
-  }
-  return { created, deleted, renamed, moved };
-}
-
-/** Merges `renamed`+`moved` pairs for the SAME node into one `updated` EditInput with the
- *  union of changedProps — the wire format's own "one frame per node per batch" contract
- *  (mirrors `coalesceEdits`), so a node that changed both is reported ONCE, not twice.
- *  Pure — the seam `runGapfillDiff` (figma-dependent) delegates to. */
-export function mergeUpdatedRecords(renamed: readonly RecordPair[], moved: readonly RecordPair[]): Array<{ rec: NodeSnapshot; changedProps: string[] }> {
-  const byId = new Map<string, { rec: NodeSnapshot; props: Set<string> }>();
-  for (const { next } of renamed) {
-    const entry = byId.get(next.id) ?? { rec: next, props: new Set<string>() };
-    entry.props.add('name');
-    byId.set(next.id, entry);
-  }
-  for (const { next } of moved) {
-    const entry = byId.get(next.id) ?? { rec: next, props: new Set<string>() };
-    entry.props.add('x');
-    entry.props.add('y');
-    byId.set(next.id, entry);
-  }
-  return [...byId.values()].map(({ rec, props }) => ({ rec, changedProps: [...props].sort() }));
-}
-
-/** Which page ids the PREVIOUS baseline knew about that no longer appear among the
- *  currently-loaded pages at all (the whole page was deleted while the plugin was
- *  closed). Pure — figma-dependent callers pass in plain ids. */
-export function deletedPageIds(prevPageIds: readonly string[], currentPageIds: ReadonlySet<string>): string[] {
-  return prevPageIds.filter((id) => !currentPageIds.has(id));
-}
-
-/** Either side of a page's own snapshot being truncated makes created/deleted facts
- *  unreliable (a node pushed past the cap by unrelated tree growth reads as a false
- *  deletion; one that only now fits reads as a false creation). Pure. */
-export function pageWasTruncated(prevTruncated: boolean | undefined, nextTruncated: boolean): boolean {
-  return prevTruncated === true || nextTruncated;
-}
-
-/** A deleted page is named with its node count only when the baseline actually stored the
- *  records to count. A truncated page stored none, and inventing "(0 node(s))" for it
- *  would be a wrong fact where an absent one costs nothing. */
-export function deletedPageLabel(page: BaselinePage): string {
-  return page.records ? `${page.name} (${page.records.length} node(s))` : page.name;
-}
-
-function toGapfillEdit(op: EditOp, rec: NodeSnapshot, page: string, changedProps: string[] = []): EditInput {
-  return {
-    op, nodeId: rec.id, nodeName: rec.name, nodeType: rec.type,
-    // Gap-fill is existence/name/position only (spec non-goal: no property-level diff for
-    // the offline window) — the baseline itself never tracked a parent NAME (only a
-    // parent id, for a future use), so this is null rather than invented.
-    parentName: null,
-    page, changedProps, origin: 'LOCAL',
-    // The agent cannot have acted while its bridge was down — every gap-fill frame is
-    // unambiguously the owner's.
-    actor: 'owner',
-  };
-}
-
-/** Builds the EDIT_FEED-ready edits for one page's diff, applying `mergeUpdatedRecords`'s
- *  one-frame-per-node contract. Pure. */
-export function gapfillEditsForPage(diff: GapfillDiff, pageName: string): EditInput[] {
-  const edits: EditInput[] = [];
-  for (const rec of diff.created) edits.push(toGapfillEdit('created', rec, pageName));
-  for (const rec of diff.deleted) edits.push(toGapfillEdit('deleted', rec, pageName));
-  for (const { rec, changedProps } of mergeUpdatedRecords(diff.renamed, diff.moved)) {
-    edits.push(toGapfillEdit('updated', rec, pageName, changedProps));
-  }
-  return edits;
-}
-
-/** The one frame a session emits when it had NO baseline to diff against — first run on
- *  this file, a cleared cache, or a renamed Free-tier file whose slug-keyed baseline was
- *  orphaned. Reported instead of a silent empty diff, and instead of diffing against an
- *  empty baseline, which would fabricate a "created" frame for every node in the file. */
-export function baselineMissingNotice(fileName: string, pageName: string): EditInput {
-  return toGapfillEdit(
-    'updated',
-    { id: 'gapfill:baseline-missing', name: fileName, type: 'DOCUMENT', x: 0, y: 0, parent: null },
-    pageName,
-    ['baseline-missing'],
-  );
-}
-
-/** The one frame a session emits when a baseline EXISTS but the store refused to read it.
- *  Not `baseline-missing`: that would state a wrong fact (there is one on disk). The write
- *  is withheld too, so the stored value survives and the next successful boot diffs against
- *  it — delayed, never lost. No page is walked on this path: a read failure must not cost a
- *  full document walk whose result could not be persisted anyway. */
-export function baselineUnreadableNotice(fileName: string, pageName: string): EditInput {
-  return toGapfillEdit(
-    'updated',
-    { id: 'gapfill:baseline-unreadable', name: fileName, type: 'DOCUMENT', x: 0, y: 0, parent: null },
-    pageName,
-    ['baseline-unreadable'],
-  );
-}
-
-export interface PageSnapshotResult { records: NodeSnapshot[]; truncated: boolean }
-
-/**
- * The per-page write DECISION, pure so it is testable without a live sandbox: `snapshot`
- * is the figma-dependent page walk (real caller: `snapshotPage`), free to throw — e.g.
- * `PageNode.findAll` on a page that isn't loaded under `dynamic-page`. On success: a fresh
- * page entry, carrying records only when the page is not truncated. On failure: the
- * PREVIOUS entry carries forward VERBATIM, so one page's failure never discards that
- * page's usable history nor any OTHER page's fresh data; `null` when there was no previous
- * entry either (a brand-new page whose first snapshot attempt failed — nothing to keep).
- */
-export function resolveBaselinePage(
-  page: { id: string; name: string },
-  prevEntry: BaselinePage | undefined,
-  snapshot: () => PageSnapshotResult,
-): BaselinePage | null {
-  try {
-    const { records, truncated } = snapshot();
-    return truncated
-      ? { id: page.id, name: page.name, truncated: true }
-      : { id: page.id, name: page.name, truncated: false, records: records.map(toBaselineRecord) };
-  } catch {
-    return prevEntry ?? null;
-  }
 }
 
 /**
@@ -263,30 +88,62 @@ export function createSingleFlightWriter(write: () => Promise<void>): () => void
 
 // ── Figma-dependent halves ─────────────────────────────────────────────────────────
 
-/** Walks one page's tree (existence/name/position only), capped at
- *  `SNAPSHOT_NODE_CAP_PER_PAGE` — a page over the cap sets `truncated: true` rather than
- *  silently under-reporting. */
-export function snapshotPage(page: PageNode): PageSnapshotResult {
-  const all = page.findAll(() => true);
-  const truncated = all.length > SNAPSHOT_NODE_CAP_PER_PAGE;
-  const records: NodeSnapshot[] = [];
-  for (const node of all) {
-    if (records.length >= SNAPSHOT_NODE_CAP_PER_PAGE) break;
-    const hasXY = 'x' in node && 'y' in node;
-    records.push({
-      id: node.id,
-      name: node.name,
-      type: node.type,
-      x: hasXY ? normalizeSnapshotCoord((node as { x: number }).x) : 0,
-      y: hasXY ? normalizeSnapshotCoord((node as { y: number }).y) : 0,
-      parent: node.parent ? node.parent.id : null,
-    });
+/**
+ * Walks one page (existence / name / position only), bounded at
+ * `SNAPSHOT_NODE_CAP_PER_PAGE` VISITS and sliced at `SNAPSHOT_SLICE_SIZE` nodes per
+ * synchronous chunk — see page-walk-bounded.ts for why `findAll` could not do either.
+ * Free to REJECT: a page that cannot enumerate its children has no walk, and the caller
+ * must treat that as a failure (previous entry carried forward), never as an empty page.
+ *
+ * `page.loadAsync()` first, when the host offers it: pages are already resident after
+ * `loadAllPagesAsync`, so this is expected to cost ≈ 0 — and that measurement is exactly
+ * the evidence the progressive-load decision needs, taken here where it is free.
+ */
+export async function snapshotPageBounded(
+  page: PageNode,
+  perf: PerfStats = createPerfStats(),
+  phase: WalkPhase = 'idle',
+  // The walk's clock and hop, injectable so a test can pin the exact slice timings this
+  // records into `perf` — the numbers the "no visible stall" budget is written in.
+  timing: SlicedWalkTiming = {},
+): Promise<PageSnapshotResult> {
+  const loadable = page as unknown as { loadAsync?: () => Promise<void> };
+  if (typeof loadable.loadAsync === 'function') {
+    const loadStartedAt = Date.now();
+    await loadable.loadAsync();
+    recordPageLoadAsync(perf, Date.now() - loadStartedAt);
   }
-  return { records, truncated };
+  const walk = await walkPageSliced(page, {
+    cap: SNAPSHOT_NODE_CAP_PER_PAGE, sliceSize: SNAPSHOT_SLICE_SIZE, ...timing,
+  });
+  recordWalk(perf, phase, walk);
+  return {
+    records: walk.records, truncated: walk.truncated, top: walk.top,
+    propertyReadErrors: walk.propertyReadErrors, errorNodeIds: walk.errorNodeIds,
+  };
 }
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** One diff with its surviving `deleted` candidates removed and counted in STATUS. */
+async function withoutSurvivors(
+  diff: GapfillDiff,
+  nodeExists: (id: string) => Promise<boolean>,
+  stats: GapfillStats,
+): Promise<GapfillDiff> {
+  const checked = await withoutSurvivingNodes(diff.deleted, nodeExists);
+  stats.deletedRechecked += checked.survived;
+  return { ...diff, deleted: checked.deleted };
+}
+
+/** Names the page, the number of nodes lost, and — as far as the ids could be read — which
+ *  ones, so a session that dropped 40 nodes is diagnosable rather than merely counted. */
+function walkErrorMessage(pageName: string, walk: PageSnapshotResult): string {
+  const named = walk.errorNodeIds.slice(0, 3);
+  const detail = named.length > 0 ? ` (${named.join(', ')}${walk.errorNodeIds.length > named.length ? ', …' : ''})` : '';
+  return `gap-fill skipped the diff of "${pageName}": ${walk.propertyReadErrors} node(s) could not be read${detail}`;
 }
 
 function currentIdentity(): BaselineIdentity {
@@ -314,15 +171,21 @@ export async function writeBaseline(
   pages: readonly PageNode[],
   // Injectable so the boot path can reuse the walk `runGapfillDiff` already took (see
   // `snapshotProviderFrom`). The idle caller, which has no prior walk to reuse, passes
-  // `snapshotPage` itself — there is no implicit default, so no caller can silently write
-  // a baseline built by the wrong walker.
-  snapshotFor: (page: PageNode) => PageSnapshotResult,
+  // `snapshotPageBounded` itself — there is no implicit default, so no caller can silently
+  // write a baseline built by the wrong walker.
+  snapshotFor: (page: PageNode) => PageSnapshotResult | Promise<PageSnapshotResult>,
   store: BaselineStore,
   stats: GapfillStats,
   // Injectable so a test can pin the stamp to a known moment. `writtenAt` is not
   // decoration: eviction ranks every file's baseline by it, so a stamp that does not parse
   // back to the write moment silently breaks which file gets dropped under quota.
   now: () => number = Date.now,
+  // The IDLE contract: only these page ids are re-walked; every other page's entry carries
+  // forward verbatim, so a one-frame edit costs one page instead of the whole document.
+  // Omitted (boot) means every page. A page the stored baseline has never heard of is
+  // walked regardless — leaving it absent would make the NEXT boot read its whole tree as
+  // freshly created, which is a wrong fact, not a saved walk.
+  onlyPageIds?: ReadonlySet<string> | null,
 ): Promise<void> {
   const key = currentBaselineKey();
   // A session that never diffed against the stored baseline must not replace it: the
@@ -344,7 +207,20 @@ export async function writeBaseline(
   const prevById = new Map((prev?.pages ?? []).map((p) => [p.id, p]));
   const nextPages: BaselinePage[] = [];
   for (const page of pages) {
-    const resolved = resolveBaselinePage(page, prevById.get(page.id), () => snapshotFor(page));
+    const prevEntry = prevById.get(page.id);
+    if (onlyPageIds && !onlyPageIds.has(page.id) && prevEntry) {
+      nextPages.push(prevEntry); // unchanged page: carried forward, walked not at all
+      continue;
+    }
+    // The walk is figma-dependent and free to reject; a failure here is one page's
+    // history, never the write.
+    let walk: PageSnapshotResult | null = null;
+    try {
+      walk = await snapshotFor(page);
+    } catch (err) {
+      recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf(err)}`);
+    }
+    const resolved = resolveBaselinePage(page, prevEntry, walk);
     if (resolved) nextPages.push(resolved);
   }
   const identity = currentIdentity();
@@ -361,6 +237,13 @@ export async function writeBaseline(
   if (result.ok) {
     stats.baselineWrittenAt = baseline.writtenAt;
     stats.baselineBytes = result.bytes;
+    // Only now that the new value is safely stored: the superseded previous-shape value is
+    // removed so it stops holding storage quota nothing will ever read. Counted, because a
+    // deletion of stored data never happens off the record.
+    const { fileKey, fileName } = identity;
+    const stale = await clearStaleBaseline(store, legacyBaselineKeyFor(fileKey, fileName));
+    stats.staleBaselinesCleared += stale.cleared;
+    if (stale.error) recordGapfillError(stats, stale.error);
   }
 }
 
@@ -389,6 +272,45 @@ export function clearLegacyGapfillDocumentData(stats: GapfillStats): number {
 }
 
 /**
+ * Whether a node the walk did not see is still in the file. `getNodeByIdAsync` is the only
+ * authority on that, and a host that has no such getter — or one that refuses the lookup —
+ * leaves the question unanswerable, so the candidate keeps the classification the diff gave
+ * it. That is the behaviour this check replaces, applied only where it cannot be improved
+ * on; it never invents a survival it could not confirm.
+ */
+async function nodeStillExists(id: string): Promise<boolean> {
+  try {
+    const host = figma as unknown as { getNodeByIdAsync?: (nodeId: string) => Promise<unknown> };
+    if (typeof host.getNodeByIdAsync !== 'function') return false;
+    return (await host.getNodeByIdAsync(id)) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Injected seams of the boot diff. Every one has a production default; a test supplies
+ *  the ones it needs to pin (a clock with known deltas, a node lookup with known answers).
+ */
+export interface GapfillDiffDeps {
+  /** Cross-check for a `deleted` candidate — see `withoutSurvivingNodes`. */
+  nodeExists?: (id: string) => Promise<boolean>;
+  /** Clock and between-slice hop for every page walk this diff takes. */
+  walk?: SlicedWalkTiming;
+}
+
+/** The boot write's page source: the walk already taken above for a page, else a fresh
+ *  bounded walk for the few pages that were not cached (their first attempt threw). */
+function bootSnapshotProvider(
+  walked: ReadonlyMap<string, PageSnapshotResult>,
+  perf: PerfStats,
+  timing: SlicedWalkTiming,
+): (page: PageNode) => PageSnapshotResult | Promise<PageSnapshotResult> {
+  return snapshotProviderFrom<PageNode, PageSnapshotResult | Promise<PageSnapshotResult>>(
+    walked, (page) => snapshotPageBounded(page, perf, 'boot', timing),
+  );
+}
+
+/**
  * Runs ONCE at boot (main.ts wiring, after `loadAllPagesAsync`): diffs the PREVIOUS
  * session's baseline against the CURRENT scene, across every loaded page, and returns the
  * gap-fill edits ready to post as one EDIT_FEED batch (`source: 'gapfill'`, stamped by the
@@ -404,8 +326,9 @@ export function clearLegacyGapfillDocumentData(stats: GapfillStats): number {
  *   - A page that existed in the PREVIOUS session but is no longer loaded AT ALL → ONE
  *     notice naming the page (never N synthetic per-node deletions — we know the page is
  *     gone, not whether each node was individually deleted).
- *   - Either side of a page truncated → the WHOLE diff for that page is suppressed and
- *     only the truncation notice is emitted.
+ *   - Either side of a page truncated → no per-node diff (a node pushed past the cap by
+ *     unrelated growth would read as a deletion), but the page is NOT silent: the
+ *     truncation notice plus the TOP-LEVEL diff, which reports real frame-level facts.
  *   - A page whose walk THROWS → that page's diff is skipped and the failure recorded;
  *     its previous baseline entry carries forward and every other page still reports.
  */
@@ -413,7 +336,13 @@ export async function runGapfillDiff(
   pages: readonly PageNode[],
   store: BaselineStore,
   stats: GapfillStats,
+  // Where the boot walk's timings land. Defaulted so a test that only cares about edits
+  // need not supply one; main.ts passes the session's own ledger.
+  perf: PerfStats = createPerfStats(),
+  deps: GapfillDiffDeps = {},
 ): Promise<EditInput[]> {
+  const nodeExists = deps.nodeExists ?? nodeStillExists;
+  const timing = deps.walk ?? {};
   const { baseline: prev, readFailed } = await readBaseline(store, stats);
   if (readFailed) {
     // The store refused the read (error already recorded in `stats`). Skip the walk AND the
@@ -429,9 +358,9 @@ export async function runGapfillDiff(
     const firstRun = new Map<string, PageSnapshotResult>();
     for (const page of pages) {
       await yieldToHost();
-      try { firstRun.set(page.id, snapshotPage(page)); } catch { /* resolveBaselinePage re-attempts and skips */ }
+      try { firstRun.set(page.id, await snapshotPageBounded(page, perf, 'boot', timing)); } catch { /* writeBaseline re-attempts and skips */ }
     }
-    await writeBaseline(pages, snapshotProviderFrom(firstRun, snapshotPage), store, stats);
+    await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
     return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
   }
 
@@ -441,13 +370,7 @@ export async function runGapfillDiff(
   const prevById = new Map(prev.pages.map((p) => [p.id, p]));
 
   for (const deletedId of deletedPageIds(prev.pages.map((p) => p.id), currentPageIds)) {
-    const prevPage = prevById.get(deletedId)!;
-    edits.push(toGapfillEdit(
-      'deleted',
-      { id: `page-deleted:${prevPage.id}`, name: deletedPageLabel(prevPage), type: 'PAGE', x: 0, y: 0, parent: null },
-      prevPage.name,
-      ['page-deleted'],
-    ));
+    edits.push(pageDeletedNotice(prevById.get(deletedId)!));
   }
 
   for (const page of pages) {
@@ -459,25 +382,57 @@ export async function runGapfillDiff(
     // verbatim (`resolveBaselinePage`) rather than overwriting its history with nothing.
     let walk: PageSnapshotResult;
     try {
-      walk = snapshotPage(page);
+      walk = await snapshotPageBounded(page, perf, 'boot', timing);
     } catch (err) {
       recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf(err)}`);
       continue;
     }
     const { records: nextRecords, truncated: nextTruncated } = walk;
+    // Cached even when it is incomplete: `resolveBaselinePage` prefers the previous entry
+    // to it, and falls back to it only for a page the baseline has never held at all.
     walked.set(page.id, walk);
+    // A walk that dropped nodes cannot be diffed AT EITHER LEVEL. Every dropped node is
+    // missing from `records` — and a dropped TOP-LEVEL frame is missing from `top` — with
+    // nothing to distinguish "gone" from "unreadable", so both diffs would state
+    // deletions that did not happen. One notice instead, and the previous entry survives.
+    //
+    // The truncation notice is deliberately NOT also emitted for such a page, even when it
+    // is over the cap: that notice claims the page was covered at frame level, and this
+    // one was not covered at all. `pagesTruncated` therefore does not count it either —
+    // `pagesWithReadErrors` is where this page appears, and `pagesDiffed` is where it
+    // does not.
+    if (walk.propertyReadErrors > 0) {
+      stats.pagesWithReadErrors += 1;
+      recordGapfillError(stats, walkErrorMessage(page.name, walk));
+      edits.push(walkErrorsNotice(page));
+      continue;
+    }
     stats.pagesDiffed += 1;
     if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
       stats.pagesTruncated += 1;
-      edits.push(toGapfillEdit('updated', { id: `truncated:${page.id}`, name: page.name, type: 'PAGE', x: 0, y: 0, parent: null }, page.name, ['truncated']));
-      continue; // never a created/deleted/renamed/moved fact for this page this round
+      // The page IS over the cap and its per-node facts stay suppressed — that is still
+      // true and still said out loud.
+      edits.push(truncatedNotice(page));
+      // What used to be the whole story. On the owner's file 16 of 21 pages are over the
+      // cap, so "truncated ⇒ report nothing" made closed-window edits on most of the
+      // document vanish without trace. The top-level fingerprint is O(top-level) and gives
+      // real frame-level facts; it is compared only when the PREVIOUS session actually
+      // stored one, since diffing against an absent fingerprint would invent a "created"
+      // frame for every frame on the page.
+      const prevTop = prevPage?.top;
+      if (prevTop) {
+        stats.pagesTopLevelOnly += 1;
+        const { diff, coarse } = diffTopLevel(prevTop, walk.top);
+        edits.push(...gapfillEditsForPage(await withoutSurvivors(diff, nodeExists, stats), page.name, coarse));
+      }
+      continue; // never a per-NODE created/deleted/renamed/moved fact for this page
     }
     const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
-    edits.push(...gapfillEditsForPage(diff, page.name));
+    edits.push(...gapfillEditsForPage(await withoutSurvivors(diff, nodeExists, stats), page.name));
   }
   // The diff window now starts at THIS observation, not session start — and the baseline
   // is the walk taken ABOVE, never a re-walk: an edit made during a yield stays absent
   // from the baseline, so the next session's gap-fill reports it instead of losing it.
-  await writeBaseline(pages, snapshotProviderFrom(walked, snapshotPage), store, stats);
+  await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
   return edits;
 }

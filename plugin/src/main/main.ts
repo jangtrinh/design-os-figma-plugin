@@ -10,11 +10,15 @@ import { DEFAULT_IDLE_MS, MIN_IDLE_MS } from '../../../shared/protocol';
 import { fileMatches } from '../../../shared/file-match';
 import type { FigmaExportPayload } from '../../../shared/figma-payload-types';
 import {
-  clearLegacyGapfillDocumentData, createSingleFlightWriter, runGapfillDiff, snapshotPage, writeBaseline,
+  clearLegacyGapfillDocumentData, runGapfillDiff, snapshotPageBounded, writeBaseline,
 } from './edit-gapfill';
+import { createIdleBaselineWriter } from './idle-baseline-write';
 import { runBootCapture } from './boot-capture';
 import { createClientStorageBaselineStore } from './gapfill-baseline-store';
 import { createGapfillStats, toGapfillStatus } from './gapfill-status';
+import {
+  createPerfStats, markBootComplete, recordLoadAllPages, toPerfStatus,
+} from './perf-stats';
 import {
   pruneDeclaredIds, pruneLastAgentAt, AGENT_ECHO_MS, type ActorState,
 } from './edit-actor';
@@ -215,25 +219,40 @@ let readOnlyViolations = 0;
 let idleMs = DEFAULT_IDLE_MS;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 let changesSinceCommit = 0;
-// Reconnect gap-fill — the baseline must refresh on ANY widened edit, not just a
-// component-level one (a session with only ordinary-frame edits still needs a fresh
-// baseline for the next reconnect's diff). Separate from `changesSinceCommit` on purpose:
-// that counter is the component-log's own "N changes ready" prompt count and must not be
-// conflated with the baseline's own freshness signal.
-let hasEditsSinceSnapshot = false;
+// Reconnect gap-fill — WHICH pages the stored baseline is now behind on. Any widened edit
+// marks its page, not just a component-level one (a session with only ordinary-frame edits
+// still needs a fresh baseline for the next reconnect's diff). Separate from
+// `changesSinceCommit` on purpose: that counter is the component-log's own "N changes
+// ready" prompt count and must not be conflated with the baseline's freshness.
+//
+// A SET rather than a flag because the idle re-walk used to cost the whole document for one
+// edit — 21 pages of walking to refresh the one page that changed. The event stream already
+// knows which page it was.
+const dirtyPageIds = new Set<string>();
 
 // The baseline lives in `figma.clientStorage` (gapfill-baseline-store.ts) — per machine,
 // async, and invisible to `documentchange`, so writing it can never feed the very timer
 // that scheduled it.
 const baselineStore = createClientStorageBaselineStore();
 const gapfillStats = createGapfillStats();
+// Where a session's time actually went (perf-stats.ts) — the boot walk this plugin
+// controls and the two host costs it does not. Reported by STATUS's `perf` block.
+const perfStats = createPerfStats();
 
-// The write is async, so two idle fires could otherwise overlap on the same key. The
-// trigger runs one write at a time and re-arms once for anything that arrived mid-flight:
-// a request is never dropped, and two writes never race for the same key.
-const triggerBaselineWrite = createSingleFlightWriter(
-  () => writeBaseline(figma.root.children, snapshotPage, baselineStore, gapfillStats),
-);
+// Claim-and-clear, single-flight, dirty-pages-only: the rules and their reasons live in
+// idle-baseline-write.ts, where they are tested directly. If this write is REFUSED
+// (quota), the claimed page ids are not re-marked: the stored baseline stays older, so the
+// next boot's gap-fill re-reports edits already captured live — duplicates, never a loss —
+// and the refusal itself is counted in `gapfillStats`.
+const triggerBaselineWrite = createIdleBaselineWriter<PageNode>({
+  dirtyPageIds,
+  pages: () => figma.root.children,
+  write: (pages, dirty) => writeBaseline(
+    pages,
+    (page) => snapshotPageBounded(page, perfStats, 'idle'),
+    baselineStore, gapfillStats, Date.now, dirty,
+  ),
+});
 
 function resetIdleTimer(): void {
   if (idleTimer !== null) clearTimeout(idleTimer);
@@ -243,14 +262,9 @@ function resetIdleTimer(): void {
 function fireIdle(): void {
   idleTimer = null;
   // Written on a debounce after each idle window — regardless of whether this window's
-  // activity was component-scoped, since the baseline tracks EVERY node. The flag clears
-  // BEFORE the (async) write is triggered: an edit landing while that write runs must set
-  // the flag again and earn its own later write, never be swallowed by this one clearing
-  // the flag after the fact.
-  if (hasEditsSinceSnapshot) {
-    hasEditsSinceSnapshot = false;
-    triggerBaselineWrite();
-  }
+  // activity was component-scoped, since the baseline tracks EVERY node. Only the pages
+  // that actually changed are re-walked (the writer claims and clears the dirty set).
+  if (dirtyPageIds.size > 0) triggerBaselineWrite();
   if (changesSinceCommit <= 0) return; // nothing accumulated — no prompt
   figma.ui.postMessage({ type: 'IDLE_READY', data: { count: changesSinceCommit } });
   // Reset here: the displayed count means "changes since this prompt". The log/cursor
@@ -284,7 +298,7 @@ const capture = createDocumentChangeCapture({
   noteChangedNodes: (nodeIds) => { void noteChangedNodes(nodeIds); },
   post: (message) => { figma.ui.postMessage(message); },
   noteComponentChanges: (count) => { changesSinceCommit += count; },
-  noteEdits: () => { hasEditsSinceSnapshot = true; }, // the next idle fire refreshes the gap-fill snapshot
+  notePageDirty: (pageId) => { dirtyPageIds.add(pageId); }, // the next idle fire re-walks exactly these
   armIdle: resetIdleTimer,
 });
 
@@ -299,7 +313,7 @@ const capture = createDocumentChangeCapture({
 // reports it — delayed, never lost. `runGapfillDiff` itself writes the fresh baseline
 // before resolving.
 async function reportGapfill(): Promise<void> {
-  const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats);
+  const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats, perfStats);
   if (gapfillEdits.length > 0) {
     // Posted DIRECTLY, never through `coalesceEdits`. `coalesceEdits` keys by nodeId ALONE
     // across the WHOLE batch, with no notion of page — a node that moved pages between
@@ -330,8 +344,19 @@ async function reportGapfill(): Promise<void> {
 // different things, and one page refusing to walk must not cost the second. Sequencing and
 // failure semantics live in boot-capture.ts, where they are tested directly.
 void runBootCapture({
-  loadAllPages: () => figma.loadAllPagesAsync(),
-  gapfill: reportGapfill,
+  loadAllPages: async () => {
+    // Timed, not guessed: whether the boot wait is Figma's page load or this plugin's walk
+    // is the whole question the progressive-load decision turns on, and STATUS is where
+    // that answer has to be readable.
+    const startedAt = Date.now();
+    await figma.loadAllPagesAsync();
+    recordLoadAllPages(perfStats, Date.now() - startedAt);
+  },
+  gapfill: async () => {
+    // `finally`: a gap-fill that failed still measured whatever it did, and a `perf` block
+    // that disappears on the interesting boots is worse than one full of zeros.
+    try { await reportGapfill(); } finally { markBootComplete(perfStats); }
+  },
   subscribe: () => { figma.on('documentchange', capture.onDocumentChange); },
   notify: (message) => { figma.notify(message); },
 });
@@ -503,6 +528,7 @@ async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
   switch (cmd) {
     case 'STATUS': return opStatus(
       bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats), capture.stats,
+      toPerfStatus(perfStats),
     );
     case 'GET_SELECTION': return opGetSelection(params);
     case 'SCAN_DESIGN_SYSTEM': return serializeDesignSystem();

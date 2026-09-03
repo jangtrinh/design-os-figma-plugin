@@ -81,11 +81,13 @@ export function editSentence(frame: SceneEditSentenceInput): string {
   // of fact (a scan hit its node cap, not an edit at all) and gets its own sentence,
   // checked BEFORE the normal verb path.
   if (frame.changedProps.includes('truncated')) {
-    // Closing round (N5) — states the ACTUAL, current fact (gap-fill is off for this page
-    // right now) rather than a speculative one ("some deletions may be invisible" implies
-    // a specific past miss this session cannot actually name).
+    // States the ACTUAL, current fact rather than a speculative one ("some deletions may be
+    // invisible" implies a specific past miss this session cannot actually name). That fact
+    // changed when the top-level signal shipped: an oversized page is no longer skipped
+    // outright, it is covered at frame level only — so "gap-fill is disabled" became a
+    // WRONG fact, and a wrong fact costs more than a coarse one.
     const label = frame.nodeName ?? frame.parentName ?? 'this page';
-    return `Gap-fill is disabled for "${label}" while it exceeds the scan cap`;
+    return `Gap-fill covers only top-level frames on "${label}" while it exceeds the scan cap`;
   }
   // The other gap-fill notice, same shape and the same reason for existing: an
   // `op: 'updated'` frame carrying `changedProps: ['baseline-missing']` is not an edit at
@@ -105,8 +107,34 @@ export function editSentence(frame: SceneEditSentenceInput): string {
     const label = frame.nodeName ?? 'this file';
     return `Gap-fill skipped this session — the stored baseline for "${label}" could not be read; edits made before this session will be reported on the next successful boot`;
   }
+  // A page whose walk could not read every node. Those nodes are absent from the walk, so
+  // gap-fill skipped that page's diff rather than reporting them — and everything under
+  // them — as deleted. Same shape and the same reason for existing as the notices above:
+  // it is not an edit, and the generic verb path would call it "Restyled page …". How many
+  // nodes were lost is in STATUS (`gapfill.pagesWithReadErrors`, `perf.propertyReadErrors`)
+  // — this sentence states only what it can name.
+  if (frame.changedProps.includes('walk-errors')) {
+    const label = frame.nodeName ?? 'this page';
+    return `Gap-fill could not read some nodes on "${label}" this session — its diff was skipped`;
+  }
   const verb = sceneEditVerb(frame.op, frame.changedProps);
-  const verbText = VERB_TEXT[verb];
+  // The top-level signal on an oversized page: this frame's contents changed while the
+  // plugin was closed, and nothing narrower is knowable — the page was never walked node by
+  // node. The generic mapper would call it "Restyled", which claims a paint/text change
+  // this session cannot see. Checked AFTER the verb so a rename or a move — facts the
+  // fingerprint states exactly — still read as themselves.
+  if (verb === 'restyled' && frame.changedProps.includes('subtree')) {
+    const label = frame.nodeName ?? 'this frame';
+    return `Contents of "${label}" changed while the plugin was closed`;
+  }
+  // A size change is not a style change. `updateVerb`'s residual bucket calls everything
+  // that is neither a rename nor a move `restyled`, which for a pure resize claims a
+  // paint/text edit that did not happen — and a resize IS one of the facts the top-level
+  // fingerprint states exactly. Checked after the verb, so a rename or a move alongside it
+  // still reads as itself (both are facts about this same frame, and the clearest one
+  // wins, with `width`/`height` still listed in changedProps).
+  const resized = verb === 'restyled' && (frame.changedProps.includes('width') || frame.changedProps.includes('height'));
+  const verbText = resized ? 'Resized' : VERB_TEXT[verb];
   if (frame.nodeName === null || frame.nodeName === '') {
     const rawType = frame.nodeType || 'NODE';
     return `${verbText} a ${rawType} node`;

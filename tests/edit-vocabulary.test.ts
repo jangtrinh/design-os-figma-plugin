@@ -96,9 +96,12 @@ describe('editSentence', () => {
     it('changedProps ["truncated"] never falls through to the generic restyled verb', () => {
       const sentence = editSentence(base({ nodeType: 'PAGE', changedProps: ['truncated'], op: 'updated' }));
       expect(sentence).not.toContain('Restyled');
-      // Closing round (N5) — states the ACTUAL current fact (gap-fill is OFF for this
-      // page right now), never a speculative "some deletions may be invisible".
-      expect(sentence).toContain('disabled');
+      // States the ACTUAL current fact, never a speculative "some deletions may be
+      // invisible". That fact CHANGED when the top-level signal shipped: gap-fill is no
+      // longer off for an oversized page, it is top-level only — and "disabled" would now
+      // be a wrong fact, which costs more than a vague one.
+      expect(sentence).not.toContain('disabled');
+      expect(sentence).toContain('top-level');
       expect(sentence).toContain('scan cap');
     });
 
@@ -133,5 +136,74 @@ describe('editSentence', () => {
       expect(sentence).toContain('could not be read');
       expect(sentence).toContain('"VSF - PCP"');
     });
+  });
+});
+
+// A page whose walk could not read every node. Not an edit at all — the generic verb path
+// would render it as the actively wrong "Restyled page".
+describe('the skipped-diff notice gets its OWN sentence', () => {
+  const notice = (over: Partial<SceneEditSentenceInput> = {}): SceneEditSentenceInput => ({
+    op: 'updated', nodeName: 'Screens', nodeType: 'PAGE', parentName: null,
+    changedProps: ['walk-errors'], ...over,
+  });
+
+  it('names the page and says the diff was skipped, never claiming an edit happened', () => {
+    const sentence = editSentence(notice());
+    expect(sentence).not.toContain('Restyled');
+    expect(sentence).toContain('"Screens"');
+    expect(sentence).toContain('skipped');
+  });
+
+  it('degrades to a page-less phrasing rather than inventing a name', () => {
+    expect(editSentence(notice({ nodeName: null }))).toContain('this page');
+  });
+});
+
+describe('a size change reads as a resize, not as a restyle', () => {
+  it('width and/or height alone → Resized', () => {
+    const base: SceneEditSentenceInput = {
+      op: 'updated', nodeName: 'Hero', nodeType: 'FRAME', parentName: null, changedProps: ['width'],
+    };
+    expect(editSentence(base)).toBe('Resized frame "Hero"');
+    expect(editSentence({ ...base, changedProps: ['width', 'height'] })).toBe('Resized frame "Hero"');
+  });
+
+  it('a rename or a move alongside it still wins — the clearest fact about the frame', () => {
+    const base: SceneEditSentenceInput = {
+      op: 'updated', nodeName: 'Hero', nodeType: 'FRAME', parentName: null, changedProps: ['name', 'width'],
+    };
+    expect(editSentence(base)).toContain('Renamed');
+    expect(editSentence({ ...base, changedProps: ['width', 'x'] })).toContain('Moved');
+  });
+
+  it('an unnamed node degrades to its raw type, same as every other verb', () => {
+    expect(editSentence({
+      op: 'updated', nodeName: null, nodeType: 'FRAME', parentName: null, changedProps: ['height'],
+    })).toBe('Resized a FRAME node');
+  });
+});
+
+// The top-level signal's own category. A page over the scan cap gets no per-node diff, so
+// "something changed inside this frame" is the most this session can honestly say — and
+// the generic verb mapper would render it as the actively wrong "Restyled frame".
+describe('the top-level subtree signal gets its OWN sentence', () => {
+  const base = (over: Partial<SceneEditSentenceInput> = {}): SceneEditSentenceInput => ({
+    op: 'updated', nodeName: 'Hero', nodeType: 'FRAME', parentName: null, changedProps: ['subtree'], ...over,
+  });
+
+  it('names the frame and says WHEN, without claiming which node changed', () => {
+    const sentence = editSentence(base());
+    expect(sentence).not.toContain('Restyled');
+    expect(sentence).toContain('"Hero"');
+    expect(sentence).toContain('Contents');
+    expect(sentence).toContain('plugin was closed');
+  });
+
+  it('a rename alongside it still reads as a rename — the clearest fact wins', () => {
+    expect(editSentence(base({ changedProps: ['name', 'subtree'] }))).toContain('Renamed');
+  });
+
+  it('a move alongside it still reads as a move', () => {
+    expect(editSentence(base({ changedProps: ['subtree', 'x', 'y'] }))).toContain('Moved');
   });
 });

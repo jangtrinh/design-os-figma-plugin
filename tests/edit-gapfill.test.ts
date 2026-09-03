@@ -1,14 +1,16 @@
-// Reconnect gap-fill — the PURE core: coordinate normalization, the diff, the record
-// codec, and the per-page write decision. No figma access. The store-backed halves
-// (baseline read/write, quota refusal, boot diff) live in edit-gapfill-baseline.test.ts,
-// which drives them through an injected store and fake pages.
+// Reconnect gap-fill — the PURE core (gapfill-diff.ts): coordinate normalization, the
+// diff, the record codec, the notice frames and the per-page write decision. No figma
+// access. The store-backed halves (baseline read/write, quota refusal, boot diff) live in
+// edit-gapfill-baseline.test.ts, which drives them through an injected store and fake
+// pages.
 import { describe, it, expect } from 'vitest';
+import { createSingleFlightWriter, normalizeSnapshotCoord } from '../plugin/src/main/edit-gapfill.ts';
 import {
-  baselineMissingNotice, createSingleFlightWriter, deletedPageIds, deletedPageLabel, diffSnapshots,
-  fromBaselineRecord, gapfillEditsForPage, mergeUpdatedRecords, normalizeSnapshotCoord,
-  pageWasTruncated, resolveBaselinePage, snapshotProviderFrom, toBaselineRecord,
-  type NodeSnapshot,
-} from '../plugin/src/main/edit-gapfill.ts';
+  baselineMissingNotice, deletedPageIds, deletedPageLabel, diffSnapshots, diffTopLevel,
+  fromBaselineRecord, gapfillEditsForPage, mergeUpdatedRecords, pageWasTruncated,
+  resolveBaselinePage, snapshotProviderFrom, toBaselineRecord, withoutSurvivingNodes,
+} from '../plugin/src/main/gapfill-diff.ts';
+import type { NodeSnapshot, TopLevelRecord } from '../plugin/src/main/page-walk-bounded.ts';
 import type { BaselinePage } from '../plugin/src/main/gapfill-baseline-store.ts';
 
 function node(over: Partial<NodeSnapshot> = {}): NodeSnapshot {
@@ -185,21 +187,21 @@ describe('pageWasTruncated — either side truncated makes created/deleted unrel
 
 describe('snapshotProviderFrom — the boot write reuses the walk the diff already took', () => {
   it('a cached page returns the precomputed result WITHOUT invoking the fallback walker', () => {
-    const cached = { records: [node()], truncated: false };
+    const cached = { records: [node()], truncated: false, top: [] };
     let walks = 0;
     const provider = snapshotProviderFrom(
       new Map([['page-1', cached]]),
-      () => { walks += 1; return { records: [], truncated: false }; },
+      () => { walks += 1; return { records: [], truncated: false, top: [] }; },
     );
     expect(provider({ id: 'page-1' })).toBe(cached);
     expect(walks).toBe(0); // the whole point: no second walk for a page already snapshotted
   });
 
   it('an uncached page falls back to the walker (and only for that page)', () => {
-    const fresh = { records: [], truncated: false };
+    const fresh = { records: [], truncated: false, top: [] };
     let walks = 0;
     const provider = snapshotProviderFrom(
-      new Map([['page-1', { records: [node()], truncated: true }]]),
+      new Map([['page-1', { records: [node()], truncated: true, top: [] }]]),
       () => { walks += 1; return fresh; },
     );
     expect(provider({ id: 'page-2' })).toBe(fresh);
@@ -224,25 +226,127 @@ describe('baseline record codec — the persisted tuple round-trips a NodeSnapsh
 
 describe('resolveBaselinePage — per-page atomicity, and no records for a truncated page', () => {
   const page = { id: 'page-1', name: 'Screens' };
-  const prevEntry: BaselinePage = { id: 'page-1', name: 'Screens', truncated: false, records: [toBaselineRecord(node())] };
+  const top: TopLevelRecord[] = [['x', 'Hero', 'FRAME', 0, 0, 100, 50, 3]];
+  const prevEntry: BaselinePage = {
+    id: 'page-1', name: 'Screens', truncated: false, top, records: [toBaselineRecord(node())],
+  };
 
   it('a successful non-truncated snapshot stores the records as tuples', () => {
-    const resolved = resolveBaselinePage(page, prevEntry, () => ({ records: [node({ id: 'x' })], truncated: false }));
-    expect(resolved).toEqual({ id: 'page-1', name: 'Screens', truncated: false, records: [toBaselineRecord(node({ id: 'x' }))] });
+    const resolved = resolveBaselinePage(page, prevEntry, { records: [node({ id: 'x' })], truncated: false, top, propertyReadErrors: 0, errorNodeIds: [] });
+    expect(resolved).toEqual({
+      id: 'page-1', name: 'Screens', truncated: false, top, records: [toBaselineRecord(node({ id: 'x' }))],
+    });
   });
 
-  it('a TRUNCATED page stores no records at all — its diff is suppressed, so they would only cost bytes', () => {
-    const resolved = resolveBaselinePage(page, prevEntry, () => ({ records: [node(), node({ id: 'y' })], truncated: true }));
-    expect(resolved).toEqual({ id: 'page-1', name: 'Screens', truncated: true });
+  it('a TRUNCATED page stores no records, but KEEPS the top-level fingerprint', () => {
+    const resolved = resolveBaselinePage(page, prevEntry, { records: [node(), node({ id: 'y' })], truncated: true, top, propertyReadErrors: 0, errorNodeIds: [] });
+    expect(resolved).toEqual({ id: 'page-1', name: 'Screens', truncated: true, top });
     expect(resolved && 'records' in resolved).toBe(false);
+    // Without this the page has no closed-window signal at all — the hole this phase closes.
+    expect(resolved!.top).toEqual(top);
   });
 
-  it('a throwing snapshot carries the PREVIOUS entry forward verbatim', () => {
-    expect(resolveBaselinePage(page, prevEntry, () => { throw new Error('findAll failed'); })).toBe(prevEntry);
+  it('a FAILED walk carries the PREVIOUS entry forward verbatim', () => {
+    expect(resolveBaselinePage(page, prevEntry, null)).toBe(prevEntry);
   });
 
-  it('a throwing snapshot with NO previous entry returns null — nothing to carry, nothing to write', () => {
-    expect(resolveBaselinePage(page, undefined, () => { throw new Error('findAll failed'); })).toBeNull();
+  it('a failed walk with NO previous entry returns null — nothing to carry, nothing to write', () => {
+    expect(resolveBaselinePage(page, undefined, null)).toBeNull();
+  });
+});
+
+describe('resolveBaselinePage — an INCOMPLETE walk never overwrites a usable history', () => {
+  const page = { id: 'p1', name: 'Screens' };
+  const top: TopLevelRecord[] = [['a', 'Hero', 'FRAME', 0, 0, 10, 10, 0]];
+  const prevEntry: BaselinePage = {
+    id: 'p1', name: 'Screens', truncated: false, top, records: [['a', 'Hero', 'FRAME', 0, 0, null]],
+  };
+  const walk = (over = {}) => ({
+    records: [node({ id: 'a' })], truncated: false, top, propertyReadErrors: 0, errorNodeIds: [], ...over,
+  });
+
+  it('a walk that could not read a node carries the PREVIOUS entry forward, not its own gaps', () => {
+    expect(resolveBaselinePage(page, prevEntry, walk({ records: [], propertyReadErrors: 1, errorNodeIds: ['a'] })))
+      .toBe(prevEntry);
+  });
+
+  it('with NO previous entry the incomplete walk IS stored — a few gaps beat a whole-page create storm', () => {
+    const resolved = resolveBaselinePage(page, undefined, walk({ propertyReadErrors: 1, errorNodeIds: ['b'] }));
+    expect(resolved!.records).toEqual([['a', 'Hero', 'FRAME', 0, 0, null]]);
+  });
+
+  it('a clean walk still replaces the previous entry', () => {
+    expect(resolveBaselinePage(page, prevEntry, walk())!.records).toEqual([['a', 'Hero', 'FRAME', 0, 0, null]]);
+  });
+});
+
+describe('diffTopLevel — the coarse signal for a page too large to walk exactly', () => {
+  function frame(id: string, over: { name?: string; x?: number; y?: number; w?: number; h?: number; kids?: number } = {}): TopLevelRecord {
+    return [id, over.name ?? 'Hero', 'FRAME', over.x ?? 0, over.y ?? 0, over.w ?? 100, over.h ?? 50, over.kids ?? 0];
+  }
+
+  it('reports created, deleted, renamed and moved frames from the fingerprint alone', () => {
+    const { diff } = diffTopLevel(
+      [frame('keep'), frame('rename', { name: 'Before' }), frame('move'), frame('gone')],
+      [frame('keep'), frame('rename', { name: 'After' }), frame('move', { x: 400 }), frame('fresh')],
+    );
+    expect(diff.created.map((n) => n.id)).toEqual(['fresh']);
+    expect(diff.deleted.map((n) => n.id)).toEqual(['gone']);
+    expect(diff.renamed.map((p) => p.next.id)).toEqual(['rename']);
+    expect(diff.moved.map((p) => p.next.id)).toEqual(['move']);
+  });
+
+  // `subtree` means CONTENTS changed — a claim about nodes on a page this session could
+  // not walk. Only the child count is evidence of that; a size change is a fact about the
+  // frame's own box and says exactly that instead.
+  const table: Array<[string, TopLevelRecord, TopLevelRecord, string[]]> = [
+    ['a child added means something changed inside', frame('f', { kids: 1 }), frame('f', { kids: 2 }), ['subtree']],
+    ['a child removed does too', frame('f', { kids: 2 }), frame('f', { kids: 1 }), ['subtree']],
+    ['a pure width change is a resize, not a contents change', frame('f'), frame('f', { w: 320 }), ['width']],
+    ['a pure height change is a resize too', frame('f'), frame('f', { h: 200 }), ['height']],
+    ['both dimensions are both named', frame('f'), frame('f', { w: 320, h: 200 }), ['width', 'height']],
+    ['a resize CAUSED by a contents change reports the contents change', frame('f', { kids: 1 }), frame('f', { kids: 2, w: 320 }), ['subtree']],
+    ['a move alone is neither', frame('f'), frame('f', { x: 40 }), []],
+    ['an untouched frame produces no fact of any kind', frame('f'), frame('f'), []],
+  ];
+  for (const [name, prev, next, props] of table) {
+    it(name, () => {
+      expect(diffTopLevel([prev], [next]).coarse.flatMap((c) => [...c.props])).toEqual(props);
+    });
+  }
+
+  it('a NEW frame is reported as created only — never also as "contents changed"', () => {
+    const { diff, coarse } = diffTopLevel([], [frame('fresh', { kids: 2 })]);
+    expect(diff.created.map((n) => n.id)).toEqual(['fresh']);
+    expect(coarse).toEqual([]);
+  });
+
+  it('a frame renamed AND changed inside keeps BOTH facts — the subtree one on its own frame', () => {
+    const { diff, coarse } = diffTopLevel(
+      [frame('f', { name: 'Before', kids: 1 })],
+      [frame('f', { name: 'After', kids: 2 })],
+    );
+    const edits = gapfillEditsForPage(diff, 'Everything', coarse);
+    // One frame per FACT here, not per node: merged, the rename would rank above the
+    // subtree fact and that sentence would never be rendered at all.
+    expect(edits.map((e) => e.changedProps)).toEqual([['name'], ['subtree']]);
+    expect(edits.every((e) => e.nodeId === 'f' && e.op === 'updated')).toBe(true);
+  });
+
+  it('a frame moved AND changed inside does too', () => {
+    const { diff, coarse } = diffTopLevel([frame('f', { kids: 1 })], [frame('f', { x: 400, kids: 2 })]);
+    expect(gapfillEditsForPage(diff, 'Everything', coarse).map((e) => e.changedProps))
+      .toEqual([['x', 'y'], ['subtree']]);
+  });
+
+  it('a frame with ONLY a contents change stays a single frame', () => {
+    const { diff, coarse } = diffTopLevel([frame('f', { kids: 1 })], [frame('f', { kids: 2 })]);
+    expect(gapfillEditsForPage(diff, 'Everything', coarse).map((e) => e.changedProps)).toEqual([['subtree']]);
+  });
+
+  it('a resize alongside a rename stays on the rename frame — both are facts about the frame itself', () => {
+    const { diff, coarse } = diffTopLevel([frame('f', { name: 'Before' })], [frame('f', { name: 'After', w: 320 })]);
+    expect(gapfillEditsForPage(diff, 'Everything', coarse).map((e) => e.changedProps)).toEqual([['name', 'width']]);
   });
 });
 
