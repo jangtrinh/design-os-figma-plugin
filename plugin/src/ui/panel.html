@@ -396,12 +396,11 @@ body {
   line-height: var(--fga-lh-title);
   color: var(--fga-text);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   /* Motion: tone crossfades instead of jumping. Named properties only. */
   transition: color var(--fga-motion) var(--fga-ease);
 }
-.rail-sentence:focus-visible {
+.failure-count:focus-visible {
   outline: 2px solid var(--fga-focus);
   outline-offset: 1px;
 }
@@ -460,6 +459,11 @@ body {
 .rail-control[hidden] { display: none; }
 
 .failure-count {
+  /* A real button: the count is the only thing that clears itself, so it is the gesture. */
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
   min-width: 14px;
   padding: 0 var(--space-hair);
   border-radius: var(--radius-full);
@@ -508,8 +512,8 @@ body {
 <body>
 <main class="agent-rail" id="fga-rail" aria-label="Agent status">
   <div class="rail-orb" id="fga-orb" role="img" title="Disconnected" aria-label="Disconnected"></div>
-  <button class="rail-sentence" id="fga-sentence" type="button" data-tone="muted" aria-live="polite" aria-atomic="true" title="Not connected — your first command starts the broker."><span class="sentence-lead" id="fga-sentence-lead" hidden></span><span class="sentence-rest" id="fga-sentence-rest">Not connected — your first command starts the broker.</span></button>
-  <span class="failure-count" id="fga-failure-count" role="status" aria-live="polite" aria-atomic="true" aria-label="0 unresolved failures" hidden></span>
+  <p class="rail-sentence" id="fga-sentence" data-tone="muted" aria-live="polite" aria-atomic="true" title="Not connected — your first command starts the broker."><span class="sentence-lead" id="fga-sentence-lead" hidden></span><span class="sentence-rest" id="fga-sentence-rest">Not connected — your first command starts the broker.</span></p>
+  <button class="failure-count" id="fga-failure-count" type="button" aria-label="0 unresolved failures" title="Click to mark these failures as seen" hidden></button>
   <button class="rail-control" id="fga-target-rail-btn" type="button" title="File target" aria-label="File target" hidden></button>
   <button class="rail-control" id="fga-sync-rail-btn" type="button" title="Pending sync" aria-label="Pending sync" hidden><span class="rail-badge" id="fga-sync-badge">1</span></button>
 </main>

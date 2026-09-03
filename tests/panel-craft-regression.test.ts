@@ -72,7 +72,10 @@ describe('panel visual regression contract', () => {
     expect(declarationsFor('.rail-orb')).toMatch(/flex:\s*0\s+0\s+32px/);
     expect(declarationsFor('.rail-sentence')).toMatch(/min-width:\s*0/);
     expect(declarationsFor('.rail-sentence')).toMatch(/max-width:\s*\d+px/);
-    expect(declarationsFor('.rail-sentence')).toMatch(/text-overflow:\s*ellipsis/);
+    // The ellipsis lives on the tail span only: a flex container's own `text-overflow` is
+    // inert, and a declaration that cannot fire is a claim the next reader would trust.
+    expect(declarationsFor('.rail-sentence')).not.toMatch(/text-overflow/);
+    expect(declarationsFor('.sentence-rest')).toMatch(/text-overflow:\s*ellipsis/);
   });
 
   it('keeps spacing, depth, focus, and applied 16px Lucide classes intentional', () => {

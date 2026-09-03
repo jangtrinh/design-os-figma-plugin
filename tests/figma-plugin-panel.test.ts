@@ -92,7 +92,6 @@ describe('adaptive panel source contract', () => {
   it('keeps the sentence on one line and the full text reachable', () => {
     const sentence = declarationsFor('.rail-sentence');
     expect(sentence).toMatch(/white-space:\s*nowrap/);
-    expect(sentence).toMatch(/text-overflow:\s*ellipsis/);
     expect(sentence).toMatch(/overflow:\s*hidden/);
     expect(sentence).toMatch(/max-width:\s*\d+px/);
     expect(panelUi).toContain('sentence.title = view.title');
@@ -113,14 +112,20 @@ describe('adaptive panel source contract', () => {
     expect(model).toContain('if (dropped > 0) layers.push');
   });
 
-  it('makes the row\'s own text the acknowledgement, with no surface to open', () => {
-    const button = /<button[^>]*id="fga-sentence"[^>]*>/s.exec(html)?.[0] ?? '';
-    expect(button, 'the sentence must be a real button').toContain('type="button"');
-    expect(button).not.toContain('role="status"'); // a status role would erase the button
+  it('makes the failure count itself the acknowledgement, with no surface to open', () => {
+    // The count is the one control that clears itself: a real button, self-labelled, hidden
+    // at zero. The sentence is plain live text — a button that does nothing at zero failures
+    // would be a control with no action.
+    const chip = /<button[^>]*id="fga-failure-count"[^>]*>/s.exec(html)?.[0] ?? '';
+    expect(chip, 'the failure count must be a real button').toContain('type="button"');
+    expect(chip).not.toContain('role="status"'); // a status role would erase the button
+    expect(chip).toContain('aria-label=');
+    expect(/<p[^>]*id="fga-sentence"[^>]*>/s.test(html), 'the sentence is plain text').toBe(true);
+    expect(panelUi).toContain('failureChip.onclick');
     expect(panelUi).toContain('activityView.acknowledgeFailures()');
     expect(activityView).toContain('this.failures.acknowledge()');
     expect(viewState).toContain('acknowledge(): void');
-    expect(declarationsFor('.rail-sentence:focus-visible')).toMatch(/outline:\s*2px/);
+    expect(declarationsFor('.failure-count')).toMatch(/cursor:\s*pointer/);
   });
 });
 

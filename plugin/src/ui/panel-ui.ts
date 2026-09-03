@@ -14,9 +14,10 @@ const el = (id: string): HTMLElement => document.getElementById(id) as HTMLEleme
 const btn = (id: string): HTMLButtonElement => el(id) as HTMLButtonElement;
 const rail = el('fga-rail');
 const orbHost = el('fga-orb');
-const sentence = btn('fga-sentence');
+const sentence = el('fga-sentence');
 const sentenceLead = el('fga-sentence-lead');
 const sentenceRest = el('fga-sentence-rest');
+const failureChip = btn('fga-failure-count');
 const targetRailBtn = btn('fga-target-rail-btn');
 const syncRailBtn = btn('fga-sync-rail-btn');
 const syncBadge = el('fga-sync-badge');
@@ -100,7 +101,7 @@ function render(): void {
   sentence.dataset.tone = view.tone;
   sentence.title = view.title;
   const unresolved = activityView.failures.unresolvedCount;
-  if (unresolved > 0) sentence.title += ` · ${acknowledgeHint(unresolved)}`;
+  if (unresolved > 0) failureChip.title = acknowledgeHint(unresolved);
   activityView.renderBadge();
   renderTarget();
   renderSync();
@@ -110,10 +111,11 @@ function render(): void {
   hugViewport();
 }
 
-// Reading the line IS the acknowledgement: one click on the row's own text clears the count
-// and the orb's "needs attention". Nothing vanishes — the failure stays in the edit feed and
-// in `figma-agent errors` — and the next failure re-arms both.
-sentence.onclick = () => { activityView.acknowledgeFailures(); render(); };
+// The count IS the acknowledgement control: it appears only while failures are unresolved,
+// names itself, and one click clears it and the orb's "needs attention". Nothing vanishes —
+// the failure stays in the edit feed and in `figma-agent errors` — and the next failure
+// re-arms both.
+failureChip.onclick = () => { activityView.acknowledgeFailures(); render(); };
 const toggleTarget = (): void => { try { window.dispatchEvent(new CustomEvent(peersPinned ? 'figma-agent:clear-target' : 'figma-agent:set-target')); } catch { /* DOM unavailable */ } };
 targetRailBtn.onclick = toggleTarget;
 window.addEventListener('pagehide', () => thinkingOrb.dispose(), { once: true });

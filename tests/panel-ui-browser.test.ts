@@ -149,12 +149,14 @@ describe('the built panel in Chromium', () => {
     expect(await page.locator('#fga-sentence-lead').isVisible()).toBe(true);
   });
 
-  it('acknowledges failures from the row itself, and re-arms on the next one', async () => {
+  it('acknowledges failures by clicking the count itself, and re-arms on the next one', async () => {
     await connect();
     await failOnce('req_1');
     expect(await chip()).toEqual({ hidden: false, text: '1' });
     expect(await orbStatus()).toBe('Needs attention');
-    await page.click('#fga-sentence');
+    // The count is the only control that clears itself; the sentence is plain text again.
+    expect(await page.locator('#fga-sentence').evaluate((node) => node.tagName)).toBe('P');
+    await page.click('#fga-failure-count');
     expect(await chip(), 'the chip clears once the user has seen it').toEqual({ hidden: true, text: '' });
     expect(await orbStatus()).toBe('Connected');
     await failOnce('req_2');
