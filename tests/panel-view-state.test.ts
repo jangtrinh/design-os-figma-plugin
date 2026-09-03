@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BoundedKeySet, VIEW_KEY_LIMIT, applyActivityOutcome, connectionForce,
+  BoundedKeySet, VIEW_KEY_LIMIT, applyActivityOutcome,
   currentActivity, landTerminalActivity, unresolvedActivityCount,
 } from '../plugin/src/ui/panel-view-state.ts';
-import { ActivityView, renderFailureBadge } from '../plugin/src/ui/panel-activity-view.ts';
+import { ActivityView, renderFailureBadge, type FailureBadgeTarget } from '../plugin/src/ui/panel-activity-view.ts';
 import type { ActivityRecord } from '../plugin/src/ui/activity-feed.ts';
 
 const record = (id: string, pending: boolean, ok: boolean, at: number): ActivityRecord => ({
@@ -35,15 +35,26 @@ describe('keyed unresolved activity failures', () => {
     expect(failures.size).toBe(VIEW_KEY_LIMIT - 1);
   });
 
-  it('accounts for the 65th failure until Activity acknowledges the aggregate', () => {
+  it('acknowledging clears the keys and the overflow they spilled into, and re-arms after', () => {
+    const failures = new BoundedKeySet();
+    for (let index = 0; index < VIEW_KEY_LIMIT + 3; index += 1) failures.add(`failure-${index}`);
+    expect(failures.overflowCount).toBe(3);
+    failures.acknowledge();
+    expect(unresolvedActivityCount(failures)).toBe(0);
+    expect(failures.overflowCount).toBe(0);
+    applyActivityOutcome(failures, 'failure-next', false);
+    expect(unresolvedActivityCount(failures)).toBe(1);
+  });
+
+  it('still counts the 65th failure after the key itself was evicted', () => {
     const failures = new BoundedKeySet();
     for (let index = 0; index < VIEW_KEY_LIMIT + 1; index += 1) failures.add(`failure-${index}`);
     expect(failures.size).toBe(VIEW_KEY_LIMIT);
     expect(failures.overflowCount).toBe(1);
     expect(unresolvedActivityCount(failures)).toBe(65);
-    failures.acknowledge();
-    expect(unresolvedActivityCount(failures)).toBe(0);
-    expect(failures.overflowCount).toBe(0);
+    // Only a genuine resolution clears one: the rail has no "mark as seen" gesture left.
+    applyActivityOutcome(failures, `failure-${VIEW_KEY_LIMIT}`, true);
+    expect(unresolvedActivityCount(failures)).toBe(64);
   });
 
   it('synthesizes a readable failure row for a terminal result after eviction', () => {
@@ -56,7 +67,7 @@ describe('keyed unresolved activity failures', () => {
     expect(landed[0]?.sentence).toContain('Node no longer exists');
   });
 
-  it('updates the visible and accessible failure badge on acknowledge', () => {
+  it('updates the visible and accessible failure badge as the count moves', () => {
     const attributes = new Map<string, string>();
     const badge = { hidden: true, textContent: '', setAttribute: (name: string, value: string) => attributes.set(name, value) };
     renderFailureBadge(badge, 65);
@@ -69,9 +80,8 @@ describe('keyed unresolved activity failures', () => {
 });
 
 describe('pending activity command snapshots', () => {
-  const view = (): ActivityView => new ActivityView(
-    {} as HTMLElement, {} as HTMLButtonElement, {} as HTMLElement, {} as HTMLElement,
-  );
+  const badge = (): FailureBadgeTarget => ({ hidden: true, textContent: '', setAttribute: () => {} });
+  const view = (): ActivityView => new ActivityView(badge());
 
   it('includes every pending request without deduplicating command names', () => {
     const activity = view();
@@ -116,23 +126,5 @@ describe('pending activity command snapshots', () => {
     const snapshot = activity.pendingTools() as string[];
     snapshot.length = 0;
     expect(activity.pendingTools()).toEqual(['EXEC_JS']);
-  });
-});
-
-describe('semantic connection force keys', () => {
-  it('reopens at the probe timeout after onboarding was already disclosed', () => {
-    expect(connectionForce('probing', 9_999, false, 7)).toEqual({
-      key: 'onboarding:7', kind: 'onboarding',
-    });
-    expect(connectionForce('probing', 10_000, false, 7)).toEqual({
-      key: 'probe-timeout:7', kind: 'probe-timeout',
-    });
-  });
-
-  it('distinguishes connection loss from first-run setup', () => {
-    expect(connectionForce('disconnected', 0, true, 8)).toEqual({
-      key: 'connection-lost:8', kind: 'connection-lost',
-    });
-    expect(connectionForce('connected', 0, true, 8)).toBeNull();
   });
 });

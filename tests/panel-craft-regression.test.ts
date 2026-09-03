@@ -24,11 +24,12 @@ describe('panel visual regression contract', () => {
   const light = /html\.figma-light\s*\{([\s\S]*?)\}/.exec(html)?.[1] ?? '';
   const tokens = (block: string): string[] => [...block.replace(/\/\*[\s\S]*?\*\//g, '')
     .matchAll(/(--fga-[a-z0-9-]+)\s*:/g)].map((match) => match[1] ?? '');
+  // Theme-invariant tokens: shape, type, and motion do not change with the appearance,
+  // so the light block must NOT redeclare them.
   const invariant = new Set([
-    '--fga-radius', '--fga-radius-sm', '--fga-divider-gap', '--fga-font-title',
-    '--fga-font-body', '--fga-font-caption', '--fga-track-title', '--fga-track-body',
-    '--fga-track-caption', '--fga-lh-title', '--fga-lh-body', '--fga-lh-caption',
-    '--fga-motion', '--fga-ease',
+    '--fga-radius-sm', '--fga-font-title', '--fga-font-body', '--fga-font-caption',
+    '--fga-track-title', '--fga-track-caption', '--fga-lh-title', '--fga-lh-body',
+    '--fga-lh-caption', '--fga-motion', '--fga-ease',
   ]);
 
   it('keeps dark tokens live and light color-token parity exact', () => {
@@ -53,21 +54,28 @@ describe('panel visual regression contract', () => {
       .filter((value) => !value?.startsWith('var(--fga-lh-'))).toEqual([]);
   });
 
-  it('preserves vertical-only overflow and every ellipsis guard', () => {
-    expect(declarationsFor('.inspector-content')).toMatch(/overflow-y:\s*auto/);
-    expect(declarationsFor('.inspector-content')).toMatch(/overflow-x:\s*hidden/);
+  it('never scrolls, never wraps, and keeps every ellipsis guard whole', () => {
+    // One row at a fixed height: nothing may scroll, in either axis.
+    expect(declarationsFor('body')).toMatch(/overflow:\s*hidden/);
+    expect(chrome).not.toMatch(/overflow-y:\s*auto|overflow-x:\s*auto/);
     expect(rules.filter(([, value]) => /text-overflow:\s*ellipsis/.test(value)
       && !(/overflow:\s*hidden/.test(value) && /white-space:\s*nowrap/.test(value)))).toEqual([]);
     expect(chrome).not.toMatch(/@media[^{]*\(\s*(?:min|max)-width/);
   });
 
-  it('hugs the rail with flex while only the activity label may shrink', () => {
+  it('hugs its content with flex while only the sentence may shrink', () => {
+    expect(declarationsFor('body')).toMatch(/width:\s*max-content/);
     expect(declarationsFor('.agent-rail')).toMatch(/display:\s*flex/);
+    expect(declarationsFor('.agent-rail')).toMatch(/width:\s*max-content/);
     expect(declarationsFor('.agent-rail')).not.toMatch(/grid-template-columns|\b1fr\b/);
     expect(declarationsFor('.rail-control')).toMatch(/flex:\s*0\s+0\s+32px/);
-    expect(declarationsFor('.current-control')).toMatch(/flex:\s*1\s+1\s+auto/);
-    expect(declarationsFor('.current-label')).toMatch(/min-width:\s*0/);
-    expect(declarationsFor('.current-label')).toMatch(/text-overflow:\s*ellipsis/);
+    expect(declarationsFor('.rail-orb')).toMatch(/flex:\s*0\s+0\s+32px/);
+    expect(declarationsFor('.rail-sentence')).toMatch(/min-width:\s*0/);
+    expect(declarationsFor('.rail-sentence')).toMatch(/max-width:\s*\d+px/);
+    // The ellipsis lives on the tail span only: a flex container's own `text-overflow` is
+    // inert, and a declaration that cannot fire is a claim the next reader would trust.
+    expect(declarationsFor('.rail-sentence')).not.toMatch(/text-overflow/);
+    expect(declarationsFor('.sentence-rest')).toMatch(/text-overflow:\s*ellipsis/);
   });
 
   it('keeps spacing, depth, focus, and applied 16px Lucide classes intentional', () => {
@@ -84,10 +92,8 @@ describe('panel visual regression contract', () => {
     expect(offGrid).toEqual([]);
     expect(declarationsFor('.fga-icon')).toMatch(/width:\s*16px/);
     expect(activityView).toContain("icon.classList.add('is-spinning')");
-    expect(activityView).toContain("iconWrap.className = 'log-icon-wrap'");
-    expect(chrome).not.toMatch(/background(?:-color)?:\s*var\(--fga-(hairline|hairline-soft|topedge)\)/);
     expect(chrome).not.toMatch(/box-shadow:\s*inset|border-left:\s*(?!0)/);
-    for (const selector of ['.rail-control:focus-visible', '.tab-button:focus-visible', '.sync-btn:focus-visible', '.inline-link:focus-visible']) expect(declarationsFor(selector)).toMatch(/outline:\s*2px/);
+    expect(declarationsFor('.rail-control:focus-visible')).toMatch(/outline:\s*2px/);
   });
 
   it('keeps the aggregate orb inline, monochrome, and lifecycle-bounded', () => {
@@ -104,15 +110,14 @@ describe('panel visual regression contract', () => {
     expect(thinkingOrb).not.toContain('IntersectionObserver');
   });
 
-  it('uses exact reduced-motion coverage and no stale icon selectors', () => {
+  it('uses exact reduced-motion coverage and no stale selectors', () => {
     expect(chrome).not.toMatch(/transition[^;]*:\s*[^;]*\ball\b|transition[^;]*:[^;]*\blinear\b/);
     const guards = [...html.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/g)]
       .map((match) => match[1] ?? '').join('\n');
-    for (const selector of ['.is-spinning', '.activity-row.is-new', '.rail-control']) expect(guards).toContain(selector);
-    expect(declarationsFor('.activity-row')).not.toMatch(/animation:/);
-    expect(declarationsFor('.activity-row.is-new')).toMatch(/animation:\s*fga-row-in/);
-    expect(html).not.toMatch(/#fga-dot|\.log-icon(?:\s|\{|\[|:)/);
-    expect(html).toContain('.log-icon-wrap[data-state="failed"]  .fga-icon');
-    expect(html).toContain('.activity-row.is-stale .fga-icon');
+    // Every animated or transitioned selector the rail still has must be guarded.
+    for (const selector of ['.is-spinning', '.rail-control', '.rail-sentence']) expect(guards).toContain(selector);
+    expect(declarationsFor('.is-spinning')).toMatch(/animation:\s*fga-spin/);
+    // The surfaces the single row replaced leave no orphan selectors behind.
+    expect(html).not.toMatch(/#fga-dot|\.log-icon|\.activity-row|\.detail-cell|\.inspector|\.tab-button/);
   });
 });

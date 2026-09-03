@@ -48,19 +48,24 @@ describe('commandOrbPresentation', () => {
     })).toMatchObject({ state, status, paused: false, dimmed: false });
   });
 
-  it('keeps semantic status as the native connection button accessible label', () => {
+  it('keeps the semantic status as the orb accessible name, build identity aside', () => {
     const panelUi = readFileSync(`${ROOT}/plugin/src/ui/panel-ui.ts`, 'utf8');
-    expect(panelUi).toContain('labelControl(connectionBtn, `${orb.status}. Open details`)');
-    const labels = new Map<string, string>();
-    const target = {
-      title: '', setAttribute: (name: string, value: string) => labels.set(name, value),
-    } as unknown as HTMLButtonElement;
+    // The orb opens nothing now, so it is a labelled image: the name is the status alone,
+    // and the build id rides only on the tooltip.
+    expect(panelUi).toContain("orbHost.setAttribute('aria-label', orb.status)");
+    expect(panelUi).toContain('orbHost.title = `${orb.status} · ${BUILD_LINE}`');
     const orb = orbPresentation({
       connection: 'connected', connectionFailure: false, syncFailure: false,
       activityFailure: false, pendingTools: ['AUDIT_DS'], syncPending: false,
     });
-    labelControl(target, `${orb.status}. Open details`);
-    expect(target.title).toBe('Analyzing. Open details');
-    expect(labels.get('aria-label')).toBe('Analyzing. Open details');
+    expect(orb.status).toBe('Analyzing');
+    const labels = new Map<string, string>();
+    const target = {
+      title: '', setAttribute: (name: string, value: string) => labels.set(name, value),
+    } as unknown as HTMLButtonElement;
+    // A rail control still says the same thing twice — tooltip and accessible name.
+    labelControl(target, `${orb.status}. Run sync`);
+    expect(target.title).toBe('Analyzing. Run sync');
+    expect(labels.get('aria-label')).toBe('Analyzing. Run sync');
   });
 });

@@ -55,14 +55,16 @@ import {
   writeEdgeCorrections,
 } from './correction-edge-store';
 import type { CorrectionEvent } from '../../../shared/supervised-memory';
-import { RAIL_COMPACT_WIDTH, RAIL_HEIGHT, viewportFor } from '../ui/panel-model';
+import { RAIL_HEIGHT, RAIL_MIN_WIDTH, resolveViewportRequest } from '../ui/panel-model';
 import {
   createReadOnlyGuardState, isReadOnlyExecJs, recordDocumentChangeBatch,
   snapshotChangeEvents, violatedSinceSnapshot,
 } from './readonly-guard';
 
-// The adaptive panel opens as its smallest rail. The iframe can request only named modes;
-// main owns the dimensions and never trusts arbitrary width/height input.
+// The panel is ONE row that hugs its content. It opens at the narrowest width the host's
+// own title bar can still render "design:os by JANG" in full; from there the iframe measures
+// its rendered row and asks for that width. Main owns the band and the height, and never
+// trusts the number on the wire (panel-model.ts's `clampRailWidth`).
 //
 // Owner decree 2026-07-30: the plugin window's own (host-drawn) title bar cannot be
 // removed and duplicated the panel's internal masthead, which is now gone (panel.html) —
@@ -76,7 +78,7 @@ import {
 // `html.figma-light { ... }` override block (a sibling of the default dark :root) is
 // what actually repaints every color token; this flag is what makes that class exist.
 figma.showUI(__html__, {
-  visible: true, width: RAIL_COMPACT_WIDTH, height: RAIL_HEIGHT, title: 'design:os by JANG', themeColors: true,
+  visible: true, width: RAIL_MIN_WIDTH, height: RAIL_HEIGHT, title: 'design:os by JANG', themeColors: true,
 });
 
 // Absorption phase-03 (FigJam) — which design-only boot capabilities this session
@@ -380,11 +382,9 @@ interface UiRequest {
 }
 
 figma.ui.onmessage = async (msg: unknown) => {
-  const chrome = msg as { type?: unknown; mode?: unknown; data?: unknown } | null;
-  if (chrome && chrome.type === 'PANEL_VIEWPORT'
-      && (chrome.mode === 'rail-compact' || chrome.mode === 'rail-one-action'
-        || chrome.mode === 'rail-two-actions' || chrome.mode === 'inspector')) {
-    const viewport = viewportFor(chrome.mode);
+  const chrome = msg as { type?: unknown; data?: unknown } | null;
+  const viewport = resolveViewportRequest(msg);
+  if (viewport) {
     figma.ui.resize(viewport.width, viewport.height);
     return;
   }

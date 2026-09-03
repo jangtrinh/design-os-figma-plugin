@@ -1,66 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
-  statusSentence, formatAge, showOnboarding, fileNote,
-  RAIL_COMPACT_WIDTH, RAIL_ONE_ACTION_WIDTH, RAIL_TWO_ACTIONS_WIDTH,
-  RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT,
-  railViewportMode, viewportFor, shouldForceInspector,
+  formatAge, showOnboarding, fileNote,
+  RAIL_MIN_WIDTH, RAIL_MAX_WIDTH, RAIL_HEIGHT,
+  clampRailWidth, resolveViewportRequest, railSentence, connectionTrouble,
   syncPromptLabel, syncResultLabel, syncNowLabel, shouldClearPendingCount,
   syncStartSentence, syncResultSentence, syncStuckSentence, syncSupersededSentence, SYNC_STUCK_TIMEOUT_MS,
-  targetButtonLabel, droppedNote,
+  targetButtonLabel, droppedNote, acknowledgeHint,
 } from '../plugin/src/ui/panel-model.ts';
-describe('statusSentence — Block 1: the problem and the next action, six branches', () => {
-  it('connected — success tone, minimal (the dot already signals it)', () => {
-    expect(statusSentence('connected', 0, true)).toEqual({
-      text: 'Connected', tone: 'success',
-    });
-  });
-  it('probing under 10s — "looking", warning tone', () => {
-    expect(statusSentence('probing', 9_000, false)).toEqual({
-      text: 'Looking for the broker', tone: 'warning',
-    });
-  });
-  it('probing at/after 10s — names the fix, trimmed (no "in a terminal" filler)', () => {
-    expect(statusSentence('probing', 10_000, false)).toEqual({
-      text: 'Broker not running — run figma-agent status.', tone: 'warning',
-    });
-  });
-  it('handshake — info tone, no ellipsis', () => {
-    expect(statusSentence('handshake', 0, false)).toEqual({ text: 'Connecting', tone: 'info' });
-  });
-  it('disconnected, never connected — first-run wait, muted, trimmed', () => {
-    expect(statusSentence('disconnected', 0, false)).toEqual({
-      text: 'Not connected — your first command starts the broker.', tone: 'muted',
-    });
-  });
-  it('disconnected, was connected — names the drop, muted, trimmed', () => {
-    expect(statusSentence('disconnected', 0, true)).toEqual({
-      text: 'Connection lost — reconnecting.', tone: 'muted',
-    });
-  });
-});
 // The relay's offline buffer is bounded, so a long enough outage still loses edits.
-// Whatever it lost has to reach the one human looking at this panel: the sentence
-// carries the count in every connection state, and says so in a warning tone even
-// while everything else is healthy.
-describe('statusSentence — dropped captures are never hidden behind a healthy state', () => {
-  it('adds nothing at all while the count is zero', () => {
-    expect(statusSentence('connected', 0, true, 0)).toEqual({ text: 'Connected', tone: 'success' });
-    expect(statusSentence('connected', 0, true)).toEqual({ text: 'Connected', tone: 'success' });
-  });
-
-  it('says what was lost even once the connection is healthy again', () => {
-    expect(statusSentence('connected', 0, true, 3)).toEqual({
-      text: 'Connected · 3 edits lost while offline', tone: 'warning',
-    });
-  });
-
-  it('keeps the count visible while still disconnected, and counts one edit in singular', () => {
-    expect(statusSentence('disconnected', 0, true, 1)).toEqual({
-      text: 'Connection lost — reconnecting. · 1 edit lost while offline', tone: 'warning',
-    });
-  });
-
-  it('droppedNote never fabricates a plural or a zero case it was not given', () => {
+// Whatever it lost has to reach the one human looking at this panel — see the
+// railSentence table below for where it lands in the one-line rail.
+describe('droppedNote — the count the panel may never swallow', () => {
+  it('never fabricates a plural or a zero case it was not given', () => {
     expect(droppedNote(1)).toBe('1 edit lost while offline');
     expect(droppedNote(42)).toBe('42 edits lost while offline');
   });
@@ -127,32 +78,150 @@ describe('targetButtonLabel — the "Target this plugin" toggle (#35 P2)', () =>
     expect(targetButtonLabel(true)).not.toBe(targetButtonLabel(false));
   });
 });
-describe('adaptive panel geometry', () => {
-  it('maps named viewport modes to the only accepted dimensions', () => {
-    expect(viewportFor('rail-compact')).toEqual({ width: 200, height: 44 });
-    expect(viewportFor('rail-one-action')).toEqual({ width: 220, height: 44 });
-    expect(viewportFor('rail-two-actions')).toEqual({ width: 240, height: 44 });
-    expect(viewportFor('inspector')).toEqual({ width: 288, height: 280 });
-    expect([
-      RAIL_COMPACT_WIDTH, RAIL_ONE_ACTION_WIDTH, RAIL_TWO_ACTIONS_WIDTH,
-      RAIL_HEIGHT, INSPECTOR_WIDTH, INSPECTOR_HEIGHT,
-    ]).toEqual([200, 220, 240, 44, 288, 280]);
+describe('clampRailWidth — the rail hugs its content, main still trusts no number', () => {
+  it('keeps a width inside the band untouched', () => {
+    expect(clampRailWidth(240)).toBe(240);
+    expect(clampRailWidth(377)).toBe(377);
+    expect(clampRailWidth(560)).toBe(560);
   });
-  it('selects the smallest safe rail from conditional control visibility', () => {
-    expect(railViewportMode(false, false)).toBe('rail-compact');
-    expect(railViewportMode(true, false)).toBe('rail-one-action');
-    expect(railViewportMode(false, true)).toBe('rail-one-action');
-    expect(railViewportMode(true, true)).toBe('rail-two-actions');
+  it('clamps both ends of the band — the title must fit, the canvas must survive', () => {
+    expect(clampRailWidth(0)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth(-9_000)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth(239)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth(561)).toBe(RAIL_MAX_WIDTH);
+    expect(clampRailWidth(100_000)).toBe(RAIL_MAX_WIDTH);
   });
-  it('forces text-bearing recovery only when it is actionable', () => {
-    expect(shouldForceInspector('disconnected', 0, false)).toBe(true);
-    expect(shouldForceInspector('probing', 9_000, false)).toBe(true);
-    expect(shouldForceInspector('probing', 10_000, true)).toBe(true);
-    expect(shouldForceInspector('disconnected', 0, true)).toBe(true);
-    expect(shouldForceInspector('handshake', 0, false)).toBe(false);
-    expect(shouldForceInspector('connected', 0, true)).toBe(false);
+  it('rounds a fractional content width UP — rounding down clips the last pixel of the sentence', () => {
+    expect(clampRailWidth(300.2)).toBe(301);
+    expect(clampRailWidth(559.6)).toBe(560);
+    expect(Number.isInteger(clampRailWidth(412.5))).toBe(true);
+  });
+  it('falls back to the minimum for anything that is not a finite number', () => {
+    expect(clampRailWidth(Number.NaN)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth(Number.POSITIVE_INFINITY)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth('420')).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth(undefined)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth(null)).toBe(RAIL_MIN_WIDTH);
+    expect(clampRailWidth({ width: 420 })).toBe(RAIL_MIN_WIDTH);
+  });
+  it('the band itself keeps the host title readable and the height fixed', () => {
+    expect([RAIL_MIN_WIDTH, RAIL_MAX_WIDTH, RAIL_HEIGHT]).toEqual([240, 560, 44]);
   });
 });
+
+describe('resolveViewportRequest — the ONE viewport message main accepts', () => {
+  it('answers a hug request with the clamped width and the fixed rail height', () => {
+    expect(resolveViewportRequest({ type: 'PANEL_VIEWPORT', mode: 'hug', width: 412 }))
+      .toEqual({ width: 412, height: RAIL_HEIGHT });
+    expect(resolveViewportRequest({ type: 'PANEL_VIEWPORT', mode: 'hug', width: 9_000 }))
+      .toEqual({ width: RAIL_MAX_WIDTH, height: RAIL_HEIGHT });
+    expect(resolveViewportRequest({ type: 'PANEL_VIEWPORT', mode: 'hug', width: 'wide' }))
+      .toEqual({ width: RAIL_MIN_WIDTH, height: RAIL_HEIGHT });
+  });
+  it('ignores every other message — a retired mode resizes nothing', () => {
+    for (const message of [
+      null, undefined, 'PANEL_VIEWPORT', 42,
+      { type: 'PANEL_VIEWPORT' },
+      { type: 'PANEL_VIEWPORT', mode: 'inspector', width: 288 },
+      { type: 'PANEL_VIEWPORT', mode: 'rail-compact' },
+      { type: 'SYNC_DONE', mode: 'hug', width: 300 },
+      { mode: 'hug', width: 300 },
+    ]) expect(resolveViewportRequest(message)).toBeNull();
+  });
+});
+
+describe('connectionTrouble — the only connection states worth a whole sentence', () => {
+  it('names first-run, a lost link, and a broker that never answered', () => {
+    expect(connectionTrouble('disconnected', 0, false)).toBe('never-connected');
+    expect(connectionTrouble('probing', 9_000, false)).toBe('never-connected');
+    expect(connectionTrouble('disconnected', 0, true)).toBe('connection-lost');
+    expect(connectionTrouble('probing', 10_000, true)).toBe('probe-timeout');
+  });
+  it('stays silent while the connection is merely working — the orb carries that', () => {
+    expect(connectionTrouble('connected', 0, true)).toBeNull();
+    expect(connectionTrouble('handshake', 0, false)).toBeNull();
+    expect(connectionTrouble('probing', 9_000, true)).toBeNull();
+  });
+});
+
+describe('railSentence — one line, strict priority, nothing hidden', () => {
+  const sync = { text: '2 changes ready', tone: 'warning' } as const;
+  const activity = { text: 'Created frame Hero', tone: 'info' } as const;
+
+  it('connection trouble outranks sync and activity, which survive in the title', () => {
+    expect(railSentence({ state: 'disconnected', ageMs: 0, hadConnection: true, sync, activity })).toEqual({
+      lead: '',
+      rest: 'Connection lost — reconnecting.',
+      text: 'Connection lost — reconnecting.',
+      tone: 'muted',
+      title: 'Connection lost — reconnecting. · 2 changes ready · Created frame Hero',
+    });
+  });
+  it('a healthy-but-slow connection is not trouble — the row belongs to the work', () => {
+    expect(railSentence({ state: 'probing', ageMs: 9_000, hadConnection: true, activity }))
+      .toEqual({ lead: '', rest: 'Created frame Hero', text: 'Created frame Hero', tone: 'info', title: 'Created frame Hero' });
+  });
+  it('a lost edit leads the line, so only the connection half can be ellipsed', () => {
+    expect(railSentence({ state: 'probing', ageMs: 10_000, hadConnection: true, droppedFrames: 2, sync })).toEqual({
+      lead: '2 edits lost while offline',
+      rest: ' · Broker not running — run figma-agent status.',
+      text: '2 edits lost while offline · Broker not running — run figma-agent status.',
+      tone: 'warning',
+      title: '2 edits lost while offline · Broker not running — run figma-agent status. · 2 changes ready',
+    });
+  });
+  it('and outranks sync and activity on its own once the connection is healthy again', () => {
+    expect(railSentence({ state: 'connected', ageMs: 0, hadConnection: true, droppedFrames: 1, sync, activity })).toEqual({
+      lead: '1 edit lost while offline',
+      rest: '',
+      text: '1 edit lost while offline',
+      tone: 'warning',
+      title: '1 edit lost while offline · 2 changes ready · Created frame Hero',
+    });
+  });
+  it('keeps text as exactly lead + rest, so the two spans read as one line', () => {
+    const view = railSentence({ state: 'probing', ageMs: 10_000, hadConnection: true, droppedFrames: 3, sync, activity });
+    expect(`${view.lead}${view.rest}`).toBe(view.text);
+    expect(view.title.startsWith(view.text)).toBe(true);
+  });
+  it('sync outranks the current activity', () => {
+    expect(railSentence({ state: 'connected', ageMs: 0, hadConnection: true, sync, activity }))
+      .toEqual({ lead: '', rest: '2 changes ready', text: '2 changes ready', tone: 'warning', title: '2 changes ready · Created frame Hero' });
+  });
+  it('falls through to the activity label, then to Idle', () => {
+    expect(railSentence({ state: 'connected', ageMs: 0, hadConnection: true, activity }))
+      .toEqual({ lead: '', rest: 'Created frame Hero', text: 'Created frame Hero', tone: 'info', title: 'Created frame Hero' });
+    expect(railSentence({ state: 'connected', ageMs: 0, hadConnection: true }))
+      .toEqual({ lead: '', rest: 'Idle', text: 'Idle', tone: 'muted', title: 'Idle' });
+  });
+  it('never renders an empty or whitespace-only layer as the sentence', () => {
+    expect(railSentence({
+      state: 'connected', ageMs: 0, hadConnection: true, droppedFrames: 0,
+      sync: { text: '   ', tone: 'info' }, activity: { text: '', tone: 'info' },
+    })).toEqual({ lead: '', rest: 'Idle', text: 'Idle', tone: 'muted', title: 'Idle' });
+  });
+  it('refuses to invent a dropped-edit count from a broken number', () => {
+    expect(railSentence({ state: 'connected', ageMs: 0, hadConnection: true, droppedFrames: Number.NaN }).text).toBe('Idle');
+    expect(railSentence({ state: 'connected', ageMs: 0, hadConnection: true, droppedFrames: -3 }).text).toBe('Idle');
+  });
+  it('first-run onboarding is the sentence, not a card', () => {
+    expect(railSentence({ state: 'probing', ageMs: 0, hadConnection: false }))
+      .toEqual({
+        lead: '',
+        rest: 'Not connected — your first command starts the broker.',
+        text: 'Not connected — your first command starts the broker.',
+        tone: 'muted',
+        title: 'Not connected — your first command starts the broker.',
+      });
+  });
+});
+describe('acknowledgeHint — the row\'s tooltip has to say what clicking it does', () => {
+  it('pluralizes the count it was actually given', () => {
+    expect(acknowledgeHint(1)).toBe('click to mark 1 unresolved failure as seen');
+    expect(acknowledgeHint(4)).toBe('click to mark 4 unresolved failures as seen');
+  });
+});
+
 describe('idle-commit prompt labels (spec 004 P4)', () => {
   it('syncPromptLabel pluralizes and floors count at 1', () => {
     expect(syncPromptLabel(1)).toBe('1 change ready');
