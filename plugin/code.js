@@ -2820,8 +2820,8 @@
       //     change whose every property is `pluginData`): a filtered change is still a change,
       //     and without a count the only way to notice the predicate had started eating real
       //     edits would be a designer reporting a missing one;
-      //   · how many live nodes had no resolvable page and were filed under the current one:
-      //     that page name is a guess about someone else's edit;
+      //   · how many changed nodes (live or deleted-unseen) had no resolvable page and were
+      //     filed under the current one: that page name is a guess about someone else's edit;
       //   · correction-store failures, as first message + count (the gapfill block's shape) —
       //     the feed is posted regardless, so nothing else would ever report the refusal.
       ...capture2 && capture2.pluginDataChangesDropped > 0 && { pluginDataChangesDropped: capture2.pluginDataChangesDropped },

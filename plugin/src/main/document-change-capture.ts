@@ -59,9 +59,10 @@ export interface DocumentChangeCaptureDeps<TBatch> {
  */
 export interface DocumentChangeCaptureStats {
   pluginDataChangesDropped: number;
-  /** How many live nodes this session had NO page for — neither their own chain nor the
-   *  identity cache — and were therefore filed under `figma.currentPage`. That name is a
-   *  guess about someone else's edit, so it is never made silently. */
+  /** How many changed nodes this session had NO page for — a live node with neither its
+   *  own chain nor an identity-cache entry, or a deleted node the session never saw — and
+   *  were therefore filed under `figma.currentPage`. That name is a guess about someone
+   *  else's edit, so it is never made silently. */
   pageFallbacks: number;
   /** Correction-store failures this session (a per-node read, or the batch's flush write,
    *  that threw). The feed is posted regardless — bookkeeping about the edits must not
