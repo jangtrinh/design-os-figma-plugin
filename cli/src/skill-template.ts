@@ -37,7 +37,9 @@ export const SKILL_WORKFLOW = `## Typical workflow
 
 1. \`figma-agent status --peek\` — is anything alive, and does it match this CLI build.
 2. \`figma-agent status\` — full detail on the active connection (spawns a broker if idle).
-3. Read before you write: \`get-selection\`, \`inspect\`, \`scan-design-system\`.
+3. Read before you write: \`get-selection\`, \`inspect\`, \`scan-design-system\`. Resolve a
+   component by name with \`resolve-component --name "<n>"\` — it returns exactly one node
+   or refuses (E_AMBIGUOUS lists the duplicates; pass \`--page\` or use an id).
 4. Mutate with the typed commands (\`create-frame\`, \`set-text\`, \`clone-traits\`, ...)
    before falling back to \`exec-js\` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after

@@ -68,6 +68,19 @@ export const COMMANDS: CommandCatalogEntry[] = [
     description: 'Components/variables/styles registry [--out file.json --timeout ms]',
   },
   {
+    name: 'resolve-component',
+    description:
+      '--name "<exact name>" [--page <page name>] [--timeout ms]   exactly ONE component or '
+      + 'component set {id,key,name,type,page} for a name — read-only (rides scan-design-system, '
+      + 'a safe read that bypasses the mutation FIFO). Name match is exact after trim, '
+      + 'case-insensitive, never a substring. Duplicates: --page filters first; without it a tie '
+      + 'is broken only when exactly one hit sits on a design-system-looking page '
+      + '(/design.?system|\\bds\\b|component|library/i) and the reply says preferred: '
+      + '"design-system-page". Anything still ambiguous exits 1 with E_AMBIGUOUS listing every '
+      + 'candidate; no match exits 1 with E_NOT_FOUND. `matched` reports how many live nodes '
+      + 'carried the name.',
+  },
+  {
     name: 'scan-node',
     description: '[SPIKE] Reverse-walk one node → FigmaExportNode spec <nodeId> [--timeout ms]',
   },

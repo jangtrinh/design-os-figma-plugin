@@ -30,7 +30,9 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 
 1. `figma-agent status --peek` — is anything alive, and does it match this CLI build.
 2. `figma-agent status` — full detail on the active connection (spawns a broker if idle).
-3. Read before you write: `get-selection`, `inspect`, `scan-design-system`.
+3. Read before you write: `get-selection`, `inspect`, `scan-design-system`. Resolve a
+   component by name with `resolve-component --name "<n>"` — it returns exactly one node
+   or refuses (E_AMBIGUOUS lists the duplicates; pass `--page` or use an id).
 4. Mutate with the typed commands (`create-frame`, `set-text`, `clone-traits`, ...)
    before falling back to `exec-js` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after
@@ -62,6 +64,7 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 - `inspect` — [nodeId|--node id] [--out file.png --scale 1 --timeout ms]
 - `job` — <jobId> [--wait] [--wait-timeout 60000] | --list [--file name] | <jobId> --cancel (queued only) | <jobId> --force-release [--force]   poll/wait/cancel/list a job the CLI stopped waiting for (backlog 1.1+2.6+4.3) — --force-release refuses a HEALTHY still-running job unless --force is also passed — --force overrides the guard and discards its result, unverified; a watchdog-wedged job still unwedges without --force. An outcome-unknown job requires canvas inspection, then a bare --force-release; never retry it automatically.
 - `scan-design-system` — Components/variables/styles registry [--out file.json --timeout ms]
+- `resolve-component` — --name "<exact name>" [--page <page name>] [--timeout ms]   exactly ONE component or component set {id,key,name,type,page} for a name — read-only (rides scan-design-system, a safe read that bypasses the mutation FIFO). Name match is exact after trim, case-insensitive, never a substring. Duplicates: --page filters first; without it a tie is broken only when exactly one hit sits on a design-system-looking page (/design.?system|\bds\b|component|library/i) and the reply says preferred: "design-system-page". Anything still ambiguous exits 1 with E_AMBIGUOUS listing every candidate; no match exits 1 with E_NOT_FOUND. `matched` reports how many live nodes carried the name.
 - `scan-node` — [SPIKE] Reverse-walk one node → FigmaExportNode spec <nodeId> [--timeout ms]
 - `mirror-verify` — Prove one node round-trips: scan → rebuild → scan → diff <nodeId> [--parent id --keep --timeout ms]
 - `scan-conventions` — Convention-DNA walk over sections → usage-dna.json [<sectionId...> --out file.json --budget 14000 --timeout ms]

@@ -52,6 +52,7 @@ import * as shaderGradient from './commands/shader-gradient.ts';
 import * as inspect from './commands/inspect.ts';
 import * as job from './commands/job.ts';
 import * as mirrorVerify from './commands/mirror-verify.ts';
+import * as resolveComponent from './commands/resolve-component.ts';
 import * as scanDesignSystem from './commands/scan-design-system.ts';
 import * as scanNode from './commands/scan-node.ts';
 import * as scanConventions from './commands/scan-conventions.ts';
@@ -82,6 +83,7 @@ export const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<u
   inspect,
   job,
   'scan-design-system': scanDesignSystem,
+  'resolve-component': resolveComponent,
   'scan-node': scanNode,
   'mirror-verify': mirrorVerify,
   'scan-conventions': scanConventions,
