@@ -97,17 +97,26 @@ describe('context intent — what it reports when the designer did set something
 
   it('attaches the dev resources of the one subtree read, keyed by node id', async () => {
     const devResources = {
-      byNode: new Map([['3:1', [{ name: 'Row.tsx', url: 'https://example.test/Row.tsx' }]]]),
-      found: 2, attached: 0,
+      byNode: new Map([['3:1', [
+        { name: 'Row.tsx', url: 'https://example.test/Row.tsx' },
+        { name: 'Row.stories.tsx', url: 'https://example.test/Row.stories.tsx' },
+      ]]]),
+      found: 3, unaddressed: 0,
     };
     const intent = reader({ devResources });
     const hit = await intent.buildRecord(node('3:1'), opts);
     const miss = await intent.buildRecord(node('3:2'), opts);
-    expect(hit.record.intent).toEqual({ devResources: [{ name: 'Row.tsx', url: 'https://example.test/Row.tsx' }] });
+    expect(hit.record.intent).toEqual({
+      devResources: [
+        { name: 'Row.tsx', url: 'https://example.test/Row.tsx' },
+        { name: 'Row.stories.tsx', url: 'https://example.test/Row.stories.tsx' },
+      ],
+    });
     expect(miss.record.intent).toBeUndefined();
-    // `found` counted 2 and only 1 landed: the difference belongs to a node this reply did
-    // not emit, and it is a number the caller can see rather than a silent drop.
-    expect(intent.attachedDevResources()).toBe(1);
+    // `attached` counts LINKS, the same unit as `found` — one layer routinely takes several
+    // dev resources, and counting records here made `attached < found` on a reply where
+    // every node and every link was present.
+    expect(intent.attachedDevResources()).toBe(2);
   });
 });
 
@@ -315,6 +324,47 @@ describe('GET_CONTEXT — intent and dedup in the assembled reply', () => {
       .toEqual({ found: 0, attached: 0, readMs: 0 });
   });
 
+  it('counts links, not records: two links on a frame plus one on its child is 3 of 3', async () => {
+    // The reviewer's probe. Both nodes are emitted and every link is attached, so
+    // `attached === found`; reporting 2 here made the catalog's "the rest belong to nodes
+    // absent from this reply" a wrong fact, and an agent would widen --budget chasing a node
+    // that does not exist.
+    const target = figmaNode('i:1', 'FRAME', [figmaNode('i:2', 'TEXT')], {
+      getDevResourcesAsync: async () => [
+        { nodeId: 'i:1', name: 'Row.tsx', url: 'https://x.test/a' },
+        { nodeId: 'i:1', name: 'Row.stories.tsx', url: 'https://x.test/b' },
+        { nodeId: 'i:2', name: 'Label.tsx', url: 'https://x.test/c' },
+      ],
+    });
+    const out = await opGetContext({ nodeId: 'i:1', devResources: true }, env({ nodeById: async () => target })) as Record<string, unknown>;
+    expect((out.budget as Record<string, unknown>).devResources)
+      .toEqual({ found: 3, attached: 3, readMs: 0 });
+  });
+
+  it('counts a resource with no readable nodeId instead of dropping it', async () => {
+    // It cannot be attached to any record — there is no id to attach it to — but `found`
+    // counts it, so without its own counter it would vanish into the found/attached gap and
+    // read as "belongs to a node outside this reply", which is not what happened.
+    const target = figmaNode('j:1', 'FRAME', [], {
+      getDevResourcesAsync: async () => [
+        { nodeId: 'j:1', name: 'Row.tsx', url: 'https://x.test/a' },
+        { nodeId: '', name: 'orphan', url: 'https://x.test/b' },
+      ],
+    });
+    const out = await opGetContext({ nodeId: 'j:1', devResources: true }, env({ nodeById: async () => target })) as Record<string, unknown>;
+    expect((out.budget as Record<string, unknown>).devResources)
+      .toEqual({ found: 2, attached: 1, unaddressed: 1, readMs: 0 });
+  });
+
+  it('omits unaddressed when every resource named a node', async () => {
+    const target = figmaNode('j:2', 'FRAME', [], {
+      getDevResourcesAsync: async () => [{ nodeId: 'j:2', name: 'a', url: 'https://x.test/a' }],
+    });
+    const out = await opGetContext({ nodeId: 'j:2', devResources: true }, env({ nodeById: async () => target })) as Record<string, unknown>;
+    expect((out.budget as Record<string, unknown>).devResources)
+      .toEqual({ found: 1, attached: 1, readMs: 0 });
+  });
+
   it('refuses a non-boolean devResources from the wire instead of guessing', async () => {
     const target = figmaNode('8:5');
     await expect(opGetContext({ nodeId: '8:5', devResources: 'yes' }, env({ nodeById: async () => target })))
@@ -337,6 +387,28 @@ describe('GET_CONTEXT — intent and dedup in the assembled reply', () => {
     expect((out.nodes as Fixture[]).slice(1).map((n) => n.intent)).toEqual([
       { componentKey: 'K9' }, { componentKey: 'K9' },
     ]);
+  });
+
+  it('never lets the walk\'s empty component name overwrite the one intent read', async () => {
+    // `context-refs.ts` falls back to `''` when the main component's name refused; the merge
+    // then has to prefer the real name, not the placeholder. The getter here refuses once —
+    // which is what a dynamic-page getter does — so the record reads `''` and intent reads
+    // the name.
+    let reads = 0;
+    const main = {
+      key: 'K7', description: 'Primary action',
+      get name(): string {
+        reads += 1;
+        if (reads === 1) throw new Error('name refused');
+        return 'Button';
+      },
+    };
+    const target = figmaNode('m:1', 'FRAME', [figmaNode('m:2', 'INSTANCE', [], {
+      getMainComponentAsync: async () => main, componentProperties: {},
+    })]);
+    const out = await opGetContext({ nodeId: 'm:1' }, env({ nodeById: async () => target })) as Record<string, unknown>;
+    const refs = out.refs as { components: Record<string, Record<string, unknown>> };
+    expect(refs.components.K7).toEqual({ name: 'Button', description: 'Primary action' });
   });
 
   it('counts a refused annotations read in budget.partial and drops complete to false', async () => {
@@ -385,6 +457,44 @@ describe('GET_CONTEXT — intent and dedup in the assembled reply', () => {
     expect(devResources.error).toMatch(/dev resources refused/);
     // A reply-level read failure is not a per-node partial: no node's own answer is missing.
     expect((out.budget as Record<string, unknown>).partial).toBe(0);
+  });
+
+  it('charges the dev-resource read against the walk deadline, not on top of it', async () => {
+    // `deadlineMs` is the wire timeout minus 2s of headroom, so the plugin can get a
+    // partial-with-counts onto the wire before the CLI gives up. Spending a fixed ~2s read
+    // BEFORE the deadline clock starts hands the walk its full budget anyway, and the wall
+    // clock then exceeds the wire timeout — the caller gets E_TIMEOUT instead of the partial
+    // the deadline exists to produce. Deterministic, because the read cost is fixed.
+    let clock = 0;
+    const target = figmaNode('k:1', 'FRAME', [
+      figmaNode('k:2', 'FRAME', [figmaNode('k:4', 'TEXT')]),
+      figmaNode('k:3', 'FRAME', [figmaNode('k:5', 'TEXT')]),
+    ], { getDevResourcesAsync: async () => { clock += 2_000; return []; } });
+    const out = await opGetContext({ nodeId: 'k:1', deadlineMs: 3_000, devResources: true }, env({
+      nodeById: async () => target,
+      now: () => clock,
+      hop: async () => { clock += 700; },
+    })) as Record<string, unknown>;
+    const budget = out.budget as Record<string, number> & { omitted: Record<string, number> };
+    // Deadline at +3000 from the START: the read is charged, so the two grandchildren are
+    // omitted with counts. Left uncharged (+5000) the walk finishes and reports complete.
+    expect((out.nodes as Fixture[]).map((n) => n.id)).toEqual(['k:1', 'k:2', 'k:3']);
+    expect(budget.omitted.deadline).toBe(2);
+    expect(budget.complete).toBe(false);
+    expect((budget as unknown as { devResources: { readMs: number } }).devResources.readMs).toBe(2_000);
+  });
+
+  it('leaves the walk a positive deadline even when the read ate all of it', async () => {
+    let clock = 0;
+    const target = figmaNode('l:1', 'FRAME', [figmaNode('l:2', 'TEXT')], {
+      getDevResourcesAsync: async () => { clock += 9_000; return []; },
+    });
+    const out = await opGetContext({ nodeId: 'l:1', deadlineMs: 1_000, devResources: true }, env({
+      nodeById: async () => target, now: () => clock, hop: async () => { clock += 1; },
+    })) as Record<string, unknown>;
+    // The root is always emitted, so the reply is still actionable rather than empty.
+    expect((out.nodes as Fixture[]).map((n) => n.id)).toEqual(['l:1']);
+    expect((out.budget as Record<string, unknown> as { omitted: Record<string, number> }).omitted.deadline).toBe(1);
   });
 
   it('applies dedup only when asked, and reports the decision either way', async () => {

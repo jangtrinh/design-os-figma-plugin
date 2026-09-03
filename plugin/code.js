@@ -3502,7 +3502,7 @@
   }
 
   // plugin/src/main/context-intent-readers.ts
-  var noDevResourcesRead = () => ({ byNode: /* @__PURE__ */ new Map(), found: 0 });
+  var noDevResourcesRead = () => ({ byNode: /* @__PURE__ */ new Map(), found: 0, unaddressed: 0 });
   var str = (value) => typeof value === "string" ? value : "";
   function readOnlyField(value, field) {
     if (!Array.isArray(value)) return [];
@@ -3515,20 +3515,29 @@
     const byNode = /* @__PURE__ */ new Map();
     const read = safe(() => root.getDevResourcesAsync);
     if (typeof read !== "function") {
-      return { byNode, found: 0, error: "getDevResourcesAsync is not available on this node" };
+      return { byNode, found: 0, unaddressed: 0, error: "getDevResourcesAsync is not available on this node" };
     }
     let list3;
     try {
       list3 = await read.call(root, { includeChildren: scope.includeChildren });
     } catch (err) {
-      return { byNode, found: 0, error: messageOf4(err) };
+      return { byNode, found: 0, unaddressed: 0, error: messageOf4(err) };
     }
-    if (!Array.isArray(list3)) return { byNode, found: 0, error: "getDevResourcesAsync did not answer with a list" };
+    if (!Array.isArray(list3)) {
+      return { byNode, found: 0, unaddressed: 0, error: "getDevResourcesAsync did not answer with a list" };
+    }
+    let unaddressed = 0;
     for (const raw2 of list3) {
-      if (raw2 === null || typeof raw2 !== "object") continue;
+      if (raw2 === null || typeof raw2 !== "object") {
+        unaddressed += 1;
+        continue;
+      }
       const resource = raw2;
       const nodeId = str(safe(() => resource.nodeId));
-      if (nodeId === "") continue;
+      if (nodeId === "") {
+        unaddressed += 1;
+        continue;
+      }
       const inherited = str(safe(() => resource.inheritedNodeId));
       const entry = {
         name: str(safe(() => resource.name)),
@@ -3539,7 +3548,7 @@
       if (existing === void 0) byNode.set(nodeId, [entry]);
       else existing.push(entry);
     }
-    return { byNode, found: list3.length };
+    return { byNode, found: list3.length, unaddressed };
   }
   function readDevStatus(node) {
     const raw2 = node.devStatus;
@@ -3641,7 +3650,7 @@
       const resources = id === "" ? void 0 : opts.devResources.byNode.get(id);
       if (resources !== void 0 && resources.length > 0) {
         intent.devResources = resources;
-        attached += 1;
+        attached += resources.length;
       }
       try {
         const component = await readComponent(node, result.record, str2(result.record.type));
@@ -3968,7 +3977,13 @@
     const walk2 = await walkContext(node, { now: env.now, hop: env.hop }, {
       budgetBytes,
       maxDepth: depth,
-      deadlineAt: env.now() + deadlineMs,
+      // The dev-resource read is CHARGED against the soft deadline, not spent on top of it.
+      // `deadlineMs` is the wire timeout minus 2s of headroom so the plugin can get a
+      // partial-with-counts onto the wire before the CLI gives up; starting the deadline clock
+      // after a fixed ~2s read hands the walk its full budget anyway and pushes the wall clock
+      // past the wire timeout, so the caller gets E_TIMEOUT instead of the partial. Never zero
+      // or negative: a read that ate the whole deadline still leaves the root emitted.
+      deadlineAt: env.now() + Math.max(1, deadlineMs - devResourcesMs),
       includeCss,
       buildRecord: intent.buildRecord
     });
@@ -3976,7 +3991,9 @@
     const refs = await resolveContextRefs(walk2.nodes, env.refs);
     const refsMs = env.now() - refsStartedAt;
     for (const [key, component] of Object.entries(intent.components())) {
-      refs.components[key] = { ...component, ...refs.components[key] };
+      const walked = refs.components[key];
+      const name = typeof walked?.name === "string" && walked.name !== "" ? walked.name : component.name;
+      refs.components[key] = { ...component, ...walked, name };
     }
     const changeBatchesDuringWalk = Math.max(0, env.changeCount() - changesBefore);
     const transformed = dedup ? dedupContextPayload({ nodes: walk2.nodes, refs: { ...refs } }) : null;
@@ -4015,6 +4032,9 @@
           devResources: {
             found: devResources.found,
             attached,
+            // Present only when it happened: links the read returned that name no readable node
+            // id, and which therefore could not be attached to anything.
+            ...devResources.unaddressed > 0 && { unaddressed: devResources.unaddressed },
             readMs: devResourcesMs,
             ...devResources.error !== void 0 && { error: devResources.error }
           }

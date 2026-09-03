@@ -18,7 +18,7 @@ const event = (eventId: string, timestamp: string, unresolved = false) => buildC
 });
 
 describe('correction content hash — pinned values', () => {
-  // These three strings are the CURRENT implementation's output, captured before the
+  // These two strings are the CURRENT implementation's output, captured before the
   // canonicaliser and the FNV-1a loop were lifted into `shared/canonical-content-hash.ts` for
   // reuse. A hash written into every stored correction event is a durable identity: if a
   // refactor changes it, every event on disk reads as corrupt (`hasValidCorrectionHash`

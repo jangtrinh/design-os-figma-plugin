@@ -23,8 +23,15 @@ export interface DevResourceEntry { name: string; url: string; inheritedNodeId?:
 
 export interface SubtreeDevResources {
   byNode: Map<string, DevResourceEntry[]>;
-  /** What the single call returned, before any of it was matched to an emitted record. */
+  /** What the single call returned, in LINKS — the same unit as `attached`. One layer
+   *  routinely takes several dev resources, so counting records against this would make
+   *  `attached < found` on a reply where nothing at all is missing. */
   found: number;
+  /** Links the call returned that name no readable node id. They can never be attached — there
+   *  is no id to attach them to — so without their own counter they would sink into the
+   *  `found`/`attached` gap and read as "belongs to a node outside this reply", which is not
+   *  what happened. */
+  unaddressed: number;
   /** Set when the read REFUSED — which must never look like "this file has none". Also set
    *  when the method is absent, so an absent `budget.devResources` block strictly means
    *  "the call succeeded and there were none". */
@@ -43,7 +50,7 @@ export interface ComponentIntent {
 /** What the reader holds when the caller did NOT pass `--dev-resources`: no read happened, so
  *  there is nothing to report and the executor emits no `budget.devResources` block at all.
  *  A zeroed block would say "asked and found none", which would be a wrong fact. */
-export const noDevResourcesRead = (): SubtreeDevResources => ({ byNode: new Map(), found: 0 });
+export const noDevResourcesRead = (): SubtreeDevResources => ({ byNode: new Map(), found: 0, unaddressed: 0 });
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 
@@ -73,20 +80,23 @@ export async function readSubtreeDevResources(
   const read = safe(() => root.getDevResourcesAsync) as
     ((opts: { includeChildren: boolean }) => Promise<unknown[]>) | undefined;
   if (typeof read !== 'function') {
-    return { byNode, found: 0, error: 'getDevResourcesAsync is not available on this node' };
+    return { byNode, found: 0, unaddressed: 0, error: 'getDevResourcesAsync is not available on this node' };
   }
   let list: unknown[];
   try {
     list = await read.call(root, { includeChildren: scope.includeChildren });
   } catch (err) {
-    return { byNode, found: 0, error: messageOf(err) };
+    return { byNode, found: 0, unaddressed: 0, error: messageOf(err) };
   }
-  if (!Array.isArray(list)) return { byNode, found: 0, error: 'getDevResourcesAsync did not answer with a list' };
+  if (!Array.isArray(list)) {
+    return { byNode, found: 0, unaddressed: 0, error: 'getDevResourcesAsync did not answer with a list' };
+  }
+  let unaddressed = 0;
   for (const raw of list) {
-    if (raw === null || typeof raw !== 'object') continue;
+    if (raw === null || typeof raw !== 'object') { unaddressed += 1; continue; }
     const resource = raw as Record<string, unknown>;
     const nodeId = str(safe(() => resource.nodeId));
-    if (nodeId === '') continue;
+    if (nodeId === '') { unaddressed += 1; continue; }
     const inherited = str(safe(() => resource.inheritedNodeId));
     const entry: DevResourceEntry = {
       name: str(safe(() => resource.name)),
@@ -97,7 +107,7 @@ export async function readSubtreeDevResources(
     if (existing === undefined) byNode.set(nodeId, [entry]);
     else existing.push(entry);
   }
-  return { byNode, found: list.length };
+  return { byNode, found: list.length, unaddressed };
 }
 
 /** `{type, description?}` verbatim, or `null` when the designer set nothing — the Free-plan

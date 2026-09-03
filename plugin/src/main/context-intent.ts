@@ -42,9 +42,10 @@ export interface ContextIntentReader {
   /** Component key → intent, for merging into `refs.components`. Only keys with something to
    *  say appear: an empty description leaves the P1 `{name}` row exactly as it was. */
   components: () => Record<string, ComponentIntent>;
-  /** How many emitted records a dev resource actually landed on. Reported beside `found` so a
-   *  resource belonging to a node the budget left on the frontier is a visible difference
-   *  rather than a silent drop. */
+  /** How many dev-resource LINKS landed on an emitted record — the same unit as `found`, so
+   *  the two are comparable. Counting RECORDS here reported `{found: 3, attached: 2}` for a
+   *  frame with two links plus a child with one, both emitted: every node and every link
+   *  present, yet the numbers said something was missing. */
   attachedDevResources: () => number;
 }
 
@@ -124,7 +125,7 @@ export function createContextIntentReader(opts: ContextIntentOptions): ContextIn
     const resources = id === '' ? undefined : opts.devResources.byNode.get(id);
     if (resources !== undefined && resources.length > 0) {
       intent.devResources = resources;
-      attached += 1;
+      attached += resources.length;
     }
 
     try {

@@ -90,7 +90,16 @@ export async function opGetContext(params: Params, env: GetContextEnv): Promise<
 
   const changesBefore = env.changeCount();
   const walk = await walkContext(node, { now: env.now, hop: env.hop }, {
-    budgetBytes, maxDepth: depth, deadlineAt: env.now() + deadlineMs, includeCss,
+    budgetBytes,
+    maxDepth: depth,
+    // The dev-resource read is CHARGED against the soft deadline, not spent on top of it.
+    // `deadlineMs` is the wire timeout minus 2s of headroom so the plugin can get a
+    // partial-with-counts onto the wire before the CLI gives up; starting the deadline clock
+    // after a fixed ~2s read hands the walk its full budget anyway and pushes the wall clock
+    // past the wire timeout, so the caller gets E_TIMEOUT instead of the partial. Never zero
+    // or negative: a read that ate the whole deadline still leaves the root emitted.
+    deadlineAt: env.now() + Math.max(1, deadlineMs - devResourcesMs),
+    includeCss,
     buildRecord: intent.buildRecord,
   });
   // Ref resolution runs AFTER the walk and therefore OUTSIDE the soft deadline: it is one
@@ -104,7 +113,12 @@ export async function opGetContext(params: Params, env: GetContextEnv): Promise<
   // where it belongs, so forty instances of one button carry a key, not forty descriptions.
   // The walk's own `{name}` wins on the name it already read.
   for (const [key, component] of Object.entries(intent.components())) {
-    refs.components[key] = { ...component, ...refs.components[key] };
+    // The walk's row wins, EXCEPT on an empty name: `context-refs.ts` falls back to `''` when
+    // the main component's name read refused, and letting that placeholder overwrite the name
+    // intent actually read would trade a fact for a blank.
+    const walked = refs.components[key];
+    const name = typeof walked?.name === 'string' && walked.name !== '' ? walked.name : component.name;
+    refs.components[key] = { ...component, ...walked, name };
   }
   // A designer editing mid-walk produces a tree read across two document states. Two
   // honesty caveats live in this name: the batches are DOCUMENT-WIDE (`soleActorChangeEvents`
@@ -159,6 +173,9 @@ export async function opGetContext(params: Params, env: GetContextEnv): Promise<
         devResources: {
           found: devResources.found,
           attached,
+          // Present only when it happened: links the read returned that name no readable node
+          // id, and which therefore could not be attached to anything.
+          ...(devResources.unaddressed > 0 && { unaddressed: devResources.unaddressed }),
           readMs: devResourcesMs,
           ...(devResources.error !== undefined && { error: devResources.error }),
         },

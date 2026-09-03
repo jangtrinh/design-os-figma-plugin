@@ -51,7 +51,16 @@ function countSignatures(slots: readonly Slot[]): Map<string, number> {
   return groups;
 }
 
-/** Pre-order: take the outermost repeated subtree and stop descending into it. */
+/**
+ * Pre-order: take the outermost repeated subtree and stop descending into it.
+ *
+ * Known compression loss, deliberately not chased: a subtree is offered when its signature
+ * occurs ≥2 times ANYWHERE, but `foldContextTemplates` then drops signatures left with a
+ * single surviving outermost occurrence. Repeats nested inside such a subtree were already
+ * skipped by the `continue` below and are never re-offered, so both stay raw. Fewer bytes
+ * saved, never a wrong fact — and re-offering them would need a second pass whose consumption
+ * order is a good deal harder to reason about than the invariant it would be protecting.
+ */
 function collectCandidates(
   slots: readonly Slot[], roots: readonly number[], groups: Map<string, number>,
 ): Map<string, number[]> {
