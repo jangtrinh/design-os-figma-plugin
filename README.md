@@ -7,7 +7,7 @@ let the two trample each other.
 <p align="center">
   <img src="docs/images/adaptive-agent-rail.gif" width="600" alt="The adaptive agent rail moving through semantic Thinking Orb states and contextual actions in Figma">
 </p>
-<p align="center"><sub>One compact surface for connection, semantic activity, file targeting, and pending sync.</sub></p>
+<p align="center"><sub>One row, hugging its content: connection, semantic activity, file targeting, and pending sync.</sub></p>
 
 Part of the [ease-design](https://github.com/jangtrinh/design-os) toolchain — this repo is
 the optional, non-deterministic "hands" for its Figma authoring track. It talks to Figma only
@@ -222,13 +222,15 @@ are reported as a count rather than dropped.
 
 ## The adaptive agent rail
 
-Once loaded, the plugin opens as a compact `200×44` rail. It grows to `220×44` or `240×44`
-only when one or two contextual actions need space, so it covers as little of the canvas as
-possible. **Keep it open** while you or an agent drive the CLI; closing it drops the
-connection. The rail always shows connection health and the current operation. Multi-file
+Once loaded, the plugin is a single `44px` row and nothing else — there is no expanded
+state. Its width hugs whatever the row is currently saying: the iframe measures the rendered
+row and the plugin main thread clamps that to `240–560px`, so the panel covers as little of
+the canvas as the sentence allows and the host window title still reads in full. **Keep it
+open** while you or an agent drive the CLI; closing it drops the connection. Multi-file
 targeting and pending sync appear only when they matter. The sizing contract lives in
-[`panel-model.ts`](plugin/src/ui/panel-model.ts) and its
-[`panel gate`](tests/figma-plugin-panel.test.ts).
+[`panel-model.ts`](plugin/src/ui/panel-model.ts), with the
+[`panel gate`](tests/figma-plugin-panel.test.ts) and a Chromium
+[`hug measurement`](tests/panel-rail-geometry.test.ts) behind it.
 
 The Thinking Orb gives peripheral progress without adding another icon or a verbose status
 panel. Stable command identity selects semantic motion; it never guesses from user-facing
@@ -242,20 +244,22 @@ rules are owned by [`orb-command-state.ts`](plugin/src/ui/orb-command-state.ts),
 wait does not fabricate plugin telemetry, so the rail stays truthful when no such event
 exists.
 
-Open the inspector for Activity, Context, or Details. It expands to `288×280`:
+The row's one sentence is ranked, never merged: any edits the relay lost while offline first,
+then connection trouble, then sync, then the current activity, then `Idle`. A lost edit leads
+the line and is the one part that never shrinks, so when the row runs out of width the ellipsis
+can only ever cut what ranks below it. Whatever the line had no room for stays readable in its
+tooltip, and a sentence past the width ceiling ellipses rather than growing. Full history lives
+in the CLI — `figma-agent status`, `figma-agent changes`, `figma-agent errors`.
 
-- **Activity** shows concurrent work, newest-first history, and a readable failure reason.
-- **Context** shows file, page, selection, and the PEERS-authoritative target control.
-- **Details** shows the connection sentence, first-run/recovery guidance, and build identity.
-
-Pending edits stay on the rail as a count badge. Opening the badge reveals the existing
-**Sync now / Later** flow; a failed or unbound sync remains visible and retryable, and only a
-genuine success clears the count. First-run and actionable failures may open the inspector
-once to expose their recovery text. Opening Activity acknowledges the rail's unresolved-failure
-count; the activity history and failure reason remain available. Every icon action is a locally
-vendored Lucide SVG with a tooltip, accessible name, keyboard focus, and a 32px target. The
-orb canvas is decorative; the connection control announces its semantic status, and reduced
-motion renders a static frame instead of continuous animation.
+Pending edits show as a count badge on the sync button, and clicking it runs the sync; the
+result lands in the sentence. A failed or unbound sync keeps the button for the retry, and only
+a genuine success clears the count. Unresolved failures show as a red count next to the line;
+the line itself is the button that marks them seen, which clears that count and the orb's
+*Needs attention*. Nothing is deleted — the failures stay in the edit feed and in `figma-agent
+errors` — and the next failure re-arms both. Every icon action is a locally vendored Lucide SVG with a
+tooltip, accessible name, keyboard focus, and a 32px target. The orb canvas is decorative; its
+labelled cell announces the semantic status (and carries the build identity in its tooltip), and
+reduced motion renders a static frame instead of continuous animation.
 
 ## Multiple files open at once
 
