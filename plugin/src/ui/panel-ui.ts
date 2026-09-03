@@ -41,6 +41,7 @@ let sceneFile = '', scenePage = '', selectionName: string | null = null, selecti
 let peersCount = 1, peersIsActiveTarget = true, peersPinned = false, pendingSyncCount = 0;
 let selectedTab: Tab = 'activity', inspectorOpen = false, userExpanded = false, forcedOnly = false;
 let connectionFailure = false, syncFailure = false, connectionTransition = 0;
+let droppedFrames = 0; // capture frames the relay lost while the broker socket was down
 let previousConnectionState: ConnectionState | null = null;
 let lastViewportMode: ViewportMode = 'rail-compact';
 const disclosed = new BoundedKeySet();
@@ -112,7 +113,7 @@ function context(): void {
 }
 function render(): void {
   const now = Date.now(), state: ConnectionState = payload?.state ?? 'disconnected', age = payload ? now - payload.since : 0;
-  const view = statusSentence(state, age, hadConnection);
+  const view = statusSentence(state, age, hadConnection, droppedFrames);
   sentence.textContent = view.text; sentence.dataset.tone = view.tone;
   onboarding.hidden = !showOnboarding(state, hadConnection);
   context(); activityView.render(now);
@@ -142,6 +143,9 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && 
 window.addEventListener('pagehide', () => thinkingOrb.dispose(), { once: true });
 window.addEventListener('figma-agent:conn-state', (event) => { const next = (event as CustomEvent).detail as ConnectionStatePayload | undefined; if (!next || typeof next.state !== 'string') return; if (next.state !== previousConnectionState) connectionTransition += 1; previousConnectionState = next.state; if (next.state === 'connected') hadConnection = true; payload = next; render(); });
 window.addEventListener('figma-agent:activity', (event) => { const detail = (event as CustomEvent).detail as { phase?: unknown } | undefined; if (detail?.phase === 'done') { const patch = toActivityResult(detail); if (!patch) return; activityView.resolve(patch); if (!patch.ok) forceOnce(`activity-failure:${patch.id}`, 'activity'); } else { const record = toActivityRecord(detail); if (!record) return; activityView.push(record); } updateSignal(); render(); });
+// Relay drop counter (ui-relay.ts): frames the pre-connect buffer had to evict. Shown
+// in the status sentence for as long as the panel lives — a lost edit does not expire.
+window.addEventListener('figma-agent:dropped', (event) => { const detail = (event as CustomEvent).detail as { frames?: unknown } | undefined; if (typeof detail?.frames !== 'number' || !Number.isFinite(detail.frames)) return; droppedFrames = Math.max(droppedFrames, Math.floor(detail.frames)); render(); });
 window.addEventListener('figma-agent:peers', (event) => { const data = (event as CustomEvent).detail as { count?: unknown; isActiveTarget?: unknown; pinned?: unknown } | undefined; if (typeof data?.count === 'number' && Number.isFinite(data.count)) peersCount = data.count; if (typeof data?.isActiveTarget === 'boolean') peersIsActiveTarget = data.isActiveTarget; peersPinned = data?.pinned === true; context(); });
 window.addEventListener('message', (event: MessageEvent) => { const message = (event.data as { pluginMessage?: { type?: string; data?: Record<string, unknown> } } | null)?.pluginMessage; if (!message) return; if (message.type === 'IDLE_READY' && message.data) { pendingSyncCount = typeof message.data.count === 'number' ? Math.max(1, Math.floor(message.data.count)) : 1; syncFailure = false; syncMsg.textContent = syncPromptLabel(pendingSyncCount); syncNowBtn.textContent = syncNowLabel(false); syncPrompt.hidden = true; render(); return; } if (message.type === 'FILE_INFO' && message.data) { if (typeof message.data.fileName === 'string') sceneFile = message.data.fileName; if (typeof message.data.page === 'string') scenePage = message.data.page; selectionName = typeof message.data.selectionName === 'string' ? message.data.selectionName : null; selectionCount = typeof message.data.selectionCount === 'number' ? message.data.selectionCount : 0; context(); } });
 

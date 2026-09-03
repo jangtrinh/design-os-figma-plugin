@@ -492,3 +492,62 @@ describe('cowork — no plugin at all refuses immediately, never silently waits 
     expect((reply as ReplyErr).error.code).toBe('E_NO_PLUGIN');
   });
 });
+
+// A batch the relay held through an outage and replayed on reconnect is history, not
+// activity. Feeding it to a live waiter would tell a cowork session that STARTED AFTER
+// the outage that pre-session edits are its own — the frames still carry
+// `source: 'live'`, because they were live when they were captured.
+describe('cowork — a replayed batch is history, and never resolves a live waiter', () => {
+  it('ignores the replayed gap, then fires on the first genuinely live edit', async () => {
+    // 800ms plugin-wait shrinks the broker's waiter tick to 100ms, so the "nothing fired"
+    // window below spans four real ticks rather than sitting inside a single 500ms one.
+    const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '800' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-replay', 'Cowork Replay', 'raw-cowork-replay');
+    const cli = await connectSocket(port);
+    const replyPromise = nextFrame<ReplyOk | ReplyErr>(cli, (m) => (m as ReplyOk | ReplyErr).id === 'req-cw-replay');
+
+    sendCowork(cli, 'req-cw-replay', { waitMs: 100, timeoutMs: 20_000 });
+    plugin.send(JSON.stringify({
+      type: 'EDIT_FEED',
+      data: {
+        edits: [ownerEdit('gap:1'), ownerEdit('gap:2')], fileKey: 'raw-cowork-replay',
+        fileName: 'Cowork Replay', source: 'live',
+        capturedAt: Date.now() - 10 * 60_000, replayed: true,
+      },
+    } satisfies EventMsg));
+
+    // Well past the 100ms quiet window: a waiter armed by the replay would have fired.
+    const early = await nextFrameByDeadline<ReplyOk>(cli, (m) => (m as ReplyOk).id === 'req-cw-replay', 400);
+    expect(early, 'a replayed gap must not arm a waiter that started after it').toBeUndefined();
+
+    sendEditFeed(plugin, [ownerEdit('live:1')], { fileKey: 'raw-cowork-replay', fileName: 'Cowork Replay' });
+    const reply = await replyPromise;
+    expect(reply).toMatchObject({ ok: true, result: { cycles: 1, edits: [{ nodeId: 'live:1' }] } });
+    expect((reply as ReplyOk).result as { edits: unknown[] }).toMatchObject({ edits: [{ nodeId: 'live:1' }] });
+  });
+
+  // …but a blip is not history. A supersede race can replay a batch captured a fraction
+  // of a second ago; within the waiter's own quiet window the designer demonstrably IS
+  // working, and telling the waiter otherwise reports less than the truth. The age of
+  // the capture decides, not the `replayed` flag alone.
+  it('counts a replay captured inside the quiet window as live activity', async () => {
+    const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '800' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-blip', 'Cowork Blip', 'raw-cowork-blip');
+    const cli = await connectSocket(port);
+    const replyPromise = nextFrame<ReplyOk | ReplyErr>(cli, (m) => (m as ReplyOk | ReplyErr).id === 'req-cw-blip');
+
+    sendCowork(cli, 'req-cw-blip', { waitMs: 800, timeoutMs: 20_000 });
+    plugin.send(JSON.stringify({
+      type: 'EDIT_FEED',
+      data: {
+        edits: [ownerEdit('blip:1')], fileKey: 'raw-cowork-blip', fileName: 'Cowork Blip', source: 'live',
+        capturedAt: Date.now() - 500, replayed: true, // half a second old: inside waitMs
+      },
+    } satisfies EventMsg));
+
+    const reply = await replyPromise;
+    expect(reply).toMatchObject({ ok: true, result: { cycles: 1, edits: [{ nodeId: 'blip:1' }] } });
+  });
+});

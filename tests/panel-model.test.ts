@@ -6,7 +6,7 @@ import {
   railViewportMode, viewportFor, shouldForceInspector,
   syncPromptLabel, syncResultLabel, syncNowLabel, shouldClearPendingCount,
   syncStartSentence, syncResultSentence, syncStuckSentence, syncSupersededSentence, SYNC_STUCK_TIMEOUT_MS,
-  targetButtonLabel,
+  targetButtonLabel, droppedNote,
 } from '../plugin/src/ui/panel-model.ts';
 describe('statusSentence — Block 1: the problem and the next action, six branches', () => {
   it('connected — success tone, minimal (the dot already signals it)', () => {
@@ -38,6 +38,34 @@ describe('statusSentence — Block 1: the problem and the next action, six branc
     });
   });
 });
+// The relay's offline buffer is bounded, so a long enough outage still loses edits.
+// Whatever it lost has to reach the one human looking at this panel: the sentence
+// carries the count in every connection state, and says so in a warning tone even
+// while everything else is healthy.
+describe('statusSentence — dropped captures are never hidden behind a healthy state', () => {
+  it('adds nothing at all while the count is zero', () => {
+    expect(statusSentence('connected', 0, true, 0)).toEqual({ text: 'Connected', tone: 'success' });
+    expect(statusSentence('connected', 0, true)).toEqual({ text: 'Connected', tone: 'success' });
+  });
+
+  it('says what was lost even once the connection is healthy again', () => {
+    expect(statusSentence('connected', 0, true, 3)).toEqual({
+      text: 'Connected · 3 edits lost while offline', tone: 'warning',
+    });
+  });
+
+  it('keeps the count visible while still disconnected, and counts one edit in singular', () => {
+    expect(statusSentence('disconnected', 0, true, 1)).toEqual({
+      text: 'Connection lost — reconnecting. · 1 edit lost while offline', tone: 'warning',
+    });
+  });
+
+  it('droppedNote never fabricates a plural or a zero case it was not given', () => {
+    expect(droppedNote(1)).toBe('1 edit lost while offline');
+    expect(droppedNote(42)).toBe('42 edits lost while offline');
+  });
+});
+
 describe('formatAge', () => {
   it('formatAge steps just-now → seconds → minutes → hours', () => {
     expect(formatAge(0)).toBe('just now');
