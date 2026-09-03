@@ -34,6 +34,7 @@ import { resolveTokenVars } from './executor-token-var-resolve';
 import { createFigmaNode } from './executor-frame';
 import { serializeDesignSystem } from './serialize-node';
 import { auditDs } from './executor-audit';
+import { figmaContextEnv, opGetContext } from './executor-context';
 import {
   opStatus, opGetSelection, opCreateFrame, opCreateInstance, opSetVariant,
   opSetAutoLayout, opSetConstraints, opSetText, opExportPng,
@@ -531,6 +532,11 @@ async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
       toPerfStatus(perfStats),
     );
     case 'GET_SELECTION': return opGetSelection(params);
+    // The change counter handed in here is the SAME signal the read-only guard keeps
+    // (one bump per documentchange batch that lands while exactly one dispatch is
+    // active). The walk snapshots it and diffs it, so a subtree read across two document
+    // states reports `changesDuringWalk` instead of presenting itself as one state.
+    case 'GET_CONTEXT': return opGetContext(params, figmaContextEnv(() => snapshotChangeEvents(readOnlyGuard)));
     case 'SCAN_DESIGN_SYSTEM': return serializeDesignSystem();
     case 'AUDIT_DS': return auditDs();
     case 'CREATE_FRAME': return opCreateFrame(params);

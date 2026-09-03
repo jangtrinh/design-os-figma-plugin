@@ -40,6 +40,13 @@ export const SKILL_WORKFLOW = `## Typical workflow
 3. Read before you write: \`get-selection\`, \`inspect\`, \`scan-design-system\`. Resolve a
    component by name with \`resolve-component --name "<n>"\` — it returns exactly one node
    or refuses (E_AMBIGUOUS lists the duplicates; pass \`--page\` or use an id).
+   For code context — CSS declarations, bound tokens, text, component props — use
+   \`context <nodeId>\` (a page id works; a document id is refused). Read its \`budget\`
+   block before trusting the tree: \`emitted\` is always \`nodes.length\`, \`partial\`
+   counts records that arrived incomplete, and \`complete: false\` means something is
+   missing. \`frontier[]\` says what: reason \`budget\`/\`deadline\` → re-run \`context\`
+   on that id; reason \`depth\` → re-run with a larger \`--depth\`. \`--budget\` bounds the
+   node records only — \`refsBytes\` reports the identity tables separately.
 4. Mutate with the typed commands (\`create-frame\`, \`set-text\`, \`clone-traits\`, ...)
    before falling back to \`exec-js\` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after

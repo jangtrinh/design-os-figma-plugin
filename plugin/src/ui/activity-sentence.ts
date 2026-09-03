@@ -65,6 +65,10 @@ const TOOL_VERBS: Record<string, ToolVerbs> = {
   BATCH: { continuous: 'Running a batch', plain: 'Ran a batch' },
   STATUS: { continuous: 'Checking status', plain: 'Checked status' },
   GET_SELECTION: { continuous: 'Reading the selection', plain: 'Read the selection' },
+  // No `countVerb`: `summarizeResult` (activity-summary.ts) returns null for every command
+  // but IMPORT_PAYLOAD/HTML_TO_FIGMA/EXEC_JS, so a count sentence is unreachable here — and
+  // "Read 12 nodes" on a walk that omitted 28 would be a wrong fact in the designer's feed.
+  GET_CONTEXT: { continuous: 'Reading code context', plain: 'Read code context' },
   // Local-only pseudo-tool: the panel's own "Sync now" push (panel-ui.ts), not a wire command.
   RECONCILE: { continuous: 'Syncing', plain: 'Synced' },
 };

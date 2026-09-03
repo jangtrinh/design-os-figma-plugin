@@ -52,6 +52,32 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + '(refuses to guess otherwise) [--list] [--unbind]',
   },
   { name: 'get-selection', description: 'Serialize the current selection [--depth 1]' },
+  {
+    name: 'context',
+    description:
+      '[nodeId|--node id] [--budget 64] [--depth N] [--no-css] [--timeout ms]   code context for '
+      + 'one node\'s subtree as DATA: the Inspect panel\'s own CSS declarations (verbatim — a '
+      + 'var(--token, #hex) fallback is never rewritten), the variable and style ids each node '
+      + 'binds with one identity table per reply, text, and component properties. Not generated '
+      + 'React/Tailwind, not Dev Mode. Read-only: it bypasses the mutation FIFO and adds no undo '
+      + 'step. A page id walks that page, budget-bounded; a document id is refused (not a subtree). '
+      + 'Breadth-first. --budget (KILOBYTES, default 64) bounds the NODE RECORDS, measured in the '
+      + 'plugin before the wire; the refs identity tables are resolved after the walk and reported '
+      + 'separately as refsBytes, so finalBytes can exceed --budget. A soft deadline 2s inside '
+      + '--timeout means a big subtree answers with a partial AND its counts instead of a bare '
+      + 'timeout. Every reply carries schema "context/1" and a budget block whose numbers add up: '
+      + 'emitted is always nodes.length, visited = emitted + omitted.budget + omitted.deadline, '
+      + 'and partial counts records that shipped with a cssError/mainComponentError/childrenError. '
+      + 'complete is true only when every omitted count, the frontier and partial are all 0. '
+      + 'frontier[] lists what was not walked: reason "budget"/"deadline" → re-run context on that '
+      + 'id; reason "depth" → re-run with a larger --depth (or none), since that node itself is '
+      + 'already in nodes[]. childCount null means its children could not be read, not that it is '
+      + 'a leaf. An isAsset subtree collapses to counts by node type plus readErrors, never a '
+      + 'silent drop. changeBatchesDuringWalk counts DOCUMENT-WIDE change batches during this '
+      + 'dispatch (a conservative bound, not subtree edits). Multi-selection reads the first '
+      + 'selected node only, and bindings.fills names the first bound paint only. --no-css skips '
+      + 'the one expensive read (~7-8ms per node). --format is reserved and refused, not ignored.',
+  },
   { name: 'inspect', description: '[nodeId|--node id] [--out file.png --scale 1 --timeout ms]' },
   {
     name: 'job',

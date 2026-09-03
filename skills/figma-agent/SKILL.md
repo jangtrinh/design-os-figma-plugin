@@ -33,6 +33,13 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 3. Read before you write: `get-selection`, `inspect`, `scan-design-system`. Resolve a
    component by name with `resolve-component --name "<n>"` — it returns exactly one node
    or refuses (E_AMBIGUOUS lists the duplicates; pass `--page` or use an id).
+   For code context — CSS declarations, bound tokens, text, component props — use
+   `context <nodeId>` (a page id works; a document id is refused). Read its `budget`
+   block before trusting the tree: `emitted` is always `nodes.length`, `partial`
+   counts records that arrived incomplete, and `complete: false` means something is
+   missing. `frontier[]` says what: reason `budget`/`deadline` → re-run `context`
+   on that id; reason `depth` → re-run with a larger `--depth`. `--budget` bounds the
+   node records only — `refsBytes` reports the identity tables separately.
 4. Mutate with the typed commands (`create-frame`, `set-text`, `clone-traits`, ...)
    before falling back to `exec-js` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after
@@ -65,6 +72,7 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 - `seat` — Probe seat → {seat, bridge, reason} [--seat free|paid skips the probe]
 - `bind` — --file "<name>" --dir <projectDir>   bind a file to a project for panel/idle sync (refuses to guess otherwise) [--list] [--unbind]
 - `get-selection` — Serialize the current selection [--depth 1]
+- `context` — [nodeId|--node id] [--budget 64] [--depth N] [--no-css] [--timeout ms]   code context for one node's subtree as DATA: the Inspect panel's own CSS declarations (verbatim — a var(--token, #hex) fallback is never rewritten), the variable and style ids each node binds with one identity table per reply, text, and component properties. Not generated React/Tailwind, not Dev Mode. Read-only: it bypasses the mutation FIFO and adds no undo step. A page id walks that page, budget-bounded; a document id is refused (not a subtree). Breadth-first. --budget (KILOBYTES, default 64) bounds the NODE RECORDS, measured in the plugin before the wire; the refs identity tables are resolved after the walk and reported separately as refsBytes, so finalBytes can exceed --budget. A soft deadline 2s inside --timeout means a big subtree answers with a partial AND its counts instead of a bare timeout. Every reply carries schema "context/1" and a budget block whose numbers add up: emitted is always nodes.length, visited = emitted + omitted.budget + omitted.deadline, and partial counts records that shipped with a cssError/mainComponentError/childrenError. complete is true only when every omitted count, the frontier and partial are all 0. frontier[] lists what was not walked: reason "budget"/"deadline" → re-run context on that id; reason "depth" → re-run with a larger --depth (or none), since that node itself is already in nodes[]. childCount null means its children could not be read, not that it is a leaf. An isAsset subtree collapses to counts by node type plus readErrors, never a silent drop. changeBatchesDuringWalk counts DOCUMENT-WIDE change batches during this dispatch (a conservative bound, not subtree edits). Multi-selection reads the first selected node only, and bindings.fills names the first bound paint only. --no-css skips the one expensive read (~7-8ms per node). --format is reserved and refused, not ignored.
 - `inspect` — [nodeId|--node id] [--out file.png --scale 1 --timeout ms]
 - `job` — <jobId> [--wait] [--wait-timeout 60000] | --list [--file name] | <jobId> --cancel (queued only) | <jobId> --force-release [--force]   poll/wait/cancel/list a job the CLI stopped waiting for (backlog 1.1+2.6+4.3) — --force-release refuses a HEALTHY still-running job unless --force is also passed — --force overrides the guard and discards its result, unverified; a watchdog-wedged job still unwedges without --force. An outcome-unknown job requires canvas inspection, then a bare --force-release; never retry it automatically.
 - `scan-design-system` — Components/variables/styles registry [--out file.json --timeout ms]

@@ -7,7 +7,7 @@ export interface CommandOrbPresentation {
 
 const COMMANDS_BY_STATE = {
   searching: new Set([
-    'STATUS', 'GET_SELECTION', 'SCAN_DESIGN_SYSTEM', 'GET_CORRECTION_MEMORY',
+    'STATUS', 'GET_SELECTION', 'GET_CONTEXT', 'SCAN_DESIGN_SYSTEM', 'GET_CORRECTION_MEMORY',
     'LIST_CONNECTIONS', 'SHADER_GRADIENT_PROBE',
   ]),
   solving: new Set(['AUDIT_DS', 'VERIFY_CONNECTIONS']),
