@@ -37,6 +37,18 @@ describe('context command — params', () => {
     });
   });
 
+  it('sends dedup only when it was asked for — the default reply shape is P1\'s', () => {
+    expect(resolveContextParams({ dedup: true }).params).toMatchObject({ dedup: true });
+    expect(resolveContextParams({ dedup: false }).params.dedup).toBeUndefined();
+    expect(resolveContextParams({}).params.dedup).toBeUndefined();
+  });
+
+  it('sends devResources only when it was asked for', () => {
+    expect(resolveContextParams({ devResources: true }).params).toMatchObject({ devResources: true });
+    expect(resolveContextParams({ devResources: false }).params.devResources).toBeUndefined();
+    expect(resolveContextParams({}).params.devResources).toBeUndefined();
+  });
+
   it('never hands the plugin a non-positive deadline, however short --timeout is', () => {
     expect(resolveContextParams({ timeout: 500 }).params.deadlineMs).toBe(250);
   });
@@ -154,6 +166,38 @@ describe('context command — the two wire numbers are capped', () => {
   it('reports the timeout it used even when the caller named none', async () => {
     const out = await run(parseArgs(['1:2']), stubRunner()) as { budget: Record<string, unknown> };
     expect(out.budget.timeoutMs).toBe(45_000);
+  });
+});
+
+describe('context command — --dedup reaches the wire as a boolean', () => {
+  it('parses through run() and travels as dedup: true', async () => {
+    const calls: { cmd: string; params: unknown }[] = [];
+    await run(parseArgs(['1:2', '--dedup']), stubRunner(calls));
+    expect(calls[0].params).toMatchObject({ nodeId: '1:2', dedup: true });
+  });
+
+  it('sends nothing at all when the flag is absent', async () => {
+    const calls: { cmd: string; params: unknown }[] = [];
+    await run(parseArgs(['1:2']), stubRunner(calls));
+    expect((calls[0].params as Record<string, unknown>).dedup).toBeUndefined();
+  });
+});
+
+describe('context command — --dev-resources is opt-in, because the read costs ~2s', () => {
+  // Measured on the owner's Free file: `getDevResourcesAsync({includeChildren:true})` costs a
+  // FIXED ~2.1s whatever the subtree size (11 nodes 2115ms, 121 nodes 2060ms, a 453-node page
+  // 2149ms) — a server round trip, not a walk. Reading it on every call put ~2s onto a command
+  // whose `--no-css` fast path was 124ms. So it is asked for, or it does not happen.
+  it('sends nothing at all when the flag is absent', async () => {
+    const calls: { cmd: string; params: unknown }[] = [];
+    await run(parseArgs(['1:2']), stubRunner(calls));
+    expect((calls[0].params as Record<string, unknown>).devResources).toBeUndefined();
+  });
+
+  it('parses through run() and travels as devResources: true', async () => {
+    const calls: { cmd: string; params: unknown }[] = [];
+    await run(parseArgs(['1:2', '--dev-resources']), stubRunner(calls));
+    expect(calls[0].params).toMatchObject({ nodeId: '1:2', devResources: true });
   });
 });
 

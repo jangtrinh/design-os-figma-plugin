@@ -1,4 +1,5 @@
-// `figma-agent context [nodeId|selection] [--budget KB] [--depth N] [--no-css] [--timeout ms]`
+// `figma-agent context [nodeId|selection] [--budget KB] [--depth N] [--no-css] [--dedup]
+// [--dev-resources] [--timeout ms]`
 // — the code context of one node's subtree as data: the Inspect panel's own CSS
 // declarations, the variables and styles each node binds, its text and component
 // properties. Not generated framework code, and not Dev Mode.
@@ -29,6 +30,12 @@ export interface ContextInput {
   budgetKb?: number;
   depth?: number;
   noCss?: boolean;
+  /** Opt-in content dedup, applied in the plugin AFTER the walk. Default off: it is a second
+   *  on-wire shape, and `cli/src/commands/context-inflate.ts` is the way back. */
+  dedup?: boolean;
+  /** Opt-in dev-resource links. Default off: the read is a fixed ~2s server round trip
+   *  whatever the subtree size, and it would otherwise be paid on every call. */
+  devResources?: boolean;
   timeout?: number;
 }
 
@@ -94,6 +101,8 @@ export function resolveContextParams(input: ContextInput): ResolvedContextCall {
       deadlineMs,
       ...(input.depth !== undefined && { depth: input.depth }),
       ...(input.noCss === true && { noCss: true }),
+      ...(input.dedup === true && { dedup: true }),
+      ...(input.devResources === true && { devResources: true }),
     },
     timeoutMs,
   };
@@ -162,6 +171,8 @@ export async function run(args: CommandArgs, runner: Runner = runCommand): Promi
     budgetKb: numericFlag(args, 'budget'),
     depth: numericFlag(args, 'depth'),
     noCss: args.bool('no-css'),
+    dedup: args.bool('dedup'),
+    devResources: args.bool('dev-resources'),
     timeout: numericFlag(args, 'timeout'),
   }, runner);
 }
