@@ -63,8 +63,9 @@ export interface DocumentChangeCaptureStats {
    *  identity cache — and were therefore filed under `figma.currentPage`. That name is a
    *  guess about someone else's edit, so it is never made silently. */
   pageFallbacks: number;
-  /** Correction-store failures this session (a read or a batch open that threw). The feed
-   *  is posted regardless — bookkeeping about the edits must not cost the edits. */
+  /** Correction-store failures this session (a per-node read, or the batch's flush write,
+   *  that threw). The feed is posted regardless — bookkeeping about the edits must not
+   *  cost the edits. */
   errorCount: number;
   /** The FIRST failure message, verbatim: the one describing the original cause rather
    *  than a cascade from it. Same convention as `gapfill.errors` in STATUS. */
@@ -93,6 +94,15 @@ export function createDocumentChangeCapture<TBatch>(
     return figma.currentPage.name;
   }
 
+  /** The page for a REMOVED node: the identity cache is its only record (a RemovedNode
+   *  carries no parent chain to walk), so a node this session never saw degrades to the
+   *  current page — same guess, same counter, as the live-node fallback above. */
+  function resolvedRemovedPage(remembered: string | undefined): string {
+    if (remembered !== undefined) return remembered;
+    stats.pageFallbacks += 1;
+    return figma.currentPage.name;
+  }
+
   /** Every failure counts; the first message is kept because it describes the cause. */
   function recordCaptureError(error: unknown): void {
     stats.errorCount += 1;
@@ -105,22 +115,20 @@ export function createDocumentChangeCapture<TBatch>(
     const now = deps.now();
     const connectorTouched: string[] = [];
     deps.onBatchStart(now);
-    // Correction bookkeeping is ABOUT the edits; it is never allowed to cost them. Opening
-    // the batch and every per-node record run inside a guard because both reach
-    // `sharedPluginData`, which Figma refuses on a file the user cannot edit and at its
-    // per-entry byte cap — and they run BEFORE anything is posted, so an escaping throw
-    // used to take the whole delivered batch with it, including the changes already
-    // processed. The first refusal disables corrections for the rest of THIS batch (one
-    // error for the batch, not one per node) and skips the flush; the pass continues and
-    // the feed goes out.
-    let correctionBatch!: TBatch;
+    // Correction bookkeeping is ABOUT the edits; it is never allowed to cost them.
+    // Opening the batch does no I/O (`beginCorrectionBatch` just allocates
+    // `{ events: null, appended: 0 }`) — the store is read lazily, at most once, the
+    // first time a per-node `record` call actually needs it, and written at most once by
+    // the flush at the end. Both of THOSE reach `sharedPluginData`, which Figma refuses on
+    // a file the user cannot edit and throws at its per-entry byte cap — and both run
+    // guarded, because an escaping throw would otherwise take the whole delivered batch
+    // with it, including the changes already processed. A read refusal disables
+    // corrections for the rest of THIS batch (one error for the batch, not one per node)
+    // and skips the flush; a flush refusal loses this batch's corrections (there is no
+    // scoped copy to retry with — the next batch reads the document afresh) but likewise
+    // never escapes. Either way the pass continues and the feed goes out.
+    const correctionBatch: TBatch = deps.corrections.begin();
     let correctionsUsable = true;
-    try {
-      correctionBatch = deps.corrections.begin();
-    } catch (error) {
-      recordCaptureError(error);
-      correctionsUsable = false;
-    }
     const raw: ComponentChange[] = [];
     const edits: EditInput[] = [];
     for (const dc of event.documentChanges) {
@@ -184,8 +192,9 @@ export function createDocumentChangeCapture<TBatch>(
       const parentName = removed ? known?.parentName ?? null : enclosingName(node);
       const page = removed
         // A delete carries no parent chain at all, so the cache is the only record of where
-        // the node lived; a node this session never saw degrades to the current page.
-        ? known?.page ?? figma.currentPage.name
+        // the node lived; a node this session never saw degrades to the current page —
+        // counted the same as the live-node substitution below, never silently.
+        ? resolvedRemovedPage(known?.page)
         // A live node resolves through its OWN chain, at any depth. Only a node with no page
         // in it (detached, or reparented out mid-batch) reaches a substitute: the last page
         // this session saw it on, else — as the final resort — the current page, which is a
@@ -241,8 +250,18 @@ export function createDocumentChangeCapture<TBatch>(
     // throws at its per-entry byte cap; the edits above are the design facts this feed
     // exists to carry, so they are already posted by the time a refusal can propagate.
     // Skipped outright when the batch's own reads already failed: there is nothing
-    // trustworthy to write back, and the failure is already counted.
-    if (correctionsUsable) deps.corrections.flush(correctionBatch);
+    // trustworthy to write back, and the failure is already counted. A refusal HERE is
+    // guarded the same way: this batch's corrections are lost (there is no scoped copy to
+    // retry with — the next batch reads the document afresh), but the refusal itself is
+    // counted rather than escaping the `documentchange` listener and taking the feed,
+    // idle-arming, and the caller down with it.
+    if (correctionsUsable) {
+      try {
+        deps.corrections.flush(correctionBatch);
+      } catch (error) {
+        recordCaptureError(error);
+      }
+    }
   }
 
   return { onDocumentChange, stats };

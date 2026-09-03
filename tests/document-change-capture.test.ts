@@ -214,6 +214,25 @@ describe('real designer edits are untouched by the filter', () => {
     expect(capture.stats.pageFallbacks).toBe(1); // a guessed page is never a silent one
   });
 
+  it('a live node\'s OWN chain wins over what the identity cache remembers for it', () => {
+    const { capture, log } = harness();
+    const onPage1: FakeNode = { id: 'moved', name: 'Moved', type: 'TEXT', parent: FRAME };
+
+    // First delivery remembers `page: 'Page 1'` in the identity cache.
+    capture.onDocumentChange({ documentChanges: [change(onPage1, 'PROPERTY_CHANGE', ['fills'])] } as any);
+    expect(feed(log)[0]?.data.edits[0]).toMatchObject({ page: 'Page 1' });
+
+    // Second delivery: the SAME id, now reparented under a different page's chain. The
+    // cache still says 'Page 1' from the delivery above — the node's own chain must win.
+    const page2: FakeNode = { id: 'p2', name: 'Page 2', type: 'PAGE', parent: null };
+    const frame2: FakeNode = { id: 'f2', name: 'Card 2', type: 'FRAME', parent: page2 };
+    const onPage2: FakeNode = { id: 'moved', name: 'Moved', type: 'TEXT', parent: frame2 };
+    capture.onDocumentChange({ documentChanges: [change(onPage2, 'PROPERTY_CHANGE', ['fills'])] } as any);
+
+    expect(feed(log)[1]?.data.edits[0]).toMatchObject({ nodeId: 'moved', page: 'Page 2' });
+    expect(capture.stats.pageFallbacks).toBe(0); // resolved outright via the chain — not a substitution
+  });
+
   it('a component edit still posts DOC_CHANGE alongside the widened feed', () => {
     const { capture, log } = harness();
     const set: FakeNode = { id: 'cs1', name: 'Button', type: 'COMPONENT_SET', parent: PAGE };
@@ -238,8 +257,36 @@ describe('real designer edits are untouched by the filter', () => {
   });
 });
 
+describe('a DELETE\'s page fallback is a guess too, and is counted the same as a live one', () => {
+  it('a DELETE of a node this session never saw guesses the current page and counts it', () => {
+    const { capture, log } = harness();
+    const gone: FakeNode = { id: 'gone', name: 'Ghost', type: 'TEXT', parent: null, removed: true };
+
+    capture.onDocumentChange({ documentChanges: [change(gone, 'DELETE')] } as any);
+
+    expect(feed(log)[0]?.data.edits[0]).toMatchObject({ nodeId: 'gone', page: 'Cover', nodeName: null });
+    expect(capture.stats.pageFallbacks).toBe(1); // a guessed page on a delete is never silent either
+  });
+
+  it('a DELETE of a node this session already has in its identity cache uses the cached page, no guess', () => {
+    const { capture, log } = harness();
+    const seen: FakeNode = { id: 'seen', name: 'Seen', type: 'TEXT', parent: FRAME };
+
+    // First delivery: a LIVE change remembers this node's page ('Page 1') in the cache.
+    capture.onDocumentChange({ documentChanges: [change(seen, 'PROPERTY_CHANGE', ['fills'])] } as any);
+    expect(capture.stats.pageFallbacks).toBe(0);
+
+    // Second delivery: the SAME id, now delivered as a DELETE (RemovedNode: id + type only).
+    const goneSeen: FakeNode = { id: 'seen', name: 'Seen', type: 'TEXT', parent: null, removed: true };
+    capture.onDocumentChange({ documentChanges: [change(goneSeen, 'DELETE')] } as any);
+
+    expect(feed(log)[1]?.data.edits[0]).toMatchObject({ nodeId: 'seen', page: 'Page 1' });
+    expect(capture.stats.pageFallbacks).toBe(0); // the identity cache had it — no guess needed
+  });
+});
+
 describe('a failing correction-store write never costs the batch its edits', () => {
-  it('posts the feed BEFORE writing the store, so a refused write loses only the corrections', () => {
+  it('is counted, not thrown — the feed posts, idle arms, the write refusal is the first recorded error', () => {
     const { log } = harness();
     const capture = createDocumentChangeCapture<null>({
       now: () => 1_000,
@@ -251,7 +298,8 @@ describe('a failing correction-store write never costs the batch its edits', () 
         record: () => {},
         // Figma refuses a `sharedPluginData` write on a file the user cannot edit, and
         // throws on the per-entry byte cap. The edits in this batch are the design facts;
-        // the correction store is bookkeeping about them.
+        // the correction store is bookkeeping about them, and its own failure must not
+        // take the feed, the idle timer, or the handler's caller down with it.
         flush: () => { throw new Error('setSharedPluginData refused'); },
       },
       noteChangedNodes: () => {},
@@ -263,10 +311,15 @@ describe('a failing correction-store write never costs the batch its edits', () 
 
     expect(() => capture.onDocumentChange({
       documentChanges: [change(text('t1'), 'PROPERTY_CHANGE', ['fills'])],
-    } as any)).toThrow('setSharedPluginData refused');
+    } as any)).not.toThrow();
 
     expect(feed(log)[0]?.data.edits[0]).toMatchObject({ nodeId: 't1' });
     expect(log.idleArmed).toBe(1);
+    // The batch's own corrections are lost with the throw (there is no scoped copy to
+    // retry with — the next batch reads the document afresh), but the refusal itself is
+    // never silent: it is the first counted capture error, verbatim.
+    expect(capture.stats.errorCount).toBe(1);
+    expect(capture.stats.firstError).toBe('setSharedPluginData refused');
   });
 });
 

@@ -671,6 +671,11 @@
       stats.pageFallbacks += 1;
       return figma.currentPage.name;
     }
+    function resolvedRemovedPage(remembered) {
+      if (remembered !== void 0) return remembered;
+      stats.pageFallbacks += 1;
+      return figma.currentPage.name;
+    }
     function recordCaptureError(error) {
       stats.errorCount += 1;
       if (stats.firstError === null) {
@@ -681,14 +686,8 @@
       const now = deps.now();
       const connectorTouched = [];
       deps.onBatchStart(now);
-      let correctionBatch;
+      const correctionBatch = deps.corrections.begin();
       let correctionsUsable = true;
-      try {
-        correctionBatch = deps.corrections.begin();
-      } catch (error) {
-        recordCaptureError(error);
-        correctionsUsable = false;
-      }
       const raw = [];
       const edits = [];
       for (const dc of event.documentChanges) {
@@ -724,7 +723,7 @@
         const removed = "removed" in node && node.removed;
         const known = deps.identity.get(node.id);
         const parentName = removed ? known?.parentName ?? null : enclosingName(node);
-        const page = removed ? known?.page ?? figma.currentPage.name : resolvedPage(node, known?.page);
+        const page = removed ? resolvedRemovedPage(known?.page) : resolvedPage(node, known?.page);
         edits.push({
           op,
           nodeId: node.id,
@@ -763,7 +762,13 @@
         deps.noteEdits();
       }
       if (changes.length > 0 || edits.length > 0) deps.armIdle();
-      if (correctionsUsable) deps.corrections.flush(correctionBatch);
+      if (correctionsUsable) {
+        try {
+          deps.corrections.flush(correctionBatch);
+        } catch (error) {
+          recordCaptureError(error);
+        }
+      }
     }
     return { onDocumentChange, stats };
   }
