@@ -123,6 +123,19 @@ Field definitions and the reasoning for each live in
 [`../plugin/src/main/perf-stats.ts`](../plugin/src/main/perf-stats.ts). Panel and CLI output never
 fabricate: a name appears only when the reply carried one, a count only when one parsed.
 
+### Code context, as data
+
+`figma-agent context <nodeId>` walks a node's subtree breadth-first under a byte budget measured in
+the plugin, before the wire. Every reply's numbers hold a conservation law,
+`visited = emitted + omitted.budget + omitted.deadline`, plus a `partial` count for records that
+shipped incomplete; unwalked nodes land in a stateless `frontier` cursor you re-issue `context` on.
+`--no-css` skips the one expensive read. `--dedup` (opt-in) folds repeated CSS/layout blocks and
+subtrees by identity first, content-hash only for unbound literals, and `inflate` restores the
+raw reply (deep-equal, not byte-identical: key order moves), round-trip tested. `--dev-resources` is opt-in because that one subtree-wide read
+costs a measured ≈2 s on a Free file regardless of subtree size. Measured on a 121-node frame:
+773 ms wall with CSS, 124 ms without, 36% smaller with `--dedup`. Command reference:
+[`../skills/figma-agent/SKILL.md`](../skills/figma-agent/SKILL.md).
+
 ## With this plugin, or Figma's official MCP alone?
 
 Both are real bridges and they are not exclusive. Figma documents its remote MCP server as
@@ -139,14 +152,17 @@ feature, but is currently available for free during the beta period" (Figma docs
 | Seeing the designer's edits | Live `documentchange` feed, gap-fill diff across a closed window, `changes --owner-only` | Read on demand; no change-subscription tool in the published list |
 | Two actors at once | Per-file mutation FIFO, one job at a time, reads bypass, cancel, explicit outcome-unknown protocol | Not covered by the published tool list |
 | Where it runs | Broker on `127.0.0.1`, no model call in the CLI or broker | Hosted endpoint; a desktop server exists for "a Dev or Full seat for all paid plans" |
-| Code context | Not offered | `get_design_context`, `get_code_connect_map`, `get_variable_defs`, `search_design_system` |
+| Code context | CSS + tokens per node, as data (`context`); no codegen | `get_design_context`, `get_code_connect_map`, `get_variable_defs`, `search_design_system` |
 
 ### What this plugin does not do
 
 Said plainly, because the official server does these and this one will not:
 
-- **No code context.** No `get_design_context`, no Code Connect mapping, no variable extraction aimed
-  at code generation. For design-to-code the official MCP is the better tool.
+- **No rendered code, no Code Connect.** `context` gives a node's CSS declarations ("the same CSS
+  that Figma shows in the inspect panel" — `@figma/plugin-typings`, `getCSSAsync`), bound variables
+  and styles, text and component properties, budgeted and counted. It does not generate
+  React/Tailwind, has no Code Connect mapping, and is not Dev Mode. For design-to-code the official
+  MCP is the better tool.
 - **No design-system search across libraries.** `scan-design-system` reads the open file only.
 - **Nothing works with the panel closed**, and the remote server has no such requirement.
 - **No hosted anything**, and it is a development plugin you import yourself, not a published Figma
@@ -194,7 +210,7 @@ same as absent from the product.
 | Multiple files at once | yes | yes, any file by URL | not documented | multi-instance ports | file-local | yes |
 | Local only, no cloud call | yes, CDN iframes excepted | hosted; the local server needs a paid seat | yes | local yes, Cloud mode no | yes | no, REST cloud |
 | Published large-file numbers | yes, 418k nodes | no | no | no | no | no |
-| Design-to-code context | no | yes, `get_design_context` and Code Connect | read tools | extraction | no | yes |
+| Design-to-code context | CSS + tokens, no codegen | yes, `get_design_context` and Code Connect | read tools | extraction | no | yes |
 | No desktop app needed | no | yes, remote server | no | Cloud mode, read-only | no | yes |
 | Licence | MIT | proprietary | MIT | MIT | MIT | MIT |
 

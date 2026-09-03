@@ -66,10 +66,18 @@ wins outright. Write to canvas is where the paths diverge: Figma documents it as
 seat, and as something that "will eventually be a usage-based paid feature, but is currently
 available for free during the beta period" (Figma docs, September 2026).
 
-This plugin is the weaker tool for some jobs and that is not a close call: **no code context, no
-Code Connect, no cross-library search**, **nothing works with the panel closed**, and **no org layer**
+This plugin is the weaker tool for some jobs and that is not a close call: **no Code Connect, no
+cross-library search, no rendered framework code**, **nothing works with the panel closed**, and **no org layer**
 (no SSO, no roles, no per-user audit: a per-file kill switch and local logs are what you get). Use both. Read
 through the MCP, write through the plugin.
+
+`figma-agent context` returns what the Plugin API exposes on every plan — a node's Inspect-panel CSS
+declarations, the variables and styles it binds, its text and component properties, and the designer's
+intent where it exists (Ready-for-dev status, annotations, a component's description) — as data for an
+agent, budgeted before the wire and counting everything it leaves out. It does not generate
+React/Tailwind, it is not Dev Mode, and Ready-for-dev/annotations read as empty on a file where nobody
+set them.
+
 [Row-by-row comparison](docs/deep-dive.md#with-this-plugin-or-figmas-official-mcp-alone)
 
 ## If you are coming from
