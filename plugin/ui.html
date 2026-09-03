@@ -540,6 +540,13 @@ body {
     SHADER_GRADIENT_PROBE: 9e4,
     IMPORT_GRADIENT: 6e4,
     SCAN_DESIGN_SYSTEM: 3e4,
+    // EXPLICIT, not left to DEFAULT_TIMEOUT_MS: measured live, `getCSSAsync` costs ~7-8ms
+    // per node (100 nodes 831ms, 500 nodes 3.9s; Promise.all batches of 16 save only ~12%
+    // — the cost is per call, not per round-trip). A 64KB budget on a dense subtree can
+    // therefore sit well past 15s, and a default-timeout E_TIMEOUT teaches the agent to
+    // re-issue, paying the whole walk twice. The plugin's own soft deadline (this minus the
+    // CLI's 2s hop buffer) returns a partial WITH counts before the wire timeout can fire.
+    GET_CONTEXT: 45e3,
     AUDIT_DS: 12e4,
     // usage scan traverses EVERY page's instances — heavier than the DS scan
     EXEC_JS: 3e4,
@@ -660,6 +667,10 @@ body {
     BATCH: { continuous: "Running a batch", plain: "Ran a batch" },
     STATUS: { continuous: "Checking status", plain: "Checked status" },
     GET_SELECTION: { continuous: "Reading the selection", plain: "Read the selection" },
+    // No `countVerb`: `summarizeResult` (activity-summary.ts) returns null for every command
+    // but IMPORT_PAYLOAD/HTML_TO_FIGMA/EXEC_JS, so a count sentence is unreachable here — and
+    // "Read 12 nodes" on a walk that omitted 28 would be a wrong fact in the designer's feed.
+    GET_CONTEXT: { continuous: "Reading code context", plain: "Read code context" },
     // Local-only pseudo-tool: the panel's own "Sync now" push (panel-ui.ts), not a wire command.
     RECONCILE: { continuous: "Syncing", plain: "Synced" }
   };
@@ -995,6 +1006,7 @@ body {
     searching: /* @__PURE__ */ new Set([
       "STATUS",
       "GET_SELECTION",
+      "GET_CONTEXT",
       "SCAN_DESIGN_SYSTEM",
       "GET_CORRECTION_MEMORY",
       "LIST_CONNECTIONS",
@@ -1847,7 +1859,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "3b22cbb" : "dev"}`;
+  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "42fe783" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;

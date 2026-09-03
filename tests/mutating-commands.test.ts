@@ -22,7 +22,7 @@ import { BROKER_SAFE_READ_COMMANDS, MUTATING_COMMANDS } from '../shared/mutating
 // without restoring, which is shared view state) — broker admission therefore excludes
 // it from the explicit BROKER_SAFE_READ_COMMANDS allowlist.
 const READ_ONLY_COMMANDS: readonly CommandName[] = [
-  'STATUS', 'GET_SELECTION', 'SCAN_DESIGN_SYSTEM', 'AUDIT_DS',
+  'STATUS', 'GET_SELECTION', 'GET_CONTEXT', 'SCAN_DESIGN_SYSTEM', 'AUDIT_DS',
   'GET_CORRECTION_MEMORY', 'EXPORT_PNG', 'HTML_TO_FIGMA', 'BATCH', 'PROJECT_BIND', 'JOB', 'MUTATION_GATE', 'COWORK',
   // SHADER_GRADIENT is READ_ONLY for the same reason HTML_TO_FIGMA is: it never reaches
   // main. The UI renders it and posts IMPORT_GRADIENT, and THAT is the mutating half.
@@ -35,6 +35,7 @@ describe('command classification — every COMMANDS entry is MUTATING xor READ_O
     expect(BROKER_SAFE_READ_COMMANDS).toEqual([
       'STATUS',
       'GET_SELECTION',
+      'GET_CONTEXT',
       'EXPORT_PNG',
       'SCAN_DESIGN_SYSTEM',
       'GET_CORRECTION_MEMORY',

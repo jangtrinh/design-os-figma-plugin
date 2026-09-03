@@ -18,6 +18,7 @@ import type { CommandName } from './protocol';
 export const BROKER_SAFE_READ_COMMANDS: readonly CommandName[] = [
   'STATUS',
   'GET_SELECTION',
+  'GET_CONTEXT',
   'EXPORT_PNG',
   'SCAN_DESIGN_SYSTEM',
   'GET_CORRECTION_MEMORY',
@@ -44,7 +45,7 @@ export const MUTATING_COMMANDS: readonly CommandName[] = [
   // reaches main (it arrives as IMPORT_GRADIENT after the UI renders).
   'IMPORT_GRADIENT',
 ];
-// Not in the set (nothing to seal into an undo step): STATUS, GET_SELECTION,
+// Not in the set (nothing to seal into an undo step): STATUS, GET_SELECTION, GET_CONTEXT,
 // SCAN_DESIGN_SYSTEM, AUDIT_DS, GET_CORRECTION_MEMORY, EXPORT_PNG, HTML_TO_FIGMA, BATCH.
 // AUDIT_DS does move the user's current page (executor-audit.ts walks pages via
 // setCurrentPageAsync and does not restore the original) — page navigation is not

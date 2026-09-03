@@ -4,6 +4,7 @@
   var DEFAULT_IDLE_MS = 3e5;
   var MIN_IDLE_MS = 1e3;
   var CHUNK_LIMIT = 512 * 1024;
+  var CONTEXT_SCHEMA = "context/1";
   var DEFAULT_COWORK_TIMEOUT_SECONDS = 600;
   var COMMAND_TIMEOUTS = {
     HTML_TO_FIGMA: 6e4,
@@ -14,6 +15,13 @@
     SHADER_GRADIENT_PROBE: 9e4,
     IMPORT_GRADIENT: 6e4,
     SCAN_DESIGN_SYSTEM: 3e4,
+    // EXPLICIT, not left to DEFAULT_TIMEOUT_MS: measured live, `getCSSAsync` costs ~7-8ms
+    // per node (100 nodes 831ms, 500 nodes 3.9s; Promise.all batches of 16 save only ~12%
+    // — the cost is per call, not per round-trip). A 64KB budget on a dense subtree can
+    // therefore sit well past 15s, and a default-timeout E_TIMEOUT teaches the agent to
+    // re-issue, paying the whole walk twice. The plugin's own soft deadline (this minus the
+    // CLI's 2s hop buffer) returns a partial WITH counts before the wire timeout can fire.
+    GET_CONTEXT: 45e3,
     AUDIT_DS: 12e4,
     // usage scan traverses EVERY page's instances — heavier than the DS scan
     EXEC_JS: 3e4,
@@ -24,6 +32,7 @@
     // requested budget" shape as batch.ts's own scaled timeout.
     COWORK: DEFAULT_COWORK_TIMEOUT_SECONDS * 1e3 + 5e3
   };
+  var EXEC_JS_MAX_TIMEOUT_MS = 12e4;
   var BROKER_IDLE_SHUTDOWN_MS = 30 * 6e4;
 
   // shared/file-match.ts
@@ -34,10 +43,10 @@
   }
 
   // shared/utf8-byte-length.ts
-  function utf8ByteLength(str2) {
+  function utf8ByteLength(str3) {
     let bytes = 0;
-    for (let i = 0; i < str2.length; i++) {
-      const code = str2.charCodeAt(i);
+    for (let i = 0; i < str3.length; i++) {
+      const code = str3.charCodeAt(i);
       if (code < 128) bytes += 1;
       else if (code < 2048) bytes += 2;
       else if (code >= 55296 && code <= 56319) {
@@ -1862,6 +1871,7 @@
   }
 
   // plugin/src/main/scan-node-utils.ts
+  var r2 = (n) => Math.round(n * 100) / 100;
   function safe(read) {
     try {
       const v = read();
@@ -3018,6 +3028,501 @@
     };
   }
 
+  // plugin/src/main/context-refs.ts
+  function collectRefIds(records) {
+    const variables = [];
+    const styles = [];
+    const components = [];
+    const seenComponent = /* @__PURE__ */ new Set();
+    for (const record of records) {
+      for (const [field, into] of [["bindings", variables], ["styles", styles]]) {
+        const table2 = record[field];
+        if (!table2 || typeof table2 !== "object") continue;
+        for (const id of Object.values(table2)) {
+          if (typeof id === "string" && id !== "" && !into.includes(id)) into.push(id);
+        }
+      }
+      const main = record.mainComponent;
+      if (main && typeof main.key === "string" && main.key !== "" && !seenComponent.has(main.key)) {
+        seenComponent.add(main.key);
+        components.push({ key: main.key, name: typeof main.name === "string" ? main.name : "" });
+      }
+    }
+    return { variables, styles, components };
+  }
+  var str = (value, fallback = "") => typeof value === "string" ? value : fallback;
+  async function resolveContextRefs(records, deps) {
+    const ids = collectRefIds(records);
+    const refs = { variables: {}, styles: {}, components: {} };
+    const collections = /* @__PURE__ */ new Map();
+    for (const id of ids.variables) {
+      try {
+        const variable = await deps.variableById(id);
+        if (!variable) {
+          refs.variables[id] = { unresolved: "no variable answers to this id" };
+          continue;
+        }
+        const collectionId = str(safe(() => variable.variableCollectionId));
+        if (collectionId !== "" && !collections.has(collectionId)) {
+          try {
+            const collection = await deps.collectionById(collectionId);
+            const modes = collection ? safe(() => collection.modes) : void 0;
+            collections.set(collectionId, collection ? { name: str(safe(() => collection.name)), modeCount: Array.isArray(modes) ? modes.length : null } : null);
+          } catch {
+            collections.set(collectionId, null);
+          }
+        }
+        const resolved = collections.get(collectionId) ?? null;
+        refs.variables[id] = {
+          name: str(safe(() => variable.name)),
+          collection: resolved ? resolved.name : null,
+          modeCount: resolved ? resolved.modeCount : null
+        };
+      } catch (err) {
+        refs.variables[id] = { unresolved: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    for (const id of ids.styles) {
+      try {
+        const style = await deps.styleById(id);
+        if (!style) {
+          refs.styles[id] = { unresolved: "no style answers to this id" };
+          continue;
+        }
+        refs.styles[id] = { name: str(safe(() => style.name)), type: str(safe(() => style.type), "UNKNOWN") };
+      } catch (err) {
+        refs.styles[id] = { unresolved: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    for (const { key, name } of ids.components) refs.components[key] = { name };
+    return refs;
+  }
+
+  // plugin/src/main/context-node-record.ts
+  function readStyles(node) {
+    const out = {};
+    for (const [key, field] of [["fill", "fillStyleId"], ["text", "textStyleId"], ["effect", "effectStyleId"]]) {
+      const id = safe(() => node[field]);
+      if (typeof id === "string" && id !== "") out[key] = id;
+    }
+    return out;
+  }
+  function readLayout(node) {
+    const out = {};
+    const num = (field) => {
+      const v = safe(() => node[field]);
+      return typeof v === "number" ? r2(v) : void 0;
+    };
+    const str3 = (field) => {
+      const v = safe(() => node[field]);
+      return typeof v === "string" ? v : void 0;
+    };
+    const layoutMode = str3("layoutMode");
+    if (layoutMode !== void 0) out.layoutMode = layoutMode;
+    const sizingH = str3("layoutSizingHorizontal");
+    if (sizingH !== void 0) out.sizingH = sizingH;
+    const sizingV = str3("layoutSizingVertical");
+    if (sizingV !== void 0) out.sizingV = sizingV;
+    const gap = num("itemSpacing");
+    if (gap !== void 0) out.gap = gap;
+    const padding = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].map(num);
+    if (padding.some((p) => p !== void 0)) out.padding = padding.map((p) => p ?? 0);
+    for (const [key, field] of [["w", "width"], ["h", "height"], ["x", "x"], ["y", "y"]]) {
+      const v = num(field);
+      if (v !== void 0) out[key] = v;
+    }
+    return out;
+  }
+  function childrenOf(node) {
+    const has = safe(() => "children" in node);
+    if (has === false) return { children: [], refused: null };
+    try {
+      const kids = node.children;
+      if (Array.isArray(kids)) return { children: kids, refused: null };
+      return { children: [], refused: has === void 0 ? "children could not be read" : "children is not an array" };
+    } catch (err) {
+      return { children: [], refused: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  function countCollapsed(children) {
+    let descendants = 0;
+    let readErrors = 0;
+    const types = {};
+    const stack = [...children];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      descendants += 1;
+      const type = safe(() => node.type);
+      const key = typeof type === "string" ? type : "UNKNOWN";
+      types[key] = (types[key] ?? 0) + 1;
+      const read = childrenOf(node);
+      if (read.refused !== null) readErrors += 1;
+      for (const child of read.children) stack.push(child);
+    }
+    return { descendants, types, readErrors };
+  }
+  var messageOf4 = (err) => err instanceof Error ? err.message : String(err);
+  function locate(opts) {
+    return opts.parentId === null ? "(unreadable target)" : `(unreadable child ${opts.childIndex ?? 0} of ${opts.parentId})`;
+  }
+  function readIdentity(node) {
+    let readError = null;
+    const note = (message) => {
+      if (readError === null) readError = message;
+    };
+    let id = "";
+    try {
+      const raw = node.id;
+      if (typeof raw === "string" && raw !== "") id = raw;
+      else note("id could not be read");
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    let name = "";
+    try {
+      const raw = node.name;
+      if (typeof raw === "string") name = raw;
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    let type = "";
+    try {
+      const raw = node.type;
+      if (typeof raw === "string" && raw !== "") type = raw;
+      else note("type could not be read");
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    return { id, name, type, readError };
+  }
+  async function buildContextRecord(node, opts) {
+    const identity = readIdentity(node);
+    if (identity.readError !== null) {
+      return {
+        record: {
+          id: identity.id !== "" ? identity.id : locate(opts),
+          readError: identity.readError
+        },
+        children: [],
+        incomplete: true
+      };
+    }
+    const record = {
+      id: identity.id,
+      name: identity.name,
+      type: identity.type,
+      depth: opts.depth,
+      parentId: opts.parentId
+    };
+    const visible = safe(() => node.visible);
+    if (typeof visible === "boolean") record.visible = visible;
+    const layout = readLayout(node);
+    if (Object.keys(layout).length > 0) record.layout = layout;
+    const bindings = readBindings(node);
+    if (Object.keys(bindings).length > 0) record.bindings = bindings;
+    const styles = readStyles(node);
+    if (Object.keys(styles).length > 0) record.styles = styles;
+    let incomplete = false;
+    const type = identity.type;
+    if (type === "TEXT") {
+      const characters = safe(() => node.characters);
+      if (typeof characters === "string") record.characters = characters;
+      if (safe(() => node.fontName) === void 0) {
+        const read2 = safe(() => node.getStyledTextSegments?.(
+          ["characters", "fontName", "fontSize", "fills", "fontWeight", "textDecoration"]
+        ));
+        if (Array.isArray(read2) && read2.length > 0) record.segments = jsonSafe(read2);
+      }
+    }
+    if (type === "INSTANCE") {
+      const getMain = safe(() => node.getMainComponentAsync);
+      if (typeof getMain === "function") {
+        try {
+          const main = await getMain.call(node);
+          const key = main ? safe(() => main.key) : void 0;
+          const name = main ? safe(() => main.name) : void 0;
+          if (typeof key === "string") record.mainComponent = { key, name: typeof name === "string" ? name : "" };
+        } catch (err) {
+          record.mainComponentError = err instanceof Error ? err.message : String(err);
+          incomplete = true;
+        }
+      }
+      const props = safe(() => node.componentProperties);
+      if (props && typeof props === "object") record.componentProperties = jsonSafe(props);
+    }
+    if (type === "COMPONENT" || type === "COMPONENT_SET") {
+      const defs = safe(() => node.componentPropertyDefinitions);
+      if (defs && typeof defs === "object") record.componentPropertyDefinitions = jsonSafe(defs);
+    }
+    const read = childrenOf(node);
+    if (read.refused !== null) {
+      record.childrenError = read.refused;
+      record.childCount = null;
+      incomplete = true;
+    } else {
+      record.childCount = read.children.length;
+    }
+    if (opts.includeCss) {
+      const getCss = safe(() => node.getCSSAsync);
+      if (typeof getCss === "function") {
+        try {
+          record.css = jsonSafe(await getCss.call(node));
+        } catch (err) {
+          record.cssError = err instanceof Error ? err.message : String(err);
+          incomplete = true;
+        }
+      }
+    }
+    const isAsset = safe(() => node.isAsset);
+    if (isAsset === true && read.children.length > 0) {
+      const collapsed = countCollapsed(read.children);
+      record.collapsed = collapsed;
+      if (collapsed.readErrors > 0) incomplete = true;
+      return { record, children: [], incomplete };
+    }
+    return { record, children: read.children, incomplete };
+  }
+
+  // plugin/src/main/context-walk.ts
+  var DEFAULT_CSS_BATCH_SIZE = 16;
+  var FRONTIER_LIMIT = 50;
+  function assertConservation(accounting) {
+    const { visited, emitted, omitted } = accounting;
+    const accounted = emitted + omitted.budget + omitted.deadline;
+    if (visited !== accounted) {
+      throw new Error(
+        `context walk conservation law violated: visited ${visited} !== emitted ${emitted} + budget ${omitted.budget} + deadline ${omitted.deadline}`
+      );
+    }
+  }
+  function childCountOf(node) {
+    const read = childrenOf(node);
+    return read.refused !== null ? null : read.children.length;
+  }
+  function idOf(node, record) {
+    const fromRecord = record?.id;
+    if (typeof fromRecord === "string" && fromRecord !== "") return fromRecord;
+    const raw = safe(() => node.id);
+    return typeof raw === "string" ? raw : "";
+  }
+  async function walkContext(root, deps, opts) {
+    const build = opts.buildRecord ?? buildContextRecord;
+    const batchSize = Math.max(1, opts.cssBatchSize ?? DEFAULT_CSS_BATCH_SIZE);
+    const startedAt = deps.now();
+    const queue = [{ node: root, depth: 0, parentId: null, childIndex: 0 }];
+    const nodes = [];
+    const omitted = { budget: 0, deadline: 0 };
+    const frontier = [];
+    let frontierTotal = 0;
+    let visited = 1;
+    let partial = 0;
+    let estimatedBytes = 0;
+    let cssMs = 0;
+    let batches = 0;
+    let stopped = null;
+    const pushFrontier = (node, reason) => {
+      frontierTotal += 1;
+      if (frontier.length >= FRONTIER_LIMIT) return;
+      frontier.push({
+        id: String(safe(() => node.id) ?? ""),
+        name: String(safe(() => node.name) ?? ""),
+        type: String(safe(() => node.type) ?? "UNKNOWN"),
+        childCount: childCountOf(node),
+        reason
+      });
+    };
+    while (queue.length > 0) {
+      if (deps.now() >= opts.deadlineAt) {
+        stopped = "deadline";
+        break;
+      }
+      const batch = queue.splice(0, batchSize);
+      batches += 1;
+      const batchStartedAt = deps.now();
+      const built = await Promise.all(batch.map((pending) => build(pending.node, {
+        depth: pending.depth,
+        parentId: pending.parentId,
+        childIndex: pending.childIndex,
+        includeCss: opts.includeCss
+        // A reader that refuses ENTIRELY still owes the caller an identified node: a record
+        // silently absent from `nodes[]` with no frontier entry is the hole this walk exists
+        // to make impossible.
+      }).catch((err) => ({
+        record: { id: idOf(pending.node), readError: messageOf4(err) },
+        children: [],
+        incomplete: true
+      }))));
+      if (opts.includeCss) cssMs += deps.now() - batchStartedAt;
+      for (let i = 0; i < built.length; i += 1) {
+        let result = built[i];
+        const pending = batch[i];
+        let bytes;
+        try {
+          bytes = utf8ByteLength(JSON.stringify(result.record));
+        } catch (err) {
+          result = {
+            record: { id: idOf(pending.node, result.record), readError: messageOf4(err) },
+            children: [],
+            incomplete: true
+          };
+          bytes = utf8ByteLength(JSON.stringify(result.record));
+        }
+        if (nodes.length > 0 && estimatedBytes + bytes > opts.budgetBytes) {
+          for (let j = i; j < batch.length; j += 1) {
+            pushFrontier(batch[j].node, "budget");
+            omitted.budget += 1;
+          }
+          for (const rest of queue) {
+            pushFrontier(rest.node, "budget");
+            omitted.budget += 1;
+          }
+          queue.length = 0;
+          stopped = "budget";
+          break;
+        }
+        nodes.push(result.record);
+        estimatedBytes += bytes;
+        if (result.incomplete) partial += 1;
+        if (result.children.length > 0) {
+          if (pending.depth + 1 <= opts.maxDepth) {
+            const parentId = String(result.record.id ?? "");
+            result.children.forEach((child, childIndex) => {
+              queue.push({ node: child, depth: pending.depth + 1, parentId, childIndex });
+              visited += 1;
+            });
+          } else {
+            pushFrontier(pending.node, "depth");
+          }
+        }
+      }
+      if (stopped !== null) break;
+      await deps.hop();
+    }
+    if (stopped === "deadline") {
+      for (const rest of queue) {
+        pushFrontier(rest.node, "deadline");
+        omitted.deadline += 1;
+      }
+      queue.length = 0;
+    }
+    const accounting = {
+      requestedBytes: opts.budgetBytes,
+      estimatedBytes,
+      visited,
+      emitted: nodes.length,
+      omitted,
+      partial,
+      frontier,
+      frontierTotal,
+      complete: frontierTotal === 0 && omitted.budget === 0 && omitted.deadline === 0 && partial === 0,
+      walkMs: deps.now() - startedAt,
+      cssMs,
+      batches
+    };
+    assertConservation(accounting);
+    return { nodes, accounting };
+  }
+
+  // plugin/src/main/executor-context.ts
+  var DEFAULT_CONTEXT_BUDGET_BYTES = 64 * 1024;
+  var DEFAULT_CONTEXT_DEADLINE_MS = 43e3;
+  function figmaContextEnv(changeCount) {
+    return {
+      nodeById: async (id) => await figma.getNodeByIdAsync(id),
+      // The one cast at the sandbox boundary (the standing pattern for a reader that must run
+      // over both a real SceneNode and a fixture): every property access past this point goes
+      // through `safe()`, so a node that refuses a read costs one field, never the walk.
+      selection: () => figma.currentPage.selection,
+      refs: {
+        variableById: (id) => figma.variables.getVariableByIdAsync(id),
+        collectionById: (id) => figma.variables.getVariableCollectionByIdAsync(id),
+        styleById: (id) => figma.getStyleByIdAsync(id)
+      },
+      now: () => Date.now(),
+      hop: () => new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      }),
+      changeCount
+    };
+  }
+  function bounded(params, key, fallback, max) {
+    const raw = params[key];
+    if (raw === void 0) return fallback;
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+      throw withCode(new Error(`${key} must be a positive number, got ${JSON.stringify(raw)}`), "E_INVALID_ARGS");
+    }
+    if (raw > max) {
+      throw withCode(new Error(`${key} ${raw} is past the ${max} maximum`), "E_INVALID_ARGS");
+    }
+    return raw;
+  }
+  function maxDepth(params) {
+    const raw = params.depth;
+    if (raw === void 0) return Number.POSITIVE_INFINITY;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+      throw withCode(new Error(`depth must be a non-negative integer, got ${JSON.stringify(raw)}`), "E_INVALID_ARGS");
+    }
+    return raw;
+  }
+  function refuseNonSubtree(node) {
+    if (safe(() => node.type) === "DOCUMENT") {
+      throw withCode(
+        new Error("a document is not a subtree \u2014 pass a page or a node id"),
+        "E_INVALID_ARGS"
+      );
+    }
+  }
+  async function resolveTarget(params, env) {
+    const nodeId = params.nodeId;
+    if (typeof nodeId === "string" && nodeId !== "") {
+      const found = await env.nodeById(nodeId);
+      if (!found) throw withCode(new Error(`no node answers to "${nodeId}"`), "E_INVALID_ARGS");
+      refuseNonSubtree(found);
+      return found;
+    }
+    const selected = env.selection()[0];
+    if (!selected) {
+      throw withCode(new Error("no target: pass a node id, or select one node in Figma"), "E_INVALID_ARGS");
+    }
+    refuseNonSubtree(selected);
+    return selected;
+  }
+  async function opGetContext(params, env) {
+    const budgetBytes = bounded(params, "budgetBytes", DEFAULT_CONTEXT_BUDGET_BYTES, CHUNK_LIMIT);
+    const deadlineMs = bounded(params, "deadlineMs", DEFAULT_CONTEXT_DEADLINE_MS, EXEC_JS_MAX_TIMEOUT_MS);
+    const depth = maxDepth(params);
+    const includeCss = params.noCss !== true;
+    const node = await resolveTarget(params, env);
+    const changesBefore = env.changeCount();
+    const walk2 = await walkContext(node, { now: env.now, hop: env.hop }, {
+      budgetBytes,
+      maxDepth: depth,
+      deadlineAt: env.now() + deadlineMs,
+      includeCss
+    });
+    const refsStartedAt = env.now();
+    const refs = await resolveContextRefs(walk2.nodes, env.refs);
+    const refsMs = env.now() - refsStartedAt;
+    const changeBatchesDuringWalk = Math.max(0, env.changeCount() - changesBefore);
+    const payload = { nodes: walk2.nodes, refs };
+    return {
+      schema: CONTEXT_SCHEMA,
+      nodeId: String(walk2.nodes[0]?.id ?? ""),
+      ...payload,
+      budget: {
+        ...walk2.accounting,
+        // `--budget` bounds the node RECORDS (`estimatedBytes`), measured in the plugin
+        // before the wire. The ref tables are resolved AFTER the walk and are NOT budgeted —
+        // so they are measured and reported on their own rather than folded into a total the
+        // caller would read as bounded. `finalBytes` is the whole payload as it goes out.
+        refsBytes: utf8ByteLength(JSON.stringify(refs)),
+        finalBytes: utf8ByteLength(JSON.stringify(payload)),
+        refsMs,
+        changeBatchesDuringWalk
+      }
+    };
+  }
+
   // plugin/src/main/executor-ops.ts
   var PLUGIN_VERSION = "0.1.0";
   var LAYOUT_MODE_MAP = {
@@ -4068,12 +4573,12 @@
     const categoryMap = new Map(categories2.map((c) => [c.id, c.name]));
     const nodeAnnotations = (node.annotations ?? []).map((a) => toOutput(a, categoryMap));
     const includeChildren = opts.includeChildren ?? false;
-    const maxDepth = opts.depth ?? 1;
+    const maxDepth2 = opts.depth ?? 1;
     const childResults = [];
     let skippedChildren = 0;
     if (includeChildren && "children" in node) {
       const walk2 = (parent, depth) => {
-        if (depth > maxDepth) return;
+        if (depth > maxDepth2) return;
         for (const child of parent.children) {
           try {
             const anns = "annotations" in child ? (child.annotations ?? []).map((a) => toOutput(a, categoryMap)) : [];
@@ -5963,7 +6468,7 @@
     });
     if (refusal) throw withCode(new Error(refusal), "E_WRONG_EDITOR");
   }
-  function str(params, ...keys) {
+  function str2(params, ...keys) {
     for (const key of keys) {
       const value = params[key];
       if (typeof value === "string" && value.trim() !== "") return value.trim();
@@ -6009,19 +6514,19 @@
   }
   async function opConnect(params) {
     requireDesignFile2("drawing a connector");
-    const fromName = str(params, "fromName");
-    const toName = str(params, "toName");
-    const pageName = str(params, "page");
-    let fromId = str(params, "from", "source");
-    let toId = str(params, "to", "target");
+    const fromName = str2(params, "fromName");
+    const toName = str2(params, "toName");
+    const pageName = str2(params, "page");
+    let fromId = str2(params, "from", "source");
+    let toId = str2(params, "to", "target");
     if (fromName) fromId = (await resolveByName(fromName, pageName, "source")).id;
     if (toName) toId = (await resolveByName(toName, pageName, "target")).id;
     if (!fromId || !toId) throw withCode(new Error("CONNECT requires params.from/params.to (ids) or params.fromName/params.toName"), "E_INVALID_ARGS");
     if (fromId === toId) throw withCode(new Error("CONNECT needs two different nodes"), "E_INVALID_ARGS");
-    const intent = str(params, "intent") === "annotation" ? "annotation" : "flow";
-    const label = str(params, "label");
-    const flowName = str(params, "flow", "flowName");
-    const transitionId = str(params, "transition", "transitionId");
+    const intent = str2(params, "intent") === "annotation" ? "annotation" : "flow";
+    const label = str2(params, "label");
+    const flowName = str2(params, "flow", "flowName");
+    const transitionId = str2(params, "transition", "transitionId");
     const clearance = typeof params.clearance === "number" ? params.clearance : void 0;
     const source = await resolveEndpoint2(fromId, "source");
     const target = await resolveEndpoint2(toId, "target");
@@ -6062,9 +6567,9 @@
   }
   async function opDisconnect(params) {
     requireDesignFile2("removing a connector");
-    const id = str(params, "id", "connectionId");
-    const fromId = str(params, "from");
-    const toId = str(params, "to");
+    const id = str2(params, "id", "connectionId");
+    const fromId = str2(params, "from");
+    const toId = str2(params, "to");
     const record = id ? findConnection(id) : fromId && toId ? findConnectionByEndpoints(fromId, toId) : null;
     if (!record) throw withCode(new Error("DISCONNECT requires params.id, or both params.from and params.to"), "E_INVALID_ARGS");
     const vector = await existingNode(record.vectorNodeId, "VECTOR");
@@ -6077,8 +6582,8 @@
   }
   async function opReroute(params) {
     requireDesignFile2("rerouting connectors");
-    const id = str(params, "id", "connectionId");
-    const flowName = str(params, "flow", "flowName");
+    const id = str2(params, "id", "connectionId");
+    const flowName = str2(params, "flow", "flowName");
     const scoped = id ? [id] : flowName ? listConnections().filter((r) => r.flow?.name === flowName).map((r) => r.id) : void 0;
     const outcomes = await rerouteConnections(scoped);
     const counts = { redrawn: 0, unchanged: 0, orphan: 0 };
@@ -6394,6 +6899,12 @@
         );
       case "GET_SELECTION":
         return opGetSelection(params);
+      // The change counter handed in here is the SAME signal the read-only guard keeps
+      // (one bump per documentchange batch that lands while exactly one dispatch is
+      // active). The walk snapshots it and diffs it, so a subtree read across two document
+      // states reports `changeBatchesDuringWalk` instead of presenting itself as one state.
+      case "GET_CONTEXT":
+        return opGetContext(params, figmaContextEnv(() => snapshotChangeEvents(readOnlyGuard)));
       case "SCAN_DESIGN_SYSTEM":
         return serializeDesignSystem();
       case "AUDIT_DS":
