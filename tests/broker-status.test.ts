@@ -211,3 +211,47 @@ describe('noPluginMessage', () => {
     expect(msg).not.toContain('Design system');
   });
 });
+
+// Broker-observed session coverage — the two facts no plugin can report about itself
+// (session-tallies.ts). Same present-only-when-meaningful contract as
+// senderMismatchCount: a clean instance's row is byte-identical to before the fields
+// existed, so `figma-agent status` can only ever print a row for loss that happened.
+describe('buildBrokerHelloData — the per-instance session tallies', () => {
+  it('an instance with no tally keeps its row unchanged', () => {
+    const { reg, clock } = seed();
+    reg.register(sock(), { instanceId: 'a', fileName: 'VSF - PCP' });
+    const row = (buildBrokerHelloData(reg, META, null, clock, undefined, undefined, () => null)
+      .plugins as Array<Record<string, unknown>>)[0];
+    expect('relayDroppedFrames' in row).toBe(false);
+    expect('replayedBatches' in row).toBe(false);
+  });
+
+  it('a zero tally is still no row — a measured zero and an absent count read the same to an agent', () => {
+    const { reg, clock } = seed();
+    reg.register(sock(), { instanceId: 'a', fileName: 'VSF - PCP' });
+    const row = (buildBrokerHelloData(
+      reg, META, null, clock, undefined, undefined, () => ({ relayDroppedFrames: 0, replayedBatches: 0 }),
+    ).plugins as Array<Record<string, unknown>>)[0];
+    expect('relayDroppedFrames' in row).toBe(false);
+    expect('replayedBatches' in row).toBe(false);
+  });
+
+  it('a real loss rides the row it belongs to, looked up by THIS instance id', () => {
+    const { reg, clock } = seed();
+    reg.register(sock(), { instanceId: 'a', fileName: 'VSF - PCP' });
+    reg.register(sock(), { instanceId: 'b', fileName: 'Design system' });
+    const rows = buildBrokerHelloData(
+      reg, META, null, clock, undefined, undefined,
+      (id) => (id === 'a' ? { relayDroppedFrames: 12, replayedBatches: 3 } : null),
+    ).plugins as Array<Record<string, unknown>>;
+    expect(rows[0]).toMatchObject({ instanceId: 'a', relayDroppedFrames: 12, replayedBatches: 3 });
+    expect('relayDroppedFrames' in rows[1]).toBe(false);
+  });
+
+  it('a caller that knows nothing about tallies gets today\'s rows, unchanged', () => {
+    const { reg, clock } = seed();
+    reg.register(sock(), { instanceId: 'a', fileName: 'VSF - PCP' });
+    const row = (buildBrokerHelloData(reg, META, null, clock).plugins as Array<Record<string, unknown>>)[0];
+    expect('relayDroppedFrames' in row).toBe(false);
+  });
+});

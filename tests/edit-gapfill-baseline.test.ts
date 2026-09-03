@@ -110,6 +110,34 @@ describe('runGapfillDiff — no baseline at all', () => {
     expect(stats.baselineBytes).toBeGreaterThan(0);
   });
 
+  it('marks the session a FIRST RUN — a baseline now exists, but the window before it was never diffed', async () => {
+    // The write below makes `baselineWrittenAt` non-null, which on its own reads exactly
+    // like a healthy diffing session. The flag is what keeps the closed window before this
+    // boot from disappearing into that.
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const stats = createGapfillStats();
+
+    await runGapfillDiff(pages, createMemoryBaselineStore(), stats);
+
+    expect(stats.baselineFirstRun).toBe(true);
+    expect(stats.baselineWrittenAt).not.toBeNull();
+    expect(toGapfillStatus(stats).baselineFirstRun).toBe(true);
+  });
+
+  it('a session that DID diff a prior baseline is not a first run, and says nothing about one', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(pages, store, createGapfillStats()); // the first session
+
+    const stats = createGapfillStats();
+    await runGapfillDiff(pages, store, stats);
+
+    expect(stats.baselineFirstRun).toBe(false);
+    expect('baselineFirstRun' in toGapfillStatus(stats)).toBe(false);
+  });
+
   it('an unparseable stored value is treated as MISSING, never as an empty baseline (which would fabricate a whole-file create storm)', async () => {
     const pages = [fakePage('p1', 'Screens', [fakeNode('a'), fakeNode('b')])];
     installFigma({ pages });

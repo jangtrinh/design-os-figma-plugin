@@ -245,6 +245,30 @@ describe('real designer edits are untouched by the filter', () => {
     expect(log.componentChanges).toEqual([1]);
   });
 
+  // Which frame carries EVERY batch matters outside this file: the broker counts a REPLAYED
+  // capture batch once, on one of the two frames a batch travels as. DOC_CHANGE is
+  // component-scoped (`raw` is pushed only when `resolveComponentIdentity` resolves), while
+  // the widened `edits` push is unconditional — so EDIT_FEED is the superset and a
+  // DOC_CHANGE never travels without one.
+  it('a plain node edit posts EDIT_FEED and NO DOC_CHANGE — DOC_CHANGE is component-scoped', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({ documentChanges: [change(text('t1'), 'PROPERTY_CHANGE', ['characters'])] } as any);
+
+    expect(feed(log)).toHaveLength(1);
+    expect(log.posted.filter((m) => m.type === 'DOC_CHANGE')).toHaveLength(0);
+  });
+
+  it('a component edit posts BOTH frames — a DOC_CHANGE batch always has an EDIT_FEED beside it', () => {
+    const { capture, log } = harness();
+    const set: FakeNode = { id: 'cs2', name: 'Chip', type: 'COMPONENT_SET', parent: PAGE };
+    const variant: FakeNode = { id: 'c2', name: 'State=Hover', type: 'COMPONENT', parent: set };
+
+    capture.onDocumentChange({ documentChanges: [change(variant, 'PROPERTY_CHANGE', ['fills'])] } as any);
+
+    expect(log.posted.map((m) => m.type).sort()).toEqual(['DOC_CHANGE', 'EDIT_FEED']);
+  });
+
   it('a STYLE_* change is filtered before any node dereference (its payload has no node)', () => {
     const { capture, log } = harness();
 

@@ -14,6 +14,8 @@ import { waitForPlugin } from '../transport/plugin-wait.ts';
 import { buildDeepLink, type DeepLinkEntry } from '../transport/figma-deep-link.ts';
 import { fileIdentity, readBindCache, readBindMarker } from '../transport/project-bind.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
+import { mergeCoverage, readSessionCoverage } from '../../../shared/session-coverage.ts';
+import { brokerCoverageRows } from '../transport/broker-coverage-rows.ts';
 
 // auto-connect slice 2 — `--wait`'s own default, in SECONDS (not ms — every other
 // `--timeout` in this CLI is ms; this one follows the usecases.md gherkin's own
@@ -162,9 +164,33 @@ export async function run(args: CommandArgs): Promise<unknown> {
     }
   }
 
+  // The session coverage statement: the plugin's own reading of its session (carried on
+  // the STATUS reply it just answered) merged with the rows only the broker can see. It
+  // OVERRIDES the raw block spread in from `scene` below — the merged one is the same
+  // statement plus what the plugin had no way of knowing — and it is ALWAYS present, so
+  // an agent told to read `coverage` first never has to tell "nothing to report" apart
+  // from "this build could not say" (that one is `complete: null`).
+  //
+  // The rows are attributed by FILE, not by instance: the STATUS round-trip's reply
+  // carries no instance id, and two windows open on one file write to the same per-file
+  // feed anyway. Everything else connected is another file whose edits are not in view.
+  const fileRows = activePlugin === null ? [] : plugins.filter((p) => p.fileName === activePlugin);
+  // Other FILES, not other sessions: two windows open on one other file are one file whose
+  // edits are missing from this view. Identity falls back the same way the rest of this CLI
+  // does (name, then key) so a nameless connection still counts as something.
+  const otherFiles = new Set(
+    all.filter((p) => p.fileName !== activePlugin).map((p) => p.fileName ?? p.fileKey ?? '?'),
+  ).size;
+  const coverage = mergeCoverage(
+    readSessionCoverage((scene ?? {}).coverage),
+    // `--file` filters `plugins[]` and moves the full list to `pluginsAll[]` — a row must
+    // point at the list that actually holds the rows its number came from.
+    brokerCoverageRows({ fileRows, otherFiles, pluginsField: wantedFile ? 'pluginsAll' : 'plugins' }),
+  );
+
   // Legacy compat shim: `plugin` mirrors the ACTIVE plugin so design-os `_status_text`
   // and older consumers (which read `plugin.connected`) keep working unchanged.
-  const plugin = { connected, state, lastHeartbeatAge, ...(scene ?? {}) };
+  const plugin = { connected, state, lastHeartbeatAge, ...(scene ?? {}), coverage };
 
   // Keep the full list available when `--file` filtered `plugins[]`, so the user can
   // still see what IS connected even though it doesn't match what they asked about.
