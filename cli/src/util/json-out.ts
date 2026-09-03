@@ -40,6 +40,7 @@ export function printErrorJson(err: unknown, fileContext?: FileContext): never {
           // this CLI) can poll `figma-agent job <id>` without re-parsing the message.
           ...(err.jobId !== undefined ? { jobId: err.jobId } : {}),
           ...(err.recovery !== undefined ? { recovery: err.recovery } : {}),
+          ...(err.candidates !== undefined ? { candidates: err.candidates } : {}),
         }
       : { code: 'E_INTERNAL', message: err instanceof Error ? err.message : String(err) };
   const payload = fileContext ? { error, fileContext } : { error };

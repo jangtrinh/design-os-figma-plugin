@@ -30,17 +30,27 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 
 1. `figma-agent status --peek` — is anything alive, and does it match this CLI build.
 2. `figma-agent status` — full detail on the active connection (spawns a broker if idle).
-3. Read before you write: `get-selection`, `inspect`, `scan-design-system`.
+3. Read before you write: `get-selection`, `inspect`, `scan-design-system`. Resolve a
+   component by name with `resolve-component --name "<n>"` — it returns exactly one node
+   or refuses (E_AMBIGUOUS lists the duplicates; pass `--page` or use an id).
 4. Mutate with the typed commands (`create-frame`, `set-text`, `clone-traits`, ...)
-   before falling back to `exec-js` for anything they don't cover.
-5. `changes`/`errors`/`contention` read durable local logs — they work even with the
-   plugin closed, useful for catching up after a session gap.
+   before falling back to `exec-js` for anything they don't cover. Every mutating
+   command first waits (up to 60s) for the plugin to register, so the first call after
+   an idle flap no longer needs a `status --wait &&` prefix — `--no-wait` opts out.
+5. Verify a screen with `export-png --node <id> --out shot.png --assert verify.js` — the
+   structural assert runs read-only first and the PNG is written only when it passes.
+6. `changes`/`errors`/`contention` read durable local logs — they work even with the
+   plugin closed, useful for catching up after a session gap. `changes --owner-only --png
+   <dir>` also exports an after PNG per owner-edited node (before only when a prior
+   export predates the edit) so you can look instead of re-exporting.
 
 ## Error hints
 
 - `E_NO_BROKER` — no broker answered; the plugin almost certainly isn't open. Peek first
   next time, don't assume.
-- `E_NO_PLUGIN` — the broker is alive but no Figma file is connected right now.
+- `E_NO_PLUGIN` — the broker is alive but no Figma file is connected right now. A
+  mutating command already waited its 60s bound for one before saying so — retrying at
+  once will not help; the human must open the plugin panel in the target file.
 - `E_WRONG_FILE` — a command named `--file`/`--instance` and the plugin currently
   answering doesn't match; open the right file, or drop the filter to see what IS live.
 - `E_TIMEOUT` (with a `jobId`) — the command is still running as a background job; poll
@@ -58,6 +68,7 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 - `inspect` — [nodeId|--node id] [--out file.png --scale 1 --timeout ms]
 - `job` — <jobId> [--wait] [--wait-timeout 60000] | --list [--file name] | <jobId> --cancel (queued only) | <jobId> --force-release [--force]   poll/wait/cancel/list a job the CLI stopped waiting for (backlog 1.1+2.6+4.3) — --force-release refuses a HEALTHY still-running job unless --force is also passed — --force overrides the guard and discards its result, unverified; a watchdog-wedged job still unwedges without --force. An outcome-unknown job requires canvas inspection, then a bare --force-release; never retry it automatically.
 - `scan-design-system` — Components/variables/styles registry [--out file.json --timeout ms]
+- `resolve-component` — --name "<exact name>" [--page <page name>] [--timeout ms]   exactly ONE component or component set {id,key,name,type,page} for a name — read-only (rides scan-design-system, a safe read that bypasses the mutation FIFO). Name match is exact after trim, case-insensitive, never a substring. Duplicates: --page filters first; without it a tie is broken only when exactly one hit sits on a design-system-looking page (/design.?system|\bds\b|component|library/i) and the reply says preferred: "design-system-page". Anything still ambiguous exits 1 with E_AMBIGUOUS listing every candidate; no match exits 1 with E_NOT_FOUND. `matched` reports how many live nodes carried the name.
 - `scan-node` — [SPIKE] Reverse-walk one node → FigmaExportNode spec <nodeId> [--timeout ms]
 - `mirror-verify` — Prove one node round-trips: scan → rebuild → scan → diff <nodeId> [--parent id --keep --timeout ms]
 - `scan-conventions` — Convention-DNA walk over sections → usage-dna.json [<sectionId...> --out file.json --budget 14000 --timeout ms]
@@ -78,13 +89,13 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 - `set-text` — --node id --chars "..." [--font f --size n --weight n]
 - `clone-traits` — --source id --target id --traits layout,fills-variables,typography,spacing,text
 - `sync-corrections` — [--dir project] sync Figma edge memory with design/memory
-- `export-png` — --node <id|selection> --out file.png [--scale 2]
+- `export-png` — --node <id|selection> --out file.png [--scale 2] [--assert <script.js> [--assert-timeout ms] [--no-lint] [--strict]]   --assert runs the script FIRST as a plugin-enforced read-only exec-js (same preflight lint as exec-js; a script that writes is refused by the plugin with E_READONLY_VIOLATION — the write is sealed into its own undo step, never applied silently) and exports only when it passes: a truthy return or {ok:true}. A falsy return or {ok:false,...} exits 1 with E_ASSERT_FAILED quoting the result; a throw keeps its own code. No PNG is written on any failure, so a file on disk always means the structural check held (craft gate 9: structure + PNG in one command). The reply carries assert:{script,result}.
 - `html-to-figma` — --html <file|-> [--width 1280 --x --y --parent id --replace id]
 - `shader-gradient` — Bake an animated ShaderGradient field onto a node as an image fill [--node <id|selection>] [--preset <slug> | --url "<customize url>" | --set k=v,k2=v2] [--w 1200 --h 800 --scale 2] [--static] [--timeout ms] [--list]   --preset takes a ledger slug (or upstream's camelCase key); --url takes a shadergradient.co/customize link; --set overrides either. --static freezes the field instead of capturing it mid-animation. --list prints the preset roster and --self-test renders a tiny throwaway field to report whether this environment can bake at all; both are read-only and make no canvas change. The resolved config is stored on the node so a later bake can reproduce or resize it.
-- `exec-js` — <file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] — exec-js lints scripts before dispatch; --no-lint explicitly bypasses that local preflight. --undo-group brackets the script in ONE undo step and reverts it on error; the script must not call figma.commitUndo/triggerUndo itself, and a timeout cannot stop a running script (the plugin has no cancellation). While it runs, figma.currentPage carries one extra invisible child (the undo sentinel) — a script that enumerates or counts the page's children will see it. `console` and `ui` are injected — a script cannot declare its own.
+- `exec-js` — <file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] [--strict] — exec-js lints scripts before dispatch; --no-lint explicitly bypasses that local preflight. Hard findings (sync dynamic-page getters, import declarations) refuse; warnings go to stderr — the sync mainComponent getter, findAll without a visible filter, componentProperties on a COMPONENT_SET, and the older heuristics — unless --strict, which refuses on any warning too. --undo-group brackets the script in ONE undo step and reverts it on error; the script must not call figma.commitUndo/triggerUndo itself, and a timeout cannot stop a running script (the plugin has no cancellation). While it runs, figma.currentPage carries one extra invisible child (the undo sentinel) — a script that enumerates or counts the page's children will see it. `console` and `ui` are injected — a script cannot declare its own.
 - `capture` — <url> [--out dir --headless --channel chrome --width 1440 --timeout ms --carousel-window ms]
 - `batch` — <file.json> [--stop-on-error]
-- `changes` — [--since ts|iso --owner-only --actor owner|agent|ambiguous --file name|slug --limit 50 --page name]  read the owner-edit feed (wave 4.4) — pure fs, works even with the plugin closed; --owner-only is sugar for --actor owner
+- `changes` — [--since ts|iso --owner-only --actor owner|agent|ambiguous --file name|slug --limit 50 --page name]  [--png <dir> [--scale 2]]  read the owner-edit feed (wave 4.4) — pure fs, works even with the plugin closed; --owner-only is sugar for --actor owner. --png (needs a live plugin) exports a read-only AFTER PNG per unique node in the listed window to <dir>/<node-id>.after.png and reports every path under png:{dir,exported,skipped}; a BEFORE exists only when a prior export of that node in <dir> predates the earliest edit (then it is kept as <node-id>.before.png, beforeSource:"prior-export") — otherwise before:null with the reason, never a guess. Nodes deleted in the window and nodes the plugin cannot find are listed in skipped with a reason; --limit bounds the export count the same way it bounds the listing. A transport failure (E_NO_PLUGIN/E_NO_BROKER/E_TIMEOUT/E_VERSION_MISMATCH) stops the export at that node: the same JSON is still printed with everything that landed plus png.error:{code,message,atNodeId}, and the command exits 1.
 - `errors` — [--since ts|iso --file name --limit 50]  read the broker's error log (backlog 4.6) — full untruncated message + cmd/activity/code/fileName, for an agent to read-and-fix; --file filters by the entry's own fileName
 - `contention` — [--file name --since days]  read the durable per-file/per-day queued-time counter — total ms a mutation waited in the FIFO before dispatch, plus jobCount, per UTC day; --file filters by fileSlug, --since limits to the last N days; pure fs, works with the plugin closed
 - `install-skill` — [--folder ~/.claude/skills] [--with-craft|--no-craft] [--yes]   write this emitted SKILL.md to a folder Claude Code reads skills from; prompts before overwriting an older installed version and before bundling skills/es-figma-craft — a non-interactive run needs --with-craft/--no-craft or it skips craft and says so

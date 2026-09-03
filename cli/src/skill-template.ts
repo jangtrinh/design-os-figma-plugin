@@ -37,17 +37,27 @@ export const SKILL_WORKFLOW = `## Typical workflow
 
 1. \`figma-agent status --peek\` — is anything alive, and does it match this CLI build.
 2. \`figma-agent status\` — full detail on the active connection (spawns a broker if idle).
-3. Read before you write: \`get-selection\`, \`inspect\`, \`scan-design-system\`.
+3. Read before you write: \`get-selection\`, \`inspect\`, \`scan-design-system\`. Resolve a
+   component by name with \`resolve-component --name "<n>"\` — it returns exactly one node
+   or refuses (E_AMBIGUOUS lists the duplicates; pass \`--page\` or use an id).
 4. Mutate with the typed commands (\`create-frame\`, \`set-text\`, \`clone-traits\`, ...)
-   before falling back to \`exec-js\` for anything they don't cover.
-5. \`changes\`/\`errors\`/\`contention\` read durable local logs — they work even with the
-   plugin closed, useful for catching up after a session gap.`;
+   before falling back to \`exec-js\` for anything they don't cover. Every mutating
+   command first waits (up to 60s) for the plugin to register, so the first call after
+   an idle flap no longer needs a \`status --wait &&\` prefix — \`--no-wait\` opts out.
+5. Verify a screen with \`export-png --node <id> --out shot.png --assert verify.js\` — the
+   structural assert runs read-only first and the PNG is written only when it passes.
+6. \`changes\`/\`errors\`/\`contention\` read durable local logs — they work even with the
+   plugin closed, useful for catching up after a session gap. \`changes --owner-only --png
+   <dir>\` also exports an after PNG per owner-edited node (before only when a prior
+   export predates the edit) so you can look instead of re-exporting.`;
 
 export const SKILL_ERROR_HINTS = `## Error hints
 
 - \`E_NO_BROKER\` — no broker answered; the plugin almost certainly isn't open. Peek first
   next time, don't assume.
-- \`E_NO_PLUGIN\` — the broker is alive but no Figma file is connected right now.
+- \`E_NO_PLUGIN\` — the broker is alive but no Figma file is connected right now. A
+  mutating command already waited its 60s bound for one before saying so — retrying at
+  once will not help; the human must open the plugin panel in the target file.
 - \`E_WRONG_FILE\` — a command named \`--file\`/\`--instance\` and the plugin currently
   answering doesn't match; open the right file, or drop the filter to see what IS live.
 - \`E_TIMEOUT\` (with a \`jobId\`) — the command is still running as a background job; poll

@@ -56,3 +56,15 @@ Model-agnostic, project-agnostic. Read as **gates you must pass**, not advice to
 - Rate limits follow the FILE's home team, not your seat.
 - Mid-build directives to a running agent can silently drop — deliver directives as separate tasks when the agent is idle, or require an explicit ACK in the final report; no ACK = treat as dropped and verify by evidence.
 - Multi-screen work = a plans/ checklist driven step-by-step with verification per step; batch conversions run sequentially with per-screen judgment.
+
+## 9. Structure is the gate; the PNG is the arbiter — never one without the other
+
+- A screen passes only when BOTH hold: structural asserts (shell instance lineage, slot swapped to the intended master, exactly-1-active per nav level, zero instance style overrides, table cells = column-first instances) AND a fresh PNG read by eye.
+- "Looks right" with a detached frame underneath is a future defect for every screen that clones it; a perfect structure that clips 100px is a defect the owner sees first. Ship neither.
+- Put the structural checks in ONE reusable audit script per file (see quality-gate-system.md) and run it over the whole section after every batch — per-screen spot checks miss the leaked template state.
+
+## 10. Owner rulings are data with a sample size
+
+- Record each ruling with its date, the artefact it was made on, and `n=1`. A ruling on one drawer becomes a conditional row in the decision tree, not a rewritten rule; two consistent rulings promote it.
+- When the owner's mockup and the DS disagree: the mockup wins for structure and order, the DS wins for pixels and components; surplus goes to an archive section at 50 % opacity, never to the bin. See section-presentation.md §5.
+

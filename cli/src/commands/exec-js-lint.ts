@@ -15,6 +15,11 @@ interface ExecJsLintRule {
   readonly message: string;
   readonly fix: string;
   readonly unless?: RegExp;
+  /** A second signature that must ALSO be present somewhere in the RAW source for the
+   *  rule to fire — for a property that is only wrong on one receiver type. Matched
+   *  unmasked on purpose: a node type is named inside a string literal
+   *  (`n.type === 'COMPONENT_SET'`), which the masker blanks out. */
+  readonly requires?: RegExp;
 }
 
 // The order is part of the CLI contract: one pass reports deterministic failures first,
@@ -87,6 +92,25 @@ export const EXEC_JS_LINT_RULES: readonly ExecJsLintRule[] = [
     unless: /\bfigma\s*\.\s*loadFontAsync\s*\(/,
     message: 'font assignment without a visible loadFontAsync may throw',
     fix: 'await figma.loadFontAsync(font) before assigning the font',
+  },
+  // Craft footguns (es-figma-craft, plugin-api-gotchas): a hidden template layer or an
+  // archived duplicate is exactly what a bare findAll sweeps up, and a COMPONENT_SET has
+  // no componentProperties (the getter throws) — its API is componentPropertyDefinitions.
+  // `\.findAll\s*\(` deliberately does not match findAllWithCriteria (no predicate to
+  // forget a visibility check in) or findOne.
+  {
+    id: 'find-all-without-visible-filter', severity: 'warning',
+    pattern: /\.\s*findAll\s*\(/,
+    unless: /\bvisible\b/,
+    message: 'findAll without a visible filter also returns hidden nodes (template layers, archived copies)',
+    fix: 'filter on n.visible in the predicate, or .filter(n => n.visible) the result',
+  },
+  {
+    id: 'component-properties-on-set', severity: 'warning',
+    pattern: /\.\s*componentProperties\b/,
+    requires: /\bCOMPONENT_SET\b/,
+    message: 'componentProperties throws on a COMPONENT_SET; it exists on instances only',
+    fix: 'read set.componentPropertyDefinitions on the set (componentProperties on an INSTANCE)',
   },
 ] as const;
 
@@ -219,6 +243,7 @@ export function lintExecJs(source: string): ExecJsLintFinding[] {
   for (const rule of EXEC_JS_LINT_RULES) {
     const index = firstIndex(rule.pattern, masked);
     if (index < 0 || (rule.unless && firstIndex(rule.unless, masked) >= 0)) continue;
+    if (rule.requires && firstIndex(rule.requires, source) < 0) continue;
     findings.push({
       id: rule.id,
       severity: rule.severity,

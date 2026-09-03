@@ -68,6 +68,19 @@ export const COMMANDS: CommandCatalogEntry[] = [
     description: 'Components/variables/styles registry [--out file.json --timeout ms]',
   },
   {
+    name: 'resolve-component',
+    description:
+      '--name "<exact name>" [--page <page name>] [--timeout ms]   exactly ONE component or '
+      + 'component set {id,key,name,type,page} for a name — read-only (rides scan-design-system, '
+      + 'a safe read that bypasses the mutation FIFO). Name match is exact after trim, '
+      + 'case-insensitive, never a substring. Duplicates: --page filters first; without it a tie '
+      + 'is broken only when exactly one hit sits on a design-system-looking page '
+      + '(/design.?system|\\bds\\b|component|library/i) and the reply says preferred: '
+      + '"design-system-page". Anything still ambiguous exits 1 with E_AMBIGUOUS listing every '
+      + 'candidate; no match exits 1 with E_NOT_FOUND. `matched` reports how many live nodes '
+      + 'carried the name.',
+  },
+  {
     name: 'scan-node',
     description: '[SPIKE] Reverse-walk one node → FigmaExportNode spec <nodeId> [--timeout ms]',
   },
@@ -123,7 +136,19 @@ export const COMMANDS: CommandCatalogEntry[] = [
     description: '--source id --target id --traits layout,fills-variables,typography,spacing,text',
   },
   { name: 'sync-corrections', description: '[--dir project] sync Figma edge memory with design/memory' },
-  { name: 'export-png', description: '--node <id|selection> --out file.png [--scale 2]' },
+  {
+    name: 'export-png',
+    description:
+      '--node <id|selection> --out file.png [--scale 2] [--assert <script.js> [--assert-timeout ms] '
+      + '[--no-lint] [--strict]]   --assert runs the script FIRST as a plugin-enforced read-only '
+      + 'exec-js (same preflight lint as exec-js; a script that writes is refused by the plugin '
+      + 'with E_READONLY_VIOLATION — the write is sealed into its own undo step, never applied '
+      + 'silently) and exports only when it passes: a truthy return or {ok:true}. A falsy return '
+      + 'or {ok:false,...} exits 1 with E_ASSERT_FAILED quoting the result; a throw keeps its own '
+      + 'code. No PNG is written on any failure, so a file on disk always means the structural '
+      + 'check held (craft gate 9: structure + PNG in one command). The reply carries '
+      + 'assert:{script,result}.',
+  },
   {
     name: 'html-to-figma',
     description: '--html <file|-> [--width 1280 --x --y --parent id --replace id]',
@@ -143,8 +168,12 @@ export const COMMANDS: CommandCatalogEntry[] = [
   {
     name: 'exec-js',
     description:
-      '<file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] — exec-js lints scripts '
-      + 'before dispatch; --no-lint explicitly bypasses that local preflight. --undo-group brackets the script in ONE '
+      '<file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] [--strict] — exec-js lints scripts '
+      + 'before dispatch; --no-lint explicitly bypasses that local preflight. Hard findings (sync '
+      + 'dynamic-page getters, import declarations) refuse; warnings go to stderr — the sync '
+      + 'mainComponent getter, findAll without a visible filter, componentProperties on a '
+      + 'COMPONENT_SET, and the older heuristics — unless --strict, which refuses on any warning '
+      + 'too. --undo-group brackets the script in ONE '
       + 'undo step and reverts it on error; the script must not call figma.commitUndo/triggerUndo itself, '
       + 'and a timeout cannot stop a running script (the plugin has no cancellation). While it runs, '
       + 'figma.currentPage carries one extra invisible child (the undo sentinel) — a script that '
@@ -161,8 +190,17 @@ export const COMMANDS: CommandCatalogEntry[] = [
     name: 'changes',
     description:
       '[--since ts|iso --owner-only --actor owner|agent|ambiguous --file name|slug --limit 50 --page name]  '
-      + 'read the owner-edit feed (wave 4.4) — pure fs, works even with the plugin closed; --owner-only '
-      + 'is sugar for --actor owner',
+      + '[--png <dir> [--scale 2]]  read the owner-edit feed (wave 4.4) — pure fs, works even with the '
+      + 'plugin closed; --owner-only is sugar for --actor owner. --png (needs a live plugin) exports a '
+      + 'read-only AFTER PNG per unique node in the listed window to <dir>/<node-id>.after.png and '
+      + 'reports every path under png:{dir,exported,skipped}; a BEFORE exists only when a prior export '
+      + 'of that node in <dir> predates the earliest edit (then it is kept as <node-id>.before.png, '
+      + 'beforeSource:"prior-export") — otherwise before:null with the reason, never a guess. Nodes '
+      + 'deleted in the window and nodes the plugin cannot find are listed in skipped with a reason; '
+      + '--limit bounds the export count the same way it bounds the listing. A transport failure '
+      + '(E_NO_PLUGIN/E_NO_BROKER/E_TIMEOUT/E_VERSION_MISMATCH) stops the export at that node: the '
+      + 'same JSON is still printed with everything that landed plus png.error:{code,message,atNodeId}, '
+      + 'and the command exits 1.',
   },
   {
     name: 'errors',
@@ -240,6 +278,19 @@ export const GLOBAL_FLAGS: GlobalFlagEntry[] = [
       'request the broker-safe read path. Only STATUS, GET_SELECTION, EXPORT_PNG, SCAN_DESIGN_SYSTEM, '
       + 'GET_CORRECTION_MEMORY, LIST_CONNECTIONS, VERIFY_CONNECTIONS, and SHADER_GRADIENT_PROBE bypass '
       + 'the per-file mutation gate; the caller cannot declare any other command safe.',
+  },
+  {
+    flag: '--no-wait',
+    description:
+      'skip the pre-dispatch plugin admission wait. By default every command the broker '
+      + 'classifies as a mutation (everything outside the --read-only safe-read allowlist, '
+      + 'EXEC_JS/BATCH/AUDIT_DS included) first waits up to 60s for a plugin matching '
+      + '--file/--instance (else any) to register — the built-in equivalent of "status --wait '
+      + '--timeout 60 &&", so the first call after an idle flap no longer fails with '
+      + 'E_FILE_KEY_UNAVAILABLE. A plugin that never comes exits 1 with E_NO_PLUGIN naming the '
+      + 'bound. Safe reads, --target-file-key requests (the broker parks those durably itself) '
+      + 'and broker-terminal commands never wait. With --no-wait the request is sent at once '
+      + "and the broker's own answer stands.",
   },
   {
     flag: '--agent <id> | FIGMA_AGENT_ID',
