@@ -76,7 +76,7 @@ Several open Figma files stay connected at once. They no longer evict each other
 target prefer a ready file, `FIGMA_AGENT_FILE` pins the default by name, and exact `--file` or
 `--instance` targets never fall through to a different file: if the exact target is connected but
 app-unready, the broker probes only that target, then dispatches once after readiness returns or fails
-with a bounded `E_APP_UNREADY`. Several agents can share one file too. Pass `--agent claude`, or set
+with a bounded `E_APP_UNREADY`. Several agents can share one file too. Pass ``, or set
 `FIGMA_AGENT_ID`, and the panel labels each entry with the harness that sent it, so a designer watching
 the canvas can tell who just did that. Readiness gates only agent dispatch; manual edits stay available.
 
@@ -86,7 +86,7 @@ Measured on a real 21-page, 418k-node file, before and after the September 2026 
 
 | | before | after |
 |---|---|---|
-| Worst synchronous stall at plugin open | 0.3 to 1.5 s per page | 21 to 44 ms (20 ms time-budgeted slices) |
+| Worst synchronous stall at plugin open | 0.3 to 1.5 s per page | 44 ms on a cold open, 21 ms for the walker alone (slices end at 500 nodes or 20 ms, whichever comes first) |
 | Idle re-index / close | one blocking tick | 0.75 s in slices / close costs nothing |
 | Bookkeeping bytes written into the design file | 0 (the writer was failing silently) | 0 (baseline lives in `clientStorage`) |
 | Pages producing a closed-window edit signal | 5 of 21 | 21 of 21 |
@@ -126,45 +126,86 @@ fabricate: a name appears only when the reply carried one, a count only when one
 ## With this plugin, or Figma's official MCP alone?
 
 Both are real bridges and they are not exclusive. Figma documents its remote MCP server as
-"available on all seats and plans", so reading a file through it is open to everyone. Write to canvas
-is documented as "currently available to Full and Dev seats on paid plans" and as something that
-"will eventually be a usage-based paid feature, but is currently available for free during the beta
-period". This plugin covers the other side: the Plugin API in Figma Desktop, where editor rights on
-the open file are the only permission involved.
+"available on all seats and plans", so reading a file through it is open to everyone. For writing,
+Figma states "You need a Full seat to write to Figma files with agents", that "Dev Seats get
+read-only access outside of their drafts", and that this "will eventually be a usage-based paid
+feature, but is currently available for free during the beta period" (Figma docs, September 2026).
 
 | | figma-agent plugin | Figma's official MCP alone |
 |---|---|---|
 | Getting connected | `status --peek` at session start, plus a skill emitted from the CLI's own command table | OAuth sign-in to `https://mcp.figma.com/mcp`, from a client in Figma's MCP catalog |
-| Write path | Public Plugin API, through a plugin you import in Figma Desktop | `use_figma`, `generate_figma_design`, `create_new_file`, `upload_assets`; write to canvas needs a Full or Dev seat on a paid plan |
+| Write path | Public Plugin API, through a plugin you import in Figma Desktop | `use_figma`, `generate_figma_design`, `create_new_file`, `upload_assets`; writing needs a Full seat |
 | Undo granularity | One undo step per mutation; scripts roll back on error and report `rolledBack: true` only when the rollback completed | Not covered by the published tool list |
 | Seeing the designer's edits | Live `documentchange` feed, gap-fill diff across a closed window, `changes --owner-only` | Read on demand; no change-subscription tool in the published list |
 | Two actors at once | Per-file mutation FIFO, one job at a time, reads bypass, cancel, explicit outcome-unknown protocol | Not covered by the published tool list |
-| Large files | 21 to 44 ms worst stall at open on a 418k-node file, measured | No published figures to compare against |
-| Multiple open files | Several files on one broker; exact `--file` targets never fall through | One authenticated session; targeting is per call |
-| Observability | `status` reports `gapfill.*` and `perf.*`, plus an errors log and a contention counter | `whoami` reports identity and plans |
 | Where it runs | Broker on `127.0.0.1`, no model call in the CLI or broker | Hosted endpoint; a desktop server exists for "a Dev or Full seat for all paid plans" |
-| Code context | Not offered | `get_design_context`, `get_code_connect_map`, `get_variable_defs`, `get_motion_context`, `search_design_system` |
-| FigJam, Slides, new files | Manifest covers the Figma, FigJam and Slides editors | `get_figjam`, `generate_diagram`, `create_new_file` |
+| Code context | Not offered | `get_design_context`, `get_code_connect_map`, `get_variable_defs`, `search_design_system` |
 
 ### What this plugin does not do
 
 Said plainly, because the official server does these and this one will not:
 
-- **No code context.** No `get_design_context`, no Code Connect mapping, no motion or variable
-  extraction aimed at code generation. For design-to-code the official MCP is the better tool.
+- **No code context.** No `get_design_context`, no Code Connect mapping, no variable extraction aimed
+  at code generation. For design-to-code the official MCP is the better tool.
 - **No design-system search across libraries.** `scan-design-system` reads the open file only.
-- **Nothing works with the panel closed.** Every live command needs Figma Desktop open with the
-  plugin running. The official remote server has no such requirement.
+- **Nothing works with the panel closed**, and the remote server has no such requirement.
 - **No hosted anything**, and it is a development plugin you import yourself, not a published Figma
   Community plugin.
 
 ### Use both
 
-The two answer different questions, and the design:os craft skill already routes them that way: MCP read
-tools for diagnosis, recon, and verification on a cheapest-first ladder (`get_metadata`, then
-`get_screenshot`, then `get_design_context`), and the figma-agent CLI for mutations on a project wired
-for it. `figma-agent seat` encodes the same split. Reading through the official server and writing
-through the plugin is a supported combination, not a compromise.
+The design:os craft skill already routes them that way: MCP read tools for diagnosis, recon and
+verification on a cheapest-first ladder (`get_metadata`, then `get_screenshot`, then
+`get_design_context`), and the figma-agent CLI for mutations on a project wired for it.
+`figma-agent seat` encodes the same split.
+
+## Which bridge should you use?
+
+Several projects solve overlapping parts of this problem and most arrived first. Stars as of
+2026-09-03: [Framelink](https://github.com/GLips/Figma-Context-MCP) 15.8k,
+[cursor-talk-to-figma](https://github.com/grab/cursor-talk-to-figma-mcp) 7.0k,
+[figma-console-mcp](https://github.com/southleft/figma-console-mcp) 2.2k,
+[cast-to-figma](https://github.com/newfiction/cast-to-figma) 9. This project is new and has none of
+that history.
+
+Where each does well, in their own words. Figma's official server is the design-to-code path and the
+one that runs without the desktop app. Framelink is the most-adopted Figma MCP of any kind and
+"simplifies and translates the response" from Figma's API for the model. figma-console-mcp is the
+most actively maintained write bridge here, ships 121 tools in its local mode, and advertises
+"Real-time selection tracking and document change monitoring". cursor-talk-to-figma is the
+most-starred write bridge. cast-to-figma is the closest architectural neighbour to this project,
+ships an `undo` command for the last operation, and is published on Figma Community, which this
+plugin is not.
+
+**A** this repo · **B** [Figma official MCP](https://developers.figma.com/docs/figma-mcp-server/) ·
+**C** cursor-talk-to-figma · **D** figma-console-mcp · **E** cast-to-figma · **F** Framelink.
+"not documented" means the capability is absent from that project's published docs, which is not the
+same as absent from the product.
+
+| capability | A | B | C | D | E | F |
+|---|---|---|---|---|---|---|
+| Write to canvas | yes | yes, `use_figma`, remote server only | yes | yes, `figma_execute` | yes | no |
+| Works on Figma Free | yes | reads "available on all seats and plans"; writes need a Full seat | not documented | yes, documented for Free, Pro and Organization plans | not documented | not documented |
+| Driveable from a CLI | yes | MCP client, no CLI | MCP, no CLI | MCP, no CLI | yes | MCP, no CLI |
+| One undo step per mutation | yes | not documented | not documented | not documented | `undo`, last operation | n/a |
+| Sees designer edits live | yes | no subscribe tool in the published list | not documented | yes, "document change monitoring" | yes, `cowork` | no |
+| Recovers edits made while closed | yes | n/a, never closed | not documented | not documented | not documented | no |
+| Per-file mutation queue | yes | not documented | not documented | not documented | not documented | n/a |
+| Multiple files at once | yes | yes, any file by URL | not documented | multi-instance ports | file-local | yes |
+| Local only, no cloud call | yes, CDN iframes excepted | hosted; the local server needs a paid seat | yes | local yes, Cloud mode no | yes | no, REST cloud |
+| Published large-file numbers | yes, 418k nodes | no | no | no | no | no |
+| Design-to-code context | no | yes, `get_design_context` and Code Connect | read tools | extraction | no | yes |
+| No desktop app needed | no | yes, remote server | no | Cloud mode, read-only | no | yes |
+| Licence | MIT | proprietary | MIT | MIT | MIT | MIT |
+
+Read the grid honestly. Row 5 is not a win: figma-console-mcp documents live change monitoring and
+cast-to-figma ships `cowork`. What is particular here is the combination of rows 6, 7 and 10:
+recovering the window while the panel was closed with every dropped frame counted, a per-file
+mutation queue with an explicit outcome-unknown protocol, and published numbers on a file large
+enough to hurt. That combination is what "built for two actors on one file" means in practice.
+
+Different job, not competitors: [html.to.design](https://html.to.design/docs/pro-plan/), Builder.io
+Visual Copilot, Anima and Locofy are design-to-code or one-shot import products.
 
 ## Commands
 
@@ -182,8 +223,7 @@ CLI's own command table so `--help` and the skill cannot disagree.
 | Read back | `changes` · `errors` · `contention` · `cowork` · `sync-corrections` |
 
 `cowork` waits for one designer change-cycle: the designer edits, then goes quiet for `--wait` seconds,
-and the command returns the nodes they touched. Only an owner edit arms it, so an agent can never wake
-itself up.
+and the command returns the nodes they touched. An owner edit arms it; an agent cannot wake itself up.
 
 ## Status and roadmap
 
@@ -197,4 +237,4 @@ ease-design artifacts), and `build`.
 
 Known follow-ups, tracked and unshipped: bounding the serial node re-check on a mass deletion; counting
 a replayed capture as activity inside the quiet window; isolating the test harness from a live broker on
-the shared port; Tier-2 subtree hashes for inner edits on oversized pages.
+the shared port; Tier-2 subtree hashes for oversized pages.
