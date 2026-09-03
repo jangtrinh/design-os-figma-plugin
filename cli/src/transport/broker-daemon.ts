@@ -25,6 +25,7 @@ import {
   parseWireMsg, rawToString, sendWireMsg, sweepAbandonedChunks, type ChunkBuffers,
 } from './protocol-helpers.ts';
 import { PluginRegistry, appReadiness, suspectedZombie, type PluginEntry } from './plugin-registry.ts';
+import { createSessionTallies, type SessionTallies } from './session-tallies.ts';
 import { buildBrokerHelloData, noPluginMessage } from './broker-status.ts';
 import { MutationAdmissionGate, mutationGatePathFor } from './mutation-admission-gate.ts';
 import { durableFileKey, exactTargetFileKey } from './file-identity.ts';
@@ -225,6 +226,12 @@ interface BrokerState {
   // request. Broker-terminal (never forwarded, never queued) — same precedent as
   // `waiting` above, but fed by EDIT_FEED batches instead of plugin availability.
   coworkWaiters: CoworkWaiterEntry[];
+  // Session coverage this broker witnessed per plugin instance (session-tallies.ts):
+  // frames the relay lost before it could connect, and capture batches that arrived
+  // stamped as replayed. Deliberately NOT on the registry entry — a close deletes that
+  // entry, and the relay re-reports only when it has NEW loss to declare, so the tally
+  // would be erased by exactly the reconnect it has to survive.
+  tallies: SessionTallies;
   dispatchReservations: Map<string, DispatchReservation>;
 }
 
@@ -405,6 +412,32 @@ function appendEditFeed(path: string, data: Record<string, unknown>): void {
   }
 }
 
+/**
+ * Count a capture batch that arrived stamped as replayed, against the instance that sent
+ * it. Every edit in it still lands in the feed, dated to when it was captured — what this
+ * counts is the window in which the live view could not account for those edits, so
+ * `figma-agent status` can say so instead of an agent inferring it from feed timestamps.
+ *
+ * Called from the EDIT_FEED branch ONLY, and that branch misses nothing. A capture batch
+ * can travel as TWO frames (document-change-capture.ts posts a DOC_CHANGE and an
+ * EDIT_FEED, both stamped `replayed`), and EDIT_FEED is the SUPERSET of the two: the
+ * DOC_CHANGE list is component-scoped (its rows are pushed only when the changed node
+ * resolves to a component), while the widened edit list is pushed for every change in the
+ * batch. So a DOC_CHANGE never travels without an EDIT_FEED beside it, and counting both
+ * branches would report every component batch twice. Proven in
+ * tests/document-change-capture.test.ts, not assumed.
+ *
+ * An EMPTY replayed batch is not counted: there was no edit to have missed.
+ */
+function countReplayedBatch(
+  tallies: SessionTallies, instanceId: string | undefined, data: Record<string, unknown>,
+): void {
+  if (instanceId === undefined || !readReplayed(data)) return;
+  const edits = data.edits;
+  if (!Array.isArray(edits) || edits.length === 0) return;
+  tallies.countReplayedBatch(instanceId);
+}
+
 /** Count of `appendErrorLog` failures since the broker started — logged alongside every
  *  failure (not just the latest one) so a repeatedly-failing write (e.g. a read-only
  *  design/ dir) is visible as a trend, not a single easy-to-miss line. */
@@ -573,6 +606,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     jobs: new JobTable(), queues: new Map(), pendingChunks: new Map(),
     awaitingReconnect: initialAwaitingReconnect,
     coworkWaiters: [], dispatchReservations: new Map(),
+    tallies: createSessionTallies({
+      onEvict: (instanceId, tally) => log(
+        `session tally evicted for [${instanceId}] (cap reached): `
+        + `${tally.relayDroppedFrames} relay-dropped frame(s), ${tally.replayedBatches} replayed batch(es)`,
+      ),
+    }),
   };
   // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
   // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
@@ -2133,9 +2172,15 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         if (isPlugin) {
           const stats = readRelayDropStats(msg.data);
           if (stats) {
-            const id = st.registry.getByWs(ws)?.instanceId ?? '?';
+            const entry = st.registry.getByWs(ws);
+            const id = entry?.instanceId ?? '?';
             log(`plugin [${id}] dropped ${stats.dropped.frames} frame(s) / ${stats.dropped.chars} chars ` +
                 `before the socket opened (session total ${stats.sessionTotal.frames}/${stats.sessionTotal.chars})`);
+            // The log line above is for a human reading the broker log; this is the same
+            // fact in a form `figma-agent status` can state as a coverage row. The SESSION
+            // total REPLACES the stored one — the frame carries the whole session's tally,
+            // so summing two reports would count the first report's frames twice.
+            if (entry) st.tallies.recordRelayDrops(entry.instanceId, stats.sessionTotal.frames);
           }
         }
       } else if (msg.type === 'APP_PROBE_ACK') {
@@ -2179,7 +2224,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // happened. It stages instead (never a project's design/) and `handleProjectBind`
         // migrates it in, once, the moment this identity gets bound.
         if (isPlugin) {
-          const scene = st.registry.getByWs(ws)?.scene;
+          const entry = st.registry.getByWs(ws);
+          const scene = entry?.scene;
           const data = msg.data as Record<string, unknown>;
           const fileName = (scene?.fileName as string | undefined) ?? null;
           const identity = fileIdentity(typeof data.fileKey === 'string' ? data.fileKey : null, fileName);
@@ -2221,8 +2267,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // `data` carried, undefined included — `appendEditFrames`' meta reads `data`
         // directly and is untouched by this fallback (honest provenance, per minor 9b).
         if (isPlugin) {
-          const scene = st.registry.getByWs(ws)?.scene;
+          const entry = st.registry.getByWs(ws);
+          const scene = entry?.scene;
           const data = msg.data as Record<string, unknown>;
+          countReplayedBatch(st.tallies, entry?.instanceId, data);
           const fileName = (typeof data.fileName === 'string' ? data.fileName : null) ?? ((scene?.fileName as string | undefined) ?? null);
           const fileKey = typeof data.fileKey === 'string' ? data.fileKey : null;
           const identity = fileIdentity(fileKey, fileName);
@@ -2342,6 +2390,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           Date.now,
           jobStatusFor,
           mutationGate.status(),
+          (instanceId) => st.tallies.get(instanceId),
         ),
         ...(awaitingReconnect.length > 0 && { awaitingReconnect }),
       },

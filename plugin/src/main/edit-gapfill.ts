@@ -374,9 +374,14 @@ export async function runGapfillDiff(
     return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
   }
   if (!prev) {
-    // Nothing to diff, but start the baseline now. Walked here (with yields) so the write
-    // below reuses the results; a page whose walk throws is simply not cached, and
-    // `resolveBaselinePage`'s own fallback attempt keeps its per-page skip semantics.
+    // Nothing to diff, but start the baseline now. Recorded as a first run: the write
+    // below sets `baselineWrittenAt`, and without this flag a session that diffed NOTHING
+    // would read exactly like one that diffed a full history — the window before this boot
+    // is real, unaccounted time and the coverage statement has to say so.
+    stats.baselineFirstRun = true;
+    // Walked here (with yields) so the write below reuses the results; a page whose walk
+    // throws is simply not cached, and `resolveBaselinePage`'s own fallback attempt keeps
+    // its per-page skip semantics.
     const firstRun = new Map<string, PageSnapshotResult>();
     for (const page of pages) {
       await yieldToHost();

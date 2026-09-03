@@ -4,6 +4,7 @@
 import type { PluginRegistry, RegistrySocket } from './plugin-registry.ts';
 import { APP_READINESS_VERSION, type JobInfo, type MutationGateRow, type MutationGateStoreHealth, type PluginStatusEntry } from '../../../shared/protocol.ts';
 import type { RouteFilter } from './route-filter.ts';
+import type { SessionTally } from './session-tallies.ts';
 import { fileIdentity } from './file-identity.ts';
 
 /** Concurrency & jobs (backlog 1.1+2.6+4.3) — one file's job status for `status` (4.3).
@@ -63,16 +64,28 @@ export function buildBrokerHelloData(
   // SAME identity chain routing + registry + jobs already share).
   jobStatusFor?: (fileSlug: string) => FileJobStatus,
   mutationGateStatus?: MutationGateStatus,
+  // Session coverage the broker witnessed for an instance (session-tallies.ts) — also
+  // OPTIONAL, same contract as `jobStatusFor`: a caller that omits it (or a lookup that
+  // returns null / all zeros) gets today's rows byte-identical. Keyed by `instanceId`,
+  // NOT by file slug: these are facts about one iframe session, and two sessions on the
+  // same file must never inherit each other's losses.
+  tallyFor?: (instanceId: string) => SessionTally | null,
 ): Record<string, unknown> {
   const plugins: PluginStatusEntry[] = registry.statusList();
   const target = registry.selectTarget(filter);
   const connected = target !== null;
-  const withJobs = jobStatusFor === undefined
+  const withJobs = jobStatusFor === undefined && tallyFor === undefined
     ? plugins
     : plugins.map((p) => {
         const slug = fileIdentity(p.fileKey ?? null, p.fileName ?? null);
-        const { runningJob, queueDepth } = jobStatusFor(slug);
-        return { ...p, runningJob, queueDepth };
+        const jobs = jobStatusFor?.(slug);
+        const tally = tallyFor?.(p.instanceId) ?? null;
+        return {
+          ...p,
+          ...(jobs !== undefined && { runningJob: jobs.runningJob, queueDepth: jobs.queueDepth }),
+          ...(tally !== null && tally.relayDroppedFrames > 0 && { relayDroppedFrames: tally.relayDroppedFrames }),
+          ...(tally !== null && tally.replayedBatches > 0 && { replayedBatches: tally.replayedBatches }),
+        };
       });
   const mutationGates = mutationGateStatus?.gates.map((gate) => ({
     ...gate,

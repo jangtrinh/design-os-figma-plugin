@@ -18,6 +18,7 @@ import {
   type FileBaseline,
 } from '../plugin/src/main/gapfill-baseline-store.ts';
 import { createGapfillStats, toGapfillStatus } from '../plugin/src/main/gapfill-status.ts';
+import { buildPluginCoverage } from '../plugin/src/main/session-coverage.ts';
 
 interface FakeNode {
   id: string; name: string; type: string; x: number; y: number;
@@ -108,6 +109,34 @@ describe('runGapfillDiff — no baseline at all', () => {
     expect(storedBaseline(store, key).writtenBy).toBe('Owner');
     expect(stats.baselineWrittenAt).toBe(storedBaseline(store, key).writtenAt);
     expect(stats.baselineBytes).toBeGreaterThan(0);
+  });
+
+  it('marks the session a FIRST RUN — a baseline now exists, but the window before it was never diffed', async () => {
+    // The write below makes `baselineWrittenAt` non-null, which on its own reads exactly
+    // like a healthy diffing session. The flag is what keeps the closed window before this
+    // boot from disappearing into that.
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const stats = createGapfillStats();
+
+    await runGapfillDiff(pages, createMemoryBaselineStore(), stats);
+
+    expect(stats.baselineFirstRun).toBe(true);
+    expect(stats.baselineWrittenAt).not.toBeNull();
+    expect(toGapfillStatus(stats).baselineFirstRun).toBe(true);
+  });
+
+  it('a session that DID diff a prior baseline is not a first run, and says nothing about one', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(pages, store, createGapfillStats()); // the first session
+
+    const stats = createGapfillStats();
+    await runGapfillDiff(pages, store, stats);
+
+    expect(stats.baselineFirstRun).toBe(false);
+    expect('baselineFirstRun' in toGapfillStatus(stats)).toBe(false);
   });
 
   it('an unparseable stored value is treated as MISSING, never as an empty baseline (which would fabricate a whole-file create storm)', async () => {
@@ -462,6 +491,34 @@ describe('runGapfillDiff — the baseline must belong to THIS file', () => {
     // The key collision itself is unchanged: B now owns the key and A will read
     // baseline-missing next boot. An honest under-report each way, never a wrong diff.
     expect(storedBaseline(store, key).fileName).toBe('VSF / PCP');
+  });
+
+  it('the coverage an agent sees for that case: two true rows, one cause', async () => {
+    // A foreign baseline is `baseline: null` PLUS a recorded error, so the boot takes the
+    // first-run path AND records failures. Both rows are true — nothing was diffed, and
+    // gap-fill did refuse a stored value — and this pins the shape so a later change cannot
+    // quietly drop either one. The error COUNT is 2 for the one condition: the foreign
+    // value is refused twice, once by the boot read and once by the write's own read-back;
+    // the messages themselves stay in `status.plugin.gapfill.errors`.
+    const pagesA = [fakePage('pA', 'Screens', [fakeNode('a1')])];
+    installFigma({ pages: pagesA, fileKey: null, fileName: 'VSF - PCP' });
+    const store = createMemoryBaselineStore();
+    await runGapfillDiff(pagesA, store, createGapfillStats());
+
+    installFigma({ pages: [fakePage('pB', 'Cover', [fakeNode('b1')])], fileKey: null, fileName: 'VSF / PCP' });
+    const stats = createGapfillStats();
+    await runGapfillDiff([fakePage('pB', 'Cover', [fakeNode('b1')])], store, stats);
+
+    const perf = createPerfStats();
+    markBootComplete(perf);
+    const coverage = buildPluginCoverage({ gapfill: toGapfillStatus(stats), perf: toPerfStatus(perf) });
+    expect(coverage).toEqual({
+      complete: false,
+      gaps: [
+        { kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' },
+        { kind: 'gapfill-errors', count: 2, see: 'status.plugin.gapfill' },
+      ],
+    });
   });
 
   it('a KEYED file keeps its baseline across a RENAME — the fileKey, not the name, is the identity', async () => {

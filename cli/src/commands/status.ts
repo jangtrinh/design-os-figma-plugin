@@ -14,6 +14,8 @@ import { waitForPlugin } from '../transport/plugin-wait.ts';
 import { buildDeepLink, type DeepLinkEntry } from '../transport/figma-deep-link.ts';
 import { fileIdentity, readBindCache, readBindMarker } from '../transport/project-bind.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
+import { mergeCoverage, readSessionCoverage } from '../../../shared/session-coverage.ts';
+import { brokerCoverageRows } from '../transport/broker-coverage-rows.ts';
 
 // auto-connect slice 2 — `--wait`'s own default, in SECONDS (not ms — every other
 // `--timeout` in this CLI is ms; this one follows the usecases.md gherkin's own
@@ -140,8 +142,14 @@ export async function run(args: CommandArgs): Promise<unknown> {
   let connected = wantedFile ? plugins.length > 0 : hello.pluginConnected === true;
   let state = (hello.pluginState as string | undefined) ?? (connected ? 'connected' : 'disconnected');
   let lastHeartbeatAge = (hello.lastHeartbeatAge as number | null | undefined) ?? null;
-  let scene: Record<string, unknown> | null =
-    hello.pluginInfo && typeof hello.pluginInfo === 'object' ? (hello.pluginInfo as Record<string, unknown>) : null;
+  // The broker's own active-target scene (the registry's scene for the instance the STATUS
+  // round-trip reaches). Kept in its own const because `scene` below is merged with the
+  // reply and nulled on a race, while the coverage roll-up needs the ACTIVE instance's
+  // `fileKey` — the one thing that tells two same-named files apart.
+  const activePluginInfo = hello.pluginInfo && typeof hello.pluginInfo === 'object'
+    ? (hello.pluginInfo as Record<string, unknown>)
+    : null;
+  let scene: Record<string, unknown> | null = activePluginInfo;
 
   // Enrich the ACTIVE plugin with a live STATUS round-trip (user, pluginVersion…).
   if (connected) {
@@ -162,9 +170,52 @@ export async function run(args: CommandArgs): Promise<unknown> {
     }
   }
 
+  // The session coverage statement: the plugin's own reading of its session (carried on
+  // the STATUS reply it just answered) merged with the rows only the broker can see. It
+  // OVERRIDES the raw block spread in from `scene` below — the merged one is the same
+  // statement plus what the plugin had no way of knowing — and it is ALWAYS present, so
+  // an agent told to read `coverage` first never has to tell "nothing to report" apart
+  // from "this build could not say" (that one is `complete: null`).
+  //
+  // The rows are attributed by FILE, not by instance: the STATUS round-trip's reply
+  // carries no instance id, and two windows open on one file write to the same per-file
+  // feed anyway. Everything else connected is another file whose edits are not in view.
+  //
+  // Attribution is by IDENTITY, never by name: `Untitled` is Figma's default file name, so
+  // two connected files routinely share one, and a name-keyed roll-up would tell a clean
+  // session it lost the other file's frames. `fileIdentity` is this package's one canonical
+  // chain — raw fileKey when present, else a slug of the name (file-identity.ts). Honest
+  // limit: two KEYLESS files sharing a name still collapse into a single identity, because
+  // a name is genuinely all either of them has.
+  const activeKeySource = wantedFile
+    ? plugins[0] ?? null                    // the file the caller asked about
+    // NOT the first row whose NAME matches: with two `Untitled`s that picks whichever
+    // connected first, which is not necessarily the one that answered.
+    : activePluginInfo;
+  const activeId = activePlugin === null || activeKeySource === null
+    ? null
+    : fileIdentity(
+        typeof activeKeySource.fileKey === 'string' ? activeKeySource.fileKey : null,
+        typeof activeKeySource.fileName === 'string' ? activeKeySource.fileName : activePlugin,
+      );
+  const fileRows = activeId === null
+    ? []
+    : plugins.filter((p) => fileIdentity(p.fileKey, p.fileName) === activeId);
+  // Other FILES, not other sessions: two windows open on one other file are one file whose
+  // edits are missing from this view.
+  const otherFiles = new Set(
+    all.map((p) => fileIdentity(p.fileKey, p.fileName)).filter((id) => id !== activeId),
+  ).size;
+  const coverage = mergeCoverage(
+    readSessionCoverage((scene ?? {}).coverage),
+    // `--file` filters `plugins[]` and moves the full list to `pluginsAll[]` — a row must
+    // point at the list that actually holds the rows its number came from.
+    brokerCoverageRows({ fileRows, otherFiles, pluginsField: wantedFile ? 'pluginsAll' : 'plugins' }),
+  );
+
   // Legacy compat shim: `plugin` mirrors the ACTIVE plugin so design-os `_status_text`
   // and older consumers (which read `plugin.connected`) keep working unchanged.
-  const plugin = { connected, state, lastHeartbeatAge, ...(scene ?? {}) };
+  const plugin = { connected, state, lastHeartbeatAge, ...(scene ?? {}), coverage };
 
   // Keep the full list available when `--file` filtered `plugins[]`, so the user can
   // still see what IS connected even though it doesn't match what they asked about.
