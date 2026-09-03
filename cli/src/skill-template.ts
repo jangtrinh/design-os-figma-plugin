@@ -44,7 +44,9 @@ export const SKILL_WORKFLOW = `## Typical workflow
    before falling back to \`exec-js\` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after
    an idle flap no longer needs a \`status --wait &&\` prefix — \`--no-wait\` opts out.
-5. \`changes\`/\`errors\`/\`contention\` read durable local logs — they work even with the
+5. Verify a screen with \`export-png --node <id> --out shot.png --assert verify.js\` — the
+   structural assert runs read-only first and the PNG is written only when it passes.
+6. \`changes\`/\`errors\`/\`contention\` read durable local logs — they work even with the
    plugin closed, useful for catching up after a session gap.`;
 
 export const SKILL_ERROR_HINTS = `## Error hints

@@ -112,6 +112,23 @@ export function refusesReadOnlyAssertion(wireCmd: CommandName, readOnly: boolean
   return readOnly && !isBrokerSafeRead(wireCmd);
 }
 
+/**
+ * What goes on the wire as `readOnly`, and whether the request is refused first.
+ * `pluginEnforced` is the internal path `export-png --assert` uses: EXEC_JS ONLY, stamping
+ * the flag so the plugin's read-only guard (plugin/src/main/readonly-guard.ts) refuses a
+ * script that writes — while broker admission is untouched: admitRequest classifies by
+ * command name alone, so the request still takes the mutation FIFO and the per-file gate.
+ * It is therefore not a bypass, and the public `--read-only` refusal on EXEC_JS above
+ * stands. On any other command plugin enforcement means nothing and is refused rather
+ * than silently dropped. Pure, unit-tested in isolation.
+ */
+export function resolveWireReadOnly(
+  wireCmd: CommandName, readOnlyRequested: boolean, pluginEnforced: boolean,
+): { refused: boolean; readOnly: boolean } {
+  if (pluginEnforced) return { refused: wireCmd !== 'EXEC_JS', readOnly: true };
+  return { refused: refusesReadOnlyAssertion(wireCmd, readOnlyRequested), readOnly: readOnlyRequested };
+}
+
 function connectWs(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(loopbackWsUrl(port));
@@ -304,16 +321,21 @@ export async function retryAmbiguousConnect(
 export async function runCommand(
   cmd: string,
   params: unknown,
-  opts?: { timeoutMs?: number; activity?: string; readOnly?: boolean },
+  opts?: { timeoutMs?: number; activity?: string; readOnly?: boolean; pluginEnforcedReadOnly?: boolean },
 ): Promise<unknown> {
   const wireCmd = cmd as CommandName;
-  const readOnlyRequested = opts?.readOnly ?? readOnlyGlobal;
+  // `pluginEnforcedReadOnly` (EXEC_JS only — see resolveWireReadOnly) asks the PLUGIN to
+  // refuse a script that writes; broker admission still treats the request as a mutation.
+  const wire = resolveWireReadOnly(wireCmd, opts?.readOnly ?? readOnlyGlobal, opts?.pluginEnforcedReadOnly === true);
+  const readOnlyRequested = wire.readOnly;
   // Fail before ever touching the broker — a lying --read-only assertion is a caller bug,
   // not something worth spawning/connecting to discover (stage-4 fix round, minor 8).
-  if (refusesReadOnlyAssertion(wireCmd, readOnlyRequested)) {
+  if (wire.refused) {
     throw new CliError(
       'E_INVALID_ARGS',
-      `--read-only cannot be asserted on ${wireCmd} — only broker-known safe reads may bypass mutation admission`,
+      opts?.pluginEnforcedReadOnly === true
+        ? `plugin-enforced read-only applies to EXEC_JS only, not ${wireCmd}`
+        : `--read-only cannot be asserted on ${wireCmd} — only broker-known safe reads may bypass mutation admission`,
     );
   }
   let ad = await ensureBroker();

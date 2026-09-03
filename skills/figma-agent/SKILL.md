@@ -37,7 +37,9 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
    before falling back to `exec-js` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after
    an idle flap no longer needs a `status --wait &&` prefix — `--no-wait` opts out.
-5. `changes`/`errors`/`contention` read durable local logs — they work even with the
+5. Verify a screen with `export-png --node <id> --out shot.png --assert verify.js` — the
+   structural assert runs read-only first and the PNG is written only when it passes.
+6. `changes`/`errors`/`contention` read durable local logs — they work even with the
    plugin closed, useful for catching up after a session gap.
 
 ## Error hints
@@ -85,7 +87,7 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 - `set-text` — --node id --chars "..." [--font f --size n --weight n]
 - `clone-traits` — --source id --target id --traits layout,fills-variables,typography,spacing,text
 - `sync-corrections` — [--dir project] sync Figma edge memory with design/memory
-- `export-png` — --node <id|selection> --out file.png [--scale 2]
+- `export-png` — --node <id|selection> --out file.png [--scale 2] [--assert <script.js> [--assert-timeout ms] [--no-lint] [--strict]]   --assert runs the script FIRST as a plugin-enforced read-only exec-js (same preflight lint as exec-js; a script that writes is refused by the plugin with E_READONLY_VIOLATION — the write is sealed into its own undo step, never applied silently) and exports only when it passes: a truthy return or {ok:true}. A falsy return or {ok:false,...} exits 1 with E_ASSERT_FAILED quoting the result; a throw keeps its own code. No PNG is written on any failure, so a file on disk always means the structural check held (craft gate 9: structure + PNG in one command). The reply carries assert:{script,result}.
 - `html-to-figma` — --html <file|-> [--width 1280 --x --y --parent id --replace id]
 - `shader-gradient` — Bake an animated ShaderGradient field onto a node as an image fill [--node <id|selection>] [--preset <slug> | --url "<customize url>" | --set k=v,k2=v2] [--w 1200 --h 800 --scale 2] [--static] [--timeout ms] [--list]   --preset takes a ledger slug (or upstream's camelCase key); --url takes a shadergradient.co/customize link; --set overrides either. --static freezes the field instead of capturing it mid-animation. --list prints the preset roster and --self-test renders a tiny throwaway field to report whether this environment can bake at all; both are read-only and make no canvas change. The resolved config is stored on the node so a later bake can reproduce or resize it.
 - `exec-js` — <file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] [--strict] — exec-js lints scripts before dispatch; --no-lint explicitly bypasses that local preflight. Hard findings (sync dynamic-page getters, import declarations) refuse; warnings go to stderr — the sync mainComponent getter, findAll without a visible filter, componentProperties on a COMPONENT_SET, and the older heuristics — unless --strict, which refuses on any warning too. --undo-group brackets the script in ONE undo step and reverts it on error; the script must not call figma.commitUndo/triggerUndo itself, and a timeout cannot stop a running script (the plugin has no cancellation). While it runs, figma.currentPage carries one extra invisible child (the undo sentinel) — a script that enumerates or counts the page's children will see it. `console` and `ui` are injected — a script cannot declare its own.

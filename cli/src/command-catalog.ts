@@ -136,7 +136,19 @@ export const COMMANDS: CommandCatalogEntry[] = [
     description: '--source id --target id --traits layout,fills-variables,typography,spacing,text',
   },
   { name: 'sync-corrections', description: '[--dir project] sync Figma edge memory with design/memory' },
-  { name: 'export-png', description: '--node <id|selection> --out file.png [--scale 2]' },
+  {
+    name: 'export-png',
+    description:
+      '--node <id|selection> --out file.png [--scale 2] [--assert <script.js> [--assert-timeout ms] '
+      + '[--no-lint] [--strict]]   --assert runs the script FIRST as a plugin-enforced read-only '
+      + 'exec-js (same preflight lint as exec-js; a script that writes is refused by the plugin '
+      + 'with E_READONLY_VIOLATION — the write is sealed into its own undo step, never applied '
+      + 'silently) and exports only when it passes: a truthy return or {ok:true}. A falsy return '
+      + 'or {ok:false,...} exits 1 with E_ASSERT_FAILED quoting the result; a throw keeps its own '
+      + 'code. No PNG is written on any failure, so a file on disk always means the structural '
+      + 'check held (craft gate 9: structure + PNG in one command). The reply carries '
+      + 'assert:{script,result}.',
+  },
   {
     name: 'html-to-figma',
     description: '--html <file|-> [--width 1280 --x --y --parent id --replace id]',
