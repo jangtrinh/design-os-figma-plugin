@@ -325,6 +325,14 @@
       ["truncated"]
     );
   }
+  function previouslyTruncatedNotice(page) {
+    return toGapfillEdit(
+      "updated",
+      { id: `prev-truncated:${page.id}`, name: page.name, type: "PAGE", x: 0, y: 0, parent: null },
+      page.name,
+      ["prev-truncated"]
+    );
+  }
   function resolveBaselinePage(page, prevEntry, walk2) {
     if (!walk2) return prevEntry ?? null;
     if (walk2.propertyReadErrors > 0 && prevEntry) return prevEntry;
@@ -408,7 +416,9 @@
       return null;
     }
   }
-  function* walkPageBounded(page, { cap, sliceSize }) {
+  var DEFAULT_SLICE_BUDGET_MS = 20;
+  function* walkPageBounded(page, { cap, sliceSize, sliceBudgetMs = DEFAULT_SLICE_BUDGET_MS, budgetClock = Date.now }) {
+    let sliceStartedAt = budgetClock();
     const records = [];
     let propertyReadErrors = 0;
     const errorNodeIds = [];
@@ -440,7 +450,10 @@
       } catch {
         noteError(readableId(node));
       }
-      if (visited % sliceSize === 0 && stack.length > 0 && visited <= cap) yield;
+      if (stack.length > 0 && visited <= cap && (visited % sliceSize === 0 || budgetClock() - sliceStartedAt >= sliceBudgetMs)) {
+        yield;
+        sliceStartedAt = budgetClock();
+      }
     }
     return { records, truncated: visited > cap, visited, propertyReadErrors, errorNodeIds, top };
   }
@@ -518,6 +531,7 @@
   var LEGACY_CHUNK_PREFIX = "figma-edit-snap-";
   var SNAPSHOT_NODE_CAP_PER_PAGE = 4e3;
   var SNAPSHOT_SLICE_SIZE = 500;
+  var SNAPSHOT_SLICE_BUDGET_MS = DEFAULT_SLICE_BUDGET_MS;
   function yieldToHost() {
     return new Promise((resolve) => setTimeout(resolve, 0));
   }
@@ -558,6 +572,7 @@
     const walk2 = await walkPageSliced(page, {
       cap: SNAPSHOT_NODE_CAP_PER_PAGE,
       sliceSize: SNAPSHOT_SLICE_SIZE,
+      sliceBudgetMs: SNAPSHOT_SLICE_BUDGET_MS,
       ...timing
     });
     recordWalk(perf, phase, walk2);
@@ -662,7 +677,8 @@
     try {
       const host = figma;
       if (typeof host.getNodeByIdAsync !== "function") return false;
-      return await host.getNodeByIdAsync(id) !== null;
+      const node = await host.getNodeByIdAsync(id);
+      return node !== null && !node.removed;
     } catch {
       return false;
     }
@@ -720,8 +736,12 @@
       }
       stats.pagesDiffed += 1;
       if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
-        stats.pagesTruncated += 1;
-        edits.push(truncatedNotice(page));
+        if (nextTruncated) {
+          stats.pagesTruncated += 1;
+          edits.push(truncatedNotice(page));
+        } else {
+          edits.push(previouslyTruncatedNotice(page));
+        }
         const prevTop = prevPage?.top;
         if (prevTop) {
           stats.pagesTopLevelOnly += 1;

@@ -327,6 +327,25 @@ export function truncatedNotice(page: { id: string; name: string }): EditInput {
   );
 }
 
+/**
+ * The other reason a per-node diff is suppressed: the page was over the cap in the PREVIOUS
+ * session — so that baseline stored a top-level fingerprint and no records — and is under
+ * it now. Nothing this session can do recovers the per-node facts of that window.
+ *
+ * A distinct notice rather than `truncatedNotice`, because the sentence that one renders
+ * states the page exceeds the scan cap, and this page does not. The suppression is the
+ * same; the reason is not, and stating the wrong reason is exactly the kind of wrong fact
+ * an absent one would beat.
+ */
+export function previouslyTruncatedNotice(page: { id: string; name: string }): EditInput {
+  return toGapfillEdit(
+    'updated',
+    { id: `prev-truncated:${page.id}`, name: page.name, type: 'PAGE', x: 0, y: 0, parent: null },
+    page.name,
+    ['prev-truncated'],
+  );
+}
+
 // ── The per-page write decision ─────────────────────────────────────────────────────
 
 export interface PageSnapshotResult {

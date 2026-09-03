@@ -71,8 +71,13 @@ function legacySnapshotPage(root: FixtureNode, cap: number): { records: NodeSnap
 }
 
 /** Drives the generator by hand — the pure half, with no flag and no host. */
+/** Drives the generator with the TIME budget frozen out of reach, so every slice count
+ *  below is a fact about the node-count cut alone. Without this the walk's own elapsed-time
+ *  cut decides these numbers, and it did: 4 001 fixture nodes crossed the 20 ms budget under
+ *  full-suite load and turned an exact 9 into a 10. The budget has its own tests, with its
+ *  own clock. */
 function runPure(root: FixtureNode, cap: number, sliceSize: number) {
-  const gen = walkPageBounded(root, { cap, sliceSize });
+  const gen = walkPageBounded(root, { cap, sliceSize, budgetClock: () => 0 });
   let slices = 0;
   let step = gen.next();
   while (!step.done) { slices += 1; step = gen.next(); }
@@ -164,6 +169,77 @@ describe('walkPageBounded — no synchronous chunk exceeds sliceSize nodes', () 
     const { result, slices } = runPure(page('p1', Array.from({ length: 20_000 }, (_, i) => node(`n${i}`))), 4_000, 500);
     expect(result.visited).toBe(4_001);
     expect(slices).toBe(Math.ceil(4_001 / 500)); // 9 — never 40
+  });
+});
+
+describe('walkPageBounded — a slice is cut on ELAPSED time, not only on node count', () => {
+  /** Per-node cost varies by node TYPE, so a node count is not a time budget: the same 500
+   *  nodes measured 45 ms in an isolated probe and 65 ms on a real cold open, where the
+   *  walk competes with iframe and socket startup. The clock here advances on each node's
+   *  own property read — 5 ms of work per node — which is exactly the shape a count-based
+   *  cut cannot see. The children sit BELOW the top level so the page's own fingerprint
+   *  (one read, by design) is not mistaken for walk work. */
+  function costlyPage(count: number, msPerNode: number): { root: FixtureNode; budgetClock: () => number } {
+    let clock = 0;
+    const kids = Array.from({ length: count }, (_, i) => {
+      const kid = node(`n${i}`);
+      Object.defineProperty(kid, 'x', { get: () => { clock += msPerNode; return 0; } });
+      return kid;
+    });
+    const root = node('root');
+    Object.defineProperty(root, 'x', { get: () => { clock += msPerNode; return 0; } });
+    root.children = kids;
+    for (const kid of kids) kid.parent = root;
+    return { root: page('p1', [root]), budgetClock: () => clock };
+  }
+
+  function runTimed(root: FixtureNode, opts: { cap: number; sliceSize: number; sliceBudgetMs?: number; budgetClock: () => number }) {
+    const gen = walkPageBounded(root, opts);
+    let yields = 0;
+    let step = gen.next();
+    while (!step.done) { yields += 1; step = gen.next(); }
+    return { result: step.value, yields };
+  }
+
+  it('yields every 4 nodes at 5 ms each, thousands of nodes before sliceSize would cut', () => {
+    const { root, budgetClock } = costlyPage(12, 5);
+
+    const { result, yields } = runTimed(root, { cap: 4_000, sliceSize: 500, sliceBudgetMs: 20, budgetClock });
+
+    // 13 nodes visited, the budget spent every 4 of them (the page's own fingerprint read
+    // costs the first slice one node). A count-based cut would have held the thread for
+    // all 13 — 65 ms — because 13 is nowhere near 500.
+    expect(result.visited).toBe(13);
+    expect(yields).toBe(3);
+  });
+
+  it('the same walk with the budget out of reach is cut by node count alone', () => {
+    const { root, budgetClock } = costlyPage(12, 5);
+
+    const { result, yields } = runTimed(root, { cap: 4_000, sliceSize: 500, sliceBudgetMs: 10_000, budgetClock });
+
+    expect(result.visited).toBe(13);
+    expect(yields).toBe(0); // one synchronous chunk — what shipped before the time budget
+  });
+
+  it('an omitted budget still cuts: the default is the one the walk ships with', () => {
+    const { root, budgetClock } = costlyPage(12, 5);
+
+    const { yields } = runTimed(root, { cap: 4_000, sliceSize: 500, budgetClock });
+
+    expect(yields).toBe(3);
+  });
+
+  it('sliceSize stays the UPPER bound — a cheap node stream is still cut at the count', () => {
+    // Nothing advances this clock, so the budget can never be reached: the count is the
+    // only cut left, and it is still honoured exactly.
+    const { result, yields } = runTimed(
+      page('p1', Array.from({ length: 1_001 }, (_, i) => node(`n${i}`))),
+      { cap: 4_000, sliceSize: 500, budgetClock: () => 0 },
+    );
+
+    expect(result.visited).toBe(1_001);
+    expect(yields).toBe(2);
   });
 });
 
@@ -316,7 +392,9 @@ describe('walkPageSliced — the per-slice timings STATUS reports', () => {
     let clock = 0;
     const walk = await walkPageSliced(
       page('p1', Array.from({ length: 5 }, (_, i) => node(`n${i}`))),
-      { cap: 4_000, sliceSize: 2, hop: () => Promise.resolve(), now: () => (clock += 7) },
+      // The budget clock is frozen, so the budget can never trip: this pins the COUNT cut
+      // and the slice MEASUREMENTS, without a dependency on how fast the machine is.
+      { cap: 4_000, sliceSize: 2, hop: () => Promise.resolve(), now: () => (clock += 7), budgetClock: () => 0 },
     );
     expect(walk.slices).toBe(3);
     expect(walk.maxSliceMs).toBeGreaterThan(0);

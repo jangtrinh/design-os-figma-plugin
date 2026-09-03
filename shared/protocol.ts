@@ -367,10 +367,16 @@ export const MIN_IDLE_MS = 1_000;
  */
 export interface GapfillStatus {
   pagesDiffed: number;
-  /** Pages whose per-node diff was suppressed because the page exceeds the scan cap. */
+  /** Pages whose per-node diff was suppressed because the page exceeds the scan cap AS OF
+   *  this session's walk. A page that was over the cap only in the PREVIOUS session loses
+   *  its per-node diff too, for a different reason it states in its own notice, and is
+   *  deliberately not counted here — this number backs the sentence "exceeds the scan cap",
+   *  and must not include a page that no longer does. */
   pagesTruncated: number;
-  /** How many of those still reported, via the top-level fingerprint alone. The gap
-   *  between the two numbers is the coverage this session did not have. */
+  /** Pages that reported via the top-level fingerprint ALONE — either suppressed case,
+   *  whenever the previous session stored a fingerprint to compare against. Not a subset of
+   *  `pagesTruncated`: a page that shrank back under the cap reports this way and is absent
+   *  from that count. */
   pagesTopLevelOnly: number;
   /** Pages whose diff was SKIPPED because their walk could not read every node — those
    *  nodes are absent from the walk, and diffing anyway would report them as deleted.
@@ -417,8 +423,8 @@ export interface PerfStatus {
   bootSlices: number;
   idleWalkMs: number;
   idleWalkMaxSliceMs: number;
-  /** Nodes dropped mid-walk because their properties threw (a reference invalidated by the
-   *  scoped visibility flag). Present only when non-zero: a dropped node would otherwise
+  /** Nodes dropped mid-walk because their properties threw — a stale node reference, or a
+   *  host that refuses the read. Present only when non-zero: a dropped node would otherwise
    *  read as a deletion in the next session's diff with nothing to explain it. */
   propertyReadErrors?: number;
 }

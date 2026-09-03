@@ -9,6 +9,9 @@
 //   · a manual DFS that STOPS at the cap — 47 ms on the same page. Same records.
 //   · property reads per 4 000 nodes: id 1 ms · type 1 · name 60 · x 45 · y 48 ·
 //     **parent.id 153**. So `parentId` comes off the DFS stack; `node.parent` is never read.
+//   · per-node cost therefore varies by node TYPE and by what else the host is doing, which
+//     is why a slice is cut on ELAPSED TIME with the node count as an upper bound — see
+//     `PageWalkOptions.sliceBudgetMs`.
 //   · `skipInvisibleInstanceChildren` is deliberately NOT used — see `walkPageSliced`.
 //
 // Split the same way the rest of gap-fill is: `walkPageBounded` is a PURE generator over an
@@ -60,8 +63,8 @@ function coord(value: number | undefined): number {
 
 /**
  * The top-level fingerprint of one page. Each entry is read inside its own guard: a frame
- * whose properties refuse to be read (a node reference invalidated by the flag flip) is
- * SKIPPED and reported to `onError`, never recorded with invented values — an absent entry
+ * whose properties refuse to be read (a stale node reference, or a host that refuses the
+ * read) is SKIPPED and reported to `onError`, never recorded with invented values — an absent entry
  * costs one frame's coverage, a guessed one would report a fake move or resize.
  */
 export function topLevelFingerprint(
@@ -95,13 +98,31 @@ function readableId(node: WalkableNode): string | null {
   }
 }
 
+/** The slice time budget every caller gets unless it states its own. The plugin's own
+ *  walks state it explicitly (`SNAPSHOT_SLICE_BUDGET_MS` re-exports this value), so this is
+ *  the fallback for a direct caller — never a second, driftable copy of the number. */
+export const DEFAULT_SLICE_BUDGET_MS = 20;
+
 export interface PageWalkOptions {
   /** Maximum nodes VISITED is `cap + 1`: one past the cap is what makes "there was more"
    *  knowable without walking the rest. Records stop at `cap`. */
   cap: number;
-  /** Nodes visited per synchronous chunk. The stall budget: at ≈ 50 µs/node, 500 nodes is
-   *  ≈ 25–30 ms of held thread. */
+  /** The UPPER bound on nodes per synchronous chunk. Not a time budget on its own: per-node
+   *  cost varies by node type and by what else the host is doing, so a fixed count buys a
+   *  chunk of unknown duration — which is what `sliceBudgetMs` exists to bound. */
   sliceSize: number;
+  /** The chunk's TIME budget in ms — the walk yields as soon as this much has elapsed in the
+   *  current chunk, whatever the node count. Checked once per node, so the worst chunk is
+   *  this budget plus one node's work. Defaults to `DEFAULT_SLICE_BUDGET_MS`. */
+  sliceBudgetMs?: number;
+  /** The clock the budget is SPENT against, read once per node. Production passes
+   *  `Date.now`, whose ≈ µs cost is far below the ≈ 50 µs of work per node it guards.
+   *
+   *  Deliberately NOT the same seam as `SlicedWalkTiming.now`, which times finished slices
+   *  for STATUS: that one is called a fixed handful of times per walk and tests pin it to an
+   *  exact stamp SEQUENCE, which a per-node read would consume. One clock for both would
+   *  make one of the two impossible to pin. In production they are the same function. */
+  budgetClock?: () => number;
 }
 
 export interface PageWalkResult {
@@ -138,8 +159,11 @@ export interface PageWalkResult {
  */
 export function* walkPageBounded(
   page: WalkableNode,
-  { cap, sliceSize }: PageWalkOptions,
+  { cap, sliceSize, sliceBudgetMs = DEFAULT_SLICE_BUDGET_MS, budgetClock = Date.now }: PageWalkOptions,
 ): Generator<void, PageWalkResult, void> {
+  // The top-level fingerprint below is synchronous work in this first chunk, so it is
+  // inside the budget rather than free of it.
+  let sliceStartedAt = budgetClock();
   const records: NodeSnapshot[] = [];
   let propertyReadErrors = 0;
   const errorNodeIds: string[] = [];
@@ -171,9 +195,17 @@ export function* walkPageBounded(
     } catch {
       noteError(readableId(node));
     }
+    // Two cuts, whichever lands first: `sliceSize` bounds the node count and `sliceBudgetMs`
+    // bounds the held thread. Time is the one the "no visible stall" target is written in —
+    // 500 nodes measured 45 ms in an isolated probe and 65 ms on a real cold open, where the
+    // walk competes with iframe and socket startup, so a count alone cannot hold 50 ms.
     // Hand control back BETWEEN slices only: a trailing yield with nothing left to do would
     // buy a macrotask hop for an empty slice.
-    if (visited % sliceSize === 0 && stack.length > 0 && visited <= cap) yield;
+    if (stack.length > 0 && visited <= cap
+      && (visited % sliceSize === 0 || budgetClock() - sliceStartedAt >= sliceBudgetMs)) {
+      yield;
+      sliceStartedAt = budgetClock();
+    }
   }
 
   return { records, truncated: visited > cap, visited, propertyReadErrors, errorNodeIds, top };
@@ -184,8 +216,13 @@ export function* walkPageBounded(
  *  always owns, so a test can pin timing without restating the budget — and so the numbers
  *  STATUS reports are assertable as exact values rather than "at least zero". */
 export interface SlicedWalkTiming {
-  /** Injectable so a test can pin the clock; production reads `Date.now`. */
+  /** Injectable so a test can pin the clock; production reads `Date.now`. Times FINISHED
+   *  slices for STATUS — the generator spends its own budget on `budgetClock`, and the two
+   *  are separate seams for the reason documented there. */
   now?: () => number;
+  /** Forwarded verbatim to the walk generator — see `PageWalkOptions.budgetClock`. Carried
+   *  here so a caller that injects walk timing at all can pin BOTH clocks. */
+  budgetClock?: () => number;
   /** The between-slices hop. A MACROTASK by default: a microtask would return control to
    *  this walk before the host could paint or deliver an event, which is the whole point. */
   hop?: () => Promise<void>;
@@ -205,7 +242,9 @@ export interface SlicedPageWalkResult extends PageWalkResult {
 
 /**
  * Runs one page's walk as a sequence of synchronous slices, hopping the host's macrotask
- * queue between them and timing each one.
+ * queue between them and timing each one. The slices are cut inside the generator (by
+ * elapsed time, with the node count as an upper bound); this runner owns only the hop and
+ * the measurements STATUS reports.
  *
  * It sets NO global. An earlier version turned `skipInvisibleInstanceChildren` on for the
  * duration of each slice, because that cuts an UNCAPPED `findAll` 4–5×. Under this capped

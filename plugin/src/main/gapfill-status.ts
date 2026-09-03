@@ -9,12 +9,14 @@ import type { GapfillStatus } from '../../../shared/protocol';
 
 export interface GapfillStats {
   pagesDiffed: number;
+  /** Pages over the node cap AS OF this session's walk. A page that was over it only in the
+   *  PREVIOUS session is suppressed the same way but counted nowhere here: this number backs
+   *  a sentence about the page's CURRENT size. */
   pagesTruncated: number;
-  /** Pages whose closed-window signal came from the TOP-LEVEL fingerprint alone, because
-   *  the page is over the node cap. Reported next to `pagesTruncated` so the coverage a
-   *  session actually delivered is readable rather than inferred: `pagesTruncated` says how
-   *  many pages lost their per-node diff, this says how many of them still reported
-   *  something. */
+  /** Pages whose closed-window signal came from the TOP-LEVEL fingerprint alone — every
+   *  page whose per-node diff was suppressed and whose previous session stored a
+   *  fingerprint, whichever side was over the cap. Reported so the coverage a session
+   *  actually delivered is readable rather than inferred. */
   pagesTopLevelOnly: number;
   /** Pages whose diff was skipped because their walk could not read every node. Their
    *  missing nodes would otherwise have been reported as deletions. */

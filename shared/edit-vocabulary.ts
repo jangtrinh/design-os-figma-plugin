@@ -89,6 +89,15 @@ export function editSentence(frame: SceneEditSentenceInput): string {
     const label = frame.nodeName ?? frame.parentName ?? 'this page';
     return `Gap-fill covers only top-level frames on "${label}" while it exceeds the scan cap`;
   }
+  // The same suppression for the OPPOSITE reason: the page was over the cap LAST session,
+  // so the stored baseline holds that session's top-level fingerprint and no per-node
+  // records, and the page is under the cap now. It gets its own sentence because the one
+  // above states that the page exceeds the scan cap — true of a page that is over it now,
+  // and a wrong fact about a page that shrank back under it while the plugin was closed.
+  if (frame.changedProps.includes('prev-truncated')) {
+    const label = frame.nodeName ?? frame.parentName ?? 'this page';
+    return `Gap-fill had only top-level frames for "${label}" last session — per-node edits made before this session are unreported`;
+  }
   // The other gap-fill notice, same shape and the same reason for existing: an
   // `op: 'updated'` frame carrying `changedProps: ['baseline-missing']` is not an edit at
   // all, and the generic verb path would render it as the actively wrong "Restyled ...".

@@ -8,8 +8,8 @@
 // a permissive mock would have hidden.
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  clearLegacyGapfillDocumentData, runGapfillDiff, snapshotPageBounded, writeBaseline,
-  SNAPSHOT_NODE_CAP_PER_PAGE, SNAPSHOT_SLICE_SIZE,
+  clearLegacyGapfillDocumentData, nodeStillExists, runGapfillDiff, snapshotPageBounded, writeBaseline,
+  SNAPSHOT_NODE_CAP_PER_PAGE, SNAPSHOT_SLICE_BUDGET_MS, SNAPSHOT_SLICE_SIZE,
 } from '../plugin/src/main/edit-gapfill.ts';
 import type { NodeSnapshot } from '../plugin/src/main/page-walk-bounded.ts';
 import { createPerfStats, markBootComplete, toPerfStatus } from '../plugin/src/main/perf-stats.ts';
@@ -204,6 +204,68 @@ describe('writeBaseline — a truncated page stores no records', () => {
     expect(edits[0]!.changedProps).toEqual(['truncated']);
     expect(stats.pagesTruncated).toBe(1);
     expect(toGapfillStatus(stats).pagesTruncated).toBe(1);
+  });
+});
+
+describe('the truncation notice names the side that is actually over the cap', () => {
+  const CAP = SNAPSHOT_NODE_CAP_PER_PAGE;
+
+  /** The same page, over or under the cap — the only two inputs the notice direction
+   *  depends on. `hero` stays top-level in both so the fingerprint is comparable. */
+  function pageOfSize(over: boolean): PageNode {
+    const bulk = over
+      ? [fakeNode('bulk', { children: Array.from({ length: CAP + 1 }, (_, i) => fakeNode(`f${i}`)) })]
+      : [];
+    return fakePage('big', 'Everything', [fakeNode('hero', { name: 'Hero' }), ...bulk]);
+  }
+
+  async function seedPrevSession(over: boolean): Promise<ReturnType<typeof createMemoryBaselineStore>> {
+    const pages = [pageOfSize(over)];
+    installFigma({ pages });
+    const store = createMemoryBaselineStore();
+    await writeBaseline(pages, snapshotPageBounded, store, createGapfillStats());
+    return store;
+  }
+
+  const cases = [
+    { prev: false, next: false, notice: null, truncated: 0, topLevelOnly: 0 },
+    { prev: false, next: true, notice: 'truncated', truncated: 1, topLevelOnly: 1 },
+    { prev: true, next: true, notice: 'truncated', truncated: 1, topLevelOnly: 1 },
+    // The page SHRANK back under the cap. Its per-node diff stays suppressed — the previous
+    // session stored no records to diff against — but "while it exceeds the scan cap" is a
+    // statement about a page that no longer does, and `pagesTruncated` would carry that
+    // wrong fact into STATUS as well.
+    { prev: true, next: false, notice: 'prev-truncated', truncated: 0, topLevelOnly: 1 },
+  ] as const;
+
+  for (const { prev, next, notice, truncated, topLevelOnly } of cases) {
+    it(`previously ${prev ? 'over' : 'under'} the cap, now ${next ? 'over' : 'under'} it → ${notice ?? 'no notice'}`, async () => {
+      const store = await seedPrevSession(prev);
+      const pages = [pageOfSize(next)];
+      installFigma({ pages });
+      const stats = createGapfillStats();
+
+      const edits = await runGapfillDiff(pages, store, stats);
+
+      const notices = edits.filter((e) => e.nodeType === 'PAGE').map((e) => e.changedProps);
+      expect(notices).toEqual(notice === null ? [] : [[notice]]);
+      expect(stats.pagesTruncated).toBe(truncated);
+      expect(stats.pagesTopLevelOnly).toBe(topLevelOnly);
+    });
+  }
+
+  it('a page that shrank still reports no per-NODE facts — the previous side stored none', async () => {
+    const store = await seedPrevSession(true);
+    const pages = [pageOfSize(false)];
+    installFigma({ pages });
+
+    const edits = await runGapfillDiff(pages, store, createGapfillStats());
+
+    // `hero` is unchanged and `bulk` is genuinely gone: the TOP-LEVEL diff still runs and
+    // states that. What must never appear is a per-node fact about the thousands of nodes
+    // under `bulk`, which this session has no previous records for.
+    expect(edits.filter((e) => e.op === 'deleted').map((e) => e.nodeId)).toEqual(['bulk']);
+    expect(edits.some((e) => e.nodeId.startsWith('f'))).toBe(false);
   });
 });
 
@@ -649,6 +711,42 @@ describe('runGapfillDiff — a node that is missing from the walk but still in t
   });
 });
 
+describe('nodeStillExists — the only authority on whether a `deleted` candidate is really gone', () => {
+  /** Every test that injects `deps.nodeExists` rides PAST this predicate, so without these
+   *  four the branch deciding whether a closed-window deletion reaches the feed at all is
+   *  never executed. The stub therefore encodes what the host can REFUSE, not just what it
+   *  can answer: no getter, a rejected lookup, a live handle, and a handle the host still
+   *  resolves for an id that is gone. */
+  function installLookup(getNodeByIdAsync: (id: string) => Promise<unknown>): void {
+    installFigma();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).figma.getNodeByIdAsync = getNodeByIdAsync;
+  }
+
+  it('a host with NO getter cannot answer, so the walk\'s own evidence stands', async () => {
+    installFigma(); // no getNodeByIdAsync at all — an older host, FigJam, Slides
+    expect(await nodeStillExists('a')).toBe(false);
+  });
+
+  it('a getter that REFUSES the lookup leaves that evidence standing too', async () => {
+    installLookup(() => Promise.reject(new Error('node lookup refused')));
+    expect(await nodeStillExists('a')).toBe(false);
+  });
+
+  it('an id that resolves to a LIVE node is a survivor', async () => {
+    installLookup(async (id: string) => ({ id, removed: false }));
+    expect(await nodeStillExists('a')).toBe(true);
+  });
+
+  it('a handle the host still resolves but has REMOVED is gone, not a survivor', async () => {
+    // The repo's own convention (executor-exec-js.ts): `.removed` is the honest check, a
+    // non-null handle is not. Trusting the handle would suppress EVERY closed-window
+    // deletion on such a host and leave the category visible only as an anonymous counter.
+    installLookup(async (id: string) => ({ id, removed: true }));
+    expect(await nodeStillExists('a')).toBe(false);
+  });
+});
+
 describe('writeBaseline — the writtenAt stamp eviction ranks by', () => {
   it('stamps the ISO timestamp of the write MOMENT, parseable back to it', async () => {
     const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
@@ -924,7 +1022,9 @@ describe('the perf block STATUS reports', () => {
     // p2: starts at 200 · one 6 ms slice · ends at 210.
     const now = pinnedClock([0, 0, 12, 20, 57, 60, 65, 100, 200, 200, 206, 210]);
 
-    await runGapfillDiff(pages, createMemoryBaselineStore(), createGapfillStats(), perf, { walk: { now, hop } });
+    // The budget clock is frozen so the TIME cut can never trip: this test is about the
+    // count cut and the slice MEASUREMENTS, and must not depend on how fast the machine is.
+    await runGapfillDiff(pages, createMemoryBaselineStore(), createGapfillStats(), perf, { walk: { now, hop, budgetClock: () => 0 } });
     markBootComplete(perf);
 
     const status = toPerfStatus(perf)!;
@@ -932,6 +1032,33 @@ describe('the perf block STATUS reports', () => {
     expect(status.bootWalkMaxSliceMs).toBe(37); // the worst chunk — NOT the mean of four
     expect(status.bootWalkMs).toBe(110);        // 100 + 10, hops included
     expect(status.idleWalkMaxSliceMs).toBe(0);  // no idle walk has happened, and it says so
+  });
+
+  it('the walk cuts a slice on the TIME budget, not only on the node count', async () => {
+    // Twelve nodes costing 5 ms each: nowhere near SNAPSHOT_SLICE_SIZE, so the count cut
+    // would hold the thread for all of them at once — the 65 ms cold-open chunk this budget
+    // exists to prevent. The clock advances on each node's own property read.
+    let clock = 0;
+    const costs = <T extends { x: number }>(n: T): T => {
+      Object.defineProperty(n, 'x', { get: () => { clock += 5; return 0; } });
+      return n;
+    };
+    const container = costs(fakeNode('bulk', {
+      children: Array.from({ length: 12 }, (_, i) => costs(fakeNode(`n${i}`))),
+    }));
+    installFigma({ pages: [fakePage('p1', 'Screens', [container])] });
+    const perf = createPerfStats();
+
+    await runGapfillDiff(
+      [fakePage('p1', 'Screens', [container])], createMemoryBaselineStore(), createGapfillStats(), perf,
+      { walk: { hop, budgetClock: () => clock } },
+    );
+    markBootComplete(perf);
+
+    // 13 nodes at 5 ms, cut every SNAPSHOT_SLICE_BUDGET_MS → 4 chunks, none longer than the
+    // budget plus one node's work.
+    expect(SNAPSHOT_SLICE_BUDGET_MS).toBe(20);
+    expect(toPerfStatus(perf)!.bootSlices).toBe(4);
   });
 
   it('an IDLE walk lands in the idle numbers, never in the boot ones', async () => {

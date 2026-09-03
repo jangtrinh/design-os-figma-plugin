@@ -20,13 +20,15 @@ import {
 } from './gapfill-baseline-store';
 import {
   baselineMissingNotice, baselineUnreadableNotice, deletedPageIds, diffSnapshots, diffTopLevel,
-  fromBaselineRecord, gapfillEditsForPage, pageDeletedNotice, pageWasTruncated, resolveBaselinePage,
-  snapshotProviderFrom, truncatedNotice, walkErrorsNotice, withoutSurvivingNodes,
+  fromBaselineRecord, gapfillEditsForPage, pageDeletedNotice, pageWasTruncated,
+  previouslyTruncatedNotice, resolveBaselinePage, snapshotProviderFrom, truncatedNotice,
+  walkErrorsNotice, withoutSurvivingNodes,
   type GapfillDiff, type PageSnapshotResult,
 } from './gapfill-diff';
 import { recordGapfillError, recordGapfillEviction, type GapfillStats } from './gapfill-status';
 import {
-  normalizeSnapshotCoord, walkPageSliced, type NodeSnapshot, type SlicedWalkTiming,
+  DEFAULT_SLICE_BUDGET_MS, normalizeSnapshotCoord, walkPageSliced,
+  type NodeSnapshot, type SlicedWalkTiming,
 } from './page-walk-bounded';
 import {
   createPerfStats, recordPageLoadAsync, recordWalk, type PerfStats, type WalkPhase,
@@ -48,10 +50,20 @@ const LEGACY_CHUNK_PREFIX = 'figma-edit-snap-';
  *  is the honest answer). */
 export const SNAPSHOT_NODE_CAP_PER_PAGE = 4_000;
 
-/** Nodes per SYNCHRONOUS slice of a page walk. At the measured ≈ 50 µs/node this is
- *  ≈ 25–30 ms of held thread — inside the 50 ms "no visible stall" budget with room for a
- *  slower machine. */
+/** The UPPER bound on nodes per SYNCHRONOUS slice of a page walk — not the stall budget
+ *  itself. Measured at this size on the owner's file: the worst chunk was 45 ms in an
+ *  isolated probe and 65 ms on a real cold open, where the walk competes with the iframe and
+ *  socket startup. Both are at or past the 50 ms "no visible stall" target, so a node count
+ *  cannot hold that target on its own — per-node cost varies by node type and by what else
+ *  the host is doing. `SNAPSHOT_SLICE_BUDGET_MS` is what bounds the held thread; this
+ *  bounds how far a slice can run when nodes turn out to be cheap. */
 export const SNAPSHOT_SLICE_SIZE = 500;
+
+/** The TIME budget for one synchronous slice: the walk yields as soon as this much has
+ *  elapsed in the current chunk, so the worst chunk is the budget plus one node's work
+ *  (≈ 50 µs). That holds on a machine of any speed, which the 500-node count did not — see
+ *  the measurements above. */
+export const SNAPSHOT_SLICE_BUDGET_MS = DEFAULT_SLICE_BUDGET_MS;
 
 /** One macrotask hop between per-page walks, so the boot diff never holds the plugin's
  *  single thread for the whole document at once (the UI-freeze half of the boot cost). */
@@ -90,8 +102,9 @@ export function createSingleFlightWriter(write: () => Promise<void>): () => void
 
 /**
  * Walks one page (existence / name / position only), bounded at
- * `SNAPSHOT_NODE_CAP_PER_PAGE` VISITS and sliced at `SNAPSHOT_SLICE_SIZE` nodes per
- * synchronous chunk — see page-walk-bounded.ts for why `findAll` could not do either.
+ * `SNAPSHOT_NODE_CAP_PER_PAGE` VISITS and sliced at `SNAPSHOT_SLICE_BUDGET_MS` of held
+ * thread per synchronous chunk, with `SNAPSHOT_SLICE_SIZE` as that chunk's upper node count
+ * — see page-walk-bounded.ts for why `findAll` could not do either.
  * Free to REJECT: a page that cannot enumerate its children has no walk, and the caller
  * must treat that as a failure (previous entry carried forward), never as an empty page.
  *
@@ -114,7 +127,8 @@ export async function snapshotPageBounded(
     recordPageLoadAsync(perf, Date.now() - loadStartedAt);
   }
   const walk = await walkPageSliced(page, {
-    cap: SNAPSHOT_NODE_CAP_PER_PAGE, sliceSize: SNAPSHOT_SLICE_SIZE, ...timing,
+    cap: SNAPSHOT_NODE_CAP_PER_PAGE, sliceSize: SNAPSHOT_SLICE_SIZE,
+    sliceBudgetMs: SNAPSHOT_SLICE_BUDGET_MS, ...timing,
   });
   recordWalk(perf, phase, walk);
   return {
@@ -277,12 +291,19 @@ export function clearLegacyGapfillDocumentData(stats: GapfillStats): number {
  * leaves the question unanswerable, so the candidate keeps the classification the diff gave
  * it. That is the behaviour this check replaces, applied only where it cannot be improved
  * on; it never invents a survival it could not confirm.
+ *
+ * A RESOLVED handle is not by itself a survival: `.removed` is this repo's honest check
+ * everywhere a node reference is held across an await (see `executor-exec-js.ts`), and a
+ * host that answers a gone id with a removed handle rather than `null` would otherwise make
+ * every closed-window deletion look like a survivor — the whole `deleted` category would
+ * leave the feed and survive only as an anonymous `deletedRechecked` count.
  */
-async function nodeStillExists(id: string): Promise<boolean> {
+export async function nodeStillExists(id: string): Promise<boolean> {
   try {
     const host = figma as unknown as { getNodeByIdAsync?: (nodeId: string) => Promise<unknown> };
     if (typeof host.getNodeByIdAsync !== 'function') return false;
-    return (await host.getNodeByIdAsync(id)) !== null;
+    const node = await host.getNodeByIdAsync(id);
+    return node !== null && !(node as { removed?: boolean }).removed;
   } catch {
     return false;
   }
@@ -327,8 +348,9 @@ function bootSnapshotProvider(
  *     notice naming the page (never N synthetic per-node deletions — we know the page is
  *     gone, not whether each node was individually deleted).
  *   - Either side of a page truncated → no per-node diff (a node pushed past the cap by
- *     unrelated growth would read as a deletion), but the page is NOT silent: the
- *     truncation notice plus the TOP-LEVEL diff, which reports real frame-level facts.
+ *     unrelated growth would read as a deletion), but the page is NOT silent: the notice
+ *     for whichever side was over the cap — this session's walk, or only the previous
+ *     baseline — plus the TOP-LEVEL diff, which reports real frame-level facts.
  *   - A page whose walk THROWS → that page's diff is skipped and the failure recorded;
  *     its previous baseline entry carries forward and every other page still reports.
  */
@@ -408,11 +430,24 @@ export async function runGapfillDiff(
       continue;
     }
     stats.pagesDiffed += 1;
+    // EITHER side truncated suppresses the per-NODE diff — one side has no records to
+    // compare, and a node pushed past the cap by unrelated growth would read as a deletion.
+    // The two sides are different FACTS about the page in front of the owner, though, so
+    // each states the one that is true of it.
     if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
-      stats.pagesTruncated += 1;
-      // The page IS over the cap and its per-node facts stay suppressed — that is still
-      // true and still said out loud.
-      edits.push(truncatedNotice(page));
+      if (nextTruncated) {
+        // The page IS over the cap and its per-node facts stay suppressed — that is still
+        // true and still said out loud. This is the ONLY case `pagesTruncated` counts, so
+        // that number and the sentence it backs say the same thing.
+        stats.pagesTruncated += 1;
+        edits.push(truncatedNotice(page));
+      } else {
+        // The page shrank back under the cap while the plugin was closed. The per-node diff
+        // is still impossible — the PREVIOUS baseline stored a fingerprint and no records —
+        // but this page does not exceed the cap, so it is neither told that it does nor
+        // counted among the pages that do.
+        edits.push(previouslyTruncatedNotice(page));
+      }
       // What used to be the whole story. On the owner's file 16 of 21 pages are over the
       // cap, so "truncated ⇒ report nothing" made closed-window edits on most of the
       // document vanish without trace. The top-level fingerprint is O(top-level) and gives

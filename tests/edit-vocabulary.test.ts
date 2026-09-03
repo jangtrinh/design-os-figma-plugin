@@ -109,6 +109,19 @@ describe('editSentence', () => {
       const sentence = editSentence(base({ nodeName: 'Screens', nodeType: 'PAGE', changedProps: ['truncated'], op: 'updated' }));
       expect(sentence).toContain('"Screens"');
     });
+
+    // A page that shrank BACK under the cap is a different fact: the PREVIOUS baseline held
+    // only top-level frames, so per-node edits made before this session are unreported —
+    // but the page does not exceed the cap now, and saying it does is a wrong fact about
+    // the page in front of the owner.
+    it('changedProps ["prev-truncated"] blames LAST session\'s baseline, never the current page size', () => {
+      const sentence = editSentence(base({ nodeName: 'Screens', nodeType: 'PAGE', changedProps: ['prev-truncated'], op: 'updated' }));
+      expect(sentence).not.toContain('Restyled');
+      expect(sentence).not.toContain('exceeds the scan cap');
+      expect(sentence).toContain('last session');
+      expect(sentence).toContain('top-level frames');
+      expect(sentence).toContain('"Screens"');
+    });
   });
 
   // The other gap-fill notice: no baseline existed for this file, so a whole session's
