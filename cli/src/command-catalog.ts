@@ -190,8 +190,14 @@ export const COMMANDS: CommandCatalogEntry[] = [
     name: 'changes',
     description:
       '[--since ts|iso --owner-only --actor owner|agent|ambiguous --file name|slug --limit 50 --page name]  '
-      + 'read the owner-edit feed (wave 4.4) — pure fs, works even with the plugin closed; --owner-only '
-      + 'is sugar for --actor owner',
+      + '[--png <dir> [--scale 2]]  read the owner-edit feed (wave 4.4) — pure fs, works even with the '
+      + 'plugin closed; --owner-only is sugar for --actor owner. --png (needs a live plugin) exports a '
+      + 'read-only AFTER PNG per unique node in the listed window to <dir>/<node-id>.after.png and '
+      + 'reports every path under png:{dir,exported,skipped}; a BEFORE exists only when a prior export '
+      + 'of that node in <dir> predates the earliest edit (then it is kept as <node-id>.before.png, '
+      + 'beforeSource:"prior-export") — otherwise before:null with the reason, never a guess. Nodes '
+      + 'deleted in the window and nodes the plugin cannot find are listed in skipped with a reason; '
+      + '--limit bounds the export count the same way it bounds the listing.',
   },
   {
     name: 'errors',

@@ -47,7 +47,9 @@ export const SKILL_WORKFLOW = `## Typical workflow
 5. Verify a screen with \`export-png --node <id> --out shot.png --assert verify.js\` — the
    structural assert runs read-only first and the PNG is written only when it passes.
 6. \`changes\`/\`errors\`/\`contention\` read durable local logs — they work even with the
-   plugin closed, useful for catching up after a session gap.`;
+   plugin closed, useful for catching up after a session gap. \`changes --owner-only --png
+   <dir>\` also exports an after PNG per owner-edited node (before only when a prior
+   export predates the edit) so you can look instead of re-exporting.`;
 
 export const SKILL_ERROR_HINTS = `## Error hints
 
