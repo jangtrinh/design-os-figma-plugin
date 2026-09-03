@@ -10,19 +10,16 @@ import { DEFAULT_IDLE_MS, MIN_IDLE_MS } from '../../../shared/protocol';
 import { fileMatches } from '../../../shared/file-match';
 import type { FigmaExportPayload } from '../../../shared/figma-payload-types';
 import {
-  coalesceChanges, mapChangeType,
-  type ChangeOrigin, type ComponentChange,
-} from '../../../shared/figma-changes';
-import { coalesceEdits, type EditInput, type EditOrigin } from '../../../shared/edit-feed';
-import {
   clearLegacyGapfillDocumentData, createSingleFlightWriter, runGapfillDiff, snapshotPage, writeBaseline,
 } from './edit-gapfill';
 import { runBootCapture } from './boot-capture';
 import { createClientStorageBaselineStore } from './gapfill-baseline-store';
 import { createGapfillStats, toGapfillStatus } from './gapfill-status';
 import {
-  classifyActor, pruneDeclaredIds, pruneLastAgentAt, AGENT_ECHO_MS, type ActorState,
+  pruneDeclaredIds, pruneLastAgentAt, AGENT_ECHO_MS, type ActorState,
 } from './edit-actor';
+import { createEditIdentityCache } from './change-node-identity';
+import { createDocumentChangeCapture } from './document-change-capture';
 import {
   createColorStyles, createTextStyles, createEffectStyles,
   resetImportWarnings, getImportWarnings, withCode,
@@ -45,10 +42,12 @@ import { opConnect, opDisconnect, opListConnections, opReroute, opVerifyConnecti
 import { noteChangedNodes } from './connector-reroute';
 import {
   beginAgentMutation,
+  beginCorrectionBatch,
+  flushCorrectionBatch,
   readEdgeCorrections,
   readEvictedUnresolvedCount,
   recordAgentMutationBatch,
-  recordDesignerCorrection,
+  recordDesignerCorrectionInBatch,
   writeEdgeCorrections,
 } from './correction-edge-store';
 import type { CorrectionEvent } from '../../../shared/supervised-memory';
@@ -178,94 +177,6 @@ function fileContext(): FileContext {
 // `documentchange`, or the event fires for the current page only. We pay that cost
 // once at boot (RAM measured in the P1 dogfood) so edits on any page are captured.
 
-/** Component identity as recorded in a change (id + best-effort name + node type). */
-interface ComponentIdentity {
-  id: string;
-  name: string | null;
-  type: string;
-}
-
-/**
- * Resolve a changed node to its canonical component container: the enclosing
- * COMPONENT_SET if the node is a variant, else the nearest COMPONENT/COMPONENT_SET.
- * Returns null when the change is not under any component (the volume filter —
- * ordinary frame/text edits are ignored). Deletes arrive as a RemovedNode with only
- * id + type (no name, no parent), so a deleted DESCENDANT of a component cannot be
- * resolved upward — we capture only whole-component deletions. Documented P1 limit.
- */
-function resolveComponentIdentity(node: SceneNode | RemovedNode): ComponentIdentity | null {
-  if ('removed' in node && node.removed) {
-    // RemovedNode: id + type only. Record it only if it WAS itself a component.
-    if (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') {
-      return { id: node.id, name: null, type: node.type };
-    }
-    return null;
-  }
-  let n: BaseNode | null = node;
-  while (n) {
-    if (n.type === 'COMPONENT_SET') return { id: n.id, name: n.name, type: n.type };
-    if (n.type === 'COMPONENT') {
-      // A variant's canonical unit is its enclosing set (matches the registry).
-      if (n.parent && n.parent.type === 'COMPONENT_SET') {
-        return { id: n.parent.id, name: n.parent.name, type: n.parent.type };
-      }
-      return { id: n.id, name: n.name, type: n.type };
-    }
-    n = n.parent;
-  }
-  return null;
-}
-
-// ─── Widened capture (wave 4.4 phase 01) ─────────────────────────────
-// The component branch above stays exactly as it was (figma.changes.jsonl / kernel
-// reconcile, spec A6, untouched). This is a SECOND, wider collection alongside it —
-// every node, not just components — feeding its own per-file feed (shared/edit-feed.ts).
-
-/** Best-effort identity, remembered so a DELETE (which arrives as id+type only) can
- *  still be described. Capped with oldest-out eviction — a long session must not leak. */
-interface CachedIdentity { name: string; type: string; parentName: string | null; page: string }
-const EDIT_IDENTITY_CACHE_CAP = 2_000;
-const identityCache = new Map<string, CachedIdentity>();
-
-function rememberIdentity(id: string, value: CachedIdentity): void {
-  identityCache.set(id, value);
-  if (identityCache.size > EDIT_IDENTITY_CACHE_CAP) {
-    const oldestKey = identityCache.keys().next().value;
-    if (oldestKey !== undefined) identityCache.delete(oldestKey);
-  }
-}
-
-const ENCLOSING_NAME_HOP_CAP = 20;
-
-/** Nearest enclosing FRAME/SECTION/COMPONENT/COMPONENT_SET above `node` — "where" the
- *  owner was working. Walks UP (not down), so it is O(depth), not O(tree). Null past
- *  the hop cap or when there is none (e.g. a direct child of the page). */
-function enclosingName(node: SceneNode): string | null {
-  let n: BaseNode | null = node.parent;
-  let hops = 0;
-  while (n && hops < ENCLOSING_NAME_HOP_CAP) {
-    if (n.type === 'FRAME' || n.type === 'SECTION' || n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') {
-      return n.name;
-    }
-    n = n.parent;
-    hops += 1;
-  }
-  return null;
-}
-
-/** The PAGE a node lives on. `documentchange` is document-wide (loadAllPagesAsync at
- *  boot), so a single batch can span pages — this must be resolved PER NODE, never
- *  stamped from `figma.currentPage` at the batch level, or cross-page edits would file
- *  under the wrong page. */
-function pageNameOf(node: SceneNode): string {
-  let n: BaseNode | null = node;
-  while (n) {
-    if (n.type === 'PAGE') return n.name;
-    n = n.parent;
-  }
-  return figma.currentPage.name; // defensive: an orphaned/detached node
-}
-
 // ─── Actor classification state (wave 4.4 phase 01) ──────────────────
 // Post-review fix (Codex P1, round 1): concurrent overlapping dispatches to the same
 // plugin instance are real (two CLI invocations racing the same file), so this is a
@@ -347,102 +258,35 @@ function fireIdle(): void {
   changesSinceCommit = 0;
 }
 
-function onDocumentChange(event: DocumentChangeEvent): void {
-  const connectorTouched: string[] = [];
-  pruneDeclaredIds(declaredIds, Date.now()); // once per batch — nothing reads `declared` between batches
-  // Read-only EXEC_JS enforcement — once per batch, not per node: this
-  // records ATTRIBUTABILITY ("could this batch belong to the one active dispatch"),
-  // not which node changed. See readonly-guard.ts.
-  recordDocumentChangeBatch(readOnlyGuard, activeCount);
-  const raw: ComponentChange[] = [];
-  const edits: EditInput[] = [];
-  for (const dc of event.documentChanges) {
-    // Filter the TYPE first — before any node dereference. A StyleChange payload
-    // carries `style`, not `node`; casting every DocumentChange to `{ node }` and
-    // testing `'removed' in changedNode` BEFORE this filter throws on `undefined`
-    // for a STYLE_* change — a latent crash this wave would otherwise inherit
-    // (one style edit away from killing capture entirely).
-    const op = mapChangeType(dc.type);
-    if (op === null) continue; // STYLE_* — filtered before any node dereference
-    const node = (dc as { node?: SceneNode | RemovedNode }).node;
-    if (!node) continue; // defensive: a node-less change type
-
-    if (!('removed' in node) || !node.removed) {
-      recordDesignerCorrection(node.id, {
-        changeType: dc.type,
-        properties: dc.type === 'PROPERTY_CHANGE' ? [...dc.properties] : [],
-      });
-    }
-    const changedProps = dc.type === 'PROPERTY_CHANGE' ? [...dc.properties] : [];
-    // Every touched id, for the connector index — a connector's endpoint may be nested far
-    // below whatever actually moved, and only the ancestor chain can bridge that.
-    connectorTouched.push(node.id);
-
-    // ── Component-scoped capture (unchanged behaviour — figma.changes.jsonl, spec A6) ──
-    const identity = resolveComponentIdentity(node);
-    if (identity) {
-      raw.push({
-        op,
-        nodeId: identity.id,
-        nodeName: identity.name,
-        nodeType: identity.type,
-        changedProps,
-        origin: dc.origin as ChangeOrigin,
-      });
-    }
-
-    // ── Widened capture (wave 4.4 phase 01) — every node, not just components ──
-    const removed = 'removed' in node && node.removed;
-    const known = identityCache.get(node.id);
-    // A RemovedNode carries ONLY id + type — no name, no parent, no page — so a delete
-    // reads from the identity cache; a node the session never saw degrades honestly to
-    // null (the sentence layer says "Deleted a TEXT node" rather than inventing a name).
-    const parentName = removed ? known?.parentName ?? null : enclosingName(node);
-    const page = removed ? known?.page ?? figma.currentPage.name : pageNameOf(node);
-    edits.push({
-      op,
-      nodeId: node.id,
-      nodeName: removed ? known?.name ?? null : node.name,
-      nodeType: node.type,
-      parentName,
-      page,
-      changedProps,
-      origin: dc.origin as EditOrigin,
-      actor: classifyActor(node.id, op, Date.now(), actorState()),
-    });
-    if (!removed) rememberIdentity(node.id, { name: node.name, type: node.type, parentName, page });
-  }
-
-  if (connectorTouched.length > 0) void noteChangedNodes(connectorTouched);
-
-  const changes = coalesceChanges(raw);
-  if (changes.length > 0) {
-    figma.ui.postMessage({
-      // fileName rides alongside fileKey (registry-integrity phase 03, §1) — fileKey is
-      // null whenever the manifest lacks enablePrivatePluginApi, so without a name the
-      // slug chain collapses every such file to 'unknown' and keeps coalescing them.
-      type: 'DOC_CHANGE',
-      data: { changes, page: figma.currentPage.name, fileKey: figma.fileKey ?? null, fileName: figma.root.name },
-    });
-    changesSinceCommit += changes.length;
-  }
-
-  if (edits.length > 0) {
-    figma.ui.postMessage({
-      type: 'EDIT_FEED',
-      data: {
-        edits: coalesceEdits(edits), fileKey: figma.fileKey ?? null,
-        fileName: figma.root.name, source: 'live',
-      },
-    });
-    hasEditsSinceSnapshot = true; // wave 4.4 phase 02 §2 — the next idle fire refreshes the gap-fill snapshot
-  }
-
-  // Either kind of activity pushes the idle-commit prompt (and the gap-fill snapshot
-  // refresh) further out — a session with ONLY widened (non-component) edits must still
-  // debounce, not just a component-scoped one.
-  if (changes.length > 0 || edits.length > 0) resetIdleTimer();
-}
+// The handler itself lives in document-change-capture.ts (main.ts cannot be imported
+// outside a live sandbox — it calls `figma.showUI` at module load — so the hottest loop in
+// the plugin is only testable from its own module). Everything session-scoped stays here:
+// this file owns the state, that module owns the pass over one delivered batch.
+const editIdentityCache = createEditIdentityCache();
+const capture = createDocumentChangeCapture({
+  now: () => Date.now(),
+  onBatchStart: (now) => {
+    pruneDeclaredIds(declaredIds, now); // once per batch — nothing reads `declared` between batches
+    // Read-only EXEC_JS enforcement — once per batch, not per node: this records
+    // ATTRIBUTABILITY ("could this batch belong to the one active dispatch"), not which
+    // node changed. See readonly-guard.ts.
+    recordDocumentChangeBatch(readOnlyGuard, activeCount);
+  },
+  actorState,
+  identity: editIdentityCache,
+  // The store is read once for the whole batch and written once at its end — never per
+  // changed node, which is what made a 50-node drag pay for the whole store 50 times.
+  corrections: {
+    begin: beginCorrectionBatch,
+    record: recordDesignerCorrectionInBatch,
+    flush: flushCorrectionBatch,
+  },
+  noteChangedNodes: (nodeIds) => { void noteChangedNodes(nodeIds); },
+  post: (message) => { figma.ui.postMessage(message); },
+  noteComponentChanges: (count) => { changesSinceCommit += count; },
+  noteEdits: () => { hasEditsSinceSnapshot = true; }, // the next idle fire refreshes the gap-fill snapshot
+  armIdle: resetIdleTimer,
+});
 
 // Reconnect gap-fill (wave 4.4 phase 02 §2) — ONE diff against the PREVIOUS session's
 // snapshot, covering the window this plugin was closed (page switches need no gap-fill:
@@ -488,7 +332,7 @@ async function reportGapfill(): Promise<void> {
 void runBootCapture({
   loadAllPages: () => figma.loadAllPagesAsync(),
   gapfill: reportGapfill,
-  subscribe: () => { figma.on('documentchange', onDocumentChange); },
+  subscribe: () => { figma.on('documentchange', capture.onDocumentChange); },
   notify: (message) => { figma.notify(message); },
 });
 
@@ -657,7 +501,9 @@ function mutationTargetIds(cmd: CommandName, params: Params): string[] {
 
 async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
   switch (cmd) {
-    case 'STATUS': return opStatus(bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats));
+    case 'STATUS': return opStatus(
+      bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats), capture.stats,
+    );
     case 'GET_SELECTION': return opGetSelection(params);
     case 'SCAN_DESIGN_SYSTEM': return serializeDesignSystem();
     case 'AUDIT_DS': return auditDs();

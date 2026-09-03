@@ -33,75 +33,6 @@
     return exact ? a === f : a.includes(f);
   }
 
-  // shared/figma-changes.ts
-  function mapChangeType(type) {
-    switch (type) {
-      case "CREATE":
-        return "created";
-      case "DELETE":
-        return "deleted";
-      case "PROPERTY_CHANGE":
-        return "updated";
-      default:
-        return null;
-    }
-  }
-  var OP_RANK = { deleted: 3, created: 2, updated: 1 };
-  function coalesceChanges(raw) {
-    const byId = /* @__PURE__ */ new Map();
-    const propSets = /* @__PURE__ */ new Map();
-    for (const c of raw) {
-      const props = propSets.get(c.nodeId) ?? /* @__PURE__ */ new Set();
-      for (const p of c.changedProps) props.add(p);
-      propSets.set(c.nodeId, props);
-      const prev = byId.get(c.nodeId);
-      if (!prev) {
-        byId.set(c.nodeId, { ...c, changedProps: [] });
-        continue;
-      }
-      prev.op = OP_RANK[c.op] > OP_RANK[prev.op] ? c.op : prev.op;
-      if (prev.nodeName === null && c.nodeName !== null) prev.nodeName = c.nodeName;
-      if (!prev.nodeType && c.nodeType) prev.nodeType = c.nodeType;
-      if (c.origin === "REMOTE") prev.origin = "REMOTE";
-    }
-    const out = [];
-    for (const [id, c] of byId) {
-      c.changedProps = [...propSets.get(id) ?? /* @__PURE__ */ new Set()].sort();
-      out.push(c);
-    }
-    out.sort((a, b) => a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0);
-    return out;
-  }
-
-  // shared/edit-feed.ts
-  function coalesceEdits(raw) {
-    const byId = /* @__PURE__ */ new Map();
-    const propSets = /* @__PURE__ */ new Map();
-    for (const e of raw) {
-      const props = propSets.get(e.nodeId) ?? /* @__PURE__ */ new Set();
-      for (const p of e.changedProps) props.add(p);
-      propSets.set(e.nodeId, props);
-      const prev = byId.get(e.nodeId);
-      if (!prev) {
-        byId.set(e.nodeId, { ...e, changedProps: [] });
-        continue;
-      }
-      prev.op = e.op;
-      if (prev.nodeName === null && e.nodeName !== null) prev.nodeName = e.nodeName;
-      if (prev.parentName === null && e.parentName !== null) prev.parentName = e.parentName;
-      if (!prev.nodeType && e.nodeType) prev.nodeType = e.nodeType;
-      if (e.origin === "REMOTE") prev.origin = "REMOTE";
-      prev.actor = e.actor;
-    }
-    const out = [];
-    for (const [id, e] of byId) {
-      e.changedProps = [...propSets.get(id) ?? /* @__PURE__ */ new Set()].sort();
-      out.push(e);
-    }
-    out.sort((a, b) => a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0);
-    return out;
-  }
-
   // shared/utf8-byte-length.ts
   function utf8ByteLength(str2) {
     let bytes = 0;
@@ -590,6 +521,256 @@
       if (now - at >= echoMs) lastAgentAt2.delete(id);
     }
     enforceCap(lastAgentAt2, cap);
+  }
+
+  // plugin/src/main/change-node-identity.ts
+  function resolveComponentIdentity(node) {
+    if ("removed" in node && node.removed) {
+      if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
+        return { id: node.id, name: null, type: node.type };
+      }
+      return null;
+    }
+    let n = node;
+    while (n) {
+      if (n.type === "COMPONENT_SET") return { id: n.id, name: n.name, type: n.type };
+      if (n.type === "COMPONENT") {
+        if (n.parent && n.parent.type === "COMPONENT_SET") {
+          return { id: n.parent.id, name: n.parent.name, type: n.parent.type };
+        }
+        return { id: n.id, name: n.name, type: n.type };
+      }
+      n = n.parent;
+    }
+    return null;
+  }
+  var EDIT_IDENTITY_CACHE_CAP = 2e3;
+  function createEditIdentityCache(cap = EDIT_IDENTITY_CACHE_CAP) {
+    const entries = /* @__PURE__ */ new Map();
+    return {
+      get: (id) => entries.get(id),
+      remember: (id, value) => {
+        entries.set(id, value);
+        if (entries.size > cap) {
+          const oldestKey = entries.keys().next().value;
+          if (oldestKey !== void 0) entries.delete(oldestKey);
+        }
+      },
+      size: () => entries.size
+    };
+  }
+  var ENCLOSING_NAME_HOP_CAP = 20;
+  function enclosingName(node) {
+    let n = node.parent;
+    let hops = 0;
+    while (n && hops < ENCLOSING_NAME_HOP_CAP) {
+      if (n.type === "FRAME" || n.type === "SECTION" || n.type === "COMPONENT" || n.type === "COMPONENT_SET") {
+        return n.name;
+      }
+      n = n.parent;
+      hops += 1;
+    }
+    return null;
+  }
+
+  // shared/figma-changes.ts
+  function mapChangeType(type) {
+    switch (type) {
+      case "CREATE":
+        return "created";
+      case "DELETE":
+        return "deleted";
+      case "PROPERTY_CHANGE":
+        return "updated";
+      default:
+        return null;
+    }
+  }
+  function isPluginBookkeepingChange(changeType, properties) {
+    if (changeType !== "PROPERTY_CHANGE" || properties.length === 0) return false;
+    return properties.every((property) => property === "pluginData");
+  }
+  var OP_RANK = { deleted: 3, created: 2, updated: 1 };
+  function coalesceChanges(raw) {
+    const byId = /* @__PURE__ */ new Map();
+    const propSets = /* @__PURE__ */ new Map();
+    for (const c of raw) {
+      const props = propSets.get(c.nodeId) ?? /* @__PURE__ */ new Set();
+      for (const p of c.changedProps) props.add(p);
+      propSets.set(c.nodeId, props);
+      const prev = byId.get(c.nodeId);
+      if (!prev) {
+        byId.set(c.nodeId, { ...c, changedProps: [] });
+        continue;
+      }
+      prev.op = OP_RANK[c.op] > OP_RANK[prev.op] ? c.op : prev.op;
+      if (prev.nodeName === null && c.nodeName !== null) prev.nodeName = c.nodeName;
+      if (!prev.nodeType && c.nodeType) prev.nodeType = c.nodeType;
+      if (c.origin === "REMOTE") prev.origin = "REMOTE";
+    }
+    const out = [];
+    for (const [id, c] of byId) {
+      c.changedProps = [...propSets.get(id) ?? /* @__PURE__ */ new Set()].sort();
+      out.push(c);
+    }
+    out.sort((a, b) => a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0);
+    return out;
+  }
+
+  // shared/edit-feed.ts
+  function coalesceEdits(raw) {
+    const byId = /* @__PURE__ */ new Map();
+    const propSets = /* @__PURE__ */ new Map();
+    for (const e of raw) {
+      const props = propSets.get(e.nodeId) ?? /* @__PURE__ */ new Set();
+      for (const p of e.changedProps) props.add(p);
+      propSets.set(e.nodeId, props);
+      const prev = byId.get(e.nodeId);
+      if (!prev) {
+        byId.set(e.nodeId, { ...e, changedProps: [] });
+        continue;
+      }
+      prev.op = e.op;
+      if (prev.nodeName === null && e.nodeName !== null) prev.nodeName = e.nodeName;
+      if (prev.parentName === null && e.parentName !== null) prev.parentName = e.parentName;
+      if (!prev.nodeType && e.nodeType) prev.nodeType = e.nodeType;
+      if (e.origin === "REMOTE") prev.origin = "REMOTE";
+      prev.actor = e.actor;
+    }
+    const out = [];
+    for (const [id, e] of byId) {
+      e.changedProps = [...propSets.get(id) ?? /* @__PURE__ */ new Set()].sort();
+      out.push(e);
+    }
+    out.sort((a, b) => a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0);
+    return out;
+  }
+
+  // plugin/src/main/page-of-node.ts
+  function pageOf(node) {
+    let current = node;
+    while (current) {
+      if (current.type === "PAGE") return current;
+      current = current.parent;
+    }
+    return null;
+  }
+
+  // plugin/src/main/document-change-capture.ts
+  function createDocumentChangeCapture(deps) {
+    const stats = {
+      pluginDataChangesDropped: 0,
+      pageFallbacks: 0,
+      errorCount: 0,
+      firstError: null
+    };
+    function resolvedPage(node, remembered) {
+      const own = pageOf(node);
+      if (own) return own.name;
+      if (remembered !== void 0) return remembered;
+      stats.pageFallbacks += 1;
+      return figma.currentPage.name;
+    }
+    function resolvedRemovedPage(remembered) {
+      if (remembered !== void 0) return remembered;
+      stats.pageFallbacks += 1;
+      return figma.currentPage.name;
+    }
+    function recordCaptureError(error) {
+      stats.errorCount += 1;
+      if (stats.firstError === null) {
+        stats.firstError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    function onDocumentChange(event) {
+      const now = deps.now();
+      const connectorTouched = [];
+      deps.onBatchStart(now);
+      const correctionBatch = deps.corrections.begin();
+      let correctionsUsable = true;
+      const raw = [];
+      const edits = [];
+      for (const dc of event.documentChanges) {
+        const op = mapChangeType(dc.type);
+        if (op === null) continue;
+        const node = dc.node;
+        if (!node) continue;
+        const changedProps = dc.type === "PROPERTY_CHANGE" ? [...dc.properties] : [];
+        if (isPluginBookkeepingChange(dc.type, changedProps)) {
+          stats.pluginDataChangesDropped += 1;
+          continue;
+        }
+        if (correctionsUsable && (!("removed" in node) || !node.removed)) {
+          try {
+            deps.corrections.record(correctionBatch, node.id, { changeType: dc.type, properties: changedProps });
+          } catch (error) {
+            recordCaptureError(error);
+            correctionsUsable = false;
+          }
+        }
+        connectorTouched.push(node.id);
+        const identity = resolveComponentIdentity(node);
+        if (identity) {
+          raw.push({
+            op,
+            nodeId: identity.id,
+            nodeName: identity.name,
+            nodeType: identity.type,
+            changedProps,
+            origin: dc.origin
+          });
+        }
+        const removed = "removed" in node && node.removed;
+        const known = deps.identity.get(node.id);
+        const parentName = removed ? known?.parentName ?? null : enclosingName(node);
+        const page = removed ? resolvedRemovedPage(known?.page) : resolvedPage(node, known?.page);
+        edits.push({
+          op,
+          nodeId: node.id,
+          nodeName: removed ? known?.name ?? null : node.name,
+          nodeType: node.type,
+          parentName,
+          page,
+          changedProps,
+          origin: dc.origin,
+          actor: classifyActor(node.id, op, now, deps.actorState())
+        });
+        if (!removed) deps.identity.remember(node.id, { name: node.name, type: node.type, parentName, page });
+      }
+      if (connectorTouched.length > 0) deps.noteChangedNodes(connectorTouched);
+      const changes = coalesceChanges(raw);
+      if (changes.length > 0) {
+        deps.post({
+          // fileName rides alongside fileKey — fileKey is null whenever the manifest lacks
+          // enablePrivatePluginApi, so without a name the slug chain collapses every such
+          // file to 'unknown' and keeps coalescing them.
+          type: "DOC_CHANGE",
+          data: { changes, page: figma.currentPage.name, fileKey: figma.fileKey ?? null, fileName: figma.root.name }
+        });
+        deps.noteComponentChanges(changes.length);
+      }
+      if (edits.length > 0) {
+        deps.post({
+          type: "EDIT_FEED",
+          data: {
+            edits: coalesceEdits(edits),
+            fileKey: figma.fileKey ?? null,
+            fileName: figma.root.name,
+            source: "live"
+          }
+        });
+        deps.noteEdits();
+      }
+      if (changes.length > 0 || edits.length > 0) deps.armIdle();
+      if (correctionsUsable) {
+        try {
+          deps.corrections.flush(correctionBatch);
+        } catch (error) {
+          recordCaptureError(error);
+        }
+      }
+    }
+    return { onDocumentChange, stats };
   }
 
   // plugin/src/main/font-match.ts
@@ -2592,7 +2773,7 @@
     if (typeof params.x === "number") node.x = params.x;
     if (typeof params.y === "number") node.y = params.y;
   }
-  function opStatus(bootSkipped2 = [], readOnlyViolations2 = 0, gapfill) {
+  function opStatus(bootSkipped2 = [], readOnlyViolations2 = 0, gapfill, capture2) {
     return {
       fileName: figma.root.name,
       page: figma.currentPage.name,
@@ -2629,7 +2810,23 @@
       // that stayed invisible while the feature was silently broken, so it must have a
       // reading of its own rather than an absence that looks like health. Caller-supplied —
       // this function never re-derives what gap-fill did.
-      ...gapfill && { gapfill }
+      ...gapfill && { gapfill },
+      // Live capture's own session record (document-change-capture.ts). All three keep the
+      // present-only-when-meaningful contract of the counters above — a session that filtered
+      // nothing, guessed no page and hit no store failure keeps the payload byte-identical to
+      // before these fields existed — because each records something that DID happen and
+      // would otherwise leave no trace at all:
+      //   · how many entries were dropped as the plugin's own bookkeeping echo (a property
+      //     change whose every property is `pluginData`): a filtered change is still a change,
+      //     and without a count the only way to notice the predicate had started eating real
+      //     edits would be a designer reporting a missing one;
+      //   · how many changed nodes (live or deleted-unseen) had no resolvable page and were
+      //     filed under the current one: that page name is a guess about someone else's edit;
+      //   · correction-store failures, as first message + count (the gapfill block's shape) —
+      //     the feed is posted regardless, so nothing else would ever report the refusal.
+      ...capture2 && capture2.pluginDataChangesDropped > 0 && { pluginDataChangesDropped: capture2.pluginDataChangesDropped },
+      ...capture2 && capture2.pageFallbacks > 0 && { pageFallbacks: capture2.pageFallbacks },
+      ...capture2 && capture2.firstError !== null && { captureErrors: [capture2.firstError], captureErrorCount: capture2.errorCount }
     };
   }
   function opGetSelection(params) {
@@ -4512,14 +4709,14 @@
       throw withCode(new Error("EXEC_JS requires params.code (string)"), "E_INVALID_ARGS");
     }
     const logs = [];
-    const capture = (level) => (...args) => {
+    const capture2 = (level) => (...args) => {
       logs.push(`[${level}] ${args.map(safeStringify).join(" ")}`);
     };
     const consoleProxy = {
-      log: capture("log"),
-      info: capture("info"),
-      warn: capture("warn"),
-      error: capture("error")
+      log: capture2("log"),
+      info: capture2("info"),
+      warn: capture2("warn"),
+      error: capture2("error")
     };
     let compiled;
     try {
@@ -4967,14 +5164,6 @@
   var PILL_PADDING_X = 8;
   var PILL_PADDING_Y = 3;
   var PILL_RADIUS = 4;
-  function pageOf(node) {
-    let current = node;
-    while (current) {
-      if (current.type === "PAGE") return current;
-      current = current.parent;
-    }
-    return null;
-  }
   function labelAnchor(points) {
     let best = 0;
     let bestLength = -1;
@@ -5150,8 +5339,7 @@
   }
   function readEdgeCorrections() {
     const manifest = readManifest();
-    if (manifest !== void 0) return readChunked(manifest);
-    return parseEvents(figma.root.getSharedPluginData(NAMESPACE2, KEY_V1));
+    return manifest !== void 0 ? readChunked(manifest) : parseEvents(figma.root.getSharedPluginData(NAMESPACE2, KEY_V1));
   }
   function writeEdgeCorrections(events) {
     const priorManifest = readManifest();
@@ -5207,13 +5395,24 @@
     beginAgentMutation(nodeIds);
     return nodeIds.map((nodeId) => recordAgentMutation(nodeId, traits));
   }
-  function recordDesignerCorrection(nodeId, traits) {
+  function beginCorrectionBatch() {
+    return { events: null, appended: 0 };
+  }
+  function recordDesignerCorrectionInBatch(batch, nodeId, traits) {
     const changeType = typeof traits.changeType === "string" ? traits.changeType : "";
     const properties = Array.isArray(traits.properties) ? traits.properties.filter((value) => typeof value === "string") : [];
     if (!isDesignerCorrectionCandidate(changeType, properties)) return null;
     if ((suppressedUntil.get(nodeId) ?? 0) >= Date.now()) return null;
-    const events = readEdgeCorrections();
-    const parent = [...events].reverse().find((event2) => event2.nodeId === nodeId && event2.kind === "agent-operation");
+    if (batch.events === null) batch.events = readEdgeCorrections();
+    const events = batch.events;
+    let parent;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const candidate = events[i];
+      if (candidate.nodeId === nodeId && candidate.kind === "agent-operation") {
+        parent = candidate;
+        break;
+      }
+    }
     if (!parent) return null;
     const event = buildCorrectionEvent({
       eventId: eventId("correction", nodeId),
@@ -5226,8 +5425,13 @@
       unresolved: true,
       traits
     });
-    writeEdgeCorrections([...events, event]);
+    events.push(event);
+    batch.appended += 1;
     return event;
+  }
+  function flushCorrectionBatch(batch) {
+    if (batch.appended === 0 || batch.events === null) return;
+    writeEdgeCorrections(batch.events);
   }
 
   // plugin/src/main/connector-reroute.ts
@@ -5642,56 +5846,6 @@
     if (ctx.fileName !== announcedFileName) announceFileInfo();
     return ctx;
   }
-  function resolveComponentIdentity(node) {
-    if ("removed" in node && node.removed) {
-      if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
-        return { id: node.id, name: null, type: node.type };
-      }
-      return null;
-    }
-    let n = node;
-    while (n) {
-      if (n.type === "COMPONENT_SET") return { id: n.id, name: n.name, type: n.type };
-      if (n.type === "COMPONENT") {
-        if (n.parent && n.parent.type === "COMPONENT_SET") {
-          return { id: n.parent.id, name: n.parent.name, type: n.parent.type };
-        }
-        return { id: n.id, name: n.name, type: n.type };
-      }
-      n = n.parent;
-    }
-    return null;
-  }
-  var EDIT_IDENTITY_CACHE_CAP = 2e3;
-  var identityCache = /* @__PURE__ */ new Map();
-  function rememberIdentity(id, value) {
-    identityCache.set(id, value);
-    if (identityCache.size > EDIT_IDENTITY_CACHE_CAP) {
-      const oldestKey = identityCache.keys().next().value;
-      if (oldestKey !== void 0) identityCache.delete(oldestKey);
-    }
-  }
-  var ENCLOSING_NAME_HOP_CAP = 20;
-  function enclosingName(node) {
-    let n = node.parent;
-    let hops = 0;
-    while (n && hops < ENCLOSING_NAME_HOP_CAP) {
-      if (n.type === "FRAME" || n.type === "SECTION" || n.type === "COMPONENT" || n.type === "COMPONENT_SET") {
-        return n.name;
-      }
-      n = n.parent;
-      hops += 1;
-    }
-    return null;
-  }
-  function pageNameOf(node) {
-    let n = node;
-    while (n) {
-      if (n.type === "PAGE") return n.name;
-      n = n.parent;
-    }
-    return figma.currentPage.name;
-  }
   var activeCount = 0;
   var lastDrainAt = 0;
   var declaredIds = /* @__PURE__ */ new Map();
@@ -5724,79 +5878,37 @@
     figma.ui.postMessage({ type: "IDLE_READY", data: { count: changesSinceCommit } });
     changesSinceCommit = 0;
   }
-  function onDocumentChange(event) {
-    const connectorTouched = [];
-    pruneDeclaredIds(declaredIds, Date.now());
-    recordDocumentChangeBatch(readOnlyGuard, activeCount);
-    const raw = [];
-    const edits = [];
-    for (const dc of event.documentChanges) {
-      const op = mapChangeType(dc.type);
-      if (op === null) continue;
-      const node = dc.node;
-      if (!node) continue;
-      if (!("removed" in node) || !node.removed) {
-        recordDesignerCorrection(node.id, {
-          changeType: dc.type,
-          properties: dc.type === "PROPERTY_CHANGE" ? [...dc.properties] : []
-        });
-      }
-      const changedProps = dc.type === "PROPERTY_CHANGE" ? [...dc.properties] : [];
-      connectorTouched.push(node.id);
-      const identity = resolveComponentIdentity(node);
-      if (identity) {
-        raw.push({
-          op,
-          nodeId: identity.id,
-          nodeName: identity.name,
-          nodeType: identity.type,
-          changedProps,
-          origin: dc.origin
-        });
-      }
-      const removed = "removed" in node && node.removed;
-      const known = identityCache.get(node.id);
-      const parentName = removed ? known?.parentName ?? null : enclosingName(node);
-      const page = removed ? known?.page ?? figma.currentPage.name : pageNameOf(node);
-      edits.push({
-        op,
-        nodeId: node.id,
-        nodeName: removed ? known?.name ?? null : node.name,
-        nodeType: node.type,
-        parentName,
-        page,
-        changedProps,
-        origin: dc.origin,
-        actor: classifyActor(node.id, op, Date.now(), actorState())
-      });
-      if (!removed) rememberIdentity(node.id, { name: node.name, type: node.type, parentName, page });
-    }
-    if (connectorTouched.length > 0) void noteChangedNodes(connectorTouched);
-    const changes = coalesceChanges(raw);
-    if (changes.length > 0) {
-      figma.ui.postMessage({
-        // fileName rides alongside fileKey (registry-integrity phase 03, §1) — fileKey is
-        // null whenever the manifest lacks enablePrivatePluginApi, so without a name the
-        // slug chain collapses every such file to 'unknown' and keeps coalescing them.
-        type: "DOC_CHANGE",
-        data: { changes, page: figma.currentPage.name, fileKey: figma.fileKey ?? null, fileName: figma.root.name }
-      });
-      changesSinceCommit += changes.length;
-    }
-    if (edits.length > 0) {
-      figma.ui.postMessage({
-        type: "EDIT_FEED",
-        data: {
-          edits: coalesceEdits(edits),
-          fileKey: figma.fileKey ?? null,
-          fileName: figma.root.name,
-          source: "live"
-        }
-      });
+  var editIdentityCache = createEditIdentityCache();
+  var capture = createDocumentChangeCapture({
+    now: () => Date.now(),
+    onBatchStart: (now) => {
+      pruneDeclaredIds(declaredIds, now);
+      recordDocumentChangeBatch(readOnlyGuard, activeCount);
+    },
+    actorState,
+    identity: editIdentityCache,
+    // The store is read once for the whole batch and written once at its end — never per
+    // changed node, which is what made a 50-node drag pay for the whole store 50 times.
+    corrections: {
+      begin: beginCorrectionBatch,
+      record: recordDesignerCorrectionInBatch,
+      flush: flushCorrectionBatch
+    },
+    noteChangedNodes: (nodeIds) => {
+      void noteChangedNodes(nodeIds);
+    },
+    post: (message) => {
+      figma.ui.postMessage(message);
+    },
+    noteComponentChanges: (count) => {
+      changesSinceCommit += count;
+    },
+    noteEdits: () => {
       hasEditsSinceSnapshot = true;
-    }
-    if (changes.length > 0 || edits.length > 0) resetIdleTimer();
-  }
+    },
+    // the next idle fire refreshes the gap-fill snapshot
+    armIdle: resetIdleTimer
+  });
   async function reportGapfill() {
     const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats);
     if (gapfillEdits.length > 0) {
@@ -5816,7 +5928,7 @@
     loadAllPages: () => figma.loadAllPagesAsync(),
     gapfill: reportGapfill,
     subscribe: () => {
-      figma.on("documentchange", onDocumentChange);
+      figma.on("documentchange", capture.onDocumentChange);
     },
     notify: (message) => {
       figma.notify(message);
@@ -5923,7 +6035,12 @@
   async function dispatch(cmd, params) {
     switch (cmd) {
       case "STATUS":
-        return opStatus(bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats));
+        return opStatus(
+          bootSkipped,
+          readOnlyViolations,
+          toGapfillStatus(gapfillStats),
+          capture.stats
+        );
       case "GET_SELECTION":
         return opGetSelection(params);
       case "SCAN_DESIGN_SYSTEM":

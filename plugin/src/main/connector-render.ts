@@ -30,16 +30,6 @@ const PILL_PADDING_X = 8;
 const PILL_PADDING_Y = 3;
 const PILL_RADIUS = 4;
 
-/** The page a node lives on. Connectors are parented here, never inside a frame. */
-export function pageOf(node: BaseNode): PageNode | null {
-  let current: BaseNode | null = node;
-  while (current) {
-    if (current.type === 'PAGE') return current;
-    current = current.parent;
-  }
-  return null;
-}
-
 /** Where a label reads best: the middle of the polyline's longest straight run. */
 function labelAnchor(points: readonly Point[]): Point {
   let best = 0;

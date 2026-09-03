@@ -121,12 +121,19 @@ function clearChunkRange(startInclusive: number, endExclusive: number): void {
   for (let i = startInclusive; i < endExclusive; i++) figma.root.setSharedPluginData(NAMESPACE, chunkKey(i), '');
 }
 
+/**
+ * The whole store, parsed from the document — every call, never from a copy an earlier call
+ * left behind. The read-once-per-batch win lives in `CorrectionBatch.events` instead: it is
+ * scoped to the batch that owns it, so it cannot be flushed back over what a second Figma
+ * tab or another plugin instance appended in between.
+ */
 export function readEdgeCorrections(): CorrectionEvent[] {
   const manifest = readManifest();
-  if (manifest !== undefined) return readChunked(manifest);
   // No v2 manifest yet — fall back to the legacy v1 single-key value (migrated + cleared
   // the next time writeEdgeCorrections runs; reading never mutates).
-  return parseEvents(figma.root.getSharedPluginData(NAMESPACE, KEY_V1));
+  return manifest !== undefined
+    ? readChunked(manifest)
+    : parseEvents(figma.root.getSharedPluginData(NAMESPACE, KEY_V1));
 }
 
 /**
@@ -229,7 +236,33 @@ export function recordAgentMutationBatch(nodeIds: readonly string[], traits: Rec
   return nodeIds.map((nodeId) => recordAgentMutation(nodeId, traits));
 }
 
-export function recordDesignerCorrection(
+/**
+ * One `documentchange` batch's worth of correction work: the store read at most ONCE for
+ * the whole batch, and every correction the batch produces written back in ONE call.
+ *
+ * `events` stays null until a change actually needs the store — a drag batch (every change
+ * carries `relativeTransform`, so nothing is a candidate) must not pay for a read it never
+ * uses.
+ */
+export interface CorrectionBatch {
+  events: CorrectionEvent[] | null;
+  appended: number;
+}
+
+/** Open a batch. Nothing is read yet: the first change that actually needs the store reads
+ *  the document, and every batch starts from the document because nothing outlives one. */
+export function beginCorrectionBatch(): CorrectionBatch {
+  return { events: null, appended: 0 };
+}
+
+/**
+ * The designer-correction check for ONE changed node, against the batch's in-memory events.
+ * Same decisions as before — candidate shape, then the agent-echo suppression window, then
+ * a causal parent (the LAST agent-operation recorded for this node) — but no store I/O per
+ * node: the read happens at most once here and the write happens in `flushCorrectionBatch`.
+ */
+export function recordDesignerCorrectionInBatch(
+  batch: CorrectionBatch,
   nodeId: string,
   traits: Record<string, unknown>,
 ): CorrectionEvent | null {
@@ -239,9 +272,18 @@ export function recordDesignerCorrection(
     : [];
   if (!isDesignerCorrectionCandidate(changeType, properties)) return null;
   if ((suppressedUntil.get(nodeId) ?? 0) >= Date.now()) return null;
-  const events = readEdgeCorrections();
-  const parent = [...events].reverse()
-    .find((event) => event.nodeId === nodeId && event.kind === 'agent-operation');
+  if (batch.events === null) batch.events = readEdgeCorrections();
+  const events = batch.events;
+  // Scanned backwards rather than `[...events].reverse().find(...)`: same "last one wins"
+  // answer, without copying the whole store for every changed node in the batch.
+  let parent: CorrectionEvent | undefined;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const candidate = events[i]!;
+    if (candidate.nodeId === nodeId && candidate.kind === 'agent-operation') {
+      parent = candidate;
+      break;
+    }
+  }
   if (!parent) return null;
   const event = buildCorrectionEvent({
     eventId: eventId('correction', nodeId),
@@ -254,6 +296,27 @@ export function recordDesignerCorrection(
     unresolved: true,
     traits,
   });
-  writeEdgeCorrections([...events, event]);
+  // Appended to the batch's own copy, so a later node in the SAME batch sees it (its own
+  // correction can be caused by it) even though nothing has been written yet.
+  events.push(event);
+  batch.appended += 1;
+  return event;
+}
+
+/** Write the batch's corrections — one store write for the batch, none at all when it
+ *  produced no correction. */
+export function flushCorrectionBatch(batch: CorrectionBatch): void {
+  if (batch.appended === 0 || batch.events === null) return;
+  writeEdgeCorrections(batch.events);
+}
+
+/** One correction outside a batch (a single change, its own read and write). */
+export function recordDesignerCorrection(
+  nodeId: string,
+  traits: Record<string, unknown>,
+): CorrectionEvent | null {
+  const batch = beginCorrectionBatch();
+  const event = recordDesignerCorrectionInBatch(batch, nodeId, traits);
+  flushCorrectionBatch(batch);
   return event;
 }
