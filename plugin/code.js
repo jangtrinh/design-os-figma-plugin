@@ -386,7 +386,8 @@
       errorCount: 0,
       firstError: null,
       baselineFirstRun: false,
-      bootBaselineUnreadable: false
+      bootBaselineUnreadable: false,
+      bootReadError: null
     };
   }
   function recordGapfillError(stats, message) {
@@ -638,8 +639,8 @@
   }
   async function readBaseline(store, stats) {
     const { baseline, error, readFailed } = await readFileBaseline(store, currentBaselineKey(), currentIdentity());
-    if (error) recordGapfillError(stats, error);
-    return { baseline, readFailed: readFailed === true };
+    if (error && error !== stats.bootReadError) recordGapfillError(stats, error);
+    return { baseline, readFailed: readFailed === true, error };
   }
   async function writeBaseline(pages, snapshotFor, store, stats, now = Date.now, onlyPageIds) {
     const key = currentBaselineKey();
@@ -724,7 +725,8 @@
   async function runGapfillDiff(pages, store, stats, perf = createPerfStats(), deps = {}) {
     const nodeExists = deps.nodeExists ?? nodeStillExists;
     const timing = deps.walk ?? {};
-    const { baseline: prev, readFailed } = await readBaseline(store, stats);
+    const { baseline: prev, readFailed, error: bootReadError } = await readBaseline(store, stats);
+    stats.bootReadError = bootReadError ?? null;
     if (readFailed) {
       stats.bootBaselineUnreadable = true;
       return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
