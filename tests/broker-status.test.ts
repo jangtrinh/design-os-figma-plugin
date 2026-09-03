@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { PluginRegistry, WS_OPEN, type RegistrySocket } from '../cli/src/transport/plugin-registry.ts';
 import { buildBrokerHelloData, noPluginMessage, type BrokerMeta } from '../cli/src/transport/broker-status.ts';
 import type { RouteFilter } from '../cli/src/transport/route-filter.ts';
+import type { MutationGateStatus } from '../cli/src/transport/mutation-admission-gate.ts';
 
 const sock = (): RegistrySocket => ({ readyState: WS_OPEN });
 const META: BrokerMeta = {
@@ -30,6 +31,20 @@ describe('buildBrokerHelloData — plugins list + activePlugin', () => {
     expect(d.lastHeartbeatAge).toBeNull();
     expect(d.pluginInfo).toBeNull();
     expect(d).toMatchObject({ port: 9410, pid: 4242, protocolV: 1, uptimeMs: 5000 });
+  });
+
+  it('advertises readiness v1 while preserving connected transport for a stale app', () => {
+    let t = 1_000;
+    const reg = new PluginRegistry<RegistrySocket>(() => t);
+    reg.register(sock(), { instanceId: 'legacy', fileName: 'Idle', caps: ['fileGuard'] });
+    t += 25_001;
+    const d = buildBrokerHelloData(reg, META, null, () => t);
+    expect(d.appReadinessV).toBe(1);
+    expect(d.pluginConnected).toBe(true);
+    expect(d.pluginState).toBe('connected');
+    expect((d.plugins as Array<Record<string, unknown>>)[0]).toMatchObject({
+      state: 'connected', appReady: false, appState: 'unready', appHeartbeatMode: 'legacy', appReadinessAge: 25_001,
+    });
   });
 
   it('two files → both listed; activePlugin + legacy mirror track the most-recent', () => {
@@ -98,6 +113,27 @@ describe('buildBrokerHelloData — jobStatusFor (concurrency & jobs, backlog 1.1
     // An idle file reports null + 0 explicitly — never an omitted key.
     expect(ds.runningJob).toBeNull();
     expect(ds.queueDepth).toBe(0);
+  });
+});
+
+describe('buildBrokerHelloData — persisted mutation gates', () => {
+  it('keeps disconnected rows and adds a live annotation only when an exact raw file key is connected', () => {
+    const { reg, clock } = seed();
+    reg.register(sock(), { instanceId: 'a', fileName: 'Connected', fileKey: 'RawA' });
+    const gates: MutationGateStatus = {
+      health: { state: 'healthy', path: '/tmp/mutation-gates.json' },
+      gates: [
+        { fileKey: 'RawA', state: 'paused', lastTransitionRevision: 2 },
+        { fileKey: 'RawB', state: 'open', lastTransitionRevision: 5 },
+      ],
+    };
+
+    const data = buildBrokerHelloData(reg, META, null, clock, undefined, gates);
+    expect(data.mutationGateStoreHealth).toEqual(gates.health);
+    expect(data.mutationGates).toEqual([
+      { fileKey: 'RawA', state: 'paused', lastTransitionRevision: 2, connected: true },
+      { fileKey: 'RawB', state: 'open', lastTransitionRevision: 5 },
+    ]);
   });
 });
 

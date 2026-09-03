@@ -2,7 +2,13 @@
 // BATCH request (single round-trip; plugin executes sequentially).
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { COMMAND_TIMEOUTS, COMMANDS, DEFAULT_TIMEOUT_MS, type CommandName } from '../../../shared/protocol.ts';
+import {
+  COMMAND_TIMEOUTS,
+  COMMANDS,
+  DEFAULT_TIMEOUT_MS,
+  isBrokerTerminalCommand,
+  type CommandName,
+} from '../../../shared/protocol.ts';
 import type { CommandArgs } from '../figma-agent.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 import { runCommand } from '../transport/broker-client.ts';
@@ -26,6 +32,12 @@ function loadOps(filePath: string): BatchOp[] {
     const candidate = op as { cmd?: unknown; params?: unknown };
     if (typeof candidate?.cmd !== 'string' || !(COMMANDS as readonly string[]).includes(candidate.cmd)) {
       throw new CliError('E_INVALID_ARGS', `batch[${i}].cmd invalid — must be one of: ${COMMANDS.join(', ')}`);
+    }
+    if (isBrokerTerminalCommand(candidate.cmd)) {
+      throw new CliError(
+        'E_INVALID_ARGS',
+        `batch[${i}].cmd ${candidate.cmd} is broker-terminal and cannot run inside BATCH`,
+      );
     }
     return { cmd: candidate.cmd as CommandName, params: candidate.params ?? {} };
   });

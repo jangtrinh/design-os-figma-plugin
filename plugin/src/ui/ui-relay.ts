@@ -12,16 +12,19 @@
 // its opening transition below — otherwise the panel would miss the first PROBE.
 import './panel-ui';
 import {
-  CHUNK_LIMIT, PLUGIN_HEARTBEAT_INTERVAL_MS, PLUGIN_PONG_TIMEOUT_MS,
+  CHUNK_LIMIT, PLUGIN_CAPABILITIES, PLUGIN_HEARTBEAT_INTERVAL_MS, PLUGIN_PONG_TIMEOUT_MS,
   PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
   RECONNECT_BACKOFF_MAX_MS, RECONNECT_BACKOFF_MIN_MS,
   makeStatePayload, nextBackoff, reduceConnState,
+  type BrokerHelloData,
   type ChunkMsg, type CommandName, type ConnectionEvent, type ConnectionState, type ConnectionStatePayload,
   type ErrorCode, type FileContext, type ReplyMsg, type RequestMsg, type WireError,
 } from '../../../shared/protocol';
 import { renderHtmlToPayload } from './render-host';
 import { renderGradientToPng, GradientRenderError } from './gradient-host';
 import { summarizeError, summarizeResult } from './activity-summary';
+import { createHeartbeatDriver } from './heartbeat-driver';
+import type { HeartbeatMode } from './heartbeat-lease';
 
 const PLUGIN_VERSION = '0.1.0';
 const PORT_PROBE_TIMEOUT_MS = 1200; // a real broker greets in <50ms; short = fast scan
@@ -38,8 +41,9 @@ const INSTANCE_ID: string =
 
 let ws: WebSocket | null = null;
 let backoffBase = 0; // grows via nextBackoff; reset to 0 (→ min) on a successful connect
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-let lastPongAt = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatMode: HeartbeatMode = 'legacy';
+let heartbeatProbeCounter = 0;
 let connState: ConnectionState = 'disconnected';
 let fileInfo: Record<string, unknown> = {}; // FILE_INFO from main (fileName, fileKey…)
 const chunkBuffers = new Map<string, string[]>(); // requestId → chunk slices
@@ -186,7 +190,18 @@ function handleWireData(raw: string): void {
   } catch {
     return; // malformed frame — ignore
   }
-  if (msg.type === 'PONG') { lastPongAt = Date.now(); return; } // heartbeat ack
+  if (msg.type === 'PONG') {
+    const data = (msg.data as Record<string, unknown> | undefined) ?? {};
+    heartbeatDriver.receivePong(typeof data.probeId === 'string' ? data.probeId : undefined);
+    return;
+  }
+  if (msg.type === 'APP_PROBE') {
+    const data = (msg.data as Record<string, unknown> | undefined) ?? {};
+    if (heartbeatMode === 'correlated' && typeof data.probeId === 'string') {
+      wsSend({ type: 'APP_PROBE_ACK', data: { probeId: data.probeId } });
+    }
+    return;
+  }
   // Live-sync (spec 004 P4). SYNC_CONFIG → main's idle timer; SYNC_RESULT → the panel.
   if (msg.type === 'SYNC_CONFIG') {
     parent.postMessage({ pluginMessage: { type: 'SYNC_CONFIG', data: msg.data ?? {} } }, '*');
@@ -421,29 +436,41 @@ window.addEventListener('message', (ev: MessageEvent) => {
 });
 
 // ─── App-level heartbeat: PING the broker, reconnect on a missed PONG ─
-function stopHeartbeat(): void {
-  if (heartbeatTimer !== null) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
-}
-
-function startHeartbeat(socket: WebSocket): void {
-  stopHeartbeat();
-  lastPongAt = Date.now();
-  heartbeatTimer = setInterval(() => {
-    if (ws !== socket) { stopHeartbeat(); return; }
-    if (Date.now() - lastPongAt > PLUGIN_PONG_TIMEOUT_MS) {
-      teardown(socket, 'heartbeat lost — reconnecting…'); // half-open socket → recover
-      return;
-    }
-    try { socket.send(JSON.stringify({ type: 'PING', data: { t: Date.now() } })); }
-    catch { teardown(socket, 'ping failed — reconnecting…'); }
-  }, PLUGIN_HEARTBEAT_INTERVAL_MS);
-}
+const heartbeatDriver = createHeartbeatDriver({
+  now: Date.now,
+  nextProbeId: () => `hb_${INSTANCE_ID}_${++heartbeatProbeCounter}_${Date.now()}`,
+  schedule: (callback, intervalMs) => setInterval(callback, intervalMs),
+  cancel: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+  sendProbe: (probeId, mode) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error('socket unavailable');
+    ws.send(JSON.stringify({
+      type: 'PING',
+      data: { t: Date.now(), ...(mode === 'correlated' ? { probeId } : {}) },
+    }));
+  },
+  teardown: (reason) => {
+    if (ws) teardown(ws, reason);
+  },
+  emitConnected: () => {
+    if (!ws) return;
+    const { url, port } = socketConnectionInfo(ws);
+    transition('READY', {
+      detail: `broker at ${url} · protocol v${PROTOCOL_VERSION}`,
+      brokerUrl: url,
+      port,
+      appState: 'ready',
+    });
+  },
+}, {
+  intervalMs: PLUGIN_HEARTBEAT_INTERVAL_MS,
+  timeoutMs: PLUGIN_PONG_TIMEOUT_MS,
+});
 
 /** Tear one socket down once, then re-enter the reconnect loop. Idempotent per socket. */
 function teardown(socket: WebSocket, reason: string): void {
   if (ws !== socket) return; // already replaced / torn down
   ws = null;
-  stopHeartbeat();
+  heartbeatDriver.stop();
   transition('LOST', { detail: reason });
   try {
     socket.onclose = null; socket.onerror = null; socket.onmessage = null;
@@ -455,7 +482,12 @@ function teardown(socket: WebSocket, reason: string): void {
 // ─── Broker discovery: probe each port until BROKER_HELLO ───────────
 // Use a dedicated `.localhost` hostname. Figma Desktop can fail bare
 // `ws://localhost`, while its manifest rejects literal IP-address domains.
-function probePort(port: number, host: string): Promise<WebSocket | null> {
+interface BrokerProbe {
+  socket: WebSocket;
+  hello: BrokerHelloData;
+}
+
+function probePort(port: number, host: string): Promise<BrokerProbe | null> {
   return new Promise((resolve) => {
     let settled = false;
     let socket: WebSocket;
@@ -465,7 +497,7 @@ function probePort(port: number, host: string): Promise<WebSocket | null> {
       resolve(null);
       return;
     }
-    const finish = (result: WebSocket | null) => {
+    const finish = (result: BrokerProbe | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -478,7 +510,9 @@ function probePort(port: number, host: string): Promise<WebSocket | null> {
     socket.onmessage = (ev) => {
       try {
         const msg = JSON.parse(String(ev.data));
-        if (msg?.type === 'BROKER_HELLO') finish(socket);
+        if (msg?.type === 'BROKER_HELLO') {
+          finish({ socket, hello: (msg.data as BrokerHelloData | undefined) ?? {} });
+        }
       } catch { /* not the greeting — keep waiting until timeout */ }
     };
     socket.onerror = () => finish(null);
@@ -486,24 +520,38 @@ function probePort(port: number, host: string): Promise<WebSocket | null> {
   });
 }
 
-async function scanForBroker(): Promise<WebSocket | null> {
+async function scanForBroker(): Promise<BrokerProbe | null> {
   for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) {
     transition('PROBE', { detail: `probing figma-agent.localhost:${port}…`, port });
-    const socket = await probePort(port, 'figma-agent.localhost');
-    if (socket) return socket;
+    const probe = await probePort(port, 'figma-agent.localhost');
+    if (probe) return probe;
   }
   return null;
 }
 
-function adoptSocket(socket: WebSocket): void {
-  ws = socket;
-  backoffBase = 0; // reset backoff on a live connection
-  chunkBuffers.clear();
+function socketConnectionInfo(socket: WebSocket): { url: string; port?: number } {
   const url = socket.url.replace(/\/$/, '');
   const portMatch = /:(\d+)/.exec(url);
-  const port = portMatch ? Number(portMatch[1]) : undefined;
+  return { url, port: portMatch ? Number(portMatch[1]) : undefined };
+}
 
-  transition('FOUND', { detail: `broker at ${url}`, brokerUrl: url, port });
+function adoptSocket(probe: BrokerProbe): void {
+  const { socket, hello } = probe;
+  if (ws !== null) {
+    if (ws !== socket) try { socket.close(); } catch { /* superseded probe */ }
+    return;
+  }
+  ws = socket;
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  backoffBase = 0; // reset backoff on a live connection
+  chunkBuffers.clear();
+  heartbeatMode = hello.appReadinessV === 1 ? 'correlated' : 'legacy';
+  const { url, port } = socketConnectionInfo(socket);
+
+  transition('FOUND', { detail: `broker at ${url}`, brokerUrl: url, port, appState: 'probing' });
   socket.onmessage = (ev) => handleWireData(String(ev.data));
   socket.onerror = () => { /* onclose fires next and drives the reconnect */ };
   socket.onclose = () => teardown(socket, 'broker connection lost — reconnecting…');
@@ -512,33 +560,37 @@ function adoptSocket(socket: WebSocket): void {
   // instanceId is stable across reconnects so the broker updates this file's slot
   // instead of spawning a duplicate. `caps` advertises the guards this bundle honours —
   // the broker refuses to route a `--file` request to a plugin that predates `fileGuard`.
-  wsSend({ type: 'PLUGIN_HELLO', data: { ...fileInfo, instanceId: INSTANCE_ID, caps: ['fileGuard'],
+  wsSend({ type: 'PLUGIN_HELLO', data: { ...fileInfo, instanceId: INSTANCE_ID, caps: [...PLUGIN_CAPABILITIES],
                                           pluginVersion: PLUGIN_VERSION, protocolV: PROTOCOL_VERSION } });
   // `fileInfo` is normally populated by main's own FILE_INFO push, but that race is not
   // guaranteed to have landed yet — ask explicitly so an iframe-originated error raised
   // before the first push still has an identity to attach (see localFileContext above).
   if (Object.keys(fileInfo).length === 0) parent.postMessage({ pluginMessage: { type: 'UI_READY' } }, '*');
-  startHeartbeat(socket);
-  transition('READY', { detail: `broker at ${url} · protocol v${PROTOCOL_VERSION}`, brokerUrl: url, port });
+  heartbeatDriver.start(heartbeatMode);
 }
 
 function scheduleReconnect(): void {
+  if (ws !== null || reconnectTimer !== null) return;
   const { base, delay } = nextBackoff(backoffBase, BACKOFF_OPTS);
   backoffBase = base;
-  setTimeout(() => void connectLoop(), delay);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void connectLoop();
+  }, delay);
 }
 
 async function connectLoop(): Promise<void> {
+  if (ws !== null) return;
   try {
-    const socket = await scanForBroker();
-    if (!socket) {
+    const probe = await scanForBroker();
+    if (!probe) {
       transition('PROBE', {
         detail: `no broker on :${PORT_RANGE_START}-${PORT_RANGE_END} — is a CLI command running? retrying…`,
       });
       scheduleReconnect();
       return;
     }
-    adoptSocket(socket);
+    adoptSocket(probe);
   } catch (err) {
     transition('LOST', { detail: err instanceof Error ? err.message : String(err) });
     scheduleReconnect();

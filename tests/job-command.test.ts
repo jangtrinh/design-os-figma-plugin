@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 // implementation either (`waitForJob`'s tests inject their own poll/wait).
 vi.mock('../cli/src/transport/broker-client.ts', () => ({ runCommand: vi.fn() }));
 
-import { formatPoll, isTerminal, run, unwrapResult, waitForJob, type PollReply } from '../cli/src/commands/job.ts';
+import { formatPoll, isPollSettled, isTerminal, run, unwrapResult, waitForJob, type PollReply } from '../cli/src/commands/job.ts';
 import { runCommand } from '../cli/src/transport/broker-client.ts';
 import { parseArgs } from '../cli/src/arg-parse.ts';
 import { CliError } from '../cli/src/transport/protocol-helpers.ts';
@@ -20,10 +20,12 @@ function jobInfo(over: Partial<JobInfo> & { state: JobInfo['state'] }): JobInfo 
 }
 
 describe('isTerminal', () => {
-  it('done/failed/cancelled are terminal; queued/running are not', () => {
+  it('keeps known terminal states separate from poll-settled uncertainty', () => {
     expect(isTerminal('done')).toBe(true);
     expect(isTerminal('failed')).toBe(true);
     expect(isTerminal('cancelled')).toBe(true);
+    expect(isTerminal('outcome-unknown')).toBe(false);
+    expect(isPollSettled('outcome-unknown')).toBe(true);
     expect(isTerminal('queued')).toBe(false);
     expect(isTerminal('running')).toBe(false);
   });
@@ -101,6 +103,51 @@ describe('formatPoll', () => {
     expect(formatPoll({ job: jobInfo({ state: 'running' }) })).toEqual({ job: jobInfo({ state: 'running' }) });
   });
 
+  it('preserves reserved-head cancel guidance state without presenting it as running', () => {
+    const job = jobInfo({ state: 'queued', dispatchState: 'queued-not-dispatched-readiness-wait' });
+    expect(formatPoll({ job })).toEqual({ job });
+    expect(isTerminal(job.state)).toBe(false);
+  });
+
+  it('reports uncertainty without claiming success/failure and gives the exact inspection recovery', () => {
+    const job = jobInfo({
+      state: 'outcome-unknown',
+      uncertaintyReason: 'plugin transport disconnected after dispatch',
+      recovery: {
+        kind: 'inspect-and-force-release',
+        command: 'figma-agent job j_1_1 --force-release',
+        requiresCanvasInspection: true,
+        retryAllowed: false,
+      },
+    });
+    expect(formatPoll({ job })).toEqual({
+      job,
+      error: {
+        code: 'E_OUTCOME_UNKNOWN',
+        message: 'plugin transport disconnected after dispatch; the canvas may or may not have changed. Inspect the canvas, then force-release the held slot.',
+        jobId: 'j_1_1',
+        recovery: job.recovery,
+      },
+    });
+  });
+
+  it('reports a released unknown as inspected/unblocked with no consumed recovery or retry', () => {
+    const job = jobInfo({
+      state: 'outcome-unknown',
+      uncertaintyReason: 'plugin transport disconnected after dispatch',
+      finishedAt: 123,
+    });
+    const out = formatPoll({ job }) as { job: JobInfo; error: Record<string, unknown> };
+    expect(out.job).toBe(job);
+    expect(out.error).toEqual({
+      code: 'E_OUTCOME_UNKNOWN',
+      message: 'plugin transport disconnected after dispatch; canvas inspection and slot release are complete. The slot is no longer held, the canvas outcome remains unknown, and automatic retry is forbidden.',
+      jobId: 'j_1_1',
+    });
+    expect(out.error).not.toHaveProperty('recovery');
+    expect(out.error.message).not.toContain('force-release');
+  });
+
   it('a terminal job with no resultFrames still just reports {job} (defensive)', () => {
     expect(formatPoll({ job: jobInfo({ state: 'done' }) })).toEqual({ job: jobInfo({ state: 'done' }) });
   });
@@ -132,6 +179,23 @@ describe('waitForJob — cadence + timeout composition (injected poll/wait, no l
     const out = await waitForJob('j_1_1', 60_000, poll, wait);
     expect(out).toEqual({ job: jobInfo({ state: 'done' }), result: 'x' });
     expect(wait).not.toHaveBeenCalled(); // done on the FIRST poll — never slept at all
+  });
+
+  it('returns immediately on outcome unknown without sleeping or polling again', async () => {
+    const recovery = {
+      kind: 'inspect-and-force-release' as const,
+      command: 'figma-agent job j_1_1 --force-release',
+      requiresCanvasInspection: true as const,
+      retryAllowed: false as const,
+    };
+    const poll = vi.fn(async (): Promise<PollReply> => ({
+      job: jobInfo({ state: 'outcome-unknown', uncertaintyReason: 'transport lost', recovery }),
+    }));
+    const wait = vi.fn(async () => {});
+    const out = await waitForJob('j_1_1', 60_000, poll, wait);
+    expect(out).toMatchObject({ error: { code: 'E_OUTCOME_UNKNOWN', jobId: 'j_1_1', recovery } });
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect(wait).not.toHaveBeenCalled();
   });
 
   it('polls repeatedly while running, then resolves once terminal', async () => {

@@ -4,8 +4,9 @@
 // list shape. Fake sockets are just `{ readyState }`; a mutable clock drives recency.
 import { describe, it, expect } from 'vitest';
 import {
-  FROZEN_AFTER_MS, PluginRegistry, WS_OPEN, extractScene, suspectedZombie, type RegistrySocket,
+  FROZEN_AFTER_MS, PluginRegistry, WS_OPEN, appReadiness, extractScene, suspectedZombie, type RegistrySocket,
 } from '../cli/src/transport/plugin-registry.ts';
+import { PLUGIN_PONG_TIMEOUT_MS } from '../shared/protocol.ts';
 
 const CLOSED = 3; // WebSocket.CLOSED
 const sock = (open = true): RegistrySocket => ({ readyState: open ? WS_OPEN : CLOSED });
@@ -343,6 +344,10 @@ describe('statusList — the per-file rows, most-recent first', () => {
       connectedAt: bConnectedAt,
       fileKey: null, // absent from the HELLO payload here — registry-integrity phase 01 §2
       appSilenceMs: 0, // b's HELLO IS an app frame — zombie-watchdog sensor, always present
+      appReady: true,
+      appState: 'ready',
+      appHeartbeatMode: 'legacy',
+      appReadinessAge: 0,
     });
     expect(list[1]).toMatchObject({ instanceId: 'a', fileName: 'A', page: 'P1', connectedAt: aConnectedAt });
     expect(list[1].lastHeartbeatAge).toBe(20); // a last seen 20ms ago
@@ -427,6 +432,57 @@ describe('zombie-watchdog — transport vs app liveness split', () => {
     expect(suspectedZombie(reg.getByWs(ws)!, at())).toBe(false); // == threshold, not over it
     tick(1);
     expect(suspectedZombie(reg.getByWs(ws)!, at())).toBe(true);
+  });
+});
+
+describe('application readiness lease', () => {
+  it('native pong never renews readiness; a JS frame does, including the exact deadline boundary', () => {
+    const { reg, tick, at } = makeReg();
+    const ws = sock();
+    reg.register(ws, {
+      instanceId: 'modern', fileName: 'Modern', caps: ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1'],
+    });
+
+    tick(PLUGIN_PONG_TIMEOUT_MS);
+    expect(appReadiness(reg.getByWs(ws)!, at())).toMatchObject({
+      appReady: true, appState: 'ready', appHeartbeatMode: 'correlated', appReadinessAge: PLUGIN_PONG_TIMEOUT_MS,
+    });
+    tick(1);
+    expect(appReadiness(reg.getByWs(ws)!, at()).appReady).toBe(false);
+    reg.touch(ws);
+    expect(appReadiness(reg.getByWs(ws)!, at()).appReady).toBe(false);
+    reg.touchApp(ws);
+    expect(appReadiness(reg.getByWs(ws)!, at())).toMatchObject({ appReady: true, appState: 'ready', appReadinessAge: 0 });
+  });
+
+  it('distinguishes absent legacy capability from an incomplete/unsupported readiness advertisement', () => {
+    const { reg, at } = makeReg();
+    const legacy = sock();
+    const unsupported = sock();
+    reg.register(legacy, { instanceId: 'legacy', fileName: 'Legacy', caps: ['fileGuard'] });
+    reg.register(unsupported, { instanceId: 'unsupported', fileName: 'Unsupported', caps: ['fileGuard', 'correlatedHeartbeatV1'] });
+
+    expect(appReadiness(reg.getByWs(legacy)!, at())).toMatchObject({ appReady: true, appHeartbeatMode: 'legacy' });
+    expect(appReadiness(reg.getByWs(unsupported)!, at())).toMatchObject({
+      appReady: null, appState: 'unknown', appHeartbeatMode: 'unknown', appReadinessAge: 0,
+    });
+  });
+
+  it('keeps explicit identity exact while unfiltered dispatch prefers ready and refuses an all-unready set', () => {
+    const { reg, tick } = makeReg();
+    const ready = sock();
+    const stale = sock();
+    reg.register(ready, { instanceId: 'ready', fileName: 'Ready', caps: ['fileGuard'] });
+    tick(PLUGIN_PONG_TIMEOUT_MS + 1);
+    reg.register(stale, { instanceId: 'stale', fileName: 'Stale', caps: ['fileGuard'] });
+    reg.touchApp(ready);
+    tick(PLUGIN_PONG_TIMEOUT_MS + 1);
+    reg.touchApp(ready);
+
+    expect(reg.selectTarget('Stale', { exact: true })?.instanceId).toBe('stale');
+    expect(reg.selectReadyTarget()?.instanceId).toBe('ready');
+    tick(PLUGIN_PONG_TIMEOUT_MS + 1);
+    expect(reg.selectReadyTarget()).toBeNull();
   });
 });
 

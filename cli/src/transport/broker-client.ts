@@ -18,7 +18,7 @@ import {
   type WireError,
 } from '../../../shared/protocol.ts';
 import { ensureBroker, isPidAlive, loopbackWsUrl } from './broker-discovery.ts';
-import { MUTATING_COMMANDS } from '../../../shared/mutating-commands.ts';
+import { isBrokerSafeRead } from '../../../shared/mutating-commands.ts';
 import {
   ChunkAssembler,
   CliError,
@@ -45,6 +45,7 @@ const requestNamespace = randomBytes(8).toString('hex');
 
 let expectedFile: string | undefined;
 let expectedInstance: string | undefined;
+let targetFileKey: string | undefined;
 let lastFileContext: FileContext | undefined;
 let projectDir: string | undefined;
 let readOnlyGlobal = false;
@@ -60,6 +61,9 @@ export function setExpectedFile(name: string | undefined): void { expectedFile =
  * non-empty here.
  */
 export function setExpectedInstance(id: string | undefined): void { expectedInstance = id; }
+
+/** Set once per invocation from global `--target-file-key`; never inferred from any filename or reply context. */
+export function setTargetFileKey(fileKey: string | undefined): void { targetFileKey = fileKey; }
 export function getLastFileContext(): FileContext | undefined { return lastFileContext; }
 
 /**
@@ -72,9 +76,8 @@ export function setProjectDir(dir: string | undefined): void { projectDir = dir;
 
 /**
  * Set once per CLI invocation from the global `--read-only` flag (concurrency & jobs,
- * backlog 1.1+2.6+4.3, phase 02 §4). A per-call `runCommand({ readOnly: true })` (used by
- * internal read-only callers riding EXEC_JS, e.g. scan-node/scan-conventions) always
- * wins over this global — see `runCommand`'s own `opts?.readOnly ?? readOnlyGlobal`.
+ * backlog 1.1+2.6+4.3, phase 02 §4). A per-call runCommand readOnly value overrides this
+ * global, but true is valid only for the broker's explicit safe-read allowlist.
  */
 export function setReadOnly(v: boolean): void { readOnlyGlobal = v; }
 
@@ -87,17 +90,13 @@ export function setAgent(id: string | undefined): void { agentId = id; }
 
 /**
  * Stage-4 fix round (minor 8, ruling Q4) — `--read-only` is a PARTIAL hardening, not a
- * blanket promise: asserting read-only on a command that mutates BY NAME (e.g. SET_TEXT,
- * CREATE_FRAME) is always a lie, so refuse it outright rather than silently trust the
- * caller. EXEC_JS is the one deliberate exception — it IS the flag's designed use (a
- * read-only script the broker cannot inspect the body of); a script that mutates despite
- * the flag is on the caller, not something this layer can detect by name. A command
- * that's already read-only by nature makes the flag a harmless no-op either way.
- * Pure (no CommandName lookup outside MUTATING_COMMANDS) so it's unit-testable without a
- * live broker.
+ * blanket promise: asserting read-only only works for the broker's exact safe-read
+ * allowlist. Every other command, including EXEC_JS, is refused rather than trusting a
+ * caller-provided declaration that could bypass mutation admission. Pure (no command
+ * lookup outside the shared allowlist) so it is unit-testable without a live broker.
  */
 export function refusesReadOnlyAssertion(wireCmd: CommandName, readOnly: boolean): boolean {
-  return readOnly && wireCmd !== 'EXEC_JS' && MUTATING_COMMANDS.includes(wireCmd);
+  return readOnly && !isBrokerSafeRead(wireCmd);
 }
 
 function connectWs(port: number): Promise<WebSocket> {
@@ -189,7 +188,11 @@ export function exchange(
         if (reply.fileContext) lastFileContext = reply.fileContext;
         finish(() => {
           if (reply.ok) resolve(reply.result);
-          else reject(new CliError(reply.error.code, reply.error.message, { rolledBack: (reply.error as WireError).rolledBack }));
+          else reject(new CliError(reply.error.code, reply.error.message, {
+            rolledBack: (reply.error as WireError).rolledBack,
+            jobId: reply.error.jobId ?? (reply.error.code === 'E_OUTCOME_UNKNOWN' ? lastJob?.jobId : undefined),
+            recovery: reply.error.recovery,
+          }));
         });
       }
     });
@@ -197,7 +200,9 @@ export function exchange(
     ws.on('error', (err) => finish(() => reject(new CliError('E_NO_BROKER', `broker socket error: ${err.message}`))));
 
     try {
-      sendWireMsg(ws, makeRequestFrame(id, cmd, params, activity, expectedFile, projectDir, readOnly, expectedInstance, agentId));
+      sendWireMsg(ws, makeRequestFrame(
+        id, cmd, params, activity, expectedFile, projectDir, readOnly, expectedInstance, agentId, targetFileKey,
+      ));
     } catch (err) {
       finish(() => reject(new CliError('E_NO_BROKER', `failed to send request: ${(err as Error).message}`)));
     }
@@ -279,11 +284,9 @@ export async function retryAmbiguousConnect(
  * the wire `cmd` (see RequestMsg.activity) — pass it from any command whose `cmd`
  * does not say what the user is actually waiting for.
  *
- * `opts.readOnly` (concurrency & jobs, backlog 1.1+2.6+4.3) is a per-call declaration
- * that ALWAYS wins over the global `--read-only` flag (`setReadOnly`) — the choke point
- * for internal callers that ride EXEC_JS but are themselves read-only regardless of
- * whatever the caller's own CLI invocation declared (scan-node, scan-conventions).
- * `undefined` (the default) falls back to the global flag's current value.
+ * `opts.readOnly` (concurrency & jobs, backlog 1.1+2.6+4.3) overrides the global
+ * `--read-only` flag (`setReadOnly`). A true value must name a broker safe-read; an
+ * undefined value falls back to the global flag's current value.
  */
 export async function runCommand(
   cmd: string,
@@ -297,7 +300,7 @@ export async function runCommand(
   if (refusesReadOnlyAssertion(wireCmd, readOnlyRequested)) {
     throw new CliError(
       'E_INVALID_ARGS',
-      `--read-only cannot be asserted on ${wireCmd} — it mutates by design; drop the flag or use EXEC_JS for a script the broker cannot inspect`,
+      `--read-only cannot be asserted on ${wireCmd} — only broker-known safe reads may bypass mutation admission`,
     );
   }
   let ad = await ensureBroker();

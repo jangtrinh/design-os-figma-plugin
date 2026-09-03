@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { assertBatchAdmissible, execute, maxBatchOps, type Runner } from '../cli/src/commands/batch.ts';
+import type { CommandName } from '../shared/protocol.ts';
 
 describe('maxBatchOps — derived from the exact PR #14 formula, not re-guessed', () => {
   it('REGRESSION LOCK: the boundary is 95 ops (95*1200+5000=119000 <= 120000; 96*1200+5000=120200 > 120000)', () => {
@@ -58,10 +59,10 @@ describe('assertBatchAdmissible — hard refusal above the 120s scaled-timeout c
 describe('execute() — the refusal fires BEFORE any dispatch, so the runner is never called', () => {
   let scratchDir: string;
 
-  function writeBatchFile(count: number): string {
+  function writeBatchFile(count: number, command: CommandName = 'SET_TEXT'): string {
     scratchDir = mkdtempSync(join(tmpdir(), 'fa-batch-ceiling-'));
     const filePath = join(scratchDir, 'ops.json');
-    const ops = Array.from({ length: count }, () => ({ cmd: 'SET_TEXT', params: { nodeId: '1:1', text: 'x' } }));
+    const ops = Array.from({ length: count }, () => ({ cmd: command, params: { nodeId: '1:1', text: 'x' } }));
     writeFileSync(filePath, JSON.stringify(ops));
     return filePath;
   }
@@ -95,6 +96,36 @@ describe('execute() — the refusal fires BEFORE any dispatch, so the runner is 
       };
       await expect(execute(filePath, false, runner)).rejects.toThrow();
       expect(called).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('rejects every broker-terminal child before BATCH dispatch, while ordinary plugin commands remain admissible', async () => {
+    for (const command of ['PROJECT_BIND', 'JOB', 'MUTATION_GATE', 'COWORK'] as const) {
+      const filePath = writeBatchFile(1, command);
+      try {
+        let called = false;
+        const runner: Runner = async () => {
+          called = true;
+          return { ok: true };
+        };
+        await expect(execute(filePath, false, runner)).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
+        expect(called).toBe(false);
+      } finally {
+        cleanup();
+      }
+    }
+
+    const pluginFile = writeBatchFile(1, 'SET_TEXT');
+    try {
+      let called = false;
+      const runner: Runner = async () => {
+        called = true;
+        return { ok: true };
+      };
+      await expect(execute(pluginFile, false, runner)).resolves.toEqual({ ok: true });
+      expect(called).toBe(true);
     } finally {
       cleanup();
     }

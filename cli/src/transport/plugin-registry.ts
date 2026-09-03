@@ -4,7 +4,13 @@
 // evict each other on every PLUGIN_HELLO (the connect/disconnect flapping bug).
 // Nothing here touches a socket beyond reading `readyState`, so the whole routing
 // / cull / status contract is pure and unit-testable with fake sockets.
-import type { PluginScene, PluginStatusEntry } from '../../../shared/protocol.ts';
+import {
+  PLUGIN_PONG_TIMEOUT_MS,
+  type AppHeartbeatMode,
+  type AppState,
+  type PluginScene,
+  type PluginStatusEntry,
+} from '../../../shared/protocol.ts';
 import { fileMatches } from '../../../shared/file-match.ts';
 import { envMs } from './protocol-helpers.ts';
 import type { FilterKind } from './route-filter.ts';
@@ -83,10 +89,48 @@ export interface PluginEntry<S extends RegistrySocket = RegistrySocket> {
   // computed versionMatch/protocolMatch comparison lives in broker-peek.ts.
   pluginVersion?: string;
   protocolV?: number;
+  /** Readiness capabilities as advertised by this HELLO. Kept separate from scene
+   *  identity so capability negotiation cannot accidentally influence file matching. */
+  appHeartbeatMode: AppHeartbeatMode;
 }
 
 // HELLO payload keys that are protocol plumbing, not scene identity.
 const PROTOCOL_KEYS = new Set(['instanceId', 'pluginVersion', 'protocolV']);
+
+function heartbeatMode(data: Record<string, unknown>): AppHeartbeatMode {
+  const caps = Array.isArray(data.caps) ? data.caps.filter((cap): cap is string => typeof cap === 'string') : [];
+  const correlated = caps.includes('correlatedHeartbeatV1');
+  const probe = caps.includes('appProbeV1');
+  if (!correlated && !probe) return 'legacy';
+  return correlated && probe ? 'correlated' : 'unknown';
+}
+
+export interface AppReadinessProjection {
+  appReady: boolean | null;
+  appState: AppState;
+  appHeartbeatMode: AppHeartbeatMode;
+  appReadinessAge: number;
+}
+
+/** Pure readiness projection. Equality stays ready: Phase 1 expires only after its
+ *  deadline has passed, so the broker uses the same exact boundary. */
+export function appReadiness<S extends RegistrySocket>(
+  entry: PluginEntry<S>,
+  now: number,
+  leaseMs: number = PLUGIN_PONG_TIMEOUT_MS,
+): AppReadinessProjection {
+  const appReadinessAge = Math.max(0, now - entry.lastAppFrameAt);
+  if (entry.appHeartbeatMode === 'unknown') {
+    return { appReady: null, appState: 'unknown', appHeartbeatMode: 'unknown', appReadinessAge };
+  }
+  const appReady = appReadinessAge <= leaseMs;
+  return {
+    appReady,
+    appState: appReady ? 'ready' : 'unready',
+    appHeartbeatMode: entry.appHeartbeatMode,
+    appReadinessAge,
+  };
+}
 
 /** Strip protocol keys from a HELLO/FILE_INFO payload → the scene subset. */
 export function extractScene(data: Record<string, unknown> | null | undefined): PluginScene {
@@ -186,6 +230,7 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
       // version, never a stale one left over from the superseded socket.
       pluginVersion: typeof data.pluginVersion === 'string' ? data.pluginVersion : undefined,
       protocolV: typeof data.protocolV === 'number' ? data.protocolV : undefined,
+      appHeartbeatMode: heartbeatMode(data),
     });
     return { instanceId: id, replaced: existing !== undefined, superseded };
   }
@@ -351,6 +396,13 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
     return this.matching(filter, opts)[0] ?? null;
   }
 
+  /** Dispatch-only selection: explicit callers resolve identity with `selectTarget`,
+   *  while an unfiltered request may choose only a currently ready entry. */
+  selectReadyTarget(): PluginEntry<S> | null {
+    const now = this.now();
+    return this.matching().find((entry) => appReadiness(entry, now).appReady === true) ?? null;
+  }
+
   /** The per-file list for BROKER_HELLO / `figma-agent status`, most-recent first. */
   statusList(): PluginStatusEntry[] {
     const now = this.now();
@@ -358,6 +410,7 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
       .map((e) => {
         const reason = zombieReason(e, now, FROZEN_AFTER_MS);
+        const readiness = appReadiness(e, now);
         return {
           instanceId: e.instanceId,
           fileName: (e.scene.fileName as string | undefined) ?? null,
@@ -378,6 +431,7 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
           // contract as reHelloCount/suspectedZombie above.
           ...(e.pluginVersion !== undefined && { pluginVersion: e.pluginVersion }),
           ...(e.protocolV !== undefined && { protocolV: e.protocolV }),
+          ...readiness,
         };
       });
   }

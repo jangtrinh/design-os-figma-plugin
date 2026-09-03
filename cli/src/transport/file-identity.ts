@@ -27,3 +27,21 @@ export function fileIdentity(fileKey: string | null | undefined, fileName: strin
   if (typeof fileKey === 'string' && fileKey.trim() !== '') return fileKey;
   return safeSlug(fileName ?? '');
 }
+
+/**
+ * Exact identity for durable broker mutation state. Unlike `fileIdentity`, this
+ * deliberately has no filename or `unknown` fallback: a gate keyed by a name could
+ * silently apply to a different Figma file after rename or collision.
+ */
+export function durableFileKey(fileKey: string | null | undefined, _fileName?: string | null): string | null {
+  return typeof fileKey === 'string' && fileKey.trim() !== '' ? fileKey : null;
+}
+
+/**
+ * Exact client-provided target assertion. Unlike a scene-supplied durable key, this is
+ * deliberately strict: padding would prove neither identity nor intent, and trimming it
+ * would silently retarget a caller. Internal whitespace remains raw and valid.
+ */
+export function exactTargetFileKey(fileKey: string | null | undefined): string | null {
+  return typeof fileKey === 'string' && fileKey !== '' && fileKey.trim() === fileKey ? fileKey : null;
+}

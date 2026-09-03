@@ -13,7 +13,15 @@ import { fileURLToPath } from 'node:url';
 import { runBrokerDaemon } from './transport/broker-daemon.ts';
 import { parseArgs, type CommandArgs } from './arg-parse.ts';
 import { CliError } from './transport/protocol-helpers.ts';
-import { getLastFileContext, setAgent, setExpectedFile, setExpectedInstance, setProjectDir, setReadOnly } from './transport/broker-client.ts';
+import {
+  getLastFileContext,
+  setAgent,
+  setExpectedFile,
+  setExpectedInstance,
+  setProjectDir,
+  setReadOnly,
+  setTargetFileKey,
+} from './transport/broker-client.ts';
 import { printErrorJson, printJson, withFileContext } from './util/json-out.ts';
 import { HELP } from './help-text.ts';
 import { renderSkill } from './skill-emitter.ts';
@@ -53,6 +61,7 @@ import * as seat from './commands/seat.ts';
 import * as setText from './commands/set-text.ts';
 import * as setVariant from './commands/set-variant.ts';
 import * as status from './commands/status.ts';
+import * as mutationGate from './commands/mutation-gate.ts';
 import * as syncCorrections from './commands/sync-corrections.ts';
 import * as installSkill from './commands/install-skill.ts';
 import * as installHook from './commands/install-hook.ts';
@@ -65,6 +74,7 @@ export type { CommandArgs } from './arg-parse.ts';
 // this list a second time.
 export const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<unknown> }> = {
   status,
+  'mutation-gate': mutationGate,
   seat,
   bind,
   'get-selection': getSelection,
@@ -171,6 +181,10 @@ async function main(): Promise<void> {
   if (args.bool('instance') && (args.str('instance') ?? '').trim() === '') {
     printErrorJson(new CliError('E_INVALID_ARGS', '--instance needs an instanceId, e.g. --instance p_3_1712345678'));
   }
+  const targetFileKey = args.str('target-file-key');
+  if (args.bool('target-file-key') && (targetFileKey === undefined || targetFileKey === '' || targetFileKey.trim() !== targetFileKey)) {
+    printErrorJson(new CliError('E_INVALID_ARGS', '--target-file-key needs an exact unpadded raw Figma fileKey'));
+  }
   const fileFlag = (args.str('file') ?? '').trim();
   const instanceFlag = (args.str('instance') ?? '').trim();
   // Mutual exclusion at the CLI boundary: both set is refused outright,
@@ -182,10 +196,17 @@ async function main(): Promise<void> {
       `--instance "${instanceFlag}" and --file "${fileFlag}" are mutually exclusive on one request — drop one`,
     ));
   }
+  if (targetFileKey !== undefined && (fileFlag !== '' || instanceFlag !== '')) {
+    printErrorJson(new CliError(
+      'E_INVALID_ARGS',
+      '--target-file-key is mutually exclusive with --file and --instance on one request — drop the filename or instance selector',
+    ));
+  }
   setExpectedFile(args.str('file'));   // global flag — verified: no command reads --file today
   setExpectedInstance(args.str('instance')); // global flag, same choke point as --file
+  setTargetFileKey(targetFileKey);
   setProjectDir(resolve(args.str('dir') ?? process.cwd())); // registry-integrity phase 01 §1
-  setReadOnly(args.bool('read-only')); // concurrency & jobs (backlog 1.1+2.6+4.3) — TRUSTED, not enforced
+  setReadOnly(args.bool('read-only')); // broker permits this declaration only for its safe-read allowlist
   setAgent(resolveAgent(args)); // auto-connect slice 2 — same choke point as --file/--instance
   try {
     const result = await command.run(args);

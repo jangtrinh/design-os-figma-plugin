@@ -16,9 +16,9 @@ import {
 } from '../cli/src/commands/scan-conventions.ts';
 
 /** A stub runner that returns a fixed EXEC_JS `{result}` and records its calls. */
-function stubRunner(result: unknown, calls?: Array<{ cmd: string; params: unknown }>): Runner {
-  return async (cmd, params) => {
-    calls?.push({ cmd, params });
+function stubRunner(result: unknown, calls?: Array<{ cmd: string; params: unknown; opts?: { timeoutMs?: number; readOnly?: boolean } }>): Runner {
+  return async (cmd, params, opts) => {
+    calls?.push({ cmd, params, opts });
     return { result, console: [], ms: 1 };
   };
 }
@@ -62,11 +62,12 @@ describe('buildWalkCode — pure walk construction', () => {
 
 describe('scanConventions — EXEC_JS wiring (stubbed runner)', () => {
   it('issues one EXEC_JS carrying the walk code and returns the DNA array', async () => {
-    const calls: Array<{ cmd: string; params: unknown }> = [];
+    const calls: Array<{ cmd: string; params: unknown; opts?: { timeoutMs?: number; readOnly?: boolean } }> = [];
     const dna = await scanConventions(['1:1'], DEFAULT_BUDGET, stubRunner(DNA, calls));
     expect(calls).toHaveLength(1);
     expect(calls[0]?.cmd).toBe('EXEC_JS');
     expect((calls[0]?.params as { code: string }).code).toContain('SECTIONS = ["1:1"]');
+    expect(calls[0]?.opts?.readOnly).toBeUndefined();
     expect(dna).toEqual(DNA);
   });
 

@@ -17,16 +17,21 @@ type BrokerDaemonModule = typeof import('../cli/src/transport/broker-daemon.ts')
 const CHANGES_DIR_KEY = 'FIGMA_AGENT_CHANGES_DIR';
 const BINDS_FILE_KEY = 'FIGMA_AGENT_BINDS_FILE';
 const UNBOUND_DIR_KEY = 'FIGMA_AGENT_UNBOUND_DIR';
+const APP_READINESS_MS_KEY = 'FIGMA_AGENT_APP_READINESS_MS';
+const PLUGIN_WAIT_MS_KEY = 'FIGMA_AGENT_PLUGIN_WAIT_MS';
 
 let scratchDir: string;
 let advertisePath: string;
 let scratchLogFile: string;
 let sockets: WebSocket[];
+let priorAppReadinessMs: string | undefined;
+let priorPluginWaitMs: string | undefined;
 
-async function loadBrokerDaemon(): Promise<BrokerDaemonModule> {
+async function loadBrokerDaemon(env: Record<string, string> = {}): Promise<BrokerDaemonModule> {
   process.env[CHANGES_DIR_KEY] = scratchDir;
   process.env[BINDS_FILE_KEY] = join(scratchDir, 'binds.json');
   process.env[UNBOUND_DIR_KEY] = join(scratchDir, 'unbound-root');
+  for (const [key, value] of Object.entries(env)) process.env[key] = value;
   vi.resetModules();
   return import('../cli/src/transport/broker-daemon.ts');
 }
@@ -37,8 +42,8 @@ function testExit(): (code: number) => never {
   };
 }
 
-async function startTestBroker(): Promise<number> {
-  const mod = await loadBrokerDaemon();
+async function startTestBroker(env: Record<string, string> = {}): Promise<number> {
+  const mod = await loadBrokerDaemon(env);
   await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit(), logFile: scratchLogFile });
   const { readFileSync } = await import('node:fs');
   const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number };
@@ -54,8 +59,11 @@ function connectSocket(port: number): Promise<WebSocket> {
   });
 }
 
-async function helloPlugin(ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null): Promise<void> {
-  ws.send(JSON.stringify({ type: 'PLUGIN_HELLO', data: { instanceId, fileName, fileKey, caps: ['fileGuard'] } }));
+async function helloPlugin(
+  ws: WebSocket, instanceId: string, fileName: string, fileKey: string | null = null,
+  caps: string[] = ['fileGuard'],
+): Promise<void> {
+  ws.send(JSON.stringify({ type: 'PLUGIN_HELLO', data: { instanceId, fileName, fileKey, caps } }));
   await new Promise<void>((resolvePromise) => {
     const handler = (raw: WebSocket.RawData): void => {
       const msg = JSON.parse(raw.toString()) as { type?: string };
@@ -71,6 +79,26 @@ function nextFrame<T extends WireMsg | EventMsg>(ws: WebSocket, predicate?: (m: 
       const msg = JSON.parse(raw.toString()) as WireMsg;
       if (!predicate || predicate(msg)) { ws.off('message', handler); resolvePromise(msg as T); }
     };
+    ws.on('message', handler);
+  });
+}
+
+function nextFrameByDeadline<T extends WireMsg | EventMsg>(
+  ws: WebSocket, predicate: (m: WireMsg) => boolean, deadlineMs: number,
+): Promise<T | undefined> {
+  return new Promise((resolvePromise) => {
+    const handler = (raw: WebSocket.RawData): void => {
+      const msg = JSON.parse(raw.toString()) as WireMsg;
+      if (predicate(msg)) {
+        clearTimeout(timer);
+        ws.off('message', handler);
+        resolvePromise(msg as T);
+      }
+    };
+    const timer = setTimeout(() => {
+      ws.off('message', handler);
+      resolvePromise(undefined);
+    }, deadlineMs);
     ws.on('message', handler);
   });
 }
@@ -106,13 +134,22 @@ function sendEditFeed(
   } satisfies EventMsg));
 }
 
-function sendCowork(ws: WebSocket, reqId: string, opts: { waitMs: number; timeoutMs: number; expectedFile?: string }): void {
+function sendCowork(
+  ws: WebSocket,
+  reqId: string,
+  opts: { waitMs: number; timeoutMs: number; expectedFile?: string; targetFileKey?: string },
+): void {
   ws.send(JSON.stringify(
-    makeRequestFrame(reqId, 'COWORK', { waitMs: opts.waitMs, timeoutMs: opts.timeoutMs }, undefined, opts.expectedFile),
+    makeRequestFrame(
+      reqId, 'COWORK', { waitMs: opts.waitMs, timeoutMs: opts.timeoutMs },
+      undefined, opts.expectedFile, undefined, undefined, undefined, undefined, opts.targetFileKey,
+    ),
   ));
 }
 
 beforeEach(() => {
+  priorAppReadinessMs = process.env[APP_READINESS_MS_KEY];
+  priorPluginWaitMs = process.env[PLUGIN_WAIT_MS_KEY];
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-cowork-harness-'));
   advertisePath = join(scratchDir, 'broker.json');
   scratchLogFile = join(scratchDir, 'broker.log');
@@ -120,8 +157,175 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  const shutdownSocket = sockets.find((ws) => ws.readyState === WebSocket.OPEN);
+  if (shutdownSocket) {
+    try { shutdownSocket.send(JSON.stringify({ type: 'BROKER_SHUTDOWN_REQUEST' })); } catch { /* already closed */ }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   for (const ws of sockets) { try { ws.terminate(); } catch { /* already closed */ } }
   rmSync(scratchDir, { recursive: true, force: true });
+  if (priorAppReadinessMs === undefined) delete process.env[APP_READINESS_MS_KEY];
+  else process.env[APP_READINESS_MS_KEY] = priorAppReadinessMs;
+  if (priorPluginWaitMs === undefined) delete process.env[PLUGIN_WAIT_MS_KEY];
+  else process.env[PLUGIN_WAIT_MS_KEY] = priorPluginWaitMs;
+});
+
+describe('cowork — application readiness is checked before waiter creation', () => {
+  it('an exact raw-key cowork watches only B even when A is newer and ready', async () => {
+    const port = await startTestBroker();
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-cw-raw-b', 'Cowork Raw B', 'raw-cowork-b');
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-cw-newer-a', 'Cowork Newer A', 'raw-cowork-a');
+    const cli = await connectSocket(port);
+    const replyPromise = nextFrame<ReplyOk | ReplyErr>(cli, (frame) =>
+      (frame as ReplyOk | ReplyErr).id === 'req-cw-raw-b');
+
+    sendCowork(cli, 'req-cw-raw-b', { waitMs: 30, timeoutMs: 500, targetFileKey: 'raw-cowork-b' });
+    sendEditFeed(pluginA, [ownerEdit('newer-a:1')], { fileKey: 'raw-cowork-a', fileName: 'Cowork Newer A' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    sendEditFeed(pluginB, [ownerEdit('raw-b:1')], { fileKey: 'raw-cowork-b', fileName: 'Cowork Raw B' });
+
+    expect(await replyPromise).toMatchObject({
+      ok: true,
+      result: { cycles: 1, file: 'Cowork Raw B', edits: [{ nodeId: 'raw-b:1' }] },
+    });
+  });
+
+  it('unfiltered cowork watches the older ready plugin instead of failing on a newer stale plugin', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '200' });
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-cw-ready-a', 'Cowork Ready A', 'raw-cowork-a', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginB = await connectSocket(port);
+    await helloPlugin(pluginB, 'inst-cw-stale-b', 'Cowork Stale B', 'raw-cowork-b', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    pluginA.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: 'cowork-ready-a' } } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cli = await connectSocket(port);
+    const reply = nextFrame<ReplyOk | ReplyErr>(cli, (frame) => (frame as ReplyOk | ReplyErr).id === 'req-cw-ready-first');
+    sendCowork(cli, 'req-cw-ready-first', { waitMs: 30, timeoutMs: 500 });
+    sendEditFeed(pluginA, [ownerEdit('ready-a:1')], { fileKey: 'raw-cowork-a', fileName: 'Cowork Ready A' });
+
+    expect(await reply).toMatchObject({ ok: true, result: { cycles: 1, file: 'Cowork Ready A' } });
+  });
+
+  it('fails an exact unready target immediately and a later gap-fill cannot arm a hidden waiter', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '30' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-unready', 'Cowork Unready', 'raw-cowork', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const cli = await connectSocket(port);
+    const collected = { replies: [] as Array<ReplyOk | ReplyErr> };
+    cli.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as ReplyOk | ReplyErr;
+      if (frame.id === 'req-cw-unready') collected.replies.push(frame);
+    });
+
+    sendCowork(cli, 'req-cw-unready', { waitMs: 30, timeoutMs: 100, expectedFile: 'Cowork Unready' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(collected.replies).toHaveLength(1);
+    expect(collected.replies[0]).toMatchObject({ ok: false, error: { code: 'E_APP_UNREADY' } });
+
+    sendEditFeed(plugin, [ownerEdit('unready:1')], { fileKey: 'raw-cowork', fileName: 'Cowork Unready', source: 'gapfill' });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(collected.replies).toHaveLength(1);
+  });
+
+  it('fails an exact raw-key unready target before waiter creation even while another file is ready', async () => {
+    const port = await startTestBroker({ [APP_READINESS_MS_KEY]: '30' });
+    const pluginA = await connectSocket(port);
+    await helloPlugin(pluginA, 'inst-cw-ready-other', 'Cowork Ready Other', 'raw-cowork-ready', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    const pluginC = await connectSocket(port);
+    await helloPlugin(pluginC, 'inst-cw-unready-raw-c', 'Cowork Unready Raw C', 'raw-cowork-c', ['fileGuard', 'correlatedHeartbeatV1', 'appProbeV1']);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    pluginA.send(JSON.stringify({ type: 'APP_PROBE_ACK', data: { probeId: 'cowork-ready-other' } } satisfies EventMsg));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cli = await connectSocket(port);
+    const collected = { replies: [] as Array<ReplyOk | ReplyErr> };
+    cli.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as ReplyOk | ReplyErr;
+      if (frame.id === 'req-cw-unready-raw-c') collected.replies.push(frame);
+    });
+
+    sendCowork(cli, 'req-cw-unready-raw-c', {
+      waitMs: 30, timeoutMs: 100, targetFileKey: 'raw-cowork-c',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(collected.replies).toHaveLength(1);
+    expect(collected.replies[0]).toMatchObject({ ok: false, error: { code: 'E_APP_UNREADY' } });
+
+    sendEditFeed(pluginC, [ownerEdit('unready-raw-c:1')], {
+      fileKey: 'raw-cowork-c', fileName: 'Cowork Unready Raw C', source: 'gapfill',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(collected.replies).toHaveLength(1);
+  });
+});
+
+describe('cowork — raw target validation and missing-target refusal', () => {
+  it('rejects blank, padded, non-string, and selector-conflicting targetFileKey values', async () => {
+    // The broker's park sweep is min(500ms, pluginWait/8); 800ms gives a 100ms
+    // sweep, so the no-second-reply observation covers at least two intervals.
+    const port = await startTestBroker({ [PLUGIN_WAIT_MS_KEY]: '800' });
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-validation', 'Cowork Validation', 'raw-cowork-validation');
+    const cli = await connectSocket(port);
+    const invalidFrames = [
+      { id: 'req-cw-raw-blank', targetFileKey: '' },
+      { id: 'req-cw-raw-padded', targetFileKey: ' raw-cowork-validation ' },
+      { id: 'req-cw-raw-number', targetFileKey: 42 },
+      { id: 'req-cw-raw-file-conflict', targetFileKey: 'raw-cowork-validation', expectedFile: 'Cowork Validation' },
+      { id: 'req-cw-raw-instance-conflict', targetFileKey: 'raw-cowork-validation', expectedInstance: 'inst-cw-validation' },
+    ];
+
+    for (const frame of invalidFrames) {
+      const replyPromise = nextFrame<ReplyErr>(cli, (reply) => (reply as ReplyErr).id === frame.id);
+      cli.send(JSON.stringify({
+        id: frame.id,
+        cmd: 'COWORK',
+        params: { waitMs: 30, timeoutMs: 100 },
+        v: 1,
+        ...frame,
+      }));
+      expect((await replyPromise).error.code).toBe('E_INVALID_ARGS');
+
+      const noSecondReply = nextFrameByDeadline<ReplyErr>(
+        cli, (reply) => (reply as ReplyErr).id === frame.id, 250,
+      );
+      sendEditFeed(plugin, [ownerEdit(`${frame.id}:live`)], {
+        fileKey: 'raw-cowork-validation', fileName: 'Cowork Validation', source: 'live',
+      });
+      sendEditFeed(plugin, [ownerEdit(`${frame.id}:gapfill`)], {
+        fileKey: 'raw-cowork-validation', fileName: 'Cowork Validation', source: 'gapfill',
+      });
+      expect(await noSecondReply).toBeUndefined();
+    }
+  });
+
+  it('returns E_NO_PLUGIN for a missing exact raw key and creates no fallback waiter', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-cw-present-a', 'Cowork Present A', 'raw-cowork-present-a');
+    const cli = await connectSocket(port);
+    const collected = { replies: [] as Array<ReplyOk | ReplyErr> };
+    cli.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as ReplyOk | ReplyErr;
+      if (frame.id === 'req-cw-missing-raw') collected.replies.push(frame);
+    });
+
+    sendCowork(cli, 'req-cw-missing-raw', {
+      waitMs: 30, timeoutMs: 100, targetFileKey: 'raw-cowork-missing',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(collected.replies).toHaveLength(1);
+    expect(collected.replies[0]).toMatchObject({ ok: false, error: { code: 'E_NO_PLUGIN' } });
+
+    sendEditFeed(plugin, [ownerEdit('present-a:1')], {
+      fileKey: 'raw-cowork-present-a', fileName: 'Cowork Present A',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(collected.replies).toHaveLength(1);
+  });
 });
 
 describe('cowork — fires on a genuine owner cycle', () => {

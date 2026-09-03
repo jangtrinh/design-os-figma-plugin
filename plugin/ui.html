@@ -986,6 +986,11 @@ body { overflow: hidden; }
 (() => {
   // shared/protocol.ts
   var PROTOCOL_VERSION = 1;
+  var PLUGIN_CAPABILITIES = [
+    "fileGuard",
+    "correlatedHeartbeatV1",
+    "appProbeV1"
+  ];
   var PORT_RANGE_START = 9410;
   var PORT_RANGE_END = 9419;
   var CHUNK_LIMIT = 512 * 1024;
@@ -1537,7 +1542,7 @@ body { overflow: hidden; }
       "CLONE_TRAITS"
     ]),
     weaving: /* @__PURE__ */ new Set(["BATCH", "CONNECT", "DISCONNECT", "REROUTE", "RECONCILE"]),
-    working: /* @__PURE__ */ new Set(["EXEC_JS", "SET_CORRECTION_MEMORY", "PROJECT_BIND", "JOB"]),
+    working: /* @__PURE__ */ new Set(["EXEC_JS", "SET_CORRECTION_MEMORY", "PROJECT_BIND", "JOB", "MUTATION_GATE"]),
     listening: /* @__PURE__ */ new Set(["COWORK"])
   };
   var STATUS_BY_STATE = {
@@ -2651,7 +2656,7 @@ body { overflow: hidden; }
     }, 4e3);
     render();
   });
-  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "c2bd0ef" : "dev"}`;
+  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "1b4fed6" : "dev"}`;
   replaceIcon(targetRailBtn, "files");
   replaceIcon(syncRailBtn, "refresh-cw");
   replaceIcon(toggleBtn, "chevron-down");
@@ -4247,6 +4252,134 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     return oneLine.length > MAX_ERROR_CHARS ? `${oneLine.slice(0, MAX_ERROR_CHARS - 1)}\u2026` : oneLine;
   }
 
+  // plugin/src/ui/heartbeat-lease.ts
+  function challenge(state, now, probeId, timeoutMs, phase) {
+    return {
+      state: {
+        ...state,
+        phase,
+        currentProbeId: probeId,
+        sentAt: now,
+        deadline: now + timeoutMs,
+        lastTickAt: now
+      },
+      effects: [{ type: "send-challenge", probeId }]
+    };
+  }
+  function startHeartbeatLease(mode, now, probeId, config) {
+    return challenge({
+      mode,
+      phase: "probing",
+      currentProbeId: null,
+      sentAt: null,
+      deadline: null,
+      lastTickAt: now
+    }, now, probeId, config.timeoutMs, "probing");
+  }
+  function reduceHeartbeatLease(state, event, config) {
+    if (event.type === "pong") {
+      const accepted = state.currentProbeId !== null && (state.mode === "correlated" ? event.probeId === state.currentProbeId : event.probeId === void 0);
+      if (!accepted) return { state, effects: [] };
+      return {
+        state: {
+          ...state,
+          phase: "ready",
+          currentProbeId: null,
+          sentAt: null,
+          deadline: null
+        },
+        effects: [{ type: "accepted-current" }]
+      };
+    }
+    const schedulerWasSuspended = event.now - state.lastTickAt > config.timeoutMs;
+    if (schedulerWasSuspended) {
+      return challenge(state, event.now, event.nextProbeId, config.timeoutMs, "suspect");
+    }
+    if (state.phase === "ready") {
+      return challenge(state, event.now, event.nextProbeId, config.timeoutMs, "probing");
+    }
+    const expired = state.deadline !== null && event.now > state.deadline;
+    if (!expired) {
+      return { state: { ...state, lastTickAt: event.now }, effects: [] };
+    }
+    if (state.phase === "probing") {
+      return challenge(state, event.now, event.nextProbeId, config.timeoutMs, "suspect");
+    }
+    return {
+      state: { ...state, lastTickAt: event.now },
+      effects: [{ type: "teardown" }]
+    };
+  }
+
+  // plugin/src/ui/heartbeat-driver.ts
+  function createHeartbeatDriver(ports, config) {
+    let scheduleHandle;
+    let generation = 0;
+    let lease = null;
+    let connectedEmitted = false;
+    function stop() {
+      generation += 1;
+      lease = null;
+      connectedEmitted = false;
+      if (scheduleHandle !== void 0) {
+        ports.cancel(scheduleHandle);
+        scheduleHandle = void 0;
+      }
+    }
+    function apply(decision) {
+      lease = decision.state;
+      let accepted = false;
+      for (const effect of decision.effects) {
+        if (effect.type === "send-challenge") {
+          try {
+            ports.sendProbe(effect.probeId, decision.state.mode);
+          } catch {
+            stop();
+            ports.teardown("ping failed \u2014 reconnecting\u2026");
+            break;
+          }
+        } else if (effect.type === "accepted-current") {
+          accepted = true;
+          if (!connectedEmitted) {
+            connectedEmitted = true;
+            ports.emitConnected();
+          }
+        } else {
+          stop();
+          ports.teardown("heartbeat lost \u2014 reconnecting\u2026");
+          break;
+        }
+      }
+      return accepted;
+    }
+    return {
+      start(mode) {
+        stop();
+        const started = startHeartbeatLease(mode, ports.now(), ports.nextProbeId(), config);
+        apply(started);
+        if (lease === null) return;
+        const activeGeneration = generation;
+        scheduleHandle = ports.schedule(() => {
+          if (activeGeneration !== generation || lease === null) return;
+          apply(reduceHeartbeatLease(lease, {
+            type: "tick",
+            now: ports.now(),
+            nextProbeId: ports.nextProbeId()
+          }, config));
+        }, config.intervalMs);
+      },
+      stop,
+      receivePong(probeId) {
+        if (lease === null) return false;
+        return apply(reduceHeartbeatLease(lease, {
+          type: "pong",
+          now: ports.now(),
+          probeId
+        }, config));
+      }
+    };
+  }
+
   // plugin/src/ui/ui-relay.ts
   var PLUGIN_VERSION = "0.1.0";
   var PORT_PROBE_TIMEOUT_MS = 1200;
@@ -4254,8 +4387,9 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   var INSTANCE_ID = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   var ws = null;
   var backoffBase = 0;
-  var heartbeatTimer = null;
-  var lastPongAt = 0;
+  var reconnectTimer = null;
+  var heartbeatMode = "legacy";
+  var heartbeatProbeCounter = 0;
   var connState = "disconnected";
   var fileInfo = {};
   var chunkBuffers = /* @__PURE__ */ new Map();
@@ -4360,7 +4494,15 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
       return;
     }
     if (msg.type === "PONG") {
-      lastPongAt = Date.now();
+      const data = msg.data ?? {};
+      heartbeatDriver.receivePong(typeof data.probeId === "string" ? data.probeId : void 0);
+      return;
+    }
+    if (msg.type === "APP_PROBE") {
+      const data = msg.data ?? {};
+      if (heartbeatMode === "correlated" && typeof data.probeId === "string") {
+        wsSend({ type: "APP_PROBE_ACK", data: { probeId: data.probeId } });
+      }
       return;
     }
     if (msg.type === "SYNC_CONFIG") {
@@ -4545,35 +4687,39 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
       emitActivity(pm.requestId, pm.ok === true, pm.ok === true ? pm.result : pm.error);
     }
   });
-  function stopHeartbeat() {
-    if (heartbeatTimer !== null) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
+  var heartbeatDriver = createHeartbeatDriver({
+    now: Date.now,
+    nextProbeId: () => `hb_${INSTANCE_ID}_${++heartbeatProbeCounter}_${Date.now()}`,
+    schedule: (callback, intervalMs) => setInterval(callback, intervalMs),
+    cancel: (handle) => clearInterval(handle),
+    sendProbe: (probeId, mode) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("socket unavailable");
+      ws.send(JSON.stringify({
+        type: "PING",
+        data: { t: Date.now(), ...mode === "correlated" ? { probeId } : {} }
+      }));
+    },
+    teardown: (reason) => {
+      if (ws) teardown(ws, reason);
+    },
+    emitConnected: () => {
+      if (!ws) return;
+      const { url, port } = socketConnectionInfo(ws);
+      transition("READY", {
+        detail: `broker at ${url} \xB7 protocol v${PROTOCOL_VERSION}`,
+        brokerUrl: url,
+        port,
+        appState: "ready"
+      });
     }
-  }
-  function startHeartbeat(socket) {
-    stopHeartbeat();
-    lastPongAt = Date.now();
-    heartbeatTimer = setInterval(() => {
-      if (ws !== socket) {
-        stopHeartbeat();
-        return;
-      }
-      if (Date.now() - lastPongAt > PLUGIN_PONG_TIMEOUT_MS) {
-        teardown(socket, "heartbeat lost \u2014 reconnecting\u2026");
-        return;
-      }
-      try {
-        socket.send(JSON.stringify({ type: "PING", data: { t: Date.now() } }));
-      } catch {
-        teardown(socket, "ping failed \u2014 reconnecting\u2026");
-      }
-    }, PLUGIN_HEARTBEAT_INTERVAL_MS);
-  }
+  }, {
+    intervalMs: PLUGIN_HEARTBEAT_INTERVAL_MS,
+    timeoutMs: PLUGIN_PONG_TIMEOUT_MS
+  });
   function teardown(socket, reason) {
     if (ws !== socket) return;
     ws = null;
-    stopHeartbeat();
+    heartbeatDriver.stop();
     transition("LOST", { detail: reason });
     try {
       socket.onclose = null;
@@ -4610,7 +4756,9 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
       socket.onmessage = (ev) => {
         try {
           const msg = JSON.parse(String(ev.data));
-          if (msg?.type === "BROKER_HELLO") finish(socket);
+          if (msg?.type === "BROKER_HELLO") {
+            finish({ socket, hello: msg.data ?? {} });
+          }
         } catch {
         }
       };
@@ -4621,19 +4769,35 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   async function scanForBroker() {
     for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) {
       transition("PROBE", { detail: `probing figma-agent.localhost:${port}\u2026`, port });
-      const socket = await probePort(port, "figma-agent.localhost");
-      if (socket) return socket;
+      const probe = await probePort(port, "figma-agent.localhost");
+      if (probe) return probe;
     }
     return null;
   }
-  function adoptSocket(socket) {
-    ws = socket;
-    backoffBase = 0;
-    chunkBuffers.clear();
+  function socketConnectionInfo(socket) {
     const url = socket.url.replace(/\/$/, "");
     const portMatch = /:(\d+)/.exec(url);
-    const port = portMatch ? Number(portMatch[1]) : void 0;
-    transition("FOUND", { detail: `broker at ${url}`, brokerUrl: url, port });
+    return { url, port: portMatch ? Number(portMatch[1]) : void 0 };
+  }
+  function adoptSocket(probe) {
+    const { socket, hello } = probe;
+    if (ws !== null) {
+      if (ws !== socket) try {
+        socket.close();
+      } catch {
+      }
+      return;
+    }
+    ws = socket;
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    backoffBase = 0;
+    chunkBuffers.clear();
+    heartbeatMode = hello.appReadinessV === 1 ? "correlated" : "legacy";
+    const { url, port } = socketConnectionInfo(socket);
+    transition("FOUND", { detail: `broker at ${url}`, brokerUrl: url, port, appState: "probing" });
     socket.onmessage = (ev) => handleWireData(String(ev.data));
     socket.onerror = () => {
     };
@@ -4641,30 +4805,34 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     wsSend({ type: "PLUGIN_HELLO", data: {
       ...fileInfo,
       instanceId: INSTANCE_ID,
-      caps: ["fileGuard"],
+      caps: [...PLUGIN_CAPABILITIES],
       pluginVersion: PLUGIN_VERSION,
       protocolV: PROTOCOL_VERSION
     } });
     if (Object.keys(fileInfo).length === 0) parent.postMessage({ pluginMessage: { type: "UI_READY" } }, "*");
-    startHeartbeat(socket);
-    transition("READY", { detail: `broker at ${url} \xB7 protocol v${PROTOCOL_VERSION}`, brokerUrl: url, port });
+    heartbeatDriver.start(heartbeatMode);
   }
   function scheduleReconnect() {
+    if (ws !== null || reconnectTimer !== null) return;
     const { base, delay } = nextBackoff(backoffBase, BACKOFF_OPTS);
     backoffBase = base;
-    setTimeout(() => void connectLoop(), delay);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void connectLoop();
+    }, delay);
   }
   async function connectLoop() {
+    if (ws !== null) return;
     try {
-      const socket = await scanForBroker();
-      if (!socket) {
+      const probe = await scanForBroker();
+      if (!probe) {
         transition("PROBE", {
           detail: `no broker on :${PORT_RANGE_START}-${PORT_RANGE_END} \u2014 is a CLI command running? retrying\u2026`
         });
         scheduleReconnect();
         return;
       }
-      adoptSocket(socket);
+      adoptSocket(probe);
     } catch (err) {
       transition("LOST", { detail: err instanceof Error ? err.message : String(err) });
       scheduleReconnect();

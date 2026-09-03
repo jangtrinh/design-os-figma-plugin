@@ -56,4 +56,19 @@ describe('printErrorJson', () => {
       fileContext: { fileName: 'VSF - PCP' },
     });
   });
+
+  it('projects exact structured recovery while ordinary errors remain unchanged', () => {
+    const recovery = {
+      kind: 'inspect-and-force-release' as const,
+      command: 'figma-agent job j_3_3 --force-release',
+      requiresCanvasInspection: true as const,
+      retryAllowed: false as const,
+    };
+    const { out } = captureExit(() => printErrorJson(new CliError(
+      'E_OUTCOME_UNKNOWN', 'uncertain', { jobId: 'j_3_3', recovery },
+    )));
+    expect(JSON.parse(out)).toEqual({
+      error: { code: 'E_OUTCOME_UNKNOWN', message: 'uncertain', jobId: 'j_3_3', recovery },
+    });
+  });
 });

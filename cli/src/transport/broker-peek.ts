@@ -2,7 +2,16 @@
 // able to call this without ever starting a broker. NEVER calls `ensureBroker`
 // (broker-discovery.ts, which spawns); only reads the /tmp advertisement and,
 // if one looks live, asks that broker ONE short question with its own deadline.
-import { BROKER_FILE, PROTOCOL_VERSION, type PluginStatusEntry } from '../../../shared/protocol.ts';
+import {
+  BROKER_FILE,
+  APP_READINESS_VERSION,
+  PROTOCOL_VERSION,
+  type AppHeartbeatMode,
+  type AppState,
+  type MutationGateRow,
+  type MutationGateStoreHealth,
+  type PluginStatusEntry,
+} from '../../../shared/protocol.ts';
 import { isAdvertisementLive, readAdvertisement } from './broker-discovery.ts';
 import { fetchBrokerHello } from './broker-client.ts';
 import { envMs } from './protocol-helpers.ts';
@@ -16,6 +25,10 @@ export interface PeekPluginEntry {
   protocolV?: number;
   versionMatch: boolean | null;
   protocolMatch: boolean | null;
+  appReady: boolean | null;
+  appState: AppState;
+  appHeartbeatMode: AppHeartbeatMode;
+  appReadinessAge: number | null;
 }
 
 export interface PeekResult {
@@ -26,16 +39,40 @@ export interface PeekResult {
   idle?: true;
   reason?: string;
   degraded?: string;
-  broker: { port: number; pid: number; protocolVersion?: number; uptimeMs?: number } | null;
+  broker: {
+    port: number;
+    pid: number;
+    protocolVersion?: number;
+    uptimeMs?: number;
+    targetFileKeyAdmissionV?: 1;
+    appReadinessVersion?: number;
+    appReadinessVersionMatch?: boolean | null;
+  } | null;
   plugins?: PeekPluginEntry[];
   cliVersion: string;
   versionMatch?: boolean | null;
   protocolMatch?: boolean | null;
+  mutationGates?: MutationGateRow[];
+  mutationGateStoreHealth?: MutationGateStoreHealth;
 }
 
 /** `undefined` (the field was never sent) is UNKNOWN, not a mismatch. */
 function matchOrNull(actual: string | number | undefined, expected: string | number): boolean | null {
   return actual === undefined ? null : actual === expected;
+}
+
+/** Readiness is additive: an old or unsupported broker must never be guessed ready. */
+export function projectReadiness(
+  plugin: Pick<PluginStatusEntry, 'appReady' | 'appState' | 'appHeartbeatMode' | 'appReadinessAge'>,
+  brokerVersion: number | undefined,
+): Pick<PeekPluginEntry, 'appReady' | 'appState' | 'appHeartbeatMode' | 'appReadinessAge'> {
+  const supported = brokerVersion === APP_READINESS_VERSION;
+  return {
+    appReady: supported && typeof plugin.appReady === 'boolean' ? plugin.appReady : null,
+    appState: supported && plugin.appState !== undefined ? plugin.appState : 'unknown',
+    appHeartbeatMode: supported && plugin.appHeartbeatMode !== undefined ? plugin.appHeartbeatMode : 'unknown',
+    appReadinessAge: supported && typeof plugin.appReadinessAge === 'number' ? plugin.appReadinessAge : null,
+  };
 }
 
 function describeError(err: unknown): string {
@@ -108,6 +145,8 @@ export async function peek(opts?: { path?: string; queryMs?: number }): Promise<
     };
   }
   const hello = outcome.value;
+  const rawReadinessVersion = typeof hello.appReadinessV === 'number' ? hello.appReadinessV : undefined;
+  const readinessSupported = rawReadinessVersion === APP_READINESS_VERSION;
 
   const rawPlugins = Array.isArray(hello.plugins) ? (hello.plugins as PluginStatusEntry[]) : [];
   const plugins: PeekPluginEntry[] = rawPlugins.map((p) => ({
@@ -118,6 +157,7 @@ export async function peek(opts?: { path?: string; queryMs?: number }): Promise<
     ...(p.protocolV !== undefined && { protocolV: p.protocolV }),
     versionMatch: matchOrNull(p.pluginVersion, CLI_VERSION),
     protocolMatch: matchOrNull(p.protocolV, PROTOCOL_VERSION),
+    ...projectReadiness(p, rawReadinessVersion),
   }));
 
   const activeFileName = (hello.activePlugin as string | null | undefined) ?? null;
@@ -130,10 +170,16 @@ export async function peek(opts?: { path?: string; queryMs?: number }): Promise<
       pid: ad.pid,
       protocolVersion: (hello.protocolV as number | undefined) ?? PROTOCOL_VERSION,
       uptimeMs: (hello.uptimeMs as number | undefined) ?? undefined,
+      ...(hello.targetFileKeyAdmissionV === 1 && { targetFileKeyAdmissionV: 1 as const }),
+      ...(rawReadinessVersion !== undefined && { appReadinessVersion: rawReadinessVersion }),
+      appReadinessVersionMatch: rawReadinessVersion === undefined ? null : readinessSupported,
     },
     plugins,
     cliVersion: CLI_VERSION,
     versionMatch: active ? active.versionMatch : null,
     protocolMatch: active ? active.protocolMatch : null,
+    ...(Array.isArray(hello.mutationGates) && { mutationGates: hello.mutationGates as MutationGateRow[] }),
+    ...(hello.mutationGateStoreHealth !== null && typeof hello.mutationGateStoreHealth === 'object'
+      && { mutationGateStoreHealth: hello.mutationGateStoreHealth as MutationGateStoreHealth }),
   };
 }

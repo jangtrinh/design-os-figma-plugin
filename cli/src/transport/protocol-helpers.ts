@@ -6,6 +6,7 @@ import {
   type ChunkMsg,
   type ErrorCode,
   type EventMsg,
+  type JobRecovery,
   type ReplyMsg,
   type RequestMsg,
   type WireMsg,
@@ -24,12 +25,14 @@ export class CliError extends Error {
    * retrievable (`figma-agent job <id>`) — retrying would double-dispatch instead.
    */
   readonly jobId?: string;
-  constructor(code: ErrorCode, message: string, opts?: { rolledBack?: boolean; jobId?: string }) {
+  readonly recovery?: JobRecovery;
+  constructor(code: ErrorCode, message: string, opts?: { rolledBack?: boolean; jobId?: string; recovery?: JobRecovery }) {
     super(message);
     this.name = 'CliError';
     this.code = code;
     if (opts?.rolledBack) this.rolledBack = opts.rolledBack;
     if (opts?.jobId !== undefined) this.jobId = opts.jobId;
+    if (opts?.recovery !== undefined) this.recovery = opts.recovery;
   }
 }
 

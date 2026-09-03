@@ -18,7 +18,7 @@ const groups = [
   ['shaping', 'Shaping', ['SET_VARIANT', 'BIND_VARIABLE', 'SET_AUTOLAYOUT',
     'SET_CONSTRAINTS', 'CLONE_TRAITS']],
   ['weaving', 'Coordinating', ['BATCH', 'CONNECT', 'DISCONNECT', 'REROUTE', 'RECONCILE']],
-  ['working', 'Processing', ['EXEC_JS', 'SET_CORRECTION_MEMORY', 'PROJECT_BIND', 'JOB']],
+  ['working', 'Processing', ['EXEC_JS', 'SET_CORRECTION_MEMORY', 'PROJECT_BIND', 'JOB', 'MUTATION_GATE']],
   ['listening', 'Listening', ['COWORK']],
 ] as const;
 

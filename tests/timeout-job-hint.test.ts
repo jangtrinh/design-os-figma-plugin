@@ -75,3 +75,38 @@ describe('exchange — JOB_STATE does not settle the promise on its own', () => 
     await expect(promise).resolves.toEqual({ ok: true });
   });
 });
+
+describe('exchange — structured unknown-outcome recovery', () => {
+  const recovery = {
+    kind: 'inspect-and-force-release' as const,
+    command: 'figma-agent job j_wire --force-release',
+    requiresCanvasInspection: true as const,
+    retryAllowed: false as const,
+  };
+
+  it('copies wire jobId and recovery without parsing message text; wire jobId wins', async () => {
+    const ws = fakeWs();
+    const promise = exchange(ws, 'EXEC_JS', {}, 5_000);
+    ws.emit('message', Buffer.from(jobStateEvent({ jobId: 'j_state', state: 'running', cmd: 'EXEC_JS', fileSlug: 'fileA' })));
+    const sentId = (JSON.parse(ws.sent[0]!) as { id: string }).id;
+    ws.emit('message', Buffer.from(JSON.stringify({
+      id: sentId, ok: false,
+      error: { code: 'E_OUTCOME_UNKNOWN', message: 'opaque', jobId: 'j_wire', recovery },
+    })));
+    await expect(promise).rejects.toMatchObject({
+      code: 'E_OUTCOME_UNKNOWN', message: 'opaque', jobId: 'j_wire', recovery,
+    });
+  });
+
+  it('uses the matching JOB_STATE jobId only when an old peer omits wire jobId', async () => {
+    const ws = fakeWs();
+    const promise = exchange(ws, 'EXEC_JS', {}, 5_000);
+    ws.emit('message', Buffer.from(jobStateEvent({ jobId: 'j_fallback', state: 'running', cmd: 'EXEC_JS', fileSlug: 'fileA' })));
+    const sentId = (JSON.parse(ws.sent[0]!) as { id: string }).id;
+    ws.emit('message', Buffer.from(JSON.stringify({
+      id: sentId, ok: false,
+      error: { code: 'E_OUTCOME_UNKNOWN', message: 'contains no useful identifier', recovery: { ...recovery, command: 'figma-agent job j_fallback --force-release' } },
+    })));
+    await expect(promise).rejects.toMatchObject({ code: 'E_OUTCOME_UNKNOWN', jobId: 'j_fallback' });
+  });
+});

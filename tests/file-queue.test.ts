@@ -36,6 +36,16 @@ describe('complete', () => {
     expect(r.q.waiting).toEqual(['job-c']);
   });
 
+  it('moves the next FIFO head into the slot owner without leaving it in waiting', () => {
+    let q: QueueState = emptyQueue();
+    ({ q } = enqueue(q, 'job-a'));
+    ({ q } = enqueue(q, 'job-b'));
+    ({ q } = enqueue(q, 'job-c'));
+    const r = complete(q, 'job-a');
+    expect(r.q).toEqual({ running: 'job-b', waiting: ['job-c'] });
+    expect(queuePosition(r.q, 'job-b')).toBeUndefined();
+  });
+
   it('reports next: null when nothing is waiting', () => {
     let q: QueueState = emptyQueue();
     ({ q } = enqueue(q, 'job-a'));
