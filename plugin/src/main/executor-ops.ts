@@ -7,6 +7,7 @@
 
 import type { FigmaExportNode } from '../../../shared/figma-payload-types';
 import type { GapfillStatus } from '../../../shared/protocol';
+import type { DocumentChangeCaptureStats } from './document-change-capture';
 import { loadBestFont } from './executor-fonts';
 import { withCode } from './executor-styles';
 import { applyAutoLayout } from './executor-frame';
@@ -89,6 +90,7 @@ export function opStatus(
   bootSkipped: readonly string[] = [],
   readOnlyViolations = 0,
   gapfill?: GapfillStatus,
+  capture?: DocumentChangeCaptureStats,
 ): Record<string, unknown> {
   return {
     fileName: figma.root.name,
@@ -127,6 +129,24 @@ export function opStatus(
     // reading of its own rather than an absence that looks like health. Caller-supplied —
     // this function never re-derives what gap-fill did.
     ...(gapfill && { gapfill }),
+    // Live capture's own session record (document-change-capture.ts). All three keep the
+    // present-only-when-meaningful contract of the counters above — a session that filtered
+    // nothing, guessed no page and hit no store failure keeps the payload byte-identical to
+    // before these fields existed — because each records something that DID happen and
+    // would otherwise leave no trace at all:
+    //   · how many entries were dropped as the plugin's own bookkeeping echo (a property
+    //     change whose every property is `pluginData`): a filtered change is still a change,
+    //     and without a count the only way to notice the predicate had started eating real
+    //     edits would be a designer reporting a missing one;
+    //   · how many live nodes had no resolvable page and were filed under the current one:
+    //     that page name is a guess about someone else's edit;
+    //   · correction-store failures, as first message + count (the gapfill block's shape) —
+    //     the feed is posted regardless, so nothing else would ever report the refusal.
+    ...(capture && capture.pluginDataChangesDropped > 0
+      && { pluginDataChangesDropped: capture.pluginDataChangesDropped }),
+    ...(capture && capture.pageFallbacks > 0 && { pageFallbacks: capture.pageFallbacks }),
+    ...(capture && capture.firstError !== null
+      && { captureErrors: [capture.firstError], captureErrorCount: capture.errorCount }),
   };
 }
 

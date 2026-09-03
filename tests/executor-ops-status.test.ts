@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { installMockFigma, setMockEditorType } from './helpers/mock-figma.ts';
 import { opStatus } from '../plugin/src/main/executor-ops.ts';
+import type { DocumentChangeCaptureStats } from '../plugin/src/main/document-change-capture.ts';
 import {
   createGapfillStats, recordGapfillError, recordGapfillEviction, toGapfillStatus,
 } from '../plugin/src/main/gapfill-status.ts';
@@ -98,5 +99,50 @@ describe('opStatus — the gap-fill block', () => {
       errors: ['first failure'], // the FIRST message — the cause, not the cascade
       errorCount: 2,
     });
+  });
+});
+
+// The self-emitted-noise counter: how many `documentchange` entries this session dropped as
+// the plugin's own bookkeeping echo (a root/DOCUMENT change, or a pluginData-only property
+// change). Same present-only-when-meaningful contract as bootSkipped/readOnlyViolations — a
+// session that never filtered anything keeps the payload byte-identical to before the field
+// existed — but a session that did filter says so, because a dropped change still happened.
+describe('opStatus — live-capture counters', () => {
+  const captureStats = (over: Partial<DocumentChangeCaptureStats> = {}): DocumentChangeCaptureStats => ({
+    pluginDataChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null, ...over,
+  });
+
+  it('no argument → every capture key is OMITTED, keeping the payload byte-identical to before they existed', () => {
+    installMockFigma();
+    const status = opStatus();
+    expect('pluginDataChangesDropped' in status).toBe(false);
+    expect('pageFallbacks' in status).toBe(false);
+    expect('captureErrors' in status).toBe(false);
+  });
+
+  it('an all-zero session → the keys are still OMITTED', () => {
+    installMockFigma();
+    const status = opStatus([], 0, undefined, captureStats());
+    expect('pluginDataChangesDropped' in status).toBe(false);
+    expect('pageFallbacks' in status).toBe(false);
+    expect('captureErrors' in status).toBe(false);
+  });
+
+  it('a non-zero drop count surfaces verbatim — filtering is never silent', () => {
+    installMockFigma();
+    expect(opStatus([], 0, undefined, captureStats({ pluginDataChangesDropped: 7 })).pluginDataChangesDropped)
+      .toBe(7);
+  });
+
+  it('a substituted page surfaces as its own count — a guessed page is never silent', () => {
+    installMockFigma();
+    expect(opStatus([], 0, undefined, captureStats({ pageFallbacks: 3 })).pageFallbacks).toBe(3);
+  });
+
+  it('a correction-store failure surfaces as first message + count, same shape as gapfill errors', () => {
+    installMockFigma();
+    const status = opStatus([], 0, undefined, captureStats({ errorCount: 4, firstError: 'read refused' }));
+    expect(status.captureErrors).toEqual(['read refused']);
+    expect(status.captureErrorCount).toBe(4);
   });
 });

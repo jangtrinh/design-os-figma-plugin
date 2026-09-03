@@ -7,7 +7,8 @@ import { editorRefusal, type EditorType } from '../../../shared/editor-surface';
 import { route } from '../../../shared/connector-route';
 import { ROUTER_VERSION, type ConnectionRecord, type ConnectorIntent, type Rect } from '../../../shared/connector-types';
 import { withCode } from './executor-styles';
-import { pageOf, renderConnector } from './connector-render';
+import { renderConnector } from './connector-render';
+import { pageOf } from './page-of-node';
 import { invalidateConnectorIndex, rerouteConnections } from './connector-reroute';
 import { verifyConnections } from './connector-verify';
 import {

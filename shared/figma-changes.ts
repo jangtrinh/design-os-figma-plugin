@@ -82,6 +82,36 @@ export function mapChangeType(type: string): ChangeOp | null {
   }
 }
 
+/**
+ * True when a raw `documentchange` entry is the plugin's OWN bookkeeping echoing back, not
+ * a design fact: a PROPERTY_CHANGE whose every listed property is `pluginData`. Pure —
+ * changeType/properties in, boolean out.
+ *
+ * Why a predicate and not a "the plugin is writing right now" flag: Figma batches
+ * `documentchange` and delivers it asynchronously, so the write that caused the echo has
+ * long returned (and any flag it set is cleared) by the time the echo lands. Only a
+ * stateless test of the change itself can be trusted.
+ *
+ * The node type is deliberately NOT part of the test. The plugin's own root write arrives
+ * on the DOCUMENT node, but so does a document rename and the `['children']` shape a page
+ * add/remove arrives in; dropping every DOCUMENT change would eat those AND would count
+ * them under a field named `pluginDataChangesDropped`, which would then be a wrong fact
+ * about what was filtered. What the property list says is the whole test:
+ * - a MIXED list (`['name','pluginData']`) is kept — it carries a real property too;
+ * - an EMPTY property list claims nothing, so it is never read as pluginData-only;
+ * - a non-PROPERTY_CHANGE (CREATE/DELETE) is never bookkeeping.
+ * The one thing it does hide is another plugin's pluginData-only write; that is
+ * bookkeeping in this feed's vocabulary too, and the caller counts every drop
+ * (`pluginDataChangesDropped` in STATUS) so the filtering is never silent.
+ */
+export function isPluginBookkeepingChange(
+  changeType: string,
+  properties: readonly string[],
+): boolean {
+  if (changeType !== 'PROPERTY_CHANGE' || properties.length === 0) return false;
+  return properties.every((property) => property === 'pluginData');
+}
+
 /** REMOTE-origin changes come from another user / a published library → global hint. */
 export function deriveScopeHint(origin: ChangeOrigin): ScopeHint {
   return origin === 'REMOTE' ? 'global' : 'local';

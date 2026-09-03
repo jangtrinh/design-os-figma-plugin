@@ -1,0 +1,249 @@
+// Live-sync capture — the `documentchange` handler, lifted out of main.ts so the hottest
+// loop in the plugin can be tested without a sandbox (main.ts calls `figma.showUI` at
+// module load, so importing it outside a live plugin is impossible).
+//
+// Two collections run over ONE pass of the batch:
+//   1. component-scoped changes → DOC_CHANGE → the broker's `figma.changes.jsonl`;
+//   2. the widened edit feed → EDIT_FEED → the per-file feed (shared/edit-feed.ts).
+// Everything the handler needs that is session state (the actor counters, the idle timer,
+// the read-only guard, the correction store) is injected: this module owns the pass, main.ts
+// owns the state.
+
+import {
+  coalesceChanges, isPluginBookkeepingChange, mapChangeType,
+  type ChangeOrigin, type ComponentChange,
+} from '../../../shared/figma-changes';
+import { coalesceEdits, type EditInput, type EditOrigin } from '../../../shared/edit-feed';
+import { classifyActor, type ActorState } from './edit-actor';
+import {
+  enclosingName, resolveComponentIdentity, type EditIdentityCache,
+} from './change-node-identity';
+import { pageOf } from './page-of-node';
+
+/**
+ * The correction store, as this handler uses it: ONE read and at most ONE write per
+ * delivered batch. Injected as three calls rather than the store module itself so a test
+ * can count exactly what the batch touched.
+ */
+export interface CorrectionRecorder<TBatch> {
+  begin: () => TBatch;
+  record: (batch: TBatch, nodeId: string, traits: Record<string, unknown>) => void;
+  flush: (batch: TBatch) => void;
+}
+
+export interface DocumentChangeCaptureDeps<TBatch> {
+  now: () => number;
+  /** Per-batch bookkeeping main.ts owns: pruning expired agent declarations and recording
+   *  the batch for read-only EXEC_JS attribution. Called once, before the pass. */
+  onBatchStart: (now: number) => void;
+  actorState: () => ActorState;
+  identity: EditIdentityCache;
+  corrections: CorrectionRecorder<TBatch>;
+  /** The connector index's "these ids moved" hook (debounced by its own module). */
+  noteChangedNodes: (nodeIds: string[]) => void;
+  post: (message: { type: string; data: unknown }) => void;
+  /** N component-level changes were posted — main.ts's idle-prompt count. */
+  noteComponentChanges: (count: number) => void;
+  /** At least one widened edit was posted — main.ts's gap-fill baseline dirty flag. */
+  noteEdits: () => void;
+  /** This batch was real activity — push the idle debounce out. */
+  armIdle: () => void;
+}
+
+/**
+ * What this session's capture had to drop, guess or give up on. Every field is
+ * present-only-when-non-zero in STATUS (executor-ops.ts's `opStatus`): a filtered change is
+ * still a change that happened, a substituted page is still someone's edit filed somewhere
+ * it may not belong, and a refused store read is still a refusal — each leaves a counter
+ * behind rather than vanishing.
+ */
+export interface DocumentChangeCaptureStats {
+  pluginDataChangesDropped: number;
+  /** How many live nodes this session had NO page for — neither their own chain nor the
+   *  identity cache — and were therefore filed under `figma.currentPage`. That name is a
+   *  guess about someone else's edit, so it is never made silently. */
+  pageFallbacks: number;
+  /** Correction-store failures this session (a read or a batch open that threw). The feed
+   *  is posted regardless — bookkeeping about the edits must not cost the edits. */
+  errorCount: number;
+  /** The FIRST failure message, verbatim: the one describing the original cause rather
+   *  than a cascade from it. Same convention as `gapfill.errors` in STATUS. */
+  firstError: string | null;
+}
+
+export interface DocumentChangeCapture {
+  onDocumentChange: (event: DocumentChangeEvent) => void;
+  stats: DocumentChangeCaptureStats;
+}
+
+export function createDocumentChangeCapture<TBatch>(
+  deps: DocumentChangeCaptureDeps<TBatch>,
+): DocumentChangeCapture {
+  const stats: DocumentChangeCaptureStats = {
+    pluginDataChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null,
+  };
+
+  /** The page for a LIVE node: its own chain first, then the last page this session saw it
+   *  on, then — counted, never silent — the page the designer is currently looking at. */
+  function resolvedPage(node: SceneNode, remembered: string | undefined): string {
+    const own = pageOf(node);
+    if (own) return own.name;
+    if (remembered !== undefined) return remembered;
+    stats.pageFallbacks += 1;
+    return figma.currentPage.name;
+  }
+
+  /** Every failure counts; the first message is kept because it describes the cause. */
+  function recordCaptureError(error: unknown): void {
+    stats.errorCount += 1;
+    if (stats.firstError === null) {
+      stats.firstError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function onDocumentChange(event: DocumentChangeEvent): void {
+    const now = deps.now();
+    const connectorTouched: string[] = [];
+    deps.onBatchStart(now);
+    // Correction bookkeeping is ABOUT the edits; it is never allowed to cost them. Opening
+    // the batch and every per-node record run inside a guard because both reach
+    // `sharedPluginData`, which Figma refuses on a file the user cannot edit and at its
+    // per-entry byte cap — and they run BEFORE anything is posted, so an escaping throw
+    // used to take the whole delivered batch with it, including the changes already
+    // processed. The first refusal disables corrections for the rest of THIS batch (one
+    // error for the batch, not one per node) and skips the flush; the pass continues and
+    // the feed goes out.
+    let correctionBatch!: TBatch;
+    let correctionsUsable = true;
+    try {
+      correctionBatch = deps.corrections.begin();
+    } catch (error) {
+      recordCaptureError(error);
+      correctionsUsable = false;
+    }
+    const raw: ComponentChange[] = [];
+    const edits: EditInput[] = [];
+    for (const dc of event.documentChanges) {
+      // Filter the TYPE first — before any node dereference. A StyleChange payload
+      // carries `style`, not `node`; casting every DocumentChange to `{ node }` and
+      // testing `'removed' in changedNode` BEFORE this filter throws on `undefined`
+      // for a STYLE_* change — a latent crash (one style edit away from killing
+      // capture entirely).
+      const op = mapChangeType(dc.type);
+      if (op === null) continue; // STYLE_* — filtered before any node dereference
+      const node = (dc as { node?: SceneNode | RemovedNode }).node;
+      if (!node) continue; // defensive: a node-less change type
+
+      // ONE copy of the property list per change, shared by the correction traits, the
+      // component record and the edit record below. Neither `coalesceChanges` nor
+      // `coalesceEdits` mutates an input's array (both build a fresh one), so sharing is
+      // safe and saves a copy per change in the middle of a drag batch.
+      const changedProps = dc.type === 'PROPERTY_CHANGE' ? [...dc.properties] : [];
+
+      // The plugin's own bookkeeping writes (correction store, connector index, relaunch
+      // data) come back through this very handler. Dropped HERE, at the top — before the
+      // correction store, the connector index, the feed and the idle timer — because each
+      // of those would otherwise read the plugin's own echo as an owner edit and, in the
+      // idle timer's case, keep re-arming itself.
+      if (isPluginBookkeepingChange(dc.type, changedProps)) {
+        stats.pluginDataChangesDropped += 1;
+        continue;
+      }
+
+      if (correctionsUsable && (!('removed' in node) || !node.removed)) {
+        try {
+          deps.corrections.record(correctionBatch, node.id, { changeType: dc.type, properties: changedProps });
+        } catch (error) {
+          recordCaptureError(error);
+          correctionsUsable = false;
+        }
+      }
+      // Every touched id, for the connector index — a connector's endpoint may be nested far
+      // below whatever actually moved, and only the ancestor chain can bridge that.
+      connectorTouched.push(node.id);
+
+      // ── Component-scoped capture (figma.changes.jsonl) ──
+      const identity = resolveComponentIdentity(node);
+      if (identity) {
+        raw.push({
+          op,
+          nodeId: identity.id,
+          nodeName: identity.name,
+          nodeType: identity.type,
+          changedProps,
+          origin: dc.origin as ChangeOrigin,
+        });
+      }
+
+      // ── Widened capture — every node, not just components ──
+      const removed = 'removed' in node && node.removed;
+      const known = deps.identity.get(node.id);
+      // A RemovedNode carries ONLY id + type — no name, no parent, no page — so a delete
+      // reads from the identity cache; a node the session never saw degrades honestly to
+      // null (the sentence layer says "Deleted a TEXT node" rather than inventing a name).
+      const parentName = removed ? known?.parentName ?? null : enclosingName(node);
+      const page = removed
+        // A delete carries no parent chain at all, so the cache is the only record of where
+        // the node lived; a node this session never saw degrades to the current page.
+        ? known?.page ?? figma.currentPage.name
+        // A live node resolves through its OWN chain, at any depth. Only a node with no page
+        // in it (detached, or reparented out mid-batch) reaches a substitute: the last page
+        // this session saw it on, else — as the final resort — the current page, which is a
+        // guess and is counted as one rather than passed off as a resolved fact.
+        : resolvedPage(node, known?.page);
+      edits.push({
+        op,
+        nodeId: node.id,
+        nodeName: removed ? known?.name ?? null : node.name,
+        nodeType: node.type,
+        parentName,
+        page,
+        changedProps,
+        origin: dc.origin as EditOrigin,
+        actor: classifyActor(node.id, op, now, deps.actorState()),
+      });
+      if (!removed) deps.identity.remember(node.id, { name: node.name, type: node.type, parentName, page });
+    }
+
+    if (connectorTouched.length > 0) deps.noteChangedNodes(connectorTouched);
+
+    const changes = coalesceChanges(raw);
+    if (changes.length > 0) {
+      deps.post({
+        // fileName rides alongside fileKey — fileKey is null whenever the manifest lacks
+        // enablePrivatePluginApi, so without a name the slug chain collapses every such
+        // file to 'unknown' and keeps coalescing them.
+        type: 'DOC_CHANGE',
+        data: { changes, page: figma.currentPage.name, fileKey: figma.fileKey ?? null, fileName: figma.root.name },
+      });
+      deps.noteComponentChanges(changes.length);
+    }
+
+    if (edits.length > 0) {
+      deps.post({
+        type: 'EDIT_FEED',
+        data: {
+          edits: coalesceEdits(edits), fileKey: figma.fileKey ?? null,
+          fileName: figma.root.name, source: 'live',
+        },
+      });
+      deps.noteEdits();
+    }
+
+    // Either kind of activity pushes the idle-commit prompt (and the gap-fill snapshot
+    // refresh) further out — a session with ONLY widened (non-component) edits must still
+    // debounce, not just a component-scoped one. A batch that was nothing but the plugin's
+    // own bookkeeping reaches here with both lists empty and arms nothing.
+    if (changes.length > 0 || edits.length > 0) deps.armIdle();
+
+    // ONE store write for the whole batch — never one per changed node — and deliberately
+    // LAST. Figma refuses a `sharedPluginData` write on a file the user cannot edit and
+    // throws at its per-entry byte cap; the edits above are the design facts this feed
+    // exists to carry, so they are already posted by the time a refusal can propagate.
+    // Skipped outright when the batch's own reads already failed: there is nothing
+    // trustworthy to write back, and the failure is already counted.
+    if (correctionsUsable) deps.corrections.flush(correctionBatch);
+  }
+
+  return { onDocumentChange, stats };
+}

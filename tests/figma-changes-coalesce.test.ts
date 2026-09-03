@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   CHANGE_LOG_SCHEMA_VERSION,
-  buildChangeFrame, coalesceChanges, deriveScopeHint, mapChangeType,
+  buildChangeFrame, coalesceChanges, deriveScopeHint, isPluginBookkeepingChange, mapChangeType,
   type ComponentChange,
 } from '../shared/figma-changes.ts';
 
@@ -125,5 +125,48 @@ describe('buildChangeFrame — stamped, well-formed frame', () => {
     expect(frame.origin).toBe('LOCAL');
     expect(frame.scopeHint).toBe('local');
     expect(frame.fileKey).toBeNull();
+  });
+});
+
+// ── Self-emitted bookkeeping noise ───────────────────────────────────
+// The plugin writes its own records (correction store, connector index, relaunch data)
+// into `sharedPluginData`, and Figma reports every one of those writes back through
+// `documentchange` — verified live: a `figma.root.setSharedPluginData` lands as
+// `PROPERTY_CHANGE` on node `0:0`, type DOCUMENT, `properties: ['pluginData']`. The
+// predicate exists so that echo never reaches the feed, arms the idle timer, or is read
+// as a designer correction. Pure and stateless on purpose: `documentchange` is batched and
+// delivered asynchronously, so any "the plugin is writing right now" flag is already
+// cleared by the time its own echo arrives.
+describe('isPluginBookkeepingChange — self-emitted noise, never a designer edit', () => {
+  // The node type decides NOTHING: a pluginData-only property change is the plugin's own
+  // echo wherever it lands, and anything else is a real change wherever it lands. The
+  // counter this predicate feeds is called `pluginDataChangesDropped`, so it must count
+  // pluginData changes and nothing else.
+  const cases: Array<{ where: string; changeType: string; properties: string[]; drop: boolean; why: string }> = [
+    { where: 'DOCUMENT', changeType: 'PROPERTY_CHANGE', properties: ['pluginData'], drop: true, why: 'the verified live shape of the plugin\'s own root write' },
+    { where: 'DOCUMENT', changeType: 'PROPERTY_CHANGE', properties: ['name'], drop: false, why: 'a document rename is a real change, and not one this counter may claim as pluginData' },
+    { where: 'DOCUMENT', changeType: 'PROPERTY_CHANGE', properties: ['children'], drop: false, why: 'the shape a page add/remove arrives in — never dropped on node type alone' },
+    { where: 'DOCUMENT', changeType: 'CREATE', properties: [], drop: false, why: 'no property list claims pluginData, so nothing here is bookkeeping' },
+    { where: 'PAGE', changeType: 'PROPERTY_CHANGE', properties: ['pluginData'], drop: true, why: 'a pluginData-only write is bookkeeping wherever it lands' },
+    { where: 'PAGE', changeType: 'PROPERTY_CHANGE', properties: ['name'], drop: false, why: 'a page rename IS a real owner edit — pages are never dropped wholesale' },
+    { where: 'PAGE', changeType: 'PROPERTY_CHANGE', properties: ['backgrounds'], drop: false, why: 'a page background change is a real owner edit' },
+    { where: 'FRAME', changeType: 'PROPERTY_CHANGE', properties: ['name', 'pluginData'], drop: false, why: 'a mixed list carries a real edit alongside the bookkeeping' },
+    { where: 'FRAME', changeType: 'PROPERTY_CHANGE', properties: ['pluginData', 'pluginData'], drop: true, why: 'every entry is pluginData, however many' },
+    { where: 'FRAME', changeType: 'PROPERTY_CHANGE', properties: [], drop: false, why: 'an empty list claims nothing — never read as pluginData-only' },
+    { where: 'FRAME', changeType: 'CREATE', properties: [], drop: false, why: 'creations are kept' },
+    { where: 'FRAME', changeType: 'DELETE', properties: [], drop: false, why: 'deletions are kept' },
+    { where: 'TEXT', changeType: 'PROPERTY_CHANGE', properties: ['characters'], drop: false, why: 'the ordinary designer edit' },
+  ];
+
+  for (const c of cases) {
+    it(`${c.drop ? 'drops' : 'keeps'} ${c.where}/${c.changeType} [${c.properties.join(',')}] — ${c.why}`, () => {
+      expect(isPluginBookkeepingChange(c.changeType, c.properties)).toBe(c.drop);
+    });
+  }
+
+  it('is pure — the same inputs answer the same way regardless of call order or repetition', () => {
+    expect(isPluginBookkeepingChange('PROPERTY_CHANGE', ['pluginData'])).toBe(true);
+    expect(isPluginBookkeepingChange('PROPERTY_CHANGE', ['x'])).toBe(false);
+    expect(isPluginBookkeepingChange('PROPERTY_CHANGE', ['pluginData'])).toBe(true);
   });
 });
