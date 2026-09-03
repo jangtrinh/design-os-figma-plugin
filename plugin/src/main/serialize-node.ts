@@ -1,5 +1,6 @@
 // JSON-safe serialization: scene nodes (GET_SELECTION), arbitrary values
 // (EXEC_JS results), and the design-system registry (SCAN_DESIGN_SYSTEM).
+import { pageOf } from './page-of-node';
 
 export interface SerializedNode {
   id: string;
@@ -71,22 +72,7 @@ export async function serializeDesignSystem(): Promise<Record<string, unknown>> 
 
   // Components + component sets (variant children are covered by their set)
   const nodes = figma.root.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] });
-  const components: Record<string, unknown>[] = [];
-  for (const n of nodes) {
-    if (n.type === 'COMPONENT' && n.parent && n.parent.type === 'COMPONENT_SET') continue;
-    const entry: Record<string, unknown> = { id: n.id, key: (n as ComponentNode).key, name: n.name, type: n.type };
-    try {
-      const defs = (n as ComponentSetNode).componentPropertyDefinitions;
-      const axes: Record<string, string[]> = {};
-      for (const [prop, def] of Object.entries(defs)) {
-        if (def.type === 'VARIANT') axes[prop] = def.variantOptions ?? [];
-      }
-      if (Object.keys(axes).length > 0) entry.variantAxes = axes;
-    } catch {
-      // Plain components without property definitions
-    }
-    components.push(entry);
-  }
+  const components = serializeComponentEntries(nodes);
 
   // Variable tokens (value resolved against the collection's default mode)
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -117,4 +103,36 @@ export async function serializeDesignSystem(): Promise<Record<string, unknown>> 
     styles,
     counts: { components: components.length, tokens: tokens.length, styles: styles.length },
   };
+}
+
+/**
+ * The `components[]` entries of SCAN_DESIGN_SYSTEM, from the COMPONENT/COMPONENT_SET nodes
+ * a file-wide criteria search returned. Each entry names the PAGE it lives on (id + name,
+ * via the one shared `pageOf` walk) — the fact `resolve-component` needs to prefer a
+ * design-system page over a stray same-named set on a screens page. `page: null` is an
+ * honest "no page in the parent chain" (a detached node), never a guess. Pure over its
+ * input so it is testable without `figma.root`/`loadAllPagesAsync`.
+ */
+export function serializeComponentEntries(nodes: readonly SceneNode[]): Record<string, unknown>[] {
+  const components: Record<string, unknown>[] = [];
+  for (const n of nodes) {
+    if (n.type === 'COMPONENT' && n.parent && n.parent.type === 'COMPONENT_SET') continue;
+    const page = pageOf(n);
+    const entry: Record<string, unknown> = {
+      id: n.id, key: (n as ComponentNode).key, name: n.name, type: n.type,
+      page: page ? { id: page.id, name: page.name } : null,
+    };
+    try {
+      const defs = (n as ComponentSetNode).componentPropertyDefinitions;
+      const axes: Record<string, string[]> = {};
+      for (const [prop, def] of Object.entries(defs)) {
+        if (def.type === 'VARIANT') axes[prop] = def.variantOptions ?? [];
+      }
+      if (Object.keys(axes).length > 0) entry.variantAxes = axes;
+    } catch {
+      // Plain components without property definitions
+    }
+    components.push(entry);
+  }
+  return components;
 }

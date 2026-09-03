@@ -20,6 +20,11 @@ import {
 import { ensureBroker, isPidAlive, loopbackWsUrl } from './broker-discovery.ts';
 import { isBrokerSafeRead } from '../../../shared/mutating-commands.ts';
 import {
+  awaitPluginAdmission,
+  needsPluginAdmission,
+  PLUGIN_ADMISSION_WAIT_SECONDS,
+} from './plugin-admission.ts';
+import {
   ChunkAssembler,
   CliError,
   isChunkMsg,
@@ -50,6 +55,7 @@ let lastFileContext: FileContext | undefined;
 let projectDir: string | undefined;
 let readOnlyGlobal = false;
 let agentId: string | undefined;
+let noWaitGlobal = false;
 
 /** Set once per CLI invocation from the global --file flag; stamped on every request envelope. */
 export function setExpectedFile(name: string | undefined): void { expectedFile = name; }
@@ -89,6 +95,13 @@ export function setReadOnly(v: boolean): void { readOnlyGlobal = v; }
 export function setAgent(id: string | undefined): void { agentId = id; }
 
 /**
+ * Set once per CLI invocation from the global `--no-wait` flag: skip the pre-dispatch
+ * plugin admission wait (plugin-admission.ts) and let the broker answer a disconnected
+ * mutation at once — the pre-wait behaviour, kept as an explicit opt-out.
+ */
+export function setNoWait(v: boolean): void { noWaitGlobal = v; }
+
+/**
  * Stage-4 fix round (minor 8, ruling Q4) — `--read-only` is a PARTIAL hardening, not a
  * blanket promise: asserting read-only only works for the broker's exact safe-read
  * allowlist. Every other command, including EXEC_JS, is refused rather than trusting a
@@ -97,6 +110,23 @@ export function setAgent(id: string | undefined): void { agentId = id; }
  */
 export function refusesReadOnlyAssertion(wireCmd: CommandName, readOnly: boolean): boolean {
   return readOnly && !isBrokerSafeRead(wireCmd);
+}
+
+/**
+ * What goes on the wire as `readOnly`, and whether the request is refused first.
+ * `pluginEnforced` is the internal path `export-png --assert` uses: EXEC_JS ONLY, stamping
+ * the flag so the plugin's read-only guard (plugin/src/main/readonly-guard.ts) refuses a
+ * script that writes — while broker admission is untouched: admitRequest classifies by
+ * command name alone, so the request still takes the mutation FIFO and the per-file gate.
+ * It is therefore not a bypass, and the public `--read-only` refusal on EXEC_JS above
+ * stands. On any other command plugin enforcement means nothing and is refused rather
+ * than silently dropped. Pure, unit-tested in isolation.
+ */
+export function resolveWireReadOnly(
+  wireCmd: CommandName, readOnlyRequested: boolean, pluginEnforced: boolean,
+): { refused: boolean; readOnly: boolean } {
+  if (pluginEnforced) return { refused: wireCmd !== 'EXEC_JS', readOnly: true };
+  return { refused: refusesReadOnlyAssertion(wireCmd, readOnlyRequested), readOnly: readOnlyRequested };
 }
 
 function connectWs(port: number): Promise<WebSocket> {
@@ -291,16 +321,21 @@ export async function retryAmbiguousConnect(
 export async function runCommand(
   cmd: string,
   params: unknown,
-  opts?: { timeoutMs?: number; activity?: string; readOnly?: boolean },
+  opts?: { timeoutMs?: number; activity?: string; readOnly?: boolean; pluginEnforcedReadOnly?: boolean },
 ): Promise<unknown> {
   const wireCmd = cmd as CommandName;
-  const readOnlyRequested = opts?.readOnly ?? readOnlyGlobal;
+  // `pluginEnforcedReadOnly` (EXEC_JS only — see resolveWireReadOnly) asks the PLUGIN to
+  // refuse a script that writes; broker admission still treats the request as a mutation.
+  const wire = resolveWireReadOnly(wireCmd, opts?.readOnly ?? readOnlyGlobal, opts?.pluginEnforcedReadOnly === true);
+  const readOnlyRequested = wire.readOnly;
   // Fail before ever touching the broker — a lying --read-only assertion is a caller bug,
   // not something worth spawning/connecting to discover (stage-4 fix round, minor 8).
-  if (refusesReadOnlyAssertion(wireCmd, readOnlyRequested)) {
+  if (wire.refused) {
     throw new CliError(
       'E_INVALID_ARGS',
-      `--read-only cannot be asserted on ${wireCmd} — only broker-known safe reads may bypass mutation admission`,
+      opts?.pluginEnforcedReadOnly === true
+        ? `plugin-enforced read-only applies to EXEC_JS only, not ${wireCmd}`
+        : `--read-only cannot be asserted on ${wireCmd} — only broker-known safe reads may bypass mutation admission`,
     );
   }
   let ad = await ensureBroker();
@@ -333,6 +368,22 @@ export async function runCommand(
 
   const timeoutMs = opts?.timeoutMs ?? COMMAND_TIMEOUTS[wireCmd] ?? DEFAULT_TIMEOUT_MS;
   try {
+    // Pre-dispatch admission: a mutation is only sent once a plugin the broker can route
+    // it to is registered (bounded wait, `--no-wait` opts out). Runs AFTER the connect so
+    // a dead broker surfaces as E_NO_BROKER above, never as a 60s wait for a plugin that
+    // has nowhere to register.
+    if (needsPluginAdmission({ cmd: wireCmd, noWait: noWaitGlobal, targetFileKey })) {
+      await awaitPluginAdmission({
+        port: ad.port,
+        timeoutMs: PLUGIN_ADMISSION_WAIT_SECONDS * 1_000,
+        fileFilter: expectedFile,
+        instanceFilter: expectedInstance,
+        onWaiting: () => process.stderr.write(
+          `waiting up to ${PLUGIN_ADMISSION_WAIT_SECONDS}s for a plugin to register before ${wireCmd} `
+            + '(open Plugins > figma-agent in the target file; --no-wait skips this)\n',
+        ),
+      });
+    }
     return await exchange(ws, wireCmd, params, timeoutMs, opts?.activity, readOnlyRequested);
   } finally {
     try {

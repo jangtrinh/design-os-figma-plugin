@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type WebSocket from 'ws';
-import { exchange, refusesReadOnlyAssertion, setTargetFileKey } from '../cli/src/transport/broker-client.ts';
+import { exchange, refusesReadOnlyAssertion, resolveWireReadOnly, setTargetFileKey } from '../cli/src/transport/broker-client.ts';
 import { BROKER_SAFE_READ_COMMANDS, MUTATING_COMMANDS } from '../shared/mutating-commands.ts';
 
 function fakeWs(): EventEmitter & { send: (text: string) => void; sent: string[] } {
@@ -34,6 +34,31 @@ describe('refusesReadOnlyAssertion', () => {
   it('readOnly=false never refuses anything, regardless of command', () => {
     expect(refusesReadOnlyAssertion('SET_TEXT', false)).toBe(false);
     expect(refusesReadOnlyAssertion('EXEC_JS', false)).toBe(false);
+  });
+});
+
+// `export-png --assert` runs its script as a PLUGIN-enforced read-only EXEC_JS: the wire
+// flag is stamped so main.ts's read-only guard refuses a script that writes, while broker
+// admission is untouched (admitRequest classifies by command name only — the request still
+// takes the mutation FIFO and the per-file gate). The public `--read-only` refusal on
+// EXEC_JS stands unchanged.
+describe('resolveWireReadOnly', () => {
+  it('EXEC_JS with plugin enforcement is not refused and carries readOnly on the wire', () => {
+    expect(resolveWireReadOnly('EXEC_JS', false, true)).toEqual({ refused: false, readOnly: true });
+  });
+
+  it('the public --read-only assertion on EXEC_JS is still refused (stage-4 ruling unchanged)', () => {
+    expect(resolveWireReadOnly('EXEC_JS', true, false)).toEqual({ refused: true, readOnly: true });
+  });
+
+  it('plugin enforcement is meaningless on any other command and is refused rather than ignored', () => {
+    expect(resolveWireReadOnly('SET_TEXT', false, true).refused).toBe(true);
+    expect(resolveWireReadOnly('EXPORT_PNG', false, true).refused).toBe(true);
+  });
+
+  it('a safe read keeps its harmless declaration; a plain mutation keeps readOnly off the wire', () => {
+    expect(resolveWireReadOnly('EXPORT_PNG', true, false)).toEqual({ refused: false, readOnly: true });
+    expect(resolveWireReadOnly('SET_TEXT', false, false)).toEqual({ refused: false, readOnly: false });
   });
 
   it('stamps only the exact global target-file-key on outgoing request frames', async () => {

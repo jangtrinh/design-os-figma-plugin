@@ -655,6 +655,14 @@ export type ErrorCode =
   | 'E_MUTATION_GATE_UNAVAILABLE'
   | 'E_FILE_KEY_UNAVAILABLE'
   | 'E_STALE_ADMISSION'
+  // `resolve-component` (backlog group 6): more than one live component/set answers to
+  // the name (the message lists every candidate), or none does. Distinct codes so an
+  // agent can tell "pick one" from "the name is wrong" without parsing prose.
+  | 'E_AMBIGUOUS'
+  | 'E_NOT_FOUND'
+  // `export-png --assert`: the structural assert script ran and returned a failing value
+  // (falsy or `{ok:false}`), so no PNG was written. A script that threw keeps its own code.
+  | 'E_ASSERT_FAILED'
   | 'E_APP_UNREADY'
   | 'E_OUTCOME_UNKNOWN'
   // #35 P2 — a no-flag command with a standing `targetInstancePin` set, whose pinned

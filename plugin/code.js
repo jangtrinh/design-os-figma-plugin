@@ -2707,21 +2707,7 @@
   async function serializeDesignSystem() {
     await figma.loadAllPagesAsync();
     const nodes = figma.root.findAllWithCriteria({ types: ["COMPONENT", "COMPONENT_SET"] });
-    const components = [];
-    for (const n of nodes) {
-      if (n.type === "COMPONENT" && n.parent && n.parent.type === "COMPONENT_SET") continue;
-      const entry = { id: n.id, key: n.key, name: n.name, type: n.type };
-      try {
-        const defs = n.componentPropertyDefinitions;
-        const axes = {};
-        for (const [prop, def] of Object.entries(defs)) {
-          if (def.type === "VARIANT") axes[prop] = def.variantOptions ?? [];
-        }
-        if (Object.keys(axes).length > 0) entry.variantAxes = axes;
-      } catch {
-      }
-      components.push(entry);
-    }
+    const components = serializeComponentEntries(nodes);
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const variables = await figma.variables.getLocalVariablesAsync();
     const collectionName = new Map(collections.map((c) => [c.id, c.name]));
@@ -2747,6 +2733,31 @@
       styles,
       counts: { components: components.length, tokens: tokens.length, styles: styles.length }
     };
+  }
+  function serializeComponentEntries(nodes) {
+    const components = [];
+    for (const n of nodes) {
+      if (n.type === "COMPONENT" && n.parent && n.parent.type === "COMPONENT_SET") continue;
+      const page = pageOf(n);
+      const entry = {
+        id: n.id,
+        key: n.key,
+        name: n.name,
+        type: n.type,
+        page: page ? { id: page.id, name: page.name } : null
+      };
+      try {
+        const defs = n.componentPropertyDefinitions;
+        const axes = {};
+        for (const [prop, def] of Object.entries(defs)) {
+          if (def.type === "VARIANT") axes[prop] = def.variantOptions ?? [];
+        }
+        if (Object.keys(axes).length > 0) entry.variantAxes = axes;
+      } catch {
+      }
+      components.push(entry);
+    }
+    return components;
   }
 
   // shared/audit-types.ts

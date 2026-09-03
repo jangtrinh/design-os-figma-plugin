@@ -1,17 +1,17 @@
 # Project adapter — template
 
-Copy into the target project as `.claude/skills/figma-<project>/SKILL.md` (or a `## Figma` section of `.project-agent.md` for small projects). The adapter carries ONLY project-specific facts; all discipline lives in `es-figma-craft`. Keep it thin — if you're writing a *rule* here that isn't project-specific, it belongs upstream in es-figma-craft (record a gap instead).
+Install the adapter in the active runtime's skill location: `.claude/skills/figma-<project>/SKILL.md` for Claude Code or `~/.gemini/config/skills/figma-<project>/SKILL.md` for Antigravity/Gemini (or use a `## Figma` section of `.project-agent.md` for small projects). The adapter carries ONLY project-specific facts; all discipline lives in `es:figma-craft`. Keep it thin — if you're writing a *rule* here that isn't project-specific, it belongs upstream in es:figma-craft (record a gap instead).
 
 ```markdown
 ---
 name: figma-<project>
-description: "Figma adapter for <Product>: file identity, DS layout, tokens, conventions. Pairs with es-figma-craft (the discipline lives there)."
+description: "Figma adapter for <Product>: file identity, DS layout, tokens, conventions. Pairs with es:figma-craft (the discipline lives there)."
 category: project
 ---
 
 # Figma adapter — <Product>
 
-**Always load `es-figma-craft` alongside this file. This file = facts; that file = law.**
+**Always load `es:figma-craft` alongside this file. This file = facts; that file = law.**
 
 ## File identity
 - File: `<Figma file name>` · key `<fileKey>` — THE source of truth for design.
@@ -35,7 +35,7 @@ category: project
 ## Architecture in this file
 - Shell template: <master name + slot name, or "none — chrome inline">.
 - Screen templates registered: <Template · Table card, … or "none yet">.
-- Table standard: <column-first per es-figma-craft | legacy notes>.
+- Table standard: <column-first per es:figma-craft | legacy notes>.
 
 ## Conventions (owner law — cite source)
 - Copy/language: <e.g. UI copy full English; data stays local-language>.
@@ -61,4 +61,4 @@ category: project
 3. Establish page structure + AI-manifest tagging if the file will be multi-agent.
 4. Register the first templates as patterns stabilize (template-first, component-system.md §6).
 5. Wire the knowledge-sync channels: where intent memories go, where the corrections feed lands, who the owner is.
-6. Project-specific *lessons* accumulate in the ADAPTER (or the project's known-patterns file); universal lessons go UPSTREAM to es-figma-craft — one fact, one home.
+6. Project-specific *lessons* accumulate in the ADAPTER (or the project's known-patterns file); universal lessons go UPSTREAM to es:figma-craft — one fact, one home.
