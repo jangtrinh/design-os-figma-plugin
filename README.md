@@ -7,7 +7,7 @@ designer moved a frame on Tuesday. And when you both edit at once, half the chan
 a CLI, over a local broker. Public Plugin API only.
 
 <p align="center">
-  <img src="docs/images/agent-rail-single-row.png" width="320" alt="The figma-agent panel: a single row showing the orb and the status Ran a script">
+  <img src="docs/images/agent-rail-single-row.gif" width="560" alt="The figma-agent panel: a single row showing the orb and the status Ran a script">
 </p>
 <p align="center"><sub>One row, hugging its content.</sub></p>
 
