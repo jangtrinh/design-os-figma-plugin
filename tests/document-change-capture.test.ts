@@ -53,7 +53,7 @@ function countingFigma(): { counts: { get: number; set: number } } {
     // Deliberately NOT the page any fixture node lives on: every `page` assertion below
     // would pass on the current-page fallback alone if these two names matched, which is
     // exactly how a wrong page reached the feed unnoticed.
-    currentPage: { name: 'Cover' },
+    currentPage: { id: 'p-cover', name: 'Cover' },
     root: {
       name: 'Test File',
       getSharedPluginData: (ns: string, key: string) => {
@@ -80,14 +80,14 @@ interface Log {
   flushes: number;
   connector: string[][];
   componentChanges: number[];
-  edits: number;
+  dirtyPages: string[];
   idleArmed: number;
 }
 
 function harness() {
   const log: Log = {
     posted: [], corrections: [], begins: 0, flushes: 0,
-    connector: [], componentChanges: [], edits: 0, idleArmed: 0,
+    connector: [], componentChanges: [], dirtyPages: [], idleArmed: 0,
   };
   const capture = createDocumentChangeCapture<null>({
     now: () => 1_000,
@@ -102,7 +102,7 @@ function harness() {
     noteChangedNodes: (ids) => log.connector.push([...ids]),
     post: (message) => log.posted.push(message as { type: string; data: any }),
     noteComponentChanges: (count) => log.componentChanges.push(count),
-    noteEdits: () => { log.edits += 1; },
+    notePageDirty: (pageId) => log.dirtyPages.push(pageId),
     armIdle: () => { log.idleArmed += 1; },
   });
   return { capture, log };
@@ -124,7 +124,7 @@ describe('the plugin\'s own bookkeeping write never becomes an owner edit', () =
 
     expect(feed(log)).toHaveLength(0);      // not in the edit feed
     expect(log.idleArmed).toBe(0);          // the idle timer is not re-armed by our own write
-    expect(log.edits).toBe(0);              // the gap-fill baseline is not marked dirty
+    expect(log.dirtyPages).toEqual([]);     // no page is marked dirty for the idle re-walk
     expect(log.corrections).toEqual([]);    // never offered to the correction store
     expect(log.connector).toEqual([]);      // never offered to the connector index
     expect(capture.stats.pluginDataChangesDropped).toBe(1); // dropped, never silently
@@ -305,7 +305,7 @@ describe('a failing correction-store write never costs the batch its edits', () 
       noteChangedNodes: () => {},
       post: (message) => log.posted.push(message as { type: string; data: any }),
       noteComponentChanges: () => {},
-      noteEdits: () => { log.edits += 1; },
+      notePageDirty: (pageId) => log.dirtyPages.push(pageId),
       armIdle: () => { log.idleArmed += 1; },
     });
 
@@ -332,7 +332,7 @@ describe('a correction-store READ that throws never costs the batch its edits', 
   function refusingFigma(message: string): void {
     (globalThis as any).figma = {
       fileKey: 'test-file-key',
-      currentPage: { name: 'Cover' },
+      currentPage: { id: 'p-cover', name: 'Cover' },
       root: {
         name: 'Test File',
         getSharedPluginData: () => { throw new Error(message); },
@@ -345,7 +345,7 @@ describe('a correction-store READ that throws never costs the batch its edits', 
     refusingFigma('getSharedPluginData refused');
     const log: Log = {
       posted: [], corrections: [], begins: 0, flushes: 0,
-      connector: [], componentChanges: [], edits: 0, idleArmed: 0,
+      connector: [], componentChanges: [], dirtyPages: [], idleArmed: 0,
     };
     const capture = createDocumentChangeCapture<CorrectionBatch>({
       now: () => Date.now(),
@@ -360,7 +360,7 @@ describe('a correction-store READ that throws never costs the batch its edits', 
       noteChangedNodes: () => {},
       post: (message) => log.posted.push(message as { type: string; data: any }),
       noteComponentChanges: () => {},
-      noteEdits: () => { log.edits += 1; },
+      notePageDirty: (pageId) => log.dirtyPages.push(pageId),
       armIdle: () => { log.idleArmed += 1; },
     });
 
@@ -398,7 +398,7 @@ describe('the correction store is read ONCE per batch and written at most once',
       noteChangedNodes: () => {},
       post: () => {},
       noteComponentChanges: () => {},
-      noteEdits: () => {},
+      notePageDirty: () => {},
       armIdle: () => {},
     });
     return capture;
@@ -463,5 +463,55 @@ describe('the correction store is read ONCE per batch and written at most once',
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('the idle re-walk is told WHICH pages changed', () => {
+  it('an edit marks its own page — not the page the designer happens to be looking at', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(deepUnderPage(6, 'Specs'), 'PROPERTY_CHANGE', ['x'])],
+    } as any);
+
+    expect(log.dirtyPages).toEqual(['p-deep']);
+    expect(feed(log)[0]!.data.edits[0].page).toBe('Specs'); // the same resolution, one walk
+  });
+
+  it('two edits on two pages mark both', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [
+        change(text('t1'), 'PROPERTY_CHANGE', ['characters']),
+        change(deepUnderPage(2, 'Specs'), 'PROPERTY_CHANGE', ['x']),
+      ],
+    } as any);
+
+    expect(new Set(log.dirtyPages)).toEqual(new Set(['p1', 'p-deep']));
+  });
+
+  it('a DELETE marks the page the identity cache remembers the node on', () => {
+    const { capture, log } = harness();
+    const doomed = text('t9');
+
+    capture.onDocumentChange({ documentChanges: [change(doomed, 'PROPERTY_CHANGE', ['x'])] } as any);
+    capture.onDocumentChange({
+      documentChanges: [change({ ...doomed, removed: true }, 'DELETE')],
+    } as any);
+
+    expect(log.dirtyPages).toEqual(['p1', 'p1']); // the delete lands on the node's OWN page
+    expect(capture.stats.pageFallbacks).toBe(0);
+  });
+
+  it('a node with no resolvable page falls back to the current page — the SAME guess the feed makes, counted once', () => {
+    const { capture, log } = harness();
+    const orphan: FakeNode = { id: 'x1', name: 'Orphan', type: 'TEXT', parent: null };
+
+    capture.onDocumentChange({ documentChanges: [change(orphan, 'PROPERTY_CHANGE', ['x'])] } as any);
+
+    expect(log.dirtyPages).toEqual(['p-cover']);
+    expect(feed(log)[0]!.data.edits[0].page).toBe('Cover');
+    expect(capture.stats.pageFallbacks).toBe(1); // one guess, one counter — not two
   });
 });

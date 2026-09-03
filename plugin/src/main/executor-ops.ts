@@ -6,7 +6,7 @@
 // EXEC_JS in executor-exec-js.ts.)
 
 import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import type { GapfillStatus } from '../../../shared/protocol';
+import type { GapfillStatus, PerfStatus } from '../../../shared/protocol';
 import type { DocumentChangeCaptureStats } from './document-change-capture';
 import { loadBestFont } from './executor-fonts';
 import { withCode } from './executor-styles';
@@ -91,6 +91,7 @@ export function opStatus(
   readOnlyViolations = 0,
   gapfill?: GapfillStatus,
   capture?: DocumentChangeCaptureStats,
+  perf?: PerfStatus,
 ): Record<string, unknown> {
   return {
     fileName: figma.root.name,
@@ -147,6 +148,12 @@ export function opStatus(
     ...(capture && capture.pageFallbacks > 0 && { pageFallbacks: capture.pageFallbacks }),
     ...(capture && capture.firstError !== null
       && { captureErrors: [capture.firstError], captureErrorCount: capture.errorCount }),
+    // Where the session's time went (shared/protocol.ts's PerfStatus). Caller-supplied and
+    // absent until BOOT HAS COMPLETED: mid-walk totals read like final ones, and "the boot
+    // walk took 40 ms" is a claim only the finished walk can make. Once present it stays,
+    // zeros included — a session that walked nothing (an unreadable baseline skips the
+    // walk) must be distinguishable from one that walked slowly.
+    ...(perf && { perf }),
   };
 }
 

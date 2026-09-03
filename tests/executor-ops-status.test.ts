@@ -72,7 +72,9 @@ describe('opStatus — the gap-fill block', () => {
   it('an all-zero session still reports the block: "no baseline was written" is the fact that must be visible', () => {
     installMockFigma();
     const gapfill = opStatus([], 0, toGapfillStatus(createGapfillStats())).gapfill as Record<string, unknown>;
-    expect(gapfill).toEqual({ pagesDiffed: 0, pagesTruncated: 0, baselineWrittenAt: null, baselineBytes: 0 });
+    expect(gapfill).toEqual({
+      pagesDiffed: 0, pagesTruncated: 0, pagesTopLevelOnly: 0, baselineWrittenAt: null, baselineBytes: 0,
+    });
   });
 
   it('the optional counters appear only once they mean something', () => {
@@ -92,6 +94,7 @@ describe('opStatus — the gap-fill block', () => {
     expect(gapfill).toEqual({
       pagesDiffed: 21,
       pagesTruncated: 16,
+      pagesTopLevelOnly: 0, // always present: 0 covered pages is a reading, not an absence
       baselineWrittenAt: '2026-09-03T00:00:00.000Z',
       baselineBytes: 1234,
       legacyCleared: 2,
@@ -144,5 +147,43 @@ describe('opStatus — live-capture counters', () => {
     const status = opStatus([], 0, undefined, captureStats({ errorCount: 4, firstError: 'read refused' }));
     expect(status.captureErrors).toEqual(['read refused']);
     expect(status.captureErrorCount).toBe(4);
+  });
+});
+
+describe('opStatus — the perf block', () => {
+  const perf = {
+    bootLoadAllPagesMs: 120, pageLoadAsyncMaxMs: 0, bootWalkMs: 900,
+    bootWalkMaxSliceMs: 31, bootSlices: 42, idleWalkMs: 0, idleWalkMaxSliceMs: 0,
+  };
+
+  it('no argument → the key is OMITTED, so a boot still in progress never reports a partial total', () => {
+    installMockFigma();
+    expect('perf' in opStatus([], 0, undefined, undefined, undefined)).toBe(false);
+  });
+
+  it('surfaces the walk numbers verbatim once boot has completed, zeros included', () => {
+    installMockFigma();
+    const result = opStatus([], 0, undefined, undefined, perf);
+    expect(result.perf).toEqual(perf); // an idle walk that never ran reads 0, not absent
+  });
+});
+
+describe('toGapfillStatus — the coverage a session actually delivered', () => {
+  it('reports how many oversized pages still reported, next to how many lost their node diff', () => {
+    const stats = createGapfillStats();
+    stats.pagesTruncated = 16;
+    stats.pagesTopLevelOnly = 15;
+    const status = toGapfillStatus(stats);
+    expect(status.pagesTruncated).toBe(16);
+    // The gap between the two is the coverage this session did NOT have — readable rather
+    // than inferred from a silence.
+    expect(status.pagesTopLevelOnly).toBe(15);
+  });
+
+  it('a superseded baseline value deleted is reported; none deleted keeps the payload unchanged', () => {
+    const stats = createGapfillStats();
+    expect(toGapfillStatus(stats).staleBaselinesCleared).toBeUndefined();
+    stats.staleBaselinesCleared = 1;
+    expect(toGapfillStatus(stats).staleBaselinesCleared).toBe(1);
   });
 });

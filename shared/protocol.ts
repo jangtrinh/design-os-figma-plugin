@@ -367,13 +367,34 @@ export const MIN_IDLE_MS = 1_000;
  */
 export interface GapfillStatus {
   pagesDiffed: number;
+  /** Pages whose per-node diff was suppressed because the page exceeds the scan cap AS OF
+   *  this session's walk. A page that was over the cap only in the PREVIOUS session loses
+   *  its per-node diff too, for a different reason it states in its own notice, and is
+   *  deliberately not counted here — this number backs the sentence "exceeds the scan cap",
+   *  and must not include a page that no longer does. */
   pagesTruncated: number;
+  /** Pages that reported via the top-level fingerprint ALONE — either suppressed case,
+   *  whenever the previous session stored a fingerprint to compare against. Not a subset of
+   *  `pagesTruncated`: a page that shrank back under the cap reports this way and is absent
+   *  from that count. */
+  pagesTopLevelOnly: number;
+  /** Pages whose diff was SKIPPED because their walk could not read every node — those
+   *  nodes are absent from the walk, and diffing anyway would report them as deleted.
+   *  Present only when > 0. */
+  pagesWithReadErrors?: number;
+  /** Nodes that looked deleted to the diff but were still in the file — a node reparented
+   *  while the sliced walk yielded. Left for the next session instead of reported as a
+   *  deletion. Present only when > 0. */
+  deletedRechecked?: number;
   /** ISO timestamp of the last baseline write that SUCCEEDED, else null. */
   baselineWrittenAt: string | null;
   /** Serialized size of that baseline. 0 while none has landed. */
   baselineBytes: number;
   /** Legacy in-document snapshot keys cleared once at boot. Present only when > 0. */
   legacyCleared?: number;
+  /** Superseded previous-shape baseline values deleted after a successful write. Present
+   *  only when > 0 — a deletion of stored data is never left off the record. */
+  staleBaselinesCleared?: number;
   /** Other files' baseline keys dropped to fit this one under the storage quota — an
    *  eviction is a deletion of real data and is never left off the record. */
   baselineEvicted?: string[];
@@ -382,6 +403,30 @@ export interface GapfillStatus {
   /** Total failures this session (≥ `errors.length`) — a single message plus a count keeps
    *  a repeating failure visible without an unbounded log in a status payload. */
   errorCount?: number;
+}
+
+/**
+ * Where a session's time actually went — the walk this plugin controls, and the two host
+ * costs it does not. Present in STATUS once boot has completed (never mid-walk, where a
+ * partial total reads like a final one).
+ *
+ * `bootWalkMaxSliceMs` is the number the "no visible stall" target is about: the WORST
+ * synchronous chunk, not an average that twenty fast pages would hide it behind.
+ */
+export interface PerfStatus {
+  /** `figma.loadAllPagesAsync()` — the dynamic-page precondition for document-wide capture. */
+  bootLoadAllPagesMs: number;
+  /** Worst per-page `loadAsync()` before its walk; expected ≈ 0 once pages are resident. */
+  pageLoadAsyncMaxMs: number;
+  bootWalkMs: number;
+  bootWalkMaxSliceMs: number;
+  bootSlices: number;
+  idleWalkMs: number;
+  idleWalkMaxSliceMs: number;
+  /** Nodes dropped mid-walk because their properties threw — a stale node reference, or a
+   *  host that refuses the read. Present only when non-zero: a dropped node would otherwise
+   *  read as a deletion in the next session's diff with nothing to explain it. */
+  propertyReadErrors?: number;
 }
 
 // ── Multi-plugin registry (P4) ──────────────────────────────────────
