@@ -194,6 +194,20 @@ export function baselineMissingNotice(fileName: string, pageName: string): EditI
   );
 }
 
+/** The one frame a session emits when a baseline EXISTS but the store refused to read it.
+ *  Not `baseline-missing`: that would state a wrong fact (there is one on disk). The write
+ *  is withheld too, so the stored value survives and the next successful boot diffs against
+ *  it — delayed, never lost. No page is walked on this path: a read failure must not cost a
+ *  full document walk whose result could not be persisted anyway. */
+export function baselineUnreadableNotice(fileName: string, pageName: string): EditInput {
+  return toGapfillEdit(
+    'updated',
+    { id: 'gapfill:baseline-unreadable', name: fileName, type: 'DOCUMENT', x: 0, y: 0, parent: null },
+    pageName,
+    ['baseline-unreadable'],
+  );
+}
+
 export interface PageSnapshotResult { records: NodeSnapshot[]; truncated: boolean }
 
 /**
@@ -375,9 +389,11 @@ export function clearLegacyGapfillDocumentData(stats: GapfillStats): number {
  * interval. Writes a FRESH baseline before resolving, so the window between "diffed" and
  * "next observation" never grows stale.
  *
- * Two honest under-reports rather than wrong facts:
+ * Honest under-reports rather than wrong facts:
  *   - No baseline at all → ONE `baseline-missing` notice, never a whole-file "created"
  *     storm diffed against nothing.
+ *   - A baseline the store refused to READ → ONE `baseline-unreadable` notice; no walk, no
+ *     write, so the stored baseline survives for the next successful boot.
  *   - A page that existed in the PREVIOUS session but is no longer loaded AT ALL → ONE
  *     notice naming the page (never N synthetic per-node deletions — we know the page is
  *     gone, not whether each node was individually deleted).
@@ -391,7 +407,12 @@ export async function runGapfillDiff(
   store: BaselineStore,
   stats: GapfillStats,
 ): Promise<EditInput[]> {
-  const { baseline: prev } = await readBaseline(store, stats);
+  const { baseline: prev, readFailed } = await readBaseline(store, stats);
+  if (readFailed) {
+    // The store refused the read (error already recorded in `stats`). Skip the walk AND the
+    // write: the stored baseline stays intact for the next successful boot.
+    return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
+  }
   if (!prev) {
     // Nothing to diff, but start the baseline now. Walked here (with yields) so the write
     // below reuses the results; a page whose walk throws is simply not cached, and

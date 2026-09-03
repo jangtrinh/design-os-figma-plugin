@@ -123,5 +123,15 @@ describe('editSentence', () => {
       const sentence = editSentence(base({ nodeName: null, nodeType: 'DOCUMENT', changedProps: ['baseline-missing'], op: 'updated' }));
       expect(sentence).toContain('"this file"');
     });
+
+    // A baseline that EXISTS but could not be read is a different fact from one that never
+    // existed: the sentence must say "could not be read", never "no previous baseline".
+    it('changedProps ["baseline-unreadable"] says the baseline could not be read, not that it was missing', () => {
+      const sentence = editSentence(base({ nodeName: 'VSF - PCP', nodeType: 'DOCUMENT', changedProps: ['baseline-unreadable'], op: 'updated' }));
+      expect(sentence).not.toContain('Restyled');
+      expect(sentence).not.toContain('no previous baseline');
+      expect(sentence).toContain('could not be read');
+      expect(sentence).toContain('"VSF - PCP"');
+    });
   });
 });

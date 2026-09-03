@@ -419,8 +419,12 @@ describe('writeBaseline — a read that REJECTS must not overwrite the previous 
     expect(stats.errorCount).toBe(0);
   });
 
-  it('a rejecting get still lets the boot diff finish, so live capture keeps going', async () => {
-    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+  it('a rejecting get skips this boot honestly: one baseline-unreadable notice, no walk, no write', async () => {
+    const page = fakePage('p1', 'Screens', [fakeNode('a')]);
+    let walks = 0;
+    const originalFindAll = page.findAll.bind(page);
+    page.findAll = ((...args: Parameters<typeof originalFindAll>) => { walks += 1; return originalFindAll(...args); }) as typeof page.findAll;
+    const pages = [page];
     installFigma({ pages });
     const key = baselineKeyFor('FILEKEY1', 'Test File');
     const store = createMemoryBaselineStore({ getError: 'clientStorage unavailable' });
@@ -429,8 +433,11 @@ describe('writeBaseline — a read that REJECTS must not overwrite the previous 
 
     const edits = await runGapfillDiff(pages, store, stats);
 
-    expect(edits.map((e) => e.changedProps)).toEqual([['baseline-missing']]);
+    // Never "no previous baseline": one still exists on disk, it merely could not be read.
+    expect(edits.map((e) => e.changedProps)).toEqual([['baseline-unreadable']]);
+    expect(walks).toBe(0); // a read failure must not cost a full document walk
     expect(store.map.get(key)).toBe(previous);
+    expect(stats.baselineWrittenAt).toBeNull();
     expect(stats.firstError).toContain('baseline read failed');
   });
 });

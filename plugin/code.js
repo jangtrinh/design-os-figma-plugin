@@ -348,6 +348,14 @@
       ["baseline-missing"]
     );
   }
+  function baselineUnreadableNotice(fileName, pageName) {
+    return toGapfillEdit(
+      "updated",
+      { id: "gapfill:baseline-unreadable", name: fileName, type: "DOCUMENT", x: 0, y: 0, parent: null },
+      pageName,
+      ["baseline-unreadable"]
+    );
+  }
   function resolveBaselinePage(page, prevEntry, snapshot) {
     try {
       const { records, truncated } = snapshot();
@@ -462,7 +470,10 @@
     return cleared;
   }
   async function runGapfillDiff(pages, store, stats) {
-    const { baseline: prev } = await readBaseline(store, stats);
+    const { baseline: prev, readFailed } = await readBaseline(store, stats);
+    if (readFailed) {
+      return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
+    }
     if (!prev) {
       const firstRun = /* @__PURE__ */ new Map();
       for (const page of pages) {
