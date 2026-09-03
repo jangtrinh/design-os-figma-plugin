@@ -16,6 +16,7 @@ import { CliError } from './transport/protocol-helpers.ts';
 import {
   getLastFileContext,
   setAgent,
+  setNoWait,
   setExpectedFile,
   setExpectedInstance,
   setProjectDir,
@@ -208,6 +209,7 @@ async function main(): Promise<void> {
   setProjectDir(resolve(args.str('dir') ?? process.cwd())); // registry-integrity phase 01 §1
   setReadOnly(args.bool('read-only')); // broker permits this declaration only for its safe-read allowlist
   setAgent(resolveAgent(args)); // auto-connect slice 2 — same choke point as --file/--instance
+  setNoWait(args.bool('no-wait')); // pre-dispatch plugin admission opt-out (plugin-admission.ts)
   try {
     const result = await command.run(args);
     printJson(withFileContext(result));

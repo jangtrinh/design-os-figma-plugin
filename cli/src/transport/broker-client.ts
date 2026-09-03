@@ -20,6 +20,11 @@ import {
 import { ensureBroker, isPidAlive, loopbackWsUrl } from './broker-discovery.ts';
 import { isBrokerSafeRead } from '../../../shared/mutating-commands.ts';
 import {
+  awaitPluginAdmission,
+  needsPluginAdmission,
+  PLUGIN_ADMISSION_WAIT_SECONDS,
+} from './plugin-admission.ts';
+import {
   ChunkAssembler,
   CliError,
   isChunkMsg,
@@ -50,6 +55,7 @@ let lastFileContext: FileContext | undefined;
 let projectDir: string | undefined;
 let readOnlyGlobal = false;
 let agentId: string | undefined;
+let noWaitGlobal = false;
 
 /** Set once per CLI invocation from the global --file flag; stamped on every request envelope. */
 export function setExpectedFile(name: string | undefined): void { expectedFile = name; }
@@ -87,6 +93,13 @@ export function setReadOnly(v: boolean): void { readOnlyGlobal = v; }
  * slice 2). `undefined` (the default) leaves the frame byte-identical to a pre-flag CLI's.
  */
 export function setAgent(id: string | undefined): void { agentId = id; }
+
+/**
+ * Set once per CLI invocation from the global `--no-wait` flag: skip the pre-dispatch
+ * plugin admission wait (plugin-admission.ts) and let the broker answer a disconnected
+ * mutation at once — the pre-wait behaviour, kept as an explicit opt-out.
+ */
+export function setNoWait(v: boolean): void { noWaitGlobal = v; }
 
 /**
  * Stage-4 fix round (minor 8, ruling Q4) — `--read-only` is a PARTIAL hardening, not a
@@ -333,6 +346,22 @@ export async function runCommand(
 
   const timeoutMs = opts?.timeoutMs ?? COMMAND_TIMEOUTS[wireCmd] ?? DEFAULT_TIMEOUT_MS;
   try {
+    // Pre-dispatch admission: a mutation is only sent once a plugin the broker can route
+    // it to is registered (bounded wait, `--no-wait` opts out). Runs AFTER the connect so
+    // a dead broker surfaces as E_NO_BROKER above, never as a 60s wait for a plugin that
+    // has nowhere to register.
+    if (needsPluginAdmission({ cmd: wireCmd, noWait: noWaitGlobal, targetFileKey })) {
+      await awaitPluginAdmission({
+        port: ad.port,
+        timeoutMs: PLUGIN_ADMISSION_WAIT_SECONDS * 1_000,
+        fileFilter: expectedFile,
+        instanceFilter: expectedInstance,
+        onWaiting: () => process.stderr.write(
+          `waiting up to ${PLUGIN_ADMISSION_WAIT_SECONDS}s for a plugin to register before ${wireCmd} `
+            + '(open Plugins > figma-agent in the target file; --no-wait skips this)\n',
+        ),
+      });
+    }
     return await exchange(ws, wireCmd, params, timeoutMs, opts?.activity, readOnlyRequested);
   } finally {
     try {

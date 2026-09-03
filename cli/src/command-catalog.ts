@@ -242,6 +242,19 @@ export const GLOBAL_FLAGS: GlobalFlagEntry[] = [
       + 'the per-file mutation gate; the caller cannot declare any other command safe.',
   },
   {
+    flag: '--no-wait',
+    description:
+      'skip the pre-dispatch plugin admission wait. By default every command the broker '
+      + 'classifies as a mutation (everything outside the --read-only safe-read allowlist, '
+      + 'EXEC_JS/BATCH/AUDIT_DS included) first waits up to 60s for a plugin matching '
+      + '--file/--instance (else any) to register — the built-in equivalent of "status --wait '
+      + '--timeout 60 &&", so the first call after an idle flap no longer fails with '
+      + 'E_FILE_KEY_UNAVAILABLE. A plugin that never comes exits 1 with E_NO_PLUGIN naming the '
+      + 'bound. Safe reads, --target-file-key requests (the broker parks those durably itself) '
+      + 'and broker-terminal commands never wait. With --no-wait the request is sent at once '
+      + "and the broker's own answer stands.",
+  },
+  {
     flag: '--agent <id> | FIGMA_AGENT_ID',
     description:
       'which harness sent this (the flag wins over the env var) — shown in the panel activity feed '

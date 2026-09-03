@@ -20,6 +20,9 @@ export interface WaitOptions {
   /** `--instance` — matched exactly; beats `fileFilter` when both are somehow set. */
   instanceFilter?: string | null;
   pollIntervalMs?: number;
+  /** Called once, the first time a poll finds no matching plugin — the moment a caller
+   *  should tell the human it is actually waiting (never fired when the first poll hits). */
+  onWaiting?: () => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   fetchHello?: (port: number) => Promise<Record<string, unknown>>;
@@ -58,6 +61,7 @@ export async function waitForPlugin(opts: WaitOptions): Promise<WaitResult> {
   const fetchHello = opts.fetchHello ?? fetchBrokerHello;
   const startedAt = now();
   const deadline = startedAt + opts.timeoutMs;
+  let announced = false;
 
   for (;;) {
     let hello: Record<string, unknown> | null = null;
@@ -72,6 +76,10 @@ export async function waitForPlugin(opts: WaitOptions): Promise<WaitResult> {
     }
     if (now() >= deadline) {
       return { registered: false, waitedMs: now() - startedAt };
+    }
+    if (!announced) {
+      announced = true;
+      opts.onWaiting?.();
     }
     await sleep(pollMs);
   }

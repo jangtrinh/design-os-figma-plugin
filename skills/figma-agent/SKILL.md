@@ -32,7 +32,9 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 2. `figma-agent status` — full detail on the active connection (spawns a broker if idle).
 3. Read before you write: `get-selection`, `inspect`, `scan-design-system`.
 4. Mutate with the typed commands (`create-frame`, `set-text`, `clone-traits`, ...)
-   before falling back to `exec-js` for anything they don't cover.
+   before falling back to `exec-js` for anything they don't cover. Every mutating
+   command first waits (up to 60s) for the plugin to register, so the first call after
+   an idle flap no longer needs a `status --wait &&` prefix — `--no-wait` opts out.
 5. `changes`/`errors`/`contention` read durable local logs — they work even with the
    plugin closed, useful for catching up after a session gap.
 
@@ -40,7 +42,9 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
 
 - `E_NO_BROKER` — no broker answered; the plugin almost certainly isn't open. Peek first
   next time, don't assume.
-- `E_NO_PLUGIN` — the broker is alive but no Figma file is connected right now.
+- `E_NO_PLUGIN` — the broker is alive but no Figma file is connected right now. A
+  mutating command already waited its 60s bound for one before saying so — retrying at
+  once will not help; the human must open the plugin panel in the target file.
 - `E_WRONG_FILE` — a command named `--file`/`--instance` and the plugin currently
   answering doesn't match; open the right file, or drop the filter to see what IS live.
 - `E_TIMEOUT` (with a `jobId`) — the command is still running as a background job; poll
