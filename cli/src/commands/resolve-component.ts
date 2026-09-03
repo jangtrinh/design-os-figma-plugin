@@ -87,7 +87,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
       page: c.page && typeof c.page === 'object' ? (c.page as ComponentCandidate['page']) : null,
     }));
   const resolution = pickComponent(candidates, name, page);
-  if (!resolution.ok) throw new CliError(resolution.code, resolution.message);
+  if (!resolution.ok) {
+    throw new CliError(resolution.code, resolution.message,
+      resolution.candidates.length > 0 ? { candidates: resolution.candidates } : undefined);
+  }
   const { node, matched, preferred } = resolution;
   return {
     id: node.id, ...(node.key !== undefined && { key: node.key }), name: node.name, type: node.type, page: node.page,

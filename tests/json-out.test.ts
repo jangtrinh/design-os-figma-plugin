@@ -39,6 +39,15 @@ describe('printErrorJson', () => {
     expect('jobId' in parsed.error).toBe(false);
   });
 
+  it('prints E_AMBIGUOUS candidates as structured data only when the CliError carries them', () => {
+    const candidates = [{ id: '10:1', name: 'Table / Cell', type: 'COMPONENT_SET', page: { id: 'p', name: 'DS' } }];
+    const { out, code } = captureExit(() => printErrorJson(new CliError('E_AMBIGUOUS', '2 live nodes', { candidates })));
+    expect(JSON.parse(out)).toEqual({ error: { code: 'E_AMBIGUOUS', message: '2 live nodes', candidates } });
+    expect(code).toBe(1);
+    const { out: plain } = captureExit(() => printErrorJson(new CliError('E_NOT_FOUND', 'none')));
+    expect(JSON.parse(plain)).toEqual({ error: { code: 'E_NOT_FOUND', message: 'none' } });
+  });
+
   it('carries both rolledBack and jobId together when both are set', () => {
     const { out } = captureExit(() => printErrorJson(new CliError('E_EVAL', 'boom', { rolledBack: true, jobId: 'j_2_2' })));
     expect(JSON.parse(out)).toEqual({ error: { code: 'E_EVAL', message: 'boom', rolledBack: true, jobId: 'j_2_2' } });

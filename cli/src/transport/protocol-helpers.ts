@@ -26,13 +26,16 @@ export class CliError extends Error {
    */
   readonly jobId?: string;
   readonly recovery?: JobRecovery;
-  constructor(code: ErrorCode, message: string, opts?: { rolledBack?: boolean; jobId?: string; recovery?: JobRecovery }) {
+  /** E_AMBIGUOUS (`resolve-component`): every node that answered to the name, as data. */
+  readonly candidates?: readonly unknown[];
+  constructor(code: ErrorCode, message: string, opts?: { rolledBack?: boolean; jobId?: string; recovery?: JobRecovery; candidates?: readonly unknown[] }) {
     super(message);
     this.name = 'CliError';
     this.code = code;
     if (opts?.rolledBack) this.rolledBack = opts.rolledBack;
     if (opts?.jobId !== undefined) this.jobId = opts.jobId;
     if (opts?.recovery !== undefined) this.recovery = opts.recovery;
+    if (opts?.candidates !== undefined) this.candidates = opts.candidates;
   }
 }
 

@@ -95,6 +95,11 @@ describe('resolve-component run()', () => {
     await expect(run(parseArgs(['--name', 'Table / Cell']))).rejects.toMatchObject({
       code: 'E_AMBIGUOUS',
       message: expect.stringMatching(/10:1.*10:2/s),
+      // Structured too, so an agent picks by id without parsing prose.
+      candidates: [
+        { id: '10:1', name: 'Table / Cell', type: 'COMPONENT_SET', page: { id: 'p1', name: 'Design System' } },
+        { id: '10:2', name: 'Table / Cell', type: 'COMPONENT_SET', page: { id: 'p1', name: 'Design System' } },
+      ],
     });
   });
 
