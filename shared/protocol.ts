@@ -164,6 +164,13 @@ export interface BrokerAdvertisement {
 export const COMMANDS = [
   'STATUS',
   'GET_SELECTION',
+  // Code context for one node's subtree: Inspect-panel CSS declarations verbatim, bound
+  // variable/style ids with an identity table, text, component API — breadth-first and
+  // bounded by a BYTE BUDGET measured in the plugin, because the cost this bounds
+  // (`getCSSAsync`, ~7-8ms per node) is paid in the plugin. A CLI-side governor would
+  // measure after the money was already spent. Read-only, so it is on the broker's
+  // safe-read allowlist and never queues behind a mutation.
+  'GET_CONTEXT',
   'SCAN_DESIGN_SYSTEM',
   'AUDIT_DS',
   'CREATE_FRAME',
@@ -615,6 +622,13 @@ export interface ChunkMsg {
 }
 export const CHUNK_LIMIT = 512 * 1024;
 
+/**
+ * Version tag on every GET_CONTEXT reply. Agents script against this payload, so a shape
+ * change is a version bump a caller can branch on — never a surprise in a field it already
+ * reads. Same contract as the audit-ds facts schema.
+ */
+export const CONTEXT_SCHEMA = 'context/1';
+
 export type WireMsg = RequestMsg | ReplyMsg | EventMsg | ChunkMsg;
 
 // ── Errors ──────────────────────────────────────────────────────────
@@ -688,6 +702,13 @@ export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   SHADER_GRADIENT_PROBE: 90_000,
   IMPORT_GRADIENT: 60_000,
   SCAN_DESIGN_SYSTEM: 30_000,
+  // EXPLICIT, not left to DEFAULT_TIMEOUT_MS: measured live, `getCSSAsync` costs ~7-8ms
+  // per node (100 nodes 831ms, 500 nodes 3.9s; Promise.all batches of 16 save only ~12%
+  // — the cost is per call, not per round-trip). A 64KB budget on a dense subtree can
+  // therefore sit well past 15s, and a default-timeout E_TIMEOUT teaches the agent to
+  // re-issue, paying the whole walk twice. The plugin's own soft deadline (this minus the
+  // CLI's 2s hop buffer) returns a partial WITH counts before the wire timeout can fire.
+  GET_CONTEXT: 45_000,
   AUDIT_DS: 120_000, // usage scan traverses EVERY page's instances — heavier than the DS scan
   EXEC_JS: 30_000, // CLI --timeout may raise, capped at 120s
   BATCH: 60_000,

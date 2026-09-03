@@ -29,6 +29,7 @@ import { renderSkill } from './skill-emitter.ts';
 import * as batch from './commands/batch.ts';
 import * as changes from './commands/changes.ts';
 import * as contention from './commands/contention.ts';
+import * as context from './commands/context.ts';
 import * as cowork from './commands/cowork.ts';
 import * as errors from './commands/errors.ts';
 import * as bind from './commands/bind.ts';
@@ -80,6 +81,7 @@ export const COMMAND_MODULES: Record<string, { run(args: CommandArgs): Promise<u
   seat,
   bind,
   'get-selection': getSelection,
+  context,
   inspect,
   job,
   'scan-design-system': scanDesignSystem,

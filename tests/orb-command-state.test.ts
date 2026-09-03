@@ -9,7 +9,7 @@ import { labelControl } from '../plugin/src/ui/panel-activity-view.ts';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 const groups = [
-  ['searching', 'Searching', ['STATUS', 'GET_SELECTION', 'SCAN_DESIGN_SYSTEM',
+  ['searching', 'Searching', ['STATUS', 'GET_SELECTION', 'GET_CONTEXT', 'SCAN_DESIGN_SYSTEM',
     'GET_CORRECTION_MEMORY', 'LIST_CONNECTIONS', 'SHADER_GRADIENT_PROBE']],
   ['solving', 'Analyzing', ['AUDIT_DS', 'VERIFY_CONNECTIONS']],
   ['composing', 'Composing', ['CREATE_FRAME', 'CREATE_INSTANCE', 'CREATE_VARIABLE',
