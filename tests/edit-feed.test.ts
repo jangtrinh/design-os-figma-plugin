@@ -3,7 +3,7 @@
 // existing log file"). Round-trip, structural-guard, and forward-compatibility coverage.
 import { describe, it, expect } from 'vitest';
 import {
-  EDIT_FEED_SCHEMA_VERSION, buildEditFrame, isValidEditInput, coalesceEdits,
+  EDIT_FEED_SCHEMA_VERSION, buildEditFrame, isValidEditFrame, isValidEditInput, coalesceEdits,
   type EditInput, type EditBatchMeta,
 } from '../shared/edit-feed.ts';
 
@@ -254,5 +254,38 @@ describe('coalesceEdits', () => {
     expect(once.map((e) => e.nodeId)).toEqual(['a', 'b']);
     const twice = coalesceEdits(once);
     expect(twice).toEqual(once);
+  });
+});
+
+// A frame the plugin held through an outage and replayed on reconnect is HISTORY. It
+// lands in the feed dated to its capture, and it says so on the frame itself, so a
+// reader can never mistake a recovered gap for something that just happened. Additive:
+// EDIT_FEED_SCHEMA_VERSION stays 1 and a frame written before the marker existed still
+// parses.
+describe('buildEditFrame — a replayed capture is marked as one', () => {
+  it('carries the marker when the batch was replayed', () => {
+    const frame = buildEditFrame(baseInput(), baseMeta({ replayed: true }), 1_700_000_000_000);
+    expect(frame.replayed).toBe(true);
+    expect(frame.ts).toBe(1_700_000_000_000);
+  });
+
+  it('omits the marker entirely on a live batch — the ordinary frame is unchanged', () => {
+    expect(buildEditFrame(baseInput(), baseMeta(), 1)).not.toHaveProperty('replayed');
+    expect(buildEditFrame(baseInput(), baseMeta({ replayed: false }), 1)).not.toHaveProperty('replayed');
+  });
+});
+
+describe('isValidEditFrame — the replay marker is additive, never required', () => {
+  it('accepts a frame written before the marker existed', () => {
+    expect(isValidEditFrame(buildEditFrame(baseInput(), baseMeta(), 1))).toBe(true);
+  });
+
+  it('accepts a marked replay', () => {
+    expect(isValidEditFrame(buildEditFrame(baseInput(), baseMeta({ replayed: true }), 1))).toBe(true);
+  });
+
+  it('refuses a non-boolean marker rather than admitting a line it cannot read', () => {
+    const frame = { ...buildEditFrame(baseInput(), baseMeta(), 1), replayed: 'yes' };
+    expect(isValidEditFrame(frame)).toBe(false);
   });
 });

@@ -1457,7 +1457,15 @@ body { overflow: hidden; }
 
   // plugin/src/ui/panel-model.ts
   var SYNC_STUCK_TIMEOUT_MS = 3e4;
-  function statusSentence(state, ageMs, hadConnection2) {
+  function droppedNote(frames) {
+    return `${frames} edit${frames === 1 ? "" : "s"} lost while offline`;
+  }
+  function statusSentence(state, ageMs, hadConnection2, droppedFrames2 = 0) {
+    const base = baseStatusSentence(state, ageMs, hadConnection2);
+    if (!(droppedFrames2 > 0)) return base;
+    return { text: `${base.text} \xB7 ${droppedNote(droppedFrames2)}`, tone: "warning" };
+  }
+  function baseStatusSentence(state, ageMs, hadConnection2) {
     if (state === "connected") return { text: "Connected", tone: "success" };
     if (state === "probing") return ageMs >= 1e4 ? { text: "Broker not running \u2014 run figma-agent status.", tone: "warning" } : { text: "Looking for the broker", tone: "warning" };
     if (state === "handshake") return { text: "Connecting", tone: "info" };
@@ -2394,6 +2402,7 @@ body { overflow: hidden; }
   var connectionFailure = false;
   var syncFailure = false;
   var connectionTransition = 0;
+  var droppedFrames = 0;
   var previousConnectionState = null;
   var lastViewportMode = "rail-compact";
   var disclosed = new BoundedKeySet();
@@ -2483,7 +2492,7 @@ body { overflow: hidden; }
   }
   function render() {
     const now = Date.now(), state = payload?.state ?? "disconnected", age = payload ? now - payload.since : 0;
-    const view = statusSentence(state, age, hadConnection);
+    const view = statusSentence(state, age, hadConnection, droppedFrames);
     sentence2.textContent = view.text;
     sentence2.dataset.tone = view.tone;
     onboarding.hidden = !showOnboarding(state, hadConnection);
@@ -2573,6 +2582,12 @@ body { overflow: hidden; }
     updateSignal();
     render();
   });
+  window.addEventListener("figma-agent:dropped", (event) => {
+    const detail = event.detail;
+    if (typeof detail?.frames !== "number" || !Number.isFinite(detail.frames)) return;
+    droppedFrames = Math.max(droppedFrames, Math.floor(detail.frames));
+    render();
+  });
   window.addEventListener("figma-agent:peers", (event) => {
     const data = event.detail;
     if (typeof data?.count === "number" && Number.isFinite(data.count)) peersCount = data.count;
@@ -2656,12 +2671,214 @@ body { overflow: hidden; }
     }, 4e3);
     render();
   });
-  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "901c81d" : "dev"}`;
+  el("fga-version").textContent = `v0.1.0 \xB7 ${true ? "f52c89c" : "dev"}`;
   replaceIcon(targetRailBtn, "files");
   replaceIcon(syncRailBtn, "refresh-cw");
   replaceIcon(toggleBtn, "chevron-down");
   setInterval(render, 1e3);
   render();
+
+  // plugin/src/ui/broker-scan.ts
+  function probeBrokerPort(port, transport, timeoutMs) {
+    let settle = () => {
+    };
+    const result = new Promise((resolve) => {
+      settle = resolve;
+    });
+    let socket;
+    try {
+      socket = transport.open(port);
+    } catch {
+      settle(null);
+      return { result, cancel: () => {
+      } };
+    }
+    let settled = false;
+    let won = null;
+    const finish = (found) => {
+      if (settled) {
+        if (found) transport.close(found.socket);
+        return;
+      }
+      settled = true;
+      won = found;
+      clearTimeout(timer);
+      transport.detach(socket);
+      if (!found) transport.close(socket);
+      settle(found);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    transport.listen(socket, {
+      message: (data) => {
+        try {
+          const msg = JSON.parse(String(data));
+          if (msg?.type === "BROKER_HELLO") {
+            finish({ socket, port, hello: msg.data ?? {} });
+          }
+        } catch {
+        }
+      },
+      fail: () => finish(null)
+    });
+    return {
+      result,
+      cancel: () => {
+        if (won) transport.close(won.socket);
+        else finish(null);
+      }
+    };
+  }
+  function scanPortsForBroker(ports, probe, onProbeStart) {
+    return new Promise((resolve) => {
+      if (ports.length === 0) {
+        resolve(null);
+        return;
+      }
+      let decided = false;
+      let outstanding = ports.length;
+      const probes = [];
+      const miss = () => {
+        outstanding -= 1;
+        if (!decided && outstanding === 0) {
+          decided = true;
+          resolve(null);
+        }
+      };
+      for (const port of ports) {
+        onProbeStart?.(port);
+        const started = probe(port);
+        probes.push(started);
+        void started.result.then((found) => {
+          if (!found) {
+            miss();
+            return;
+          }
+          if (decided) {
+            started.cancel();
+            return;
+          }
+          decided = true;
+          for (const other of probes) if (other !== started) other.cancel();
+          resolve(found);
+        });
+      }
+    });
+  }
+
+  // plugin/src/ui/outbound-buffer.ts
+  var PRE_OPEN_MAX_FRAMES = 200;
+  var PRE_OPEN_MAX_CHARS = 1e6;
+  var BUFFERED_EVENT_TYPES = /* @__PURE__ */ new Set(["EDIT_FEED", "DOC_CHANGE"]);
+  function stampCapturedFrame(msg, capturedAt) {
+    const data = typeof msg.data === "object" && msg.data !== null ? msg.data : {};
+    return JSON.stringify({ ...msg, data: { ...data, capturedAt, replayed: true } });
+  }
+  function isBufferableFrame(msg) {
+    if (typeof msg !== "object" || msg === null) return false;
+    if ("id" in msg) return false;
+    const type = msg.type;
+    return typeof type === "string" && BUFFERED_EVENT_TYPES.has(type);
+  }
+  function handshakeBatch(helloData, buffer) {
+    const control = [JSON.stringify({ type: "PLUGIN_HELLO", data: helloData })];
+    const unreported = buffer.unreported;
+    const reported = unreported.frames > 0 ? unreported : null;
+    if (reported) {
+      control.push(JSON.stringify({
+        type: "PLUGIN_RELAY_STATS",
+        data: { dropped: reported, sessionTotal: buffer.dropped }
+      }));
+    }
+    return { control, captures: buffer.drain(), reported };
+  }
+  function createPreOpenBuffer(limits = {}) {
+    const maxFrames = limits.maxFrames ?? PRE_OPEN_MAX_FRAMES;
+    const maxChars = limits.maxChars ?? PRE_OPEN_MAX_CHARS;
+    const frames = [];
+    let chars = 0;
+    const dropped = { frames: 0, chars: 0 };
+    const unreported = { frames: 0, chars: 0 };
+    return {
+      enqueue(json) {
+        frames.push(json);
+        chars += json.length;
+        while (frames.length > maxFrames || chars > maxChars) {
+          const oldest = frames.shift();
+          if (oldest === void 0) break;
+          chars -= oldest.length;
+          dropped.frames += 1;
+          dropped.chars += oldest.length;
+          unreported.frames += 1;
+          unreported.chars += oldest.length;
+        }
+      },
+      drain() {
+        const held = frames.slice();
+        frames.length = 0;
+        chars = 0;
+        return held;
+      },
+      get size() {
+        return frames.length;
+      },
+      get chars() {
+        return chars;
+      },
+      get dropped() {
+        return { ...dropped };
+      },
+      get unreported() {
+        return { ...unreported };
+      },
+      confirmReported(confirmed) {
+        unreported.frames = Math.max(0, unreported.frames - confirmed.frames);
+        unreported.chars = Math.max(0, unreported.chars - confirmed.chars);
+      }
+    };
+  }
+
+  // plugin/src/ui/socket-adoption.ts
+  var SOCKET_OPEN = 1;
+  function refuseAdoption(current, candidate) {
+    if (current !== null) {
+      if (current !== candidate) closeQuietly(candidate);
+      return "already-adopted";
+    }
+    if (candidate.readyState === SOCKET_OPEN) return null;
+    closeQuietly(candidate);
+    return "socket-not-open";
+  }
+  function closeQuietly(socket) {
+    try {
+      socket.close();
+    } catch {
+    }
+  }
+  function flushHandshake(params) {
+    const { socket, batch, buffer, onFlushed } = params;
+    let sent = 0;
+    const write = (json) => {
+      if (socket.readyState !== SOCKET_OPEN) return false;
+      try {
+        socket.send(json);
+        sent += 1;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let from = batch.captures.length;
+    if (batch.control.every(write)) {
+      if (batch.reported) buffer.confirmReported(batch.reported);
+      from = batch.captures.findIndex((frame) => !write(frame));
+      if (from === -1) from = batch.captures.length;
+    } else {
+      from = 0;
+    }
+    for (let i = from; i < batch.captures.length; i++) buffer.enqueue(batch.captures[i]);
+    onFlushed();
+    return { sent, reBuffered: batch.captures.length - from };
+  }
 
   // plugin/src/ui/converter/color-utils.ts
   var NAMED_COLORS = {
@@ -4458,8 +4675,25 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
       statusEl.className = cls;
     }
   }
+  var preOpenBuffer = createPreOpenBuffer();
+  var announcedDropFrames = 0;
+  function announceDrops() {
+    const { frames, chars } = preOpenBuffer.dropped;
+    if (frames === announcedDropFrames) return;
+    announcedDropFrames = frames;
+    try {
+      window.dispatchEvent(new CustomEvent("figma-agent:dropped", { detail: { frames, chars } }));
+    } catch {
+    }
+  }
   function wsSend(msg) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (isBufferableFrame(msg)) {
+        preOpenBuffer.enqueue(stampCapturedFrame(msg, Date.now()));
+        announceDrops();
+      }
+      return;
+    }
     const json = JSON.stringify(msg);
     if (json.length <= CHUNK_LIMIT || !("id" in msg)) {
       ws.send(json);
@@ -4730,49 +4964,34 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     }
     scheduleReconnect();
   }
-  function probePort(port, host) {
-    return new Promise((resolve) => {
-      let settled = false;
-      let socket;
+  var PROBE_HOST = "figma-agent.localhost";
+  var PROBE_PORTS = [];
+  for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) PROBE_PORTS.push(port);
+  var probeTransport = {
+    open: (port) => new WebSocket(`ws://${PROBE_HOST}:${port}`),
+    listen: (socket, on) => {
+      socket.onmessage = (ev) => on.message(ev.data);
+      socket.onerror = () => on.fail();
+      socket.onclose = () => on.fail();
+    },
+    detach: (socket) => {
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+    },
+    close: (socket) => {
       try {
-        socket = new WebSocket(`ws://${host}:${port}`);
+        socket.close();
       } catch {
-        resolve(null);
-        return;
       }
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (!result) {
-          try {
-            socket.close();
-          } catch {
-          }
-        }
-        resolve(result);
-      };
-      const timer = setTimeout(() => finish(null), PORT_PROBE_TIMEOUT_MS);
-      socket.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(String(ev.data));
-          if (msg?.type === "BROKER_HELLO") {
-            finish({ socket, hello: msg.data ?? {} });
-          }
-        } catch {
-        }
-      };
-      socket.onerror = () => finish(null);
-      socket.onclose = () => finish(null);
-    });
-  }
-  async function scanForBroker() {
-    for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) {
-      transition("PROBE", { detail: `probing figma-agent.localhost:${port}\u2026`, port });
-      const probe = await probePort(port, "figma-agent.localhost");
-      if (probe) return probe;
     }
-    return null;
+  };
+  function scanForBroker() {
+    return scanPortsForBroker(
+      PROBE_PORTS,
+      (port) => probeBrokerPort(port, probeTransport, PORT_PROBE_TIMEOUT_MS),
+      (port) => transition("PROBE", { detail: `probing ${PROBE_HOST}:${port}\u2026`, port })
+    );
   }
   function socketConnectionInfo(socket) {
     const url = socket.url.replace(/\/$/, "");
@@ -4781,11 +5000,11 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   }
   function adoptSocket(probe) {
     const { socket, hello } = probe;
-    if (ws !== null) {
-      if (ws !== socket) try {
-        socket.close();
-      } catch {
-      }
+    const refusal = refuseAdoption(ws, socket);
+    if (refusal === "already-adopted") return;
+    if (refusal === "socket-not-open") {
+      transition("LOST", { detail: "broker closed before the handshake \u2014 retrying\u2026" });
+      scheduleReconnect();
       return;
     }
     ws = socket;
@@ -4802,15 +5021,20 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     socket.onerror = () => {
     };
     socket.onclose = () => teardown(socket, "broker connection lost \u2014 reconnecting\u2026");
-    wsSend({ type: "PLUGIN_HELLO", data: {
-      ...fileInfo,
-      instanceId: INSTANCE_ID,
-      caps: [...PLUGIN_CAPABILITIES],
-      pluginVersion: PLUGIN_VERSION,
-      protocolV: PROTOCOL_VERSION
-    } });
+    const flushed = flushHandshake({
+      socket,
+      batch: handshakeBatch({
+        ...fileInfo,
+        instanceId: INSTANCE_ID,
+        caps: [...PLUGIN_CAPABILITIES],
+        pluginVersion: PLUGIN_VERSION,
+        protocolV: PROTOCOL_VERSION
+      }, preOpenBuffer),
+      buffer: preOpenBuffer,
+      onFlushed: () => heartbeatDriver.start(heartbeatMode)
+    });
+    if (flushed.reBuffered > 0) announceDrops();
     if (Object.keys(fileInfo).length === 0) parent.postMessage({ pluginMessage: { type: "UI_READY" } }, "*");
-    heartbeatDriver.start(heartbeatMode);
   }
   function scheduleReconnect() {
     if (ws !== null || reconnectTimer !== null) return;

@@ -49,7 +49,7 @@ export interface EditInput {
 /** One line of the per-file edit feed. Append-only, versioned. */
 export interface EditFrame {
   v: number;                 // EDIT_FEED_SCHEMA_VERSION
-  ts: number;                // epoch ms, stamped by the broker at append
+  ts: number;                // epoch ms: the plugin's capture time on a replayed frame (see `replayed`), else broker append time
   actor: EditActor;
   source: EditSource;
   op: EditOp;
@@ -69,6 +69,15 @@ export interface EditFrame {
    * frame on disk without it still parses; `EDIT_FEED_SCHEMA_VERSION` stays 1.
    */
   fileName?: string;
+  /**
+   * Present (and always `true`) only on a frame the plugin held in its pre-connect
+   * buffer through an outage and replayed on reconnect. `ts` above is then the plugin's
+   * own capture time, so the frame is dated when the edit HAPPENED — this marker is what
+   * keeps a reader from mistaking a recovered gap for something that just occurred.
+   * Additive/optional, same contract as `fileName`: a frame written before it existed
+   * still parses and `EDIT_FEED_SCHEMA_VERSION` stays 1.
+   */
+  replayed?: true;
 }
 
 /**
@@ -80,6 +89,9 @@ export interface EditBatchMeta {
   fileKey: string | null;
   fileName: string;
   source: EditSource;
+  /** True when the batch is the relay replaying its pre-connect buffer. Stamped onto
+   *  every frame of the batch; absent/false leaves the frame shape untouched. */
+  replayed?: boolean;
 }
 
 const VALID_OPS: ReadonlySet<string> = new Set(['created', 'updated', 'deleted']);
@@ -130,6 +142,7 @@ export function buildEditFrame(e: EditInput, meta: EditBatchMeta, ts: number): E
     page: e.page ?? '',
     fileKey: meta.fileKey ?? null,
     ...(typeof meta.fileName === 'string' && meta.fileName.length > 0 && { fileName: meta.fileName }),
+    ...(meta.replayed === true && { replayed: true as const }),
   };
 }
 
@@ -153,6 +166,10 @@ export function isValidEditFrame(v: unknown): v is EditFrame {
   if (typeof r.source !== 'string' || !VALID_SOURCES.has(r.source)) return false;
   if (r.fileKey !== null && typeof r.fileKey !== 'string') return false;
   if (r.fileName !== undefined && typeof r.fileName !== 'string') return false;
+  // Additive marker: absent on every frame written before replay was possible, and only
+  // ever `true` when present — a line claiming anything else is one this reader cannot
+  // honestly interpret, so it is skipped and counted rather than admitted.
+  if (r.replayed !== undefined && r.replayed !== true) return false;
   return true;
 }
 
