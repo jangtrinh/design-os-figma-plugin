@@ -8,13 +8,18 @@
 //
 // The environment is INJECTED (`GetContextEnv`) rather than read off `figma` inline, so the
 // whole command is drivable from plain fixture objects. main.ts supplies the live one.
+import { assertDedupConservation, dedupContextPayload } from '../../../shared/context-dedup';
 import { CHUNK_LIMIT, CONTEXT_SCHEMA, EXEC_JS_MAX_TIMEOUT_MS } from '../../../shared/protocol';
 import { utf8ByteLength } from '../../../shared/utf8-byte-length';
+import {
+  countAttachedDevResources, createContextIntentReader, noDevResourcesRead, readSubtreeDevResources,
+} from './context-intent';
 import type { ContextNodeLike } from './context-node-record';
+import {
+  contextBoundedNumber, contextFlag, contextMaxDepth, resolveContextTarget,
+} from './context-params';
 import { resolveContextRefs, type ContextRefsDeps } from './context-refs';
 import { walkContext } from './context-walk';
-import { withCode } from './executor-styles';
-import { safe } from './scan-node-utils';
 
 type Params = Record<string, unknown>;
 
@@ -58,77 +63,46 @@ export function figmaContextEnv(changeCount: () => number): GetContextEnv {
   };
 }
 
-/** A wire number is validated at the boundary, never silently corrected: a caller that
- *  asked for `--budget 0` and got 64 KB learns the wrong thing about this command.
- *
- *  The upper bound is enforced HERE as well as at the CLI because the WIRE is the trust
- *  boundary — the CLI is one client of it. Without this, `budgetBytes: 1_073_741_824` from
- *  any other client has the designer's plugin accumulate an unbounded `nodes[]` until it
- *  dies mid-session. */
-function bounded(params: Params, key: string, fallback: number, max: number): number {
-  const raw = params[key];
-  if (raw === undefined) return fallback;
-  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
-    throw withCode(new Error(`${key} must be a positive number, got ${JSON.stringify(raw)}`), 'E_INVALID_ARGS');
-  }
-  if (raw > max) {
-    throw withCode(new Error(`${key} ${raw} is past the ${max} maximum`), 'E_INVALID_ARGS');
-  }
-  return raw;
-}
-
-function maxDepth(params: Params): number {
-  const raw = params.depth;
-  if (raw === undefined) return Number.POSITIVE_INFINITY;
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
-    throw withCode(new Error(`depth must be a non-negative integer, got ${JSON.stringify(raw)}`), 'E_INVALID_ARGS');
-  }
-  return raw;
-}
-
-/**
- * A DOCUMENT is refused; a PAGE is allowed and says so in the docs.
- *
- * `context 0:0` would walk every page — bounded by bytes, but still "a read outside the
- * target's subtree", and on the one command whose selling point is that it never widens a
- * read, a silent allow is the wrong default. A PAGE, by contrast, IS a subtree and "give me
- * this screen" is the natural call.
- */
-function refuseNonSubtree(node: ContextNodeLike): void {
-  if (safe(() => node.type) === 'DOCUMENT') {
-    throw withCode(
-      new Error('a document is not a subtree — pass a page or a node id'),
-      'E_INVALID_ARGS',
-    );
-  }
-}
-
-async function resolveTarget(params: Params, env: GetContextEnv): Promise<ContextNodeLike> {
-  const nodeId = params.nodeId;
-  if (typeof nodeId === 'string' && nodeId !== '') {
-    const found = await env.nodeById(nodeId);
-    if (!found) throw withCode(new Error(`no node answers to "${nodeId}"`), 'E_INVALID_ARGS');
-    refuseNonSubtree(found);
-    return found;
-  }
-  const selected = env.selection()[0];
-  if (!selected) {
-    throw withCode(new Error('no target: pass a node id, or select one node in Figma'), 'E_INVALID_ARGS');
-  }
-  refuseNonSubtree(selected);
-  return selected;
-}
 
 export async function opGetContext(params: Params, env: GetContextEnv): Promise<Record<string, unknown>> {
-  const budgetBytes = bounded(params, 'budgetBytes', DEFAULT_CONTEXT_BUDGET_BYTES, CHUNK_LIMIT);
-  const deadlineMs = bounded(params, 'deadlineMs', DEFAULT_CONTEXT_DEADLINE_MS, EXEC_JS_MAX_TIMEOUT_MS);
-  const depth = maxDepth(params);
+  const budgetBytes = contextBoundedNumber(params, 'budgetBytes', DEFAULT_CONTEXT_BUDGET_BYTES, CHUNK_LIMIT);
+  const deadlineMs = contextBoundedNumber(params, 'deadlineMs', DEFAULT_CONTEXT_DEADLINE_MS, EXEC_JS_MAX_TIMEOUT_MS);
+  const depth = contextMaxDepth(params);
   const includeCss = params.noCss !== true;
-  const node = await resolveTarget(params, env);
+  const dedup = contextFlag(params, 'dedup');
+  const node = await resolveContextTarget(params, env);
+
+  // Dev resources are OPT-IN, and the reason is measured rather than assumed: on the owner's
+  // Free file `getDevResourcesAsync({includeChildren: true})` costs a FIXED ~2.1s whatever the
+  // subtree size (11 nodes 2115ms, 121 nodes 2060ms, a 453-node page 2149ms). It is a server
+  // round trip, not a walk, and reading it unconditionally put ~2s onto a command whose
+  // `--no-css` fast path measured 124ms. So: no flag, no read, no block.
+  //
+  // When it IS asked for, the read runs before the walk that needs its map, OUTSIDE the soft
+  // deadline and bounded by NEITHER `--budget` nor `--depth`. At `--depth 0` only one record
+  // can carry an answer, so it narrows to that node (`includeChildren: false`, measured
+  // 408ms): still its own links, including any inherited from its main component.
+  const wantDevResources = contextFlag(params, 'devResources');
+  const devResourcesStartedAt = env.now();
+  const devResources = wantDevResources
+    ? await readSubtreeDevResources(node, { includeChildren: depth > 0 })
+    : noDevResourcesRead();
+  const devResourcesMs = wantDevResources ? env.now() - devResourcesStartedAt : 0;
+  const intent = createContextIntentReader({ devResources });
 
   const changesBefore = env.changeCount();
   const walk = await walkContext(node, { now: env.now, hop: env.hop }, {
-    budgetBytes, maxDepth: depth, deadlineAt: env.now() + deadlineMs, includeCss,
+    budgetBytes,
+    maxDepth: depth,
+    // The dev-resource read is CHARGED against the soft deadline, not spent on top of it.
+    // `deadlineMs` is the wire timeout minus 2s of headroom so the plugin can get a
+    // partial-with-counts onto the wire before the CLI gives up; starting the deadline clock
+    // after a fixed ~2s read hands the walk its full budget anyway and pushes the wall clock
+    // past the wire timeout, so the caller gets E_TIMEOUT instead of the partial. Never zero
+    // or negative: a read that ate the whole deadline still leaves the root emitted.
+    deadlineAt: env.now() + Math.max(1, deadlineMs - devResourcesMs),
+    includeCss,
+    buildRecord: intent.buildRecord,
   });
   // Ref resolution runs AFTER the walk and therefore OUTSIDE the soft deadline: it is one
   // lookup per distinct id, which is the headroom between the deadline and the wire timeout.
@@ -137,6 +111,17 @@ export async function opGetContext(params: Params, env: GetContextEnv): Promise<
   const refsStartedAt = env.now();
   const refs = await resolveContextRefs(walk.nodes, env.refs);
   const refsMs = env.now() - refsStartedAt;
+  // The component intent was resolved once per KEY during the walk; the identity table is
+  // where it belongs, so forty instances of one button carry a key, not forty descriptions.
+  // The walk's own `{name}` wins on the name it already read.
+  for (const [key, component] of Object.entries(intent.components())) {
+    // The walk's row wins, EXCEPT on an empty name: `context-refs.ts` falls back to `''` when
+    // the main component's name read refused, and letting that placeholder overwrite the name
+    // intent actually read would trade a fact for a blank.
+    const walked = refs.components[key];
+    const name = typeof walked?.name === 'string' && walked.name !== '' ? walked.name : component.name;
+    refs.components[key] = { ...component, ...walked, name };
+  }
   // A designer editing mid-walk produces a tree read across two document states. Two
   // honesty caveats live in this name: the batches are DOCUMENT-WIDE (`soleActorChangeEvents`
   // counts every batch, not edits inside the walked subtree), and the count is a LOWER
@@ -144,21 +129,65 @@ export async function opGetContext(params: Params, env: GetContextEnv): Promise<
   // (see readonly-guard.ts). A conservative bound the caller can see beats a clean zero.
   const changeBatchesDuringWalk = Math.max(0, env.changeCount() - changesBefore);
 
-  const payload = { nodes: walk.nodes, refs };
+  // Dedup is a POST-walk transform, which is exactly why `--budget`'s meaning is unchanged:
+  // the budget bounded the raw records as they were built (`estimatedBytes`), and what the
+  // transformed payload costs is `finalBytes`. Whether it was worth applying is the
+  // transform's own honest decision — the raw form ships with `applied: false` and a reason
+  // when the deduped one would not be smaller.
+  // `{ ...refs }` rather than `refs`: the transform is pure and takes an open record, and a
+  // copy is also what keeps the walk's own tables out of reach of it.
+  const transformed = dedup ? dedupContextPayload({ nodes: walk.nodes, refs: { ...refs } }) : null;
+  const payload = transformed === null
+    ? { nodes: walk.nodes, refs }
+    : { nodes: transformed.nodes, refs: transformed.refs };
+  // Over the PRE-dedup list: those are the records that ship, and `--dedup` folds a record's
+  // fields into `refs.templates` rather than dropping them.
+  const attached = countAttachedDevResources(walk.nodes);
+  // The reply-level law after folding: every record the walk emitted is either still in
+  // `nodes[]` or counted as folded into a template occurrence. Asserted here as well as
+  // inside the transform because THIS is the object that goes on the wire.
+  assertDedupConservation(
+    walk.accounting.emitted, payload.nodes.length, transformed?.dedup.foldedNodes ?? 0,
+  );
   return {
     schema: CONTEXT_SCHEMA,
     nodeId: String(walk.nodes[0]?.id ?? ''),
     ...payload,
+    ...(transformed !== null && { dedup: transformed.dedup }),
     budget: {
       ...walk.accounting,
       // `--budget` bounds the node RECORDS (`estimatedBytes`), measured in the plugin
       // before the wire. The ref tables are resolved AFTER the walk and are NOT budgeted —
       // so they are measured and reported on their own rather than folded into a total the
       // caller would read as bounded. `finalBytes` is the whole payload as it goes out.
-      refsBytes: utf8ByteLength(JSON.stringify(refs)),
+      // Under `--dedup` this covers the WHOLE `refs` object, so it includes `literals` and
+      // `templates` — content, not only identity tables.
+      refsBytes: utf8ByteLength(JSON.stringify(payload.refs)),
       finalBytes: utf8ByteLength(JSON.stringify(payload)),
       refsMs,
       changeBatchesDuringWalk,
+      // Present whenever `--dev-resources` was passed, INCLUDING at `found: 0`. Presence then
+      // means exactly "you asked", so a caller can tell "this subtree has none" from "nobody
+      // looked" — and `readMs` keeps the ~2s round trip visible rather than mysterious.
+      // `found` and `attached` both count LINKS, never layers (one layer routinely takes
+      // several), and `attached` counts only links on records that SHIPPED. So
+      // `attached < found` means those links belong to nodes absent from this reply:
+      // descendants the budget or the deadline never enqueued (below the frontier), nodes
+      // outside the `--depth` bound, or a record whose own identity read refused and which
+      // therefore carries no intent. `unaddressed` splits out the links that named no readable
+      // node id and so could never land anywhere:
+      // `found = attached + unaddressed + links on nodes absent from the reply`.
+      ...(wantDevResources && {
+        devResources: {
+          found: devResources.found,
+          attached,
+          // Present only when it happened: links the read returned that name no readable node
+          // id, and which therefore could not be attached to anything.
+          ...(devResources.unaddressed > 0 && { unaddressed: devResources.unaddressed }),
+          readMs: devResourcesMs,
+          ...(devResources.error !== undefined && { error: devResources.error }),
+        },
+      }),
     },
   };
 }
