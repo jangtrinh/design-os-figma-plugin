@@ -156,8 +156,12 @@ export const COMMANDS: CommandCatalogEntry[] = [
   {
     name: 'exec-js',
     description:
-      '<file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] — exec-js lints scripts '
-      + 'before dispatch; --no-lint explicitly bypasses that local preflight. --undo-group brackets the script in ONE '
+      '<file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] [--strict] — exec-js lints scripts '
+      + 'before dispatch; --no-lint explicitly bypasses that local preflight. Hard findings (sync '
+      + 'dynamic-page getters, import declarations) refuse; warnings go to stderr — the sync '
+      + 'mainComponent getter, findAll without a visible filter, componentProperties on a '
+      + 'COMPONENT_SET, and the older heuristics — unless --strict, which refuses on any warning '
+      + 'too. --undo-group brackets the script in ONE '
       + 'undo step and reverts it on error; the script must not call figma.commitUndo/triggerUndo itself, '
       + 'and a timeout cannot stop a running script (the plugin has no cancellation). While it runs, '
       + 'figma.currentPage carries one extra invisible child (the undo sentinel) — a script that '

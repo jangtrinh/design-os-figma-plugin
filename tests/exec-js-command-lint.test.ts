@@ -69,6 +69,21 @@ describe('exec-js command pre-dispatch lint', () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
+  it('--strict turns a warning into an E_INVALID_ARGS refusal before dispatch, naming the rule', async () => {
+    const path = script('strict.js', 'return page.findAll()');
+    await expect(run(parseArgs([path, '--strict']))).rejects.toMatchObject({
+      code: 'E_INVALID_ARGS',
+      message: expect.stringMatching(/find-all-without-visible-filter/),
+    });
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('--strict on a warning-free script dispatches exactly as before', async () => {
+    const path = script('strict-clean.js', 'return frame.findAll(n => n.visible)');
+    await run(parseArgs([path, '--strict']));
+    expect(runCommand).toHaveBeenCalledOnce();
+  });
+
   it('a clean script keeps the current broker call and return value', async () => {
     const path = script('clean.js', 'return await figma.getNodeByIdAsync("1:2")');
     vi.mocked(runCommand).mockResolvedValue({ result: 1 });

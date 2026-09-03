@@ -37,17 +37,20 @@ export async function run(args: CommandArgs): Promise<unknown> {
 
   if (!args.bool('no-lint')) {
     const findings = lintExecJs(code);
-    for (const finding of findings.filter((item) => item.severity === 'warning')) {
+    // --strict promotes every warning to a refusal — a gate for scripts that must be
+    // clean (a verify/assert script), never the default: a heuristic can be wrong.
+    const strict = args.bool('strict');
+    const blocking = findings.filter((item) => item.severity === 'error' || strict);
+    for (const finding of findings.filter((item) => item.severity === 'warning' && !strict)) {
       process.stderr.write(
         `warning: [${finding.id}] line ${finding.line}: ${finding.message}; fix: ${finding.fix}\n`,
       );
     }
-    const errors = findings.filter((item) => item.severity === 'error');
-    if (errors.length > 0) {
-      const detail = errors
+    if (blocking.length > 0) {
+      const detail = blocking
         .map((finding) => `[${finding.id}] line ${finding.line}: ${finding.message}; fix: ${finding.fix}`)
         .join('\n');
-      throw new CliError('E_INVALID_ARGS', `exec-js preflight failed:\n${detail}`);
+      throw new CliError('E_INVALID_ARGS', `exec-js preflight failed${strict ? ' (--strict)' : ''}:\n${detail}`);
     }
   }
 
