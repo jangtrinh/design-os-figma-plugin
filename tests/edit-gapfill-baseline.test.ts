@@ -440,6 +440,28 @@ describe('writeBaseline — a read that REJECTS must not overwrite the previous 
     expect(stats.baselineWrittenAt).toBeNull();
     expect(stats.firstError).toContain('baseline read failed');
   });
+
+  // The unreadable notice promises "reported on the next successful boot". An idle write
+  // later in the SAME session, once the store reads fine again, would bake the closed-window
+  // edits into a fresh baseline and make that promise impossible — silently. A session whose
+  // boot never diffed against the stored baseline must therefore never overwrite it.
+  it('a session whose boot could not read the baseline never overwrites it later, even once reads recover', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a'), fakeNode('new-this-session')])];
+    installFigma({ pages });
+    const key = baselineKeyFor('FILEKEY1', 'Test File');
+    const opts: { getError?: string } = { getError: 'clientStorage unavailable' };
+    const store = createMemoryBaselineStore(opts);
+    store.map.set(key, previous);
+    const stats = createGapfillStats();
+
+    await runGapfillDiff(pages, store, stats);
+    delete opts.getError; // reads recover mid-session (e.g. after the idle window)
+    await writeBaseline(pages, snapshotPage, store, stats);
+
+    expect(store.map.get(key)).toBe(previous);
+    expect(stats.baselineWrittenAt).toBeNull();
+    expect(stats.errorCount).toBeGreaterThanOrEqual(2); // the read failure AND the withheld write are both on record
+  });
 });
 
 describe('runGapfillDiff — one page whose walk THROWS', () => {

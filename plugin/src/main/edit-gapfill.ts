@@ -325,6 +325,13 @@ export async function writeBaseline(
   now: () => number = Date.now,
 ): Promise<void> {
   const key = currentBaselineKey();
+  // A session that never diffed against the stored baseline must not replace it: the
+  // unreadable notice promised those closed-window edits for the next successful BOOT,
+  // and a write here — even after reads recover — would bake them in unreported.
+  if (stats.bootBaselineUnreadable) {
+    recordGapfillError(stats, 'baseline write withheld: this session could not read the stored baseline at boot');
+    return;
+  }
   const { baseline: prev, readFailed } = await readBaseline(store, stats);
   // A read that FAILED is not an empty baseline. Writing the current scene over a value we
   // could not load would discard the only record of the window the plugin was closed —
@@ -410,7 +417,9 @@ export async function runGapfillDiff(
   const { baseline: prev, readFailed } = await readBaseline(store, stats);
   if (readFailed) {
     // The store refused the read (error already recorded in `stats`). Skip the walk AND the
-    // write: the stored baseline stays intact for the next successful boot.
+    // write: the stored baseline stays intact for the next successful boot. The flag keeps
+    // every later write of THIS session withheld too (see `writeBaseline`).
+    stats.bootBaselineUnreadable = true;
     return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
   }
   if (!prev) {

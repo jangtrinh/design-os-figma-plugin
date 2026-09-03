@@ -16,12 +16,17 @@ export interface GapfillStats {
   evicted: string[];
   errorCount: number;
   firstError: string | null;
+  /** True once this session's boot found a stored baseline it could NOT read. Every later
+   *  write in the session is withheld: the stored value is the only record of the window
+   *  the plugin was closed, and the unreadable notice promised it would be diffed on the
+   *  next successful boot — a write from this session would make that promise false. */
+  bootBaselineUnreadable: boolean;
 }
 
 export function createGapfillStats(): GapfillStats {
   return {
     pagesDiffed: 0, pagesTruncated: 0, baselineWrittenAt: null, baselineBytes: 0,
-    legacyCleared: 0, evicted: [], errorCount: 0, firstError: null,
+    legacyCleared: 0, evicted: [], errorCount: 0, firstError: null, bootBaselineUnreadable: false,
   };
 }
 

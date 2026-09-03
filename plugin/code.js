@@ -225,7 +225,8 @@
       legacyCleared: 0,
       evicted: [],
       errorCount: 0,
-      firstError: null
+      firstError: null,
+      bootBaselineUnreadable: false
     };
   }
   function recordGapfillError(stats, message) {
@@ -426,6 +427,10 @@
   }
   async function writeBaseline(pages, snapshotFor, store, stats, now = Date.now) {
     const key = currentBaselineKey();
+    if (stats.bootBaselineUnreadable) {
+      recordGapfillError(stats, "baseline write withheld: this session could not read the stored baseline at boot");
+      return;
+    }
     const { baseline: prev, readFailed } = await readBaseline(store, stats);
     if (readFailed) {
       recordGapfillError(stats, "baseline write skipped: the previous baseline could not be read");
@@ -472,6 +477,7 @@
   async function runGapfillDiff(pages, store, stats) {
     const { baseline: prev, readFailed } = await readBaseline(store, stats);
     if (readFailed) {
+      stats.bootBaselineUnreadable = true;
       return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
     }
     if (!prev) {
