@@ -47,7 +47,16 @@ export function resolveComponentIdentity(node: SceneNode | RemovedNode): Compone
 
 /** Best-effort identity, remembered so a DELETE (which arrives as id+type only) can
  *  still be described. Capped with oldest-out eviction — a long session must not leak. */
-export interface CachedIdentity { name: string; type: string; parentName: string | null; page: string }
+export interface CachedIdentity {
+  name: string;
+  type: string;
+  parentName: string | null;
+  page: string;
+  /** The page's ID as well as its name. A name is not an identity (two pages may share
+   *  one), and the idle re-walk needs the id to know which page to walk — a DELETE arrives
+   *  with no parent chain at all, so this cache is the only record of where the node was. */
+  pageId: string;
+}
 
 export const EDIT_IDENTITY_CACHE_CAP = 2_000;
 

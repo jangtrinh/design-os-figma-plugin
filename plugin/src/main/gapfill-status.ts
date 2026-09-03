@@ -9,10 +9,27 @@ import type { GapfillStatus } from '../../../shared/protocol';
 
 export interface GapfillStats {
   pagesDiffed: number;
+  /** Pages over the node cap AS OF this session's walk. A page that was over it only in the
+   *  PREVIOUS session is suppressed the same way but counted nowhere here: this number backs
+   *  a sentence about the page's CURRENT size. */
   pagesTruncated: number;
+  /** Pages whose closed-window signal came from the TOP-LEVEL fingerprint alone — every
+   *  page whose per-node diff was suppressed and whose previous session stored a
+   *  fingerprint, whichever side was over the cap. Reported so the coverage a session
+   *  actually delivered is readable rather than inferred. */
+  pagesTopLevelOnly: number;
+  /** Pages whose diff was skipped because their walk could not read every node. Their
+   *  missing nodes would otherwise have been reported as deletions. */
+  pagesWithReadErrors: number;
+  /** Nodes the diff would have called deleted, which the host could still find — the walk
+   *  spans yields, so a node reparented mid-walk goes missing without being gone. Left for
+   *  the next session's diff rather than reported as a deletion that did not happen. */
+  deletedRechecked: number;
   baselineWrittenAt: string | null;
   baselineBytes: number;
   legacyCleared: number;
+  /** Superseded previous-shape baseline values deleted after a successful write. */
+  staleBaselinesCleared: number;
   evicted: string[];
   errorCount: number;
   firstError: string | null;
@@ -25,8 +42,10 @@ export interface GapfillStats {
 
 export function createGapfillStats(): GapfillStats {
   return {
-    pagesDiffed: 0, pagesTruncated: 0, baselineWrittenAt: null, baselineBytes: 0,
-    legacyCleared: 0, evicted: [], errorCount: 0, firstError: null, bootBaselineUnreadable: false,
+    pagesDiffed: 0, pagesTruncated: 0, pagesTopLevelOnly: 0, pagesWithReadErrors: 0, deletedRechecked: 0,
+    baselineWrittenAt: null, baselineBytes: 0,
+    legacyCleared: 0, staleBaselinesCleared: 0,
+    evicted: [], errorCount: 0, firstError: null, bootBaselineUnreadable: false,
   };
 }
 
@@ -47,9 +66,13 @@ export function toGapfillStatus(stats: GapfillStats): GapfillStatus {
   return {
     pagesDiffed: stats.pagesDiffed,
     pagesTruncated: stats.pagesTruncated,
+    pagesTopLevelOnly: stats.pagesTopLevelOnly,
     baselineWrittenAt: stats.baselineWrittenAt,
     baselineBytes: stats.baselineBytes,
+    ...(stats.pagesWithReadErrors > 0 && { pagesWithReadErrors: stats.pagesWithReadErrors }),
+    ...(stats.deletedRechecked > 0 && { deletedRechecked: stats.deletedRechecked }),
     ...(stats.legacyCleared > 0 && { legacyCleared: stats.legacyCleared }),
+    ...(stats.staleBaselinesCleared > 0 && { staleBaselinesCleared: stats.staleBaselinesCleared }),
     ...(stats.evicted.length > 0 && { baselineEvicted: [...stats.evicted] }),
     ...(stats.firstError !== null && { errors: [stats.firstError], errorCount: stats.errorCount }),
   };

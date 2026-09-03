@@ -12,6 +12,7 @@
 // The store is an INTERFACE, not a direct `figma.clientStorage` call, for one reason that
 // matters: the quota REFUSAL is the interesting path, and a test double can encode it.
 import { utf8ByteLength } from '../../../shared/utf8-byte-length';
+import type { TopLevelRecord } from './page-walk-bounded';
 
 /** `[id, name, type, x, y, parentId]` — the tuple form of one node, ~40% smaller than the
  *  object form across a 4 000-record page and the only shape ever persisted. */
@@ -21,9 +22,16 @@ export interface BaselinePage {
   id: string;
   name: string;
   truncated: boolean;
-  /** Absent for a truncated page: its diff is suppressed anyway, so storing records for it
-   *  buys nothing and costs the most bytes of any page in the file. */
+  /** Absent for a truncated page: no per-node diff runs for it, so storing 4 000 records
+   *  would buy nothing and cost the most bytes of any page in the file.
+   *  A page UNDER the cap keeps its records and gets the exact per-node diff. */
   records?: BaselineRecord[];
+  /** The top-level fingerprint, stored for EVERY page regardless of the cap — it is the
+   *  only closed-window signal a page over the cap gets (16 of 21 pages on the owner's
+   *  file), and 8–458 entries per page is a rounding error next to the records.
+   *  Optional in the TYPE because an entry carried forward from a failed walk may predate
+   *  it; an absent fingerprint means "nothing to compare", never "nothing was there". */
+  top?: TopLevelRecord[];
 }
 
 /** WHICH file a baseline describes. Stamped into the value because the storage KEY cannot
@@ -51,16 +59,34 @@ export interface BaselineStore {
   delete(key: string): Promise<void>;
 }
 
-export const BASELINE_KEY_PREFIX = 'figma-edit-baseline-v2:';
+export const BASELINE_KEY_PREFIX = 'figma-edit-baseline-v3:';
+
+/** The PREVIOUS key prefix. A v2 value carries no top-level fingerprint, so diffing it
+ *  against a v3 walk would report top-level facts ("this frame was created") that the
+ *  stored value never actually stated. Version the KEY rather than the value: an old value
+ *  is then simply absent at the new key and degrades to the honest `baseline-missing`
+ *  notice, and no code path can mix the two shapes. */
+export const LEGACY_BASELINE_KEY_PREFIX = 'figma-edit-baseline-v2:';
 
 /** Same fileKey-first chain the CLI's `fileIdentity` uses (duplicated, not imported: the
  *  plugin sandbox cannot reach `cli/src`). A Free-tier file has no fileKey, so its baseline
  *  is keyed by a slug of the name — renaming such a file orphans its baseline, which reads
  *  as an honest `baseline-missing` notice rather than a wrong diff. */
-export function baselineKeyFor(fileKey: string | null | undefined, fileName: string | null | undefined): string {
-  if (typeof fileKey === 'string' && fileKey.trim() !== '') return `${BASELINE_KEY_PREFIX}${fileKey}`;
+function baselineKeySuffix(fileKey: string | null | undefined, fileName: string | null | undefined): string {
+  if (typeof fileKey === 'string' && fileKey.trim() !== '') return fileKey;
   const slug = (fileName ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return `${BASELINE_KEY_PREFIX}${slug.length > 0 ? slug : 'unknown'}`;
+  return slug.length > 0 ? slug : 'unknown';
+}
+
+export function baselineKeyFor(fileKey: string | null | undefined, fileName: string | null | undefined): string {
+  return `${BASELINE_KEY_PREFIX}${baselineKeySuffix(fileKey, fileName)}`;
+}
+
+/** Where THIS file's previous-shape baseline would live. Same suffix, older prefix — so the
+ *  value the new one replaces can be found and removed rather than left occupying storage
+ *  quota no future session will ever read. */
+export function legacyBaselineKeyFor(fileKey: string | null | undefined, fileName: string | null | undefined): string {
+  return `${LEGACY_BASELINE_KEY_PREFIX}${baselineKeySuffix(fileKey, fileName)}`;
 }
 
 export function createClientStorageBaselineStore(): BaselineStore {
@@ -167,6 +193,21 @@ export async function readFileBaseline(store: BaselineStore, key: string, identi
   return { baseline };
 }
 
+/** Removes THIS file's superseded previous-shape baseline, after the new one has landed —
+ *  never before, so a failed write can never leave the file with neither. Returns the
+ *  number of keys actually removed (0 or 1) so the caller can report it: a deletion of
+ *  stored data never happens off the record, even when nothing will ever read it again. */
+export async function clearStaleBaseline(store: BaselineStore, legacyKey: string): Promise<{ cleared: number; error?: string }> {
+  try {
+    const raw = await store.get(legacyKey);
+    if (raw === undefined || raw === null) return { cleared: 0 };
+    await store.delete(legacyKey);
+    return { cleared: 1 };
+  } catch (err) {
+    return { cleared: 0, error: `stale baseline cleanup failed: ${messageOf(err)}` };
+  }
+}
+
 export interface BaselineWriteResult {
   ok: boolean;
   bytes: number;
@@ -181,7 +222,11 @@ export interface BaselineWriteResult {
  *  be ordered against anything, so it is the cheapest of the set to lose. Ties keep the
  *  first key in enumeration order. */
 async function oldestOtherBaselineKey(store: BaselineStore, selfKey: string): Promise<string | null> {
-  const keys = (await store.keys()).filter((k) => k !== selfKey && k.startsWith(BASELINE_KEY_PREFIX));
+  // Previous-shape keys are candidates too: no session will ever read one again, so
+  // refusing this write while another file's dead v2 value holds the quota would be a
+  // self-inflicted failure. It is still an eviction, and still reported as one.
+  const keys = (await store.keys()).filter((k) => k !== selfKey
+    && (k.startsWith(BASELINE_KEY_PREFIX) || k.startsWith(LEGACY_BASELINE_KEY_PREFIX)));
   let oldestKey: string | null = null;
   let oldestAt = Infinity;
   for (const key of keys) {
