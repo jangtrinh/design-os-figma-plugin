@@ -14,7 +14,12 @@ import {
   type ChangeOrigin, type ComponentChange,
 } from '../../../shared/figma-changes';
 import { coalesceEdits, type EditInput, type EditOrigin } from '../../../shared/edit-feed';
-import { runGapfillDiff, writeSnapshot } from './edit-gapfill';
+import {
+  clearLegacyGapfillDocumentData, createSingleFlightWriter, runGapfillDiff, snapshotPage, writeBaseline,
+} from './edit-gapfill';
+import { runBootCapture } from './boot-capture';
+import { createClientStorageBaselineStore } from './gapfill-baseline-store';
+import { createGapfillStats, toGapfillStatus } from './gapfill-status';
 import {
   classifyActor, pruneDeclaredIds, pruneLastAgentAt, AGENT_ECHO_MS, type ActorState,
 } from './edit-actor';
@@ -299,12 +304,25 @@ let readOnlyViolations = 0;
 let idleMs = DEFAULT_IDLE_MS;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 let changesSinceCommit = 0;
-// Reconnect gap-fill (wave 4.4 phase 02 §2) — the snapshot must refresh on ANY widened
-// edit, not just a component-level one (a session with only ordinary-frame edits still
-// needs a fresh baseline for the next reconnect's diff). Separate from `changesSinceCommit`
-// on purpose: that counter is the component-log's own "N changes ready" prompt count and
-// must not be conflated with the snapshot's own freshness signal.
+// Reconnect gap-fill — the baseline must refresh on ANY widened edit, not just a
+// component-level one (a session with only ordinary-frame edits still needs a fresh
+// baseline for the next reconnect's diff). Separate from `changesSinceCommit` on purpose:
+// that counter is the component-log's own "N changes ready" prompt count and must not be
+// conflated with the baseline's own freshness signal.
 let hasEditsSinceSnapshot = false;
+
+// The baseline lives in `figma.clientStorage` (gapfill-baseline-store.ts) — per machine,
+// async, and invisible to `documentchange`, so writing it can never feed the very timer
+// that scheduled it.
+const baselineStore = createClientStorageBaselineStore();
+const gapfillStats = createGapfillStats();
+
+// The write is async, so two idle fires could otherwise overlap on the same key. The
+// trigger runs one write at a time and re-arms once for anything that arrived mid-flight:
+// a request is never dropped, and two writes never race for the same key.
+const triggerBaselineWrite = createSingleFlightWriter(
+  () => writeBaseline(figma.root.children, snapshotPage, baselineStore, gapfillStats),
+);
 
 function resetIdleTimer(): void {
   if (idleTimer !== null) clearTimeout(idleTimer);
@@ -313,11 +331,14 @@ function resetIdleTimer(): void {
 
 function fireIdle(): void {
   idleTimer = null;
-  // Written on a debounce after each idle window (spec §2) — regardless of whether this
-  // window's activity was component-scoped, since the snapshot tracks EVERY node.
+  // Written on a debounce after each idle window — regardless of whether this window's
+  // activity was component-scoped, since the baseline tracks EVERY node. The flag clears
+  // BEFORE the (async) write is triggered: an edit landing while that write runs must set
+  // the flag again and earn its own later write, never be swallowed by this one clearing
+  // the flag after the fact.
   if (hasEditsSinceSnapshot) {
-    writeSnapshot(figma.root.children);
     hasEditsSinceSnapshot = false;
+    triggerBaselineWrite();
   }
   if (changesSinceCommit <= 0) return; // nothing accumulated — no prompt
   figma.ui.postMessage({ type: 'IDLE_READY', data: { count: changesSinceCommit } });
@@ -423,63 +444,60 @@ function onDocumentChange(event: DocumentChangeEvent): void {
   if (changes.length > 0 || edits.length > 0) resetIdleTimer();
 }
 
-// Subscribe only after all pages are loaded (dynamic-page requirement).
-figma.loadAllPagesAsync()
-  .then(async () => {
-    // Reconnect gap-fill (wave 4.4 phase 02 §2) — ONE diff against the PREVIOUS session's
-    // snapshot, covering the window this plugin was closed (page switches need no
-    // gap-fill: `documentchange` is document-wide once `loadAllPagesAsync` has run, the
-    // spec's own verdict). Completes BEFORE subscribing to `documentchange`, so a live
-    // edit can never race the boot diff's read of the about-to-be-superseded snapshot.
-    // The diff yields between pages (boot must not hold the plugin thread for the whole
-    // document — the measured freeze on large files); an edit made during a yield is not
-    // seen live (no subscription yet) AND is absent from the pre-edit baseline the diff
-    // writes, so the NEXT session's gap-fill reports it — delayed, never lost.
-    // `runGapfillDiff` itself writes the fresh baseline before resolving.
-    const gapfillEdits = await runGapfillDiff(figma.root.children);
-    if (gapfillEdits.length > 0) {
-      // Stage-4 fix round (M3) — posted DIRECTLY, never through `coalesceEdits`.
-      // `coalesceEdits` keys by nodeId ALONE across the WHOLE batch, with no notion of
-      // page — a node that moved pages between sessions (deleted on page A, created on
-      // page B, same stable node id) would collapse into ONE entry carrying the FIRST
-      // page seen and the LAST op seen, mislabelling a create as landing on the wrong
-      // page. `runGapfillDiff`/`gapfillEditsForPage` already guarantee one edit per node
-      // PER PAGE (each page's own diff is computed and coalesced independently), so a
-      // cross-page rename/move is deliberately reported as two separate, correctly-paged
-      // frames (deleted on A, created on B) rather than merged into a single frame that
-      // could carry the wrong page.
-      figma.ui.postMessage({
-        type: 'EDIT_FEED',
-        data: {
-          edits: gapfillEdits, fileKey: figma.fileKey ?? null,
-          fileName: figma.root.name, source: 'gapfill',
-        },
-      });
-    }
-    figma.on('documentchange', onDocumentChange);
-  })
-  .catch((err) => figma.notify(`live-sync capture disabled: ${err instanceof Error ? err.message : String(err)}`));
+// Reconnect gap-fill (wave 4.4 phase 02 §2) — ONE diff against the PREVIOUS session's
+// snapshot, covering the window this plugin was closed (page switches need no gap-fill:
+// `documentchange` is document-wide once `loadAllPagesAsync` has run, the spec's own
+// verdict). Completes BEFORE subscribing to `documentchange`, so a live edit can never race
+// the boot diff's read of the about-to-be-superseded snapshot. The diff yields between
+// pages (boot must not hold the plugin thread for the whole document — the measured freeze
+// on large files); an edit made during a yield is not seen live (no subscription yet) AND
+// is absent from the pre-edit baseline the diff writes, so the NEXT session's gap-fill
+// reports it — delayed, never lost. `runGapfillDiff` itself writes the fresh baseline
+// before resolving.
+async function reportGapfill(): Promise<void> {
+  const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats);
+  if (gapfillEdits.length > 0) {
+    // Posted DIRECTLY, never through `coalesceEdits`. `coalesceEdits` keys by nodeId ALONE
+    // across the WHOLE batch, with no notion of page — a node that moved pages between
+    // sessions (deleted on page A, created on page B, same stable node id) would collapse
+    // into ONE entry carrying the FIRST page seen and the LAST op seen, mislabelling a
+    // create as landing on the wrong page. `runGapfillDiff`/`gapfillEditsForPage` already
+    // guarantee one edit per node PER PAGE (each page's own diff is computed and coalesced
+    // independently), so a cross-page rename/move is deliberately reported as two
+    // separate, correctly-paged frames (deleted on A, created on B) rather than merged
+    // into a single frame that could carry the wrong page.
+    figma.ui.postMessage({
+      type: 'EDIT_FEED',
+      data: {
+        edits: gapfillEdits, fileKey: figma.fileKey ?? null,
+        fileName: figma.root.name, source: 'gapfill',
+      },
+    });
+  }
+  // The one-time removal of the pre-clientStorage in-document baseline. AFTER the diff
+  // (which never reads those keys) and BEFORE subscribing, because clearing them is a
+  // `figma.root` write and a write to the document is exactly the kind of event this
+  // handler would otherwise report back to the project as an owner edit.
+  clearLegacyGapfillDocumentData(gapfillStats);
+}
 
-// Stage-4 fix round (Q3) — `figma.on('close', ...)` IS a real, documented plugin-API event
-// (confirmed against the platform docs — it fires once, argument-free, right before the
-// plugin's execution environment is destroyed). Per Figma's own guidance for this event:
-// run as little code as possible, never anything asynchronous (no `await`, no new
-// callbacks — the environment is torn down the instant every 'close' callback returns).
-// `writeSnapshot` is already fully synchronous, so it is safe here. This SHRINKS (not
-// closes) the staleness window a plugin closing between idle-debounce writes would
-// otherwise leave — the idle-debounce write stays the PRIMARY mechanism (this handler is
-// pure insurance, and its own doc comment there states so); a write that fails here
-// (or a close so abrupt this callback never runs at all) still self-heals via the very
-// next boot's own `runGapfillDiff`.
-//
-// Stage-4 fix round (N2) — the try/catch is explicit HERE too, at this module's one
-// external call site, not just inside `writeSnapshot` itself: the never-crash contract
-// this module makes must hold regardless of how well-hardened the callee happens to be,
-// and a 'close' callback that throws is the worst possible place to discover otherwise —
-// the sandbox is tearing down; nothing meaningful can be done with an error here anyway.
-figma.on('close', () => {
-  try { writeSnapshot(figma.root.children); } catch { /* tearing down — best-effort only */ }
+// Subscribe only after all pages are loaded (dynamic-page requirement) — and subscribe even
+// when gap-fill failed: the closed-window report and the session's live capture are two
+// different things, and one page refusing to walk must not cost the second. Sequencing and
+// failure semantics live in boot-capture.ts, where they are tested directly.
+void runBootCapture({
+  loadAllPages: () => figma.loadAllPagesAsync(),
+  gapfill: reportGapfill,
+  subscribe: () => { figma.on('documentchange', onDocumentChange); },
+  notify: (message) => { figma.notify(message); },
 });
+
+// There is deliberately NO `figma.on('close', ...)` baseline write. The store is async and
+// a close callback must not be (the sandbox is destroyed the instant it returns), and the
+// write it used to do was into the document — the write this whole change removes. Closing
+// mid-session therefore leaves an OLDER baseline, which the next boot diffs against: some
+// edits already reported live get reported once more (duplicates, net-correct), and none
+// is lost.
 
 type Params = Record<string, unknown>;
 
@@ -639,7 +657,7 @@ function mutationTargetIds(cmd: CommandName, params: Params): string[] {
 
 async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
   switch (cmd) {
-    case 'STATUS': return opStatus(bootSkipped, readOnlyViolations);
+    case 'STATUS': return opStatus(bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats));
     case 'GET_SELECTION': return opGetSelection(params);
     case 'SCAN_DESIGN_SYSTEM': return serializeDesignSystem();
     case 'AUDIT_DS': return auditDs();

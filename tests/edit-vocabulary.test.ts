@@ -107,4 +107,31 @@ describe('editSentence', () => {
       expect(sentence).toContain('"Screens"');
     });
   });
+
+  // The other gap-fill notice: no baseline existed for this file, so a whole session's
+  // closed-window edits are unreported. Same "not an edit at all" problem as the
+  // truncation notice — the generic verb mapper would render it as "Restyled".
+  describe('the gap-fill baseline-missing notice gets its OWN sentence, never "Restyled"', () => {
+    it('changedProps ["baseline-missing"] never falls through to the generic restyled verb', () => {
+      const sentence = editSentence(base({ nodeName: 'VSF - PCP', nodeType: 'DOCUMENT', changedProps: ['baseline-missing'], op: 'updated' }));
+      expect(sentence).not.toContain('Restyled');
+      expect(sentence).toContain('no previous baseline');
+      expect(sentence).toContain('"VSF - PCP"');
+    });
+
+    it('a frame with no file name degrades to "this file" rather than inventing one', () => {
+      const sentence = editSentence(base({ nodeName: null, nodeType: 'DOCUMENT', changedProps: ['baseline-missing'], op: 'updated' }));
+      expect(sentence).toContain('"this file"');
+    });
+
+    // A baseline that EXISTS but could not be read is a different fact from one that never
+    // existed: the sentence must say "could not be read", never "no previous baseline".
+    it('changedProps ["baseline-unreadable"] says the baseline could not be read, not that it was missing', () => {
+      const sentence = editSentence(base({ nodeName: 'VSF - PCP', nodeType: 'DOCUMENT', changedProps: ['baseline-unreadable'], op: 'updated' }));
+      expect(sentence).not.toContain('Restyled');
+      expect(sentence).not.toContain('no previous baseline');
+      expect(sentence).toContain('could not be read');
+      expect(sentence).toContain('"VSF - PCP"');
+    });
+  });
 });

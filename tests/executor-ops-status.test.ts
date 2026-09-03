@@ -6,6 +6,9 @@
 import { describe, it, expect } from 'vitest';
 import { installMockFigma, setMockEditorType } from './helpers/mock-figma.ts';
 import { opStatus } from '../plugin/src/main/executor-ops.ts';
+import {
+  createGapfillStats, recordGapfillError, recordGapfillEviction, toGapfillStatus,
+} from '../plugin/src/main/gapfill-status.ts';
 
 describe('opStatus — editorType', () => {
   it('reports figma.editorType directly', () => {
@@ -56,5 +59,44 @@ describe('opStatus — readOnlyViolations', () => {
   it('a non-zero count surfaces verbatim', () => {
     installMockFigma();
     expect(opStatus([], 3).readOnlyViolations).toBe(3);
+  });
+});
+
+describe('opStatus — the gap-fill block', () => {
+  it('no argument → the key is OMITTED (a caller that knows nothing about gap-fill claims nothing)', () => {
+    installMockFigma();
+    expect('gapfill' in opStatus()).toBe(false);
+  });
+
+  it('an all-zero session still reports the block: "no baseline was written" is the fact that must be visible', () => {
+    installMockFigma();
+    const gapfill = opStatus([], 0, toGapfillStatus(createGapfillStats())).gapfill as Record<string, unknown>;
+    expect(gapfill).toEqual({ pagesDiffed: 0, pagesTruncated: 0, baselineWrittenAt: null, baselineBytes: 0 });
+  });
+
+  it('the optional counters appear only once they mean something', () => {
+    installMockFigma();
+    const stats = createGapfillStats();
+    stats.pagesDiffed = 21;
+    stats.pagesTruncated = 16;
+    stats.baselineWrittenAt = '2026-09-03T00:00:00.000Z';
+    stats.baselineBytes = 1234;
+    stats.legacyCleared = 2;
+    recordGapfillEviction(stats, 'figma-edit-baseline-v2:other');
+    recordGapfillError(stats, 'first failure');
+    recordGapfillError(stats, 'a later, derived failure');
+
+    const gapfill = opStatus([], 0, toGapfillStatus(stats)).gapfill as Record<string, unknown>;
+
+    expect(gapfill).toEqual({
+      pagesDiffed: 21,
+      pagesTruncated: 16,
+      baselineWrittenAt: '2026-09-03T00:00:00.000Z',
+      baselineBytes: 1234,
+      legacyCleared: 2,
+      baselineEvicted: ['figma-edit-baseline-v2:other'],
+      errors: ['first failure'], // the FIRST message — the cause, not the cascade
+      errorCount: 2,
+    });
   });
 });

@@ -1,3 +1,4 @@
+import { utf8ByteLength } from '../../../shared/utf8-byte-length';
 import {
   buildCorrectionEvent,
   EDGE_RAW_LIMIT,
@@ -30,24 +31,6 @@ function parseEvents(text: string): CorrectionEvent[] {
   } catch {
     return [];
   }
-}
-
-/** UTF-8 byte length without `Buffer`/`TextEncoder` — the Figma plugin main-thread sandbox
- *  cannot be assumed to expose either, so this is a plain-JS surrogate-pair-aware count
- *  (same "duplicate a small pure helper rather than depend on an unavailable API"
- *  convention this wave already uses for `safeSlug`/`fileIdentity`). */
-function utf8ByteLength(str: string): number {
-  let bytes = 0;
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    if (code < 0x80) bytes += 1;
-    else if (code < 0x800) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff) {
-      bytes += 4; // surrogate pair — one full UTF-16 "character" is 4 UTF-8 bytes
-      i += 1; // consume the low surrogate too
-    } else bytes += 3;
-  }
-  return bytes;
 }
 
 interface ChunkManifest {
