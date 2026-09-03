@@ -205,11 +205,17 @@ export async function run(args: CommandArgs): Promise<unknown> {
   // chain — raw fileKey when present, else a slug of the name (file-identity.ts). Honest
   // limit: two KEYLESS files sharing a name still collapse into a single identity, because
   // a name is genuinely all either of them has.
-  const activeKeySource = wantedFile
-    ? plugins[0] ?? null                    // the file the caller asked about
-    // NOT the first row whose NAME matches: with two `Untitled`s that picks whichever
-    // connected first, which is not necessarily the one that answered.
-    : activePluginInfo;
+  // An ambiguous --file reached no plugin at all — nothing is IN VIEW, so no identity may
+  // be excluded from `otherFiles` as "the active one". Without this, the FIRST of the
+  // ambiguous matches (`plugins[0]`) would silently claim the active slot and vanish from
+  // its own count, undercounting distinct connected files by one.
+  const activeKeySource = ambiguous !== undefined
+    ? null
+    : wantedFile
+      ? plugins[0] ?? null                    // the file the caller asked about
+      // NOT the first row whose NAME matches: with two `Untitled`s that picks whichever
+      // connected first, which is not necessarily the one that answered.
+      : activePluginInfo;
   const activeId = activePlugin === null || activeKeySource === null
     ? null
     : fileIdentity(

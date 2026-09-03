@@ -43,6 +43,16 @@ export interface GapfillStats {
    *  the plugin was closed, and the unreadable notice promised it would be diffed on the
    *  next successful boot — a write from this session would make that promise false. */
   bootBaselineUnreadable: boolean;
+  /** The exact message (if any) this session's BOOT read of the stored baseline recorded —
+   *  set once, by the boot's own read, and never by any later one. Every later read of the
+   *  SAME key (a write's own read-back, at boot or idle) compares against this and skips
+   *  `recordGapfillError` when it is the identical refusal: the boot verdict is
+   *  authoritative for the whole session, so the one cause is stated once no matter how
+   *  many times something in this session re-reads the same unreadable/foreign value. A
+   *  DIFFERENT message (a store that only starts rejecting later, or the WRITE itself
+   *  refusing) is a genuinely separate fact and is always recorded, no matter how many
+   *  times that keeps happening. */
+  bootReadError: string | null;
 }
 
 export function createGapfillStats(): GapfillStats {
@@ -51,7 +61,7 @@ export function createGapfillStats(): GapfillStats {
     baselineWrittenAt: null, baselineBytes: 0,
     legacyCleared: 0, staleBaselinesCleared: 0,
     evicted: [], errorCount: 0, firstError: null,
-    baselineFirstRun: false, bootBaselineUnreadable: false,
+    baselineFirstRun: false, bootBaselineUnreadable: false, bootReadError: null,
   };
 }
 

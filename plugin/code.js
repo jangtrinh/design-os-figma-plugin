@@ -386,7 +386,8 @@
       errorCount: 0,
       firstError: null,
       baselineFirstRun: false,
-      bootBaselineUnreadable: false
+      bootBaselineUnreadable: false,
+      bootReadError: null
     };
   }
   function recordGapfillError(stats, message) {
@@ -636,18 +637,18 @@
     const { fileKey, fileName } = currentIdentity();
     return baselineKeyFor(fileKey, fileName);
   }
-  async function readBaseline(store, stats, alreadyRecordedError) {
+  async function readBaseline(store, stats) {
     const { baseline, error, readFailed } = await readFileBaseline(store, currentBaselineKey(), currentIdentity());
-    if (error && error !== alreadyRecordedError) recordGapfillError(stats, error);
+    if (error && error !== stats.bootReadError) recordGapfillError(stats, error);
     return { baseline, readFailed: readFailed === true, error };
   }
-  async function writeBaseline(pages, snapshotFor, store, stats, now = Date.now, onlyPageIds, bootReadError) {
+  async function writeBaseline(pages, snapshotFor, store, stats, now = Date.now, onlyPageIds) {
     const key = currentBaselineKey();
     if (stats.bootBaselineUnreadable) {
       recordGapfillError(stats, "baseline write withheld: this session could not read the stored baseline at boot");
       return;
     }
-    const { baseline: prev, readFailed } = await readBaseline(store, stats, bootReadError);
+    const { baseline: prev, readFailed } = await readBaseline(store, stats);
     if (readFailed) {
       recordGapfillError(stats, "baseline write skipped: the previous baseline could not be read");
       return;
@@ -725,6 +726,7 @@
     const nodeExists = deps.nodeExists ?? nodeStillExists;
     const timing = deps.walk ?? {};
     const { baseline: prev, readFailed, error: bootReadError } = await readBaseline(store, stats);
+    stats.bootReadError = bootReadError ?? null;
     if (readFailed) {
       stats.bootBaselineUnreadable = true;
       return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
@@ -739,7 +741,7 @@
         } catch {
         }
       }
-      await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats, void 0, void 0, bootReadError);
+      await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
       return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
     }
     const edits = [];
@@ -786,7 +788,7 @@
       const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
       edits.push(...gapfillEditsForPage(await withoutSurvivors(diff, nodeExists, stats), page.name));
     }
-    await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats, void 0, void 0, bootReadError);
+    await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
     return edits;
   }
 

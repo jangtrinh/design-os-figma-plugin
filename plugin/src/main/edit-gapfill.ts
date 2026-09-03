@@ -170,18 +170,19 @@ function currentBaselineKey(): string {
 }
 
 /**
- * `alreadyRecordedError`: the write read-back re-reads the SAME key the boot
- * diff already read this session — when that read is STILL the identical refusal (a
- * foreign baseline does not change underneath a single boot), recording it again would
- * count one cause twice with one `firstError`. A DIFFERENT (or newly-appearing) error is a
- * genuinely separate fact — e.g. the store itself starts rejecting between the two reads —
- * and is recorded as its own failure, same as always.
+ * Every read of this key — the boot diff's own, AND every write's read-back (at boot or on
+ * the idle debounce, main.ts:253) — goes through here, and `stats.bootReadError` (set once,
+ * by the FIRST of these calls this session) is what keeps them from re-recording the same
+ * cause: when a later read is STILL the identical refusal (a foreign or unreadable baseline
+ * does not change underneath a single session), it is not recorded again. A DIFFERENT (or
+ * newly-appearing) error — the store starts rejecting only later, say — is a genuinely
+ * separate fact and is recorded as its own failure, same as always.
  */
 async function readBaseline(
-  store: BaselineStore, stats: GapfillStats, alreadyRecordedError?: string,
+  store: BaselineStore, stats: GapfillStats,
 ): Promise<{ baseline: FileBaseline | null; readFailed: boolean; error?: string }> {
   const { baseline, error, readFailed } = await readFileBaseline(store, currentBaselineKey(), currentIdentity());
-  if (error && error !== alreadyRecordedError) recordGapfillError(stats, error);
+  if (error && error !== stats.bootReadError) recordGapfillError(stats, error);
   return { baseline, readFailed: readFailed === true, error };
 }
 
@@ -210,12 +211,6 @@ export async function writeBaseline(
   // walked regardless — leaving it absent would make the NEXT boot read its whole tree as
   // freshly created, which is a wrong fact, not a saved walk.
   onlyPageIds?: ReadonlySet<string> | null,
-  // Set ONLY by the two `runGapfillDiff` call sites, which just read this
-  // exact key this boot: the error (if any) that read already recorded, so this write's
-  // own read-back does not record it a second time for the identical cause. The idle
-  // debounce caller (main.ts) has no prior read this session and omits it, so a read
-  // failure there is always recorded (there is nothing to deduplicate against).
-  bootReadError?: string,
 ): Promise<void> {
   const key = currentBaselineKey();
   // A session that never diffed against the stored baseline must not replace it: the
@@ -225,7 +220,12 @@ export async function writeBaseline(
     recordGapfillError(stats, 'baseline write withheld: this session could not read the stored baseline at boot');
     return;
   }
-  const { baseline: prev, readFailed } = await readBaseline(store, stats, bootReadError);
+  // `readBaseline` compares against `stats.bootReadError` — set once, by `runGapfillDiff`'s
+  // own boot read, never by this call. Every write's read-back, whether it runs as part of
+  // that same boot or later on the idle debounce (main.ts:253), shares that one comparison
+  // on the SAME `stats` object, so the boot verdict is authoritative no matter which caller
+  // re-reads the identical refusal.
+  const { baseline: prev, readFailed } = await readBaseline(store, stats);
   // A read that FAILED is not an empty baseline. Writing the current scene over a value we
   // could not load would discard the only record of the window the plugin was closed —
   // turning "reported late" into "never reported". Skip this write and keep the stored
@@ -382,6 +382,10 @@ export async function runGapfillDiff(
   const nodeExists = deps.nodeExists ?? nodeStillExists;
   const timing = deps.walk ?? {};
   const { baseline: prev, readFailed, error: bootReadError } = await readBaseline(store, stats);
+  // THIS session's one boot verdict — set once, here, never by any other read. Every later
+  // read of this key (this function's own write below, or a later idle write) compares
+  // against it instead of recording the identical refusal again.
+  stats.bootReadError = bootReadError ?? null;
   if (readFailed) {
     // The store refused the read (error already recorded in `stats`). Skip the walk AND the
     // write: the stored baseline stays intact for the next successful boot. The flag keeps
@@ -403,7 +407,7 @@ export async function runGapfillDiff(
       await yieldToHost();
       try { firstRun.set(page.id, await snapshotPageBounded(page, perf, 'boot', timing)); } catch { /* writeBaseline re-attempts and skips */ }
     }
-    await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats, undefined, undefined, bootReadError);
+    await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
     return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
   }
 
@@ -489,6 +493,6 @@ export async function runGapfillDiff(
   // The diff window now starts at THIS observation, not session start — and the baseline
   // is the walk taken ABOVE, never a re-walk: an edit made during a yield stays absent
   // from the baseline, so the next session's gap-fill reports it instead of losing it.
-  await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats, undefined, undefined, bootReadError);
+  await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
   return edits;
 }

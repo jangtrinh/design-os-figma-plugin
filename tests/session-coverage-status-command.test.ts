@@ -334,6 +334,31 @@ describe('figma-agent status — ambiguous --file diagnoses instead of failing',
     expect(result.pluginsAll).toHaveLength(2);
     expect(result.plugin.coverage.complete).toBeNull();
   });
+
+  it('nothing is IN VIEW when ambiguous — every distinct connected identity counts, none excluded as "active"', async () => {
+    const mod = await loadBrokerDaemon();
+    await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
+    const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number; pid: number };
+    vi.mocked(ensureBroker).mockResolvedValue({
+      port: ad.port, pid: ad.pid, protocolV: 1, buildMtime: 0, startedAt: Date.now(), lastSeen: Date.now(),
+    });
+    const clean: SessionCoverage = { complete: true, gaps: [] };
+    await helloPlugin(await connectSocket(ad.port), 'p_a', 'Untitled', clean, 'KEY_A');
+    await helloPlugin(await connectSocket(ad.port), 'p_b', 'Untitled', clean, 'KEY_B');
+    await helloPlugin(await connectSocket(ad.port), 'p_c', 'Design System', clean, 'KEY_C');
+    await settle();
+
+    setExpectedFile('Untitled');
+    const result = await run(fakeArgs({ file: 'Untitled' })) as {
+      plugin: { coverage: SessionCoverage };
+    };
+
+    // Distinct connected identities: KEY_A, KEY_B, KEY_C = 3. An ambiguous --file reaches
+    // no plugin, so NONE of them is "the active session" excluded from the count — not
+    // even the two Untitled rows the caller's --file matched.
+    expect(result.plugin.coverage.gaps)
+      .toEqual([{ kind: 'other-files-connected', count: 3, see: 'status.pluginsAll' }]);
+  });
 });
 
 // Drift guard for `see`: every value a coverage row can carry must name something that
