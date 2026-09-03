@@ -14,7 +14,7 @@ import type { CommandArgs } from '../figma-agent.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 import { runCommand } from '../transport/broker-client.ts';
 import { resolveSafeTarget } from '../../../shared/safe-target.ts';
-import { COMMAND_TIMEOUTS } from '../../../shared/protocol.ts';
+import { CHUNK_LIMIT, COMMAND_TIMEOUTS, EXEC_JS_MAX_TIMEOUT_MS } from '../../../shared/protocol.ts';
 import type { CorrectionEvent } from '../../../shared/supervised-memory.ts';
 
 type Runner = typeof runCommand;
@@ -33,6 +33,12 @@ export interface ContextInput {
 }
 
 export const DEFAULT_CONTEXT_BUDGET_KB = 64;
+/** The 512 KB chunk seam (`CHUNK_LIMIT`). Past it a single reply is not "one large answer"
+ *  but hundreds of frames of a plugin sandbox accumulating an unbounded `nodes[]` — the
+ *  opposite of what a command whose selling point is "bounded before the wire" may do.
+ *  REFUSED rather than clamped: a caller who asked for a gigabyte and silently got 512 KB
+ *  learns the wrong thing about this command. */
+export const MAX_CONTEXT_BUDGET_KB = CHUNK_LIMIT / 1024;
 /** The plugin's soft deadline sits this far inside the wire timeout, so a slow subtree
  *  answers with a partial AND its counts before the wire can fail with nothing. */
 export const DEADLINE_HEADROOM_MS = 2_000;
@@ -55,16 +61,28 @@ export function resolveContextParams(input: ContextInput): ResolvedContextCall {
   if (input.depth !== undefined && (!Number.isInteger(input.depth) || input.depth < 0)) {
     throw new CliError('E_INVALID_ARGS', `--depth must be a non-negative integer, got ${String(input.depth)}`);
   }
+  if (budgetKb > MAX_CONTEXT_BUDGET_KB) {
+    throw new CliError(
+      'E_INVALID_ARGS',
+      `--budget ${budgetKb} KB is past the ${MAX_CONTEXT_BUDGET_KB} KB maximum (the wire's chunk seam) `
+      + '— ask for less, then follow the frontier ids for the rest',
+    );
+  }
   const budgetBytes = Math.floor(budgetKb * 1024);
   // Refused HERE rather than after a round trip: the plugin's own boundary check would
   // reject `budgetBytes: 0`, but only once the request had already reached it.
   if (budgetBytes < 1) {
     throw new CliError('E_INVALID_ARGS', `--budget ${budgetKb} KB floors to 0 bytes — pass at least 1`);
   }
-  const timeoutMs = input.timeout ?? COMMAND_TIMEOUTS.GET_CONTEXT ?? 0;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+  const requestedTimeout = input.timeout ?? COMMAND_TIMEOUTS.GET_CONTEXT ?? 0;
+  if (!Number.isFinite(requestedTimeout) || requestedTimeout <= 0) {
     throw new CliError('E_INVALID_ARGS', `--timeout must be a positive number of ms, got ${String(input.timeout)}`);
   }
+  // CLAMPED, not refused — the same treatment `resolveScanTimeout` gives exec-js, and for
+  // the same reason: an over-long timeout is a caller asking to wait, not a caller asking
+  // for something impossible. It is never invisible: the value actually used rides back in
+  // the reply's `budget.timeoutMs`.
+  const timeoutMs = Math.min(requestedTimeout, EXEC_JS_MAX_TIMEOUT_MS);
   // Below ~4s the headroom would leave the plugin no time at all, so the deadline becomes
   // half the budget instead of a negative number.
   const deadlineMs = timeoutMs > DEADLINE_HEADROOM_MS * 2
@@ -85,6 +103,15 @@ export function resolveContextParams(input: ContextInput): ResolvedContextCall {
  * Target resolution is `inspect`'s exactly: an explicit id, else the selection, else the
  * most recently corrected node, else a refusal that names the three ways to fix it.
  */
+/** `budget` with the wire timeout actually used folded in. The plugin authors the rest of
+ *  that block; this one number is the CLI's own (it clamps `--timeout`), and hiding it would
+ *  make the clamp invisible. */
+function withTimeout(reply: Record<string, unknown>, timeoutMs: number): Record<string, unknown> {
+  const budget = reply.budget;
+  if (budget === null || typeof budget !== 'object') return reply;
+  return { ...reply, budget: { ...(budget as Record<string, unknown>), timeoutMs } };
+}
+
 export async function contextTarget(input: ContextInput, runner: Runner = runCommand): Promise<unknown> {
   // Flags are validated BEFORE any round trip: a refused budget must not cost a
   // GET_SELECTION first.
@@ -100,7 +127,7 @@ export async function contextTarget(input: ContextInput, runner: Runner = runCom
   const reply = await runner('GET_CONTEXT', { nodeId: target.nodeId, ...params }, {
     readOnly: true, timeoutMs, activity: `Context · ${target.nodeId}`,
   }) as Record<string, unknown> | null;
-  return { ...(reply ?? {}), nodeId: target.nodeId, targetSource: target.source };
+  return { ...withTimeout(reply ?? {}, timeoutMs), nodeId: target.nodeId, targetSource: target.source };
 }
 
 /**
@@ -119,7 +146,7 @@ function numericFlag(args: CommandArgs, name: string): number | undefined {
   return args.num(name);
 }
 
-export async function run(args: CommandArgs): Promise<unknown> {
+export async function run(args: CommandArgs, runner: Runner = runCommand): Promise<unknown> {
   // RESERVED, not implemented: an alternative serialization is only worth a second on-wire
   // shape once the byte numbers this command reports prove JSON is what costs. Accepting
   // and ignoring the flag would have the caller believe it got the format it asked for.
@@ -136,5 +163,5 @@ export async function run(args: CommandArgs): Promise<unknown> {
     depth: numericFlag(args, 'depth'),
     noCss: args.bool('no-css'),
     timeout: numericFlag(args, 'timeout'),
-  });
+  }, runner);
 }

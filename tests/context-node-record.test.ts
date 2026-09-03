@@ -215,6 +215,50 @@ describe('context record — wire safety', () => {
   });
 });
 
+describe('context record — a refused IDENTITY read leaves a trace', () => {
+  // The same class as the children refusal, at the reader that names the node. Degrading a
+  // refused `id` to '' shipped a record the caller cannot re-issue on, with no error field,
+  // no counter, and `complete: true` — while the emitted docs tell agents that `complete:
+  // false` is how they learn something is missing.
+  it('a child whose id getter throws ships as a minimal LOCATED record, not as id ""', async () => {
+    const ghost = withThrowingGetter(
+      { name: 'ghost', type: 'FRAME' }, 'id', 'The node with id "9:9" does not exist',
+    );
+    const out = await buildContextRecord(ghost, {
+      depth: 1, parentId: '1:1', childIndex: 2, includeCss: false,
+    });
+    expect(out.record).toEqual({
+      id: '(unreadable child 2 of 1:1)',
+      readError: 'The node with id "9:9" does not exist',
+    });
+    expect(out.incomplete).toBe(true);
+    expect(out.children).toEqual([]);
+  });
+
+  it('a node whose type getter throws is minimal too — never type "UNKNOWN" with text skipped', async () => {
+    const ghost = withThrowingGetter(
+      { id: '2:9', name: 'label', characters: 'Save' }, 'type', 'node type refused',
+    );
+    const out = await buildContextRecord(ghost, { depth: 0, parentId: null, includeCss: false });
+    // Degraded to UNKNOWN, this node skipped the TEXT branch and an agent rendered no string.
+    expect(out.record).toEqual({ id: '2:9', readError: 'node type refused' });
+    expect(out.record.type).toBeUndefined();
+    expect(out.incomplete).toBe(true);
+  });
+
+  it('the requested root, unreadable, is located as the target rather than as a child', async () => {
+    const ghost = withThrowingGetter({ name: 'x', type: 'FRAME' }, 'id', 'id refused');
+    const out = await buildContextRecord(ghost, { depth: 0, parentId: null, includeCss: false });
+    expect(out.record).toEqual({ id: '(unreadable target)', readError: 'id refused' });
+  });
+
+  it('a best-effort id is kept when only the NAME read refuses', async () => {
+    const ghost = withThrowingGetter({ id: '3:9', type: 'FRAME' }, 'name', 'name refused');
+    const out = await buildContextRecord(ghost, { depth: 0, parentId: null, includeCss: false });
+    expect(out.record).toEqual({ id: '3:9', readError: 'name refused' });
+  });
+});
+
 describe('context record — a refused structural read leaves a trace', () => {
   // The live refusal: boot's loadAllPagesAsync is fire-and-forget, so a context call that
   // lands before it resolves reads a page whose `children` getter throws. Reported as

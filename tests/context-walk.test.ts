@@ -110,6 +110,23 @@ describe('context walk — the conservation law', () => {
     expect(full.accounting.visited).toBe(full.accounting.emitted);
   });
 
+  it('a child whose identity read refuses is counted partial, so complete goes false', async () => {
+    const ghost: Fixture = { name: 'ghost', type: 'FRAME' };
+    Object.defineProperty(ghost, 'id', {
+      get() { throw new Error('The node with id "9:9" does not exist'); }, enumerable: true,
+    });
+    const out = await walkContext(node('1:1', 'FRAME', [ghost]), deps(), OPTS);
+    expect(out.accounting.partial).toBe(1);
+    expect(out.accounting.complete).toBe(false);
+    // Located by its parent and position, so the caller knows WHERE to re-read — an id of
+    // '' is a record nothing can be re-issued on.
+    expect(out.nodes[1]).toEqual({
+      id: '(unreadable child 0 of 1:1)',
+      readError: 'The node with id "9:9" does not exist',
+    });
+    expect(out.accounting.visited).toBe(out.accounting.emitted);
+  });
+
   it('a record that cannot be built or serialised still ships as a minimal identified node', async () => {
     const poisoned = await walkContext(node('0', 'TEXT'), deps(), {
       ...OPTS,

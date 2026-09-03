@@ -8,7 +8,7 @@
 //
 // The environment is INJECTED (`GetContextEnv`) rather than read off `figma` inline, so the
 // whole command is drivable from plain fixture objects. main.ts supplies the live one.
-import { CONTEXT_SCHEMA } from '../../../shared/protocol';
+import { CHUNK_LIMIT, CONTEXT_SCHEMA, EXEC_JS_MAX_TIMEOUT_MS } from '../../../shared/protocol';
 import { utf8ByteLength } from '../../../shared/utf8-byte-length';
 import type { ContextNodeLike } from './context-node-record';
 import { resolveContextRefs, type ContextRefsDeps } from './context-refs';
@@ -59,12 +59,20 @@ export function figmaContextEnv(changeCount: () => number): GetContextEnv {
 }
 
 /** A wire number is validated at the boundary, never silently corrected: a caller that
- *  asked for `--budget 0` and got 64 KB learns the wrong thing about this command. */
-function positive(params: Params, key: string, fallback: number, integer = false): number {
+ *  asked for `--budget 0` and got 64 KB learns the wrong thing about this command.
+ *
+ *  The upper bound is enforced HERE as well as at the CLI because the WIRE is the trust
+ *  boundary — the CLI is one client of it. Without this, `budgetBytes: 1_073_741_824` from
+ *  any other client has the designer's plugin accumulate an unbounded `nodes[]` until it
+ *  dies mid-session. */
+function bounded(params: Params, key: string, fallback: number, max: number): number {
   const raw = params[key];
   if (raw === undefined) return fallback;
-  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0 || (integer && !Number.isInteger(raw))) {
-    throw withCode(new Error(`${key} must be a positive ${integer ? 'integer' : 'number'}, got ${JSON.stringify(raw)}`), 'E_INVALID_ARGS');
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
+    throw withCode(new Error(`${key} must be a positive number, got ${JSON.stringify(raw)}`), 'E_INVALID_ARGS');
+  }
+  if (raw > max) {
+    throw withCode(new Error(`${key} ${raw} is past the ${max} maximum`), 'E_INVALID_ARGS');
   }
   return raw;
 }
@@ -112,8 +120,8 @@ async function resolveTarget(params: Params, env: GetContextEnv): Promise<Contex
 }
 
 export async function opGetContext(params: Params, env: GetContextEnv): Promise<Record<string, unknown>> {
-  const budgetBytes = positive(params, 'budgetBytes', DEFAULT_CONTEXT_BUDGET_BYTES);
-  const deadlineMs = positive(params, 'deadlineMs', DEFAULT_CONTEXT_DEADLINE_MS);
+  const budgetBytes = bounded(params, 'budgetBytes', DEFAULT_CONTEXT_BUDGET_BYTES, CHUNK_LIMIT);
+  const deadlineMs = bounded(params, 'deadlineMs', DEFAULT_CONTEXT_DEADLINE_MS, EXEC_JS_MAX_TIMEOUT_MS);
   const depth = maxDepth(params);
   const includeCss = params.noCss !== true;
   const node = await resolveTarget(params, env);

@@ -32,6 +32,7 @@
     // requested budget" shape as batch.ts's own scaled timeout.
     COWORK: DEFAULT_COWORK_TIMEOUT_SECONDS * 1e3 + 5e3
   };
+  var EXEC_JS_MAX_TIMEOUT_MS = 12e4;
   var BROKER_IDLE_SHUTDOWN_MS = 30 * 6e4;
 
   // shared/file-match.ts
@@ -3160,11 +3161,56 @@
     }
     return { descendants, types, readErrors };
   }
+  var messageOf4 = (err) => err instanceof Error ? err.message : String(err);
+  function locate(opts) {
+    return opts.parentId === null ? "(unreadable target)" : `(unreadable child ${opts.childIndex ?? 0} of ${opts.parentId})`;
+  }
+  function readIdentity(node) {
+    let readError = null;
+    const note = (message) => {
+      if (readError === null) readError = message;
+    };
+    let id = "";
+    try {
+      const raw = node.id;
+      if (typeof raw === "string" && raw !== "") id = raw;
+      else note("id could not be read");
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    let name = "";
+    try {
+      const raw = node.name;
+      if (typeof raw === "string") name = raw;
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    let type = "";
+    try {
+      const raw = node.type;
+      if (typeof raw === "string" && raw !== "") type = raw;
+      else note("type could not be read");
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    return { id, name, type, readError };
+  }
   async function buildContextRecord(node, opts) {
+    const identity = readIdentity(node);
+    if (identity.readError !== null) {
+      return {
+        record: {
+          id: identity.id !== "" ? identity.id : locate(opts),
+          readError: identity.readError
+        },
+        children: [],
+        incomplete: true
+      };
+    }
     const record = {
-      id: String(safe(() => node.id) ?? ""),
-      name: String(safe(() => node.name) ?? ""),
-      type: String(safe(() => node.type) ?? "UNKNOWN"),
+      id: identity.id,
+      name: identity.name,
+      type: identity.type,
       depth: opts.depth,
       parentId: opts.parentId
     };
@@ -3177,7 +3223,7 @@
     const styles = readStyles(node);
     if (Object.keys(styles).length > 0) record.styles = styles;
     let incomplete = false;
-    const type = record.type;
+    const type = identity.type;
     if (type === "TEXT") {
       const characters = safe(() => node.characters);
       if (typeof characters === "string") record.characters = characters;
@@ -3259,12 +3305,11 @@
     const raw = safe(() => node.id);
     return typeof raw === "string" ? raw : "";
   }
-  var messageOf4 = (err) => err instanceof Error ? err.message : String(err);
   async function walkContext(root, deps, opts) {
     const build = opts.buildRecord ?? buildContextRecord;
     const batchSize = Math.max(1, opts.cssBatchSize ?? DEFAULT_CSS_BATCH_SIZE);
     const startedAt = deps.now();
-    const queue = [{ node: root, depth: 0, parentId: null }];
+    const queue = [{ node: root, depth: 0, parentId: null, childIndex: 0 }];
     const nodes = [];
     const omitted = { budget: 0, deadline: 0 };
     const frontier = [];
@@ -3297,6 +3342,7 @@
       const built = await Promise.all(batch.map((pending) => build(pending.node, {
         depth: pending.depth,
         parentId: pending.parentId,
+        childIndex: pending.childIndex,
         includeCss: opts.includeCss
         // A reader that refuses ENTIRELY still owes the caller an identified node: a record
         // silently absent from `nodes[]` with no frontier entry is the hole this walk exists
@@ -3340,10 +3386,10 @@
         if (result.children.length > 0) {
           if (pending.depth + 1 <= opts.maxDepth) {
             const parentId = String(result.record.id ?? "");
-            for (const child of result.children) {
-              queue.push({ node: child, depth: pending.depth + 1, parentId });
+            result.children.forEach((child, childIndex) => {
+              queue.push({ node: child, depth: pending.depth + 1, parentId, childIndex });
               visited += 1;
-            }
+            });
           } else {
             pushFrontier(pending.node, "depth");
           }
@@ -3399,11 +3445,14 @@
       changeCount
     };
   }
-  function positive(params, key, fallback, integer = false) {
+  function bounded(params, key, fallback, max) {
     const raw = params[key];
     if (raw === void 0) return fallback;
-    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0 || integer && !Number.isInteger(raw)) {
-      throw withCode(new Error(`${key} must be a positive ${integer ? "integer" : "number"}, got ${JSON.stringify(raw)}`), "E_INVALID_ARGS");
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+      throw withCode(new Error(`${key} must be a positive number, got ${JSON.stringify(raw)}`), "E_INVALID_ARGS");
+    }
+    if (raw > max) {
+      throw withCode(new Error(`${key} ${raw} is past the ${max} maximum`), "E_INVALID_ARGS");
     }
     return raw;
   }
@@ -3439,8 +3488,8 @@
     return selected;
   }
   async function opGetContext(params, env) {
-    const budgetBytes = positive(params, "budgetBytes", DEFAULT_CONTEXT_BUDGET_BYTES);
-    const deadlineMs = positive(params, "deadlineMs", DEFAULT_CONTEXT_DEADLINE_MS);
+    const budgetBytes = bounded(params, "budgetBytes", DEFAULT_CONTEXT_BUDGET_BYTES, CHUNK_LIMIT);
+    const deadlineMs = bounded(params, "deadlineMs", DEFAULT_CONTEXT_DEADLINE_MS, EXEC_JS_MAX_TIMEOUT_MS);
     const depth = maxDepth(params);
     const includeCss = params.noCss !== true;
     const node = await resolveTarget(params, env);
@@ -6853,7 +6902,7 @@
       // The change counter handed in here is the SAME signal the read-only guard keeps
       // (one bump per documentchange batch that lands while exactly one dispatch is
       // active). The walk snapshots it and diffs it, so a subtree read across two document
-      // states reports `changesDuringWalk` instead of presenting itself as one state.
+      // states reports `changeBatchesDuringWalk` instead of presenting itself as one state.
       case "GET_CONTEXT":
         return opGetContext(params, figmaContextEnv(() => snapshotChangeEvents(readOnlyGuard)));
       case "SCAN_DESIGN_SYSTEM":

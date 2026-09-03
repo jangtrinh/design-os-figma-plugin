@@ -10,6 +10,18 @@ import { COMMAND_TIMEOUTS } from '../shared/protocol.ts';
 
 const reply = { schema: 'context/1', nodes: [{ id: '1:2' }], refs: {}, budget: { complete: true } };
 
+/** Every `run()` case below must refuse BEFORE any transport. Passing an explicit runner
+ *  keeps that a failed assertion rather than live broker I/O in CI: the round-1 RED for the
+ *  valueless-flag bug was produced by a `run()` call that genuinely reached the owner's
+ *  plugin. */
+function stubRunner(calls: { cmd: string; params: unknown; opts?: Record<string, unknown> }[] = []) {
+  return async (cmd: string, params: unknown, opts?: Record<string, unknown>): Promise<unknown> => {
+    calls.push({ cmd, params, opts });
+    if (cmd === 'GET_CONTEXT') return reply;
+    throw new Error(`unexpected ${cmd}`);
+  };
+}
+
 describe('context command — params', () => {
   it('defaults to a 64 KB budget and a soft deadline 2s inside the wire timeout', () => {
     expect(resolveContextParams({})).toEqual({
@@ -96,24 +108,60 @@ describe('context command — a valueless numeric flag is refused, never default
   // requestedBytes 65536, a number the caller never stated. Same refusal figma-agent.ts
   // already makes for a valueless --file / --instance / --target-file-key.
   it.each(['budget', 'depth', 'timeout'])('refuses a valueless --%s by name', async (flag) => {
-    await expect(run(parseArgs(['1:2', `--${flag}`, '--no-css']))).rejects.toMatchObject({
+    await expect(run(parseArgs(['1:2', `--${flag}`, '--no-css']), stubRunner())).rejects.toMatchObject({
       code: 'E_INVALID_ARGS',
     });
-    await expect(run(parseArgs(['1:2', `--${flag}`]))).rejects.toThrow(new RegExp(`--${flag}`));
+    await expect(run(parseArgs(['1:2', `--${flag}`]), stubRunner()))
+      .rejects.toThrow(new RegExp(`--${flag}`));
   });
 
   it('refuses a --budget that floors to zero bytes before spending a round trip', async () => {
-    await expect(run(parseArgs(['1:2', '--budget', '0.0001']))).rejects.toMatchObject({
+    await expect(run(parseArgs(['1:2', '--budget', '0.0001']), stubRunner())).rejects.toMatchObject({
       code: 'E_INVALID_ARGS',
     });
   });
 });
 
-describe('context command — --format is reserved, not implemented', () => {
-  it('exits with E_INVALID_ARGS before any broker traffic', async () => {
-    await expect(run(parseArgs(['1:2', '--format', 'tree']))).rejects.toMatchObject({
+describe('context command — the two wire numbers are capped', () => {
+  it('refuses a --budget past the 512 KB chunk seam, naming the max', async () => {
+    await expect(run(parseArgs(['1:2', '--budget', '513']), stubRunner())).rejects.toMatchObject({
       code: 'E_INVALID_ARGS',
     });
-    await expect(run(parseArgs(['1:2', '--format']))).rejects.toThrow(/--format/);
+    // Refused, not clamped: a caller who asked for a gigabyte and silently got 512 KB
+    // learns the wrong thing about what this command will do.
+    await expect(run(parseArgs(['1:2', '--budget', '1000000']), stubRunner()))
+      .rejects.toThrow(/512/);
+  });
+
+  it('accepts a --budget exactly at the seam', async () => {
+    const calls: { cmd: string; params: unknown }[] = [];
+    await run(parseArgs(['1:2', '--budget', '512']), stubRunner(calls));
+    expect(calls[0].params).toMatchObject({ budgetBytes: 512 * 1024 });
+  });
+
+  it('CLAMPS --timeout to the CLI-wide 120s max and reports the clamped value', async () => {
+    const calls: { cmd: string; params: unknown; opts?: Record<string, unknown> }[] = [];
+    const out = await run(parseArgs(['1:2', '--timeout', '3600000']), stubRunner(calls)) as {
+      budget: Record<string, unknown>;
+    };
+    // Clamped silently, exactly as `resolveScanTimeout` does for exec-js…
+    expect(calls[0].opts).toMatchObject({ timeoutMs: 120_000 });
+    expect(calls[0].params).toMatchObject({ deadlineMs: 118_000 });
+    // …but never invisibly: the value actually used rides back in the budget block.
+    expect(out.budget.timeoutMs).toBe(120_000);
+  });
+
+  it('reports the timeout it used even when the caller named none', async () => {
+    const out = await run(parseArgs(['1:2']), stubRunner()) as { budget: Record<string, unknown> };
+    expect(out.budget.timeoutMs).toBe(45_000);
+  });
+});
+
+describe('context command — --format is reserved, not implemented', () => {
+  it('exits with E_INVALID_ARGS before any broker traffic', async () => {
+    await expect(run(parseArgs(['1:2', '--format', 'tree']), stubRunner())).rejects.toMatchObject({
+      code: 'E_INVALID_ARGS',
+    });
+    await expect(run(parseArgs(['1:2', '--format']), stubRunner())).rejects.toThrow(/--format/);
   });
 });

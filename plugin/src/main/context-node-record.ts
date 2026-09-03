@@ -36,6 +36,10 @@ export interface ContextRecordOptions {
   /** `null` for the requested root — the flat breadth-first list is only re-assemblable
    *  into a tree if every record names its parent. */
   parentId: string | null;
+  /** Position among its parent's children. Only ever used to LOCATE a node whose own
+   *  identity read refused: "child 2 of 1:1" is something the caller can act on, an id of
+   *  `''` is not. */
+  childIndex?: number;
   /** `false` for `--no-css`: `getCSSAsync` is then never called at all (it is the whole
    *  cost of this command, ~7-8ms per node), not called-and-discarded. */
   includeCss: boolean;
@@ -145,13 +149,76 @@ export function countCollapsed(
   return { descendants, types, readErrors };
 }
 
+/** The one error-to-string used by every reader in this command. */
+export const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** Where a node whose own id refused SITS, so the caller can go back and re-read it.
+ *  Deliberately parenthesised prose: no Figma node id looks like this, so it can never be
+ *  mistaken for one and passed back as a target. */
+function locate(opts: ContextRecordOptions): string {
+  return opts.parentId === null
+    ? '(unreadable target)'
+    : `(unreadable child ${opts.childIndex ?? 0} of ${opts.parentId})`;
+}
+
+/**
+ * id / name / type, and whether reading them REFUSED — the third refusal in this module,
+ * and the one that decides whether a record is addressable at all.
+ *
+ * `safe()` alone degrades a throwing `id` to `''` and a throwing `type` to `'UNKNOWN'`,
+ * which shipped a record the caller cannot re-issue on with no error field, no counter and
+ * `complete: true` — and a TEXT whose `type` refused silently skipped its `characters`, so
+ * an agent rendered no string. `id` and `type` must therefore READ, not merely not-throw:
+ * a non-string answer is as unusable as a refusal. A throwing `name` is a refusal too (an
+ * invalidated reference refuses everything), but an ABSENT name costs nothing and is `''`.
+ * The FIRST message is kept — the one describing the original cause, not a cascade.
+ */
+function readIdentity(node: ContextNodeLike): {
+  id: string; name: string; type: string; readError: string | null;
+} {
+  let readError: string | null = null;
+  const note = (message: string): void => { if (readError === null) readError = message; };
+  let id = '';
+  try {
+    const raw = node.id;
+    if (typeof raw === 'string' && raw !== '') id = raw;
+    else note('id could not be read');
+  } catch (err) { note(messageOf(err)); }
+  let name = '';
+  try {
+    const raw = node.name;
+    if (typeof raw === 'string') name = raw;
+  } catch (err) { note(messageOf(err)); }
+  let type = '';
+  try {
+    const raw = node.type;
+    if (typeof raw === 'string' && raw !== '') type = raw;
+    else note('type could not be read');
+  } catch (err) { note(messageOf(err)); }
+  return { id, name, type, readError };
+}
+
 export async function buildContextRecord(
   node: ContextNodeLike, opts: ContextRecordOptions,
 ): Promise<ContextRecordResult> {
+  const identity = readIdentity(node);
+  if (identity.readError !== null) {
+    // Minimal and LOCATED: the same shape the walk uses for a record it could not build at
+    // all, so a caller has one thing to recognise. Nothing else is read — a reference that
+    // refuses its own name refuses everything after it.
+    return {
+      record: {
+        id: identity.id !== '' ? identity.id : locate(opts),
+        readError: identity.readError,
+      },
+      children: [],
+      incomplete: true,
+    };
+  }
   const record: Record<string, unknown> = {
-    id: String(safe(() => node.id) ?? ''),
-    name: String(safe(() => node.name) ?? ''),
-    type: String(safe(() => node.type) ?? 'UNKNOWN'),
+    id: identity.id,
+    name: identity.name,
+    type: identity.type,
     depth: opts.depth,
     parentId: opts.parentId,
   };
@@ -167,7 +234,7 @@ export async function buildContextRecord(
   if (Object.keys(styles).length > 0) record.styles = styles;
 
   let incomplete = false;
-  const type = record.type as string;
+  const type = identity.type;
 
   if (type === 'TEXT') {
     const characters = safe(() => node.characters);

@@ -46,7 +46,10 @@ export const SKILL_WORKFLOW = `## Typical workflow
    counts records that arrived incomplete, and \`complete: false\` means something is
    missing. \`frontier[]\` says what: reason \`budget\`/\`deadline\` → re-run \`context\`
    on that id; reason \`depth\` → re-run with a larger \`--depth\`. \`--budget\` bounds the
-   node records only — \`refsBytes\` reports the identity tables separately.
+   node records only — \`refsBytes\` reports the identity tables separately, and the soft
+   deadline covers the WALK only: ref resolution runs after it unbounded (\`refsMs\`), so a
+   very large \`--budget\` can still hit the wire timeout — then \`E_TIMEOUT\` carries a
+   \`jobId\`, and \`job <id> --wait\` collects the answer.
 4. Mutate with the typed commands (\`create-frame\`, \`set-text\`, \`clone-traits\`, ...)
    before falling back to \`exec-js\` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after

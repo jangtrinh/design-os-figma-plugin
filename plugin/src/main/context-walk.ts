@@ -15,7 +15,7 @@
 // prevents is the one every serializer reaches for first: drop a subtree, return the rest,
 // say nothing. A caller cannot ask for what it was never told is missing.
 import { utf8ByteLength } from '../../../shared/utf8-byte-length';
-import { buildContextRecord, childrenOf, type ContextNodeLike } from './context-node-record';
+import { buildContextRecord, childrenOf, messageOf, type ContextNodeLike } from './context-node-record';
 import { safe } from './scan-node-utils';
 
 /** Measured live: `getCSSAsync` costs ~7-8ms per node and `Promise.all` batches of 16 save
@@ -135,6 +135,9 @@ interface Pending {
   node: ContextNodeLike;
   depth: number;
   parentId: string | null;
+  /** Position among its parent's children — the only way to LOCATE a node whose own
+   *  identity read refuses. */
+  childIndex: number;
 }
 
 function childCountOf(node: ContextNodeLike): number | null {
@@ -151,7 +154,6 @@ function idOf(node: ContextNodeLike, record?: Record<string, unknown>): string {
   return typeof raw === 'string' ? raw : '';
 }
 
-const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export async function walkContext(
   root: ContextNodeLike, deps: ContextWalkDeps, opts: ContextWalkOptions,
@@ -159,7 +161,7 @@ export async function walkContext(
   const build = opts.buildRecord ?? buildContextRecord;
   const batchSize = Math.max(1, opts.cssBatchSize ?? DEFAULT_CSS_BATCH_SIZE);
   const startedAt = deps.now();
-  const queue: Pending[] = [{ node: root, depth: 0, parentId: null }];
+  const queue: Pending[] = [{ node: root, depth: 0, parentId: null, childIndex: 0 }];
   const nodes: Record<string, unknown>[] = [];
   const omitted: ContextOmissions = { budget: 0, deadline: 0 };
   const frontier: FrontierEntry[] = [];
@@ -194,7 +196,8 @@ export async function walkContext(
     // per-call latencies (which reads as many times the whole walk).
     const batchStartedAt = deps.now();
     const built = await Promise.all(batch.map((pending) => build(pending.node, {
-      depth: pending.depth, parentId: pending.parentId, includeCss: opts.includeCss,
+      depth: pending.depth, parentId: pending.parentId, childIndex: pending.childIndex,
+      includeCss: opts.includeCss,
       // A reader that refuses ENTIRELY still owes the caller an identified node: a record
       // silently absent from `nodes[]` with no frontier entry is the hole this walk exists
       // to make impossible.
@@ -239,10 +242,10 @@ export async function walkContext(
       if (result.children.length > 0) {
         if (pending.depth + 1 <= opts.maxDepth) {
           const parentId = String(result.record.id ?? '');
-          for (const child of result.children) {
-            queue.push({ node: child, depth: pending.depth + 1, parentId });
+          result.children.forEach((child, childIndex) => {
+            queue.push({ node: child, depth: pending.depth + 1, parentId, childIndex });
             visited += 1;
-          }
+          });
         } else {
           // Depth-clipped: the node itself IS emitted, so nothing is omitted — but its
           // subtree is unwalked, which is exactly what the frontier is for.

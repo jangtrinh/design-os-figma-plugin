@@ -1,7 +1,7 @@
 // `GET_CONTEXT` end to end inside the plugin: target resolution, the assembled reply, and
 // the two facts the caller cannot get anywhere else — `schema` (so a payload change is a
-// version bump, not a surprise) and `changesDuringWalk` (so a tree read across two document
-// states is never presented as one).
+// version bump, not a surprise) and `changeBatchesDuringWalk` (so a tree read across two
+// document states is never presented as one).
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONTEXT_BUDGET_BYTES, opGetContext } from '../plugin/src/main/executor-context.ts';
 import { utf8ByteLength } from '../shared/utf8-byte-length.ts';
@@ -121,6 +121,19 @@ describe('GET_CONTEXT — the reply', () => {
         opGetContext({ nodeId: '1', ...params }, env({ nodeById: async () => target })),
       ).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
     }
+  });
+
+  it('refuses a wire budget or deadline past the caps, so a client cannot route around the CLI', async () => {
+    const target = node('1');
+    for (const params of [{ budgetBytes: 512 * 1024 + 1 }, { deadlineMs: 120_001 }]) {
+      await expect(
+        opGetContext({ nodeId: '1', ...params }, env({ nodeById: async () => target })),
+      ).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
+    }
+    // Exactly at the caps is legal.
+    await expect(
+      opGetContext({ nodeId: '1', budgetBytes: 512 * 1024, deadlineMs: 120_000 }, env({ nodeById: async () => target })),
+    ).resolves.toMatchObject({ schema: 'context/1' });
   });
 
   it('measures the ref resolution that runs outside the soft deadline', async () => {
