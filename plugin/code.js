@@ -3588,6 +3588,16 @@
       ...uris.length > 0 && { documentationLinks: uris }
     };
   }
+  function countAttachedDevResources(records) {
+    let attached = 0;
+    for (const record of records) {
+      const intent = record.intent;
+      if (intent === null || typeof intent !== "object") continue;
+      const links = intent.devResources;
+      if (Array.isArray(links)) attached += links.length;
+    }
+    return attached;
+  }
   var hasComponentIntent = (intent) => intent.description !== void 0 || intent.descriptionMarkdown !== void 0 || intent.documentationLinks !== void 0;
 
   // plugin/src/main/context-intent.ts
@@ -3600,7 +3610,6 @@
     const build = opts.build ?? buildContextRecord;
     const mainComponentOf = opts.mainComponentOf ?? defaultMainComponentOf;
     const asked = /* @__PURE__ */ new Map();
-    let attached = 0;
     async function resolveByKey(key, source) {
       const known = asked.get(key);
       if (known !== void 0) return hasComponentIntent(known) ? key : null;
@@ -3648,10 +3657,7 @@
       }
       const id = str2(result.record.id);
       const resources = id === "" ? void 0 : opts.devResources.byNode.get(id);
-      if (resources !== void 0 && resources.length > 0) {
-        intent.devResources = resources;
-        attached += resources.length;
-      }
+      if (resources !== void 0 && resources.length > 0) intent.devResources = resources;
       try {
         const component = await readComponent(node, result.record, str2(result.record.type));
         if (component.componentKey !== void 0) intent.componentKey = component.componentKey;
@@ -3672,8 +3678,7 @@
         const out = {};
         for (const [key, intent] of asked) if (hasComponentIntent(intent)) out[key] = intent;
         return out;
-      },
-      attachedDevResources: () => attached
+      }
     };
   }
 
@@ -3998,7 +4003,7 @@
     const changeBatchesDuringWalk = Math.max(0, env.changeCount() - changesBefore);
     const transformed = dedup ? dedupContextPayload({ nodes: walk2.nodes, refs: { ...refs } }) : null;
     const payload = transformed === null ? { nodes: walk2.nodes, refs } : { nodes: transformed.nodes, refs: transformed.refs };
-    const attached = intent.attachedDevResources();
+    const attached = countAttachedDevResources(walk2.nodes);
     assertDedupConservation(
       walk2.accounting.emitted,
       payload.nodes.length,
@@ -4024,10 +4029,14 @@
         // Present whenever `--dev-resources` was passed, INCLUDING at `found: 0`. Presence then
         // means exactly "you asked", so a caller can tell "this subtree has none" from "nobody
         // looked" — and `readMs` keeps the ~2s round trip visible rather than mysterious.
-        // `attached` counts the EMITTED records a resource landed on, so `attached < found`
-        // means the rest belong to nodes that are not in this reply: descendants the budget or
-        // the deadline never enqueued (below the frontier), nodes outside the `--depth` bound,
-        // or a record whose own identity read refused and which therefore carries no intent.
+        // `found` and `attached` both count LINKS, never layers (one layer routinely takes
+        // several), and `attached` counts only links on records that SHIPPED. So
+        // `attached < found` means those links belong to nodes absent from this reply:
+        // descendants the budget or the deadline never enqueued (below the frontier), nodes
+        // outside the `--depth` bound, or a record whose own identity read refused and which
+        // therefore carries no intent. `unaddressed` splits out the links that named no readable
+        // node id and so could never land anywhere:
+        // `found = attached + unaddressed + links on nodes absent from the reply`.
         ...wantDevResources && {
           devResources: {
             found: devResources.found,

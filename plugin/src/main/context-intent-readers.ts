@@ -163,6 +163,31 @@ export function readComponentIntent(component: ContextNodeLike): ComponentIntent
   };
 }
 
+/**
+ * Dev-resource LINKS carried by records that actually SHIP — the same unit as `found`, so the
+ * two are comparable, and the same population the reply contains.
+ *
+ * Counted here, over the finished list, rather than while each record is built: the walk builds
+ * a whole breadth-first batch and only then drops its tail (and the rest of the queue) into
+ * `omitted.budget`, so a built record may never reach `nodes[]`. Counting at build time
+ * reported `attached === found` for a budget-cut page where every link's node was on the
+ * frontier and no shipped record carried a `devResources` key — which hides the exact gap the
+ * `found`/`attached` pair exists to expose.
+ *
+ * Called on the PRE-dedup list: `--dedup` moves a record's fields into `refs.templates` instead
+ * of dropping them, so a folded record still ships and still counts.
+ */
+export function countAttachedDevResources(records: readonly Record<string, unknown>[]): number {
+  let attached = 0;
+  for (const record of records) {
+    const intent = record.intent;
+    if (intent === null || typeof intent !== 'object') continue;
+    const links = (intent as Record<string, unknown>).devResources;
+    if (Array.isArray(links)) attached += links.length;
+  }
+  return attached;
+}
+
 /** Whether a component row has anything to SAY. A row with only a name is exactly what P1
  *  already ships, so it must not gain a `description` key. */
 export const hasComponentIntent = (intent: ComponentIntent): boolean => (

@@ -22,7 +22,7 @@ import {
 import { buildContextRecord, messageOf, type ContextNodeLike, type ContextRecordResult } from './context-node-record';
 import { safe } from './scan-node-utils';
 
-export { noDevResourcesRead, readSubtreeDevResources } from './context-intent-readers';
+export { countAttachedDevResources, noDevResourcesRead, readSubtreeDevResources } from './context-intent-readers';
 export type { ComponentIntent, DevResourceEntry, SubtreeDevResources } from './context-intent-readers';
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -42,11 +42,6 @@ export interface ContextIntentReader {
   /** Component key → intent, for merging into `refs.components`. Only keys with something to
    *  say appear: an empty description leaves the P1 `{name}` row exactly as it was. */
   components: () => Record<string, ComponentIntent>;
-  /** How many dev-resource LINKS landed on an emitted record — the same unit as `found`, so
-   *  the two are comparable. Counting RECORDS here reported `{found: 3, attached: 2}` for a
-   *  frame with two links plus a child with one, both emitted: every node and every link
-   *  present, yet the numbers said something was missing. */
-  attachedDevResources: () => number;
 }
 
 const defaultMainComponentOf = async (node: ContextNodeLike): Promise<ContextNodeLike | null> => {
@@ -60,7 +55,6 @@ export function createContextIntentReader(opts: ContextIntentOptions): ContextIn
   /** Every key asked about, including the ones that answered empty — so a second instance of
    *  an undocumented component costs nothing either. */
   const asked = new Map<string, ComponentIntent>();
-  let attached = 0;
 
   /** The component key a record may point at, resolving each key at most once. `null` when
    *  there is nothing to point at. */
@@ -123,10 +117,10 @@ export function createContextIntentReader(opts: ContextIntentOptions): ContextIn
 
     const id = str(result.record.id);
     const resources = id === '' ? undefined : opts.devResources.byNode.get(id);
-    if (resources !== undefined && resources.length > 0) {
-      intent.devResources = resources;
-      attached += resources.length;
-    }
+    // No counter here. Whether this record SHIPS is not known yet — the walk builds a whole
+    // batch and then drops its tail on the budget — so the links are counted over the finished
+    // list by `countAttachedDevResources`.
+    if (resources !== undefined && resources.length > 0) intent.devResources = resources;
 
     try {
       const component = await readComponent(node, result.record, str(result.record.type));
@@ -149,6 +143,5 @@ export function createContextIntentReader(opts: ContextIntentOptions): ContextIn
       for (const [key, intent] of asked) if (hasComponentIntent(intent)) out[key] = intent;
       return out;
     },
-    attachedDevResources: (): number => attached,
   };
 }

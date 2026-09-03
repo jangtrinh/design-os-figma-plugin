@@ -12,13 +12,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildContextRecord } from '../plugin/src/main/context-node-record.ts';
 import {
-  createContextIntentReader, readSubtreeDevResources,
+  countAttachedDevResources, createContextIntentReader, readSubtreeDevResources,
 } from '../plugin/src/main/context-intent.ts';
 import { opGetContext } from '../plugin/src/main/executor-context.ts';
 
 type Fixture = Record<string, unknown>;
 
-const noDevResources = { byNode: new Map<string, never[]>(), found: 0, attached: 0 };
+const noDevResources = { byNode: new Map<string, never[]>(), found: 0, unaddressed: 0 };
 
 function reader(over: Partial<Parameters<typeof createContextIntentReader>[0]> = {}) {
   return createContextIntentReader({ devResources: noDevResources, ...over });
@@ -115,8 +115,9 @@ describe('context intent — what it reports when the designer did set something
     expect(miss.record.intent).toBeUndefined();
     // `attached` counts LINKS, the same unit as `found` — one layer routinely takes several
     // dev resources, and counting records here made `attached < found` on a reply where
-    // every node and every link was present.
-    expect(intent.attachedDevResources()).toBe(2);
+    // every node and every link was present. Counted over the finished record list, because
+    // building a record is not the same as shipping it.
+    expect(countAttachedDevResources([hit.record, miss.record])).toBe(2);
   });
 });
 
@@ -339,6 +340,56 @@ describe('GET_CONTEXT — intent and dedup in the assembled reply', () => {
     const out = await opGetContext({ nodeId: 'i:1', devResources: true }, env({ nodeById: async () => target })) as Record<string, unknown>;
     expect((out.budget as Record<string, unknown>).devResources)
       .toEqual({ found: 3, attached: 3, readMs: 0 });
+  });
+
+  it('counts links on records the budget SHIPPED, not records it built and threw away', async () => {
+    // The walk builds a whole breadth-first batch and only then drops its tail into
+    // `omitted.budget`, so a record can be built — and its links counted — without ever
+    // reaching `nodes[]`. Counting at build time reported every link as landed while both
+    // their nodes sat on the frontier and no shipped record carried a `devResources` key: an
+    // agent reads "all links accounted for" and never follows the frontier. Budget exhaustion
+    // on a page is the ordinary case for this flag, not a tail.
+    const target = figmaNode('p:1', 'FRAME', [
+      figmaNode('p:2', 'TEXT'), figmaNode('p:3', 'TEXT'), figmaNode('p:4', 'TEXT'),
+    ], {
+      getDevResourcesAsync: async () => [
+        { nodeId: 'p:2', name: 'a', url: 'https://x.test/a' },
+        { nodeId: 'p:4', name: 'b', url: 'https://x.test/b' },
+      ],
+    });
+    const out = await opGetContext(
+      { nodeId: 'p:1', devResources: true, budgetBytes: 1 },
+      env({ nodeById: async () => target }),
+    ) as Record<string, unknown>;
+    const budget = out.budget as Record<string, unknown> & { omitted: Record<string, number> };
+    expect((out.nodes as Fixture[]).map((n) => n.id)).toEqual(['p:1']);
+    expect(budget.omitted.budget).toBe(3);
+    expect(budget.devResources).toEqual({ found: 2, attached: 0, readMs: 0 });
+  });
+
+  it('counts links on every record that ships, including ones folded into a template', async () => {
+    // `--dedup` moves a folded record's fields into `refs.templates` rather than dropping
+    // them, so a folded record still SHIPS — and the count has to be taken over the pre-dedup
+    // list or every folded link would read as missing. The two rows carry the SAME link (one
+    // component file linked from both), which is what lets them share a template at all.
+    const link = (nodeId: string): Record<string, string> => ({ nodeId, name: 'Row.tsx', url: 'https://x.test/row' });
+    const rows = [1, 2].map((i) => figmaNode(`q:${i + 1}`, 'FRAME', [figmaNode(`q:1${i}`, 'TEXT', [], {
+      characters: 'Same', getCSSAsync: async () => ({ color: '#111111', 'font-size': '12px', 'font-family': 'Inter' }),
+    })], {
+      getCSSAsync: async () => ({ display: 'flex', gap: '4px', padding: '8px 12px', 'border-radius': '6px' }),
+    }));
+    const target = figmaNode('q:1', 'FRAME', rows, {
+      getDevResourcesAsync: async () => [link('q:2'), link('q:3')],
+    });
+    const out = await opGetContext({ nodeId: 'q:1', devResources: true, dedup: true }, env({
+      nodeById: async () => target,
+    })) as Record<string, unknown>;
+    // The premise of this test, asserted rather than assumed: the rows really did fold, and
+    // the shipped occurrence records really did lose their own `intent`.
+    expect((out.dedup as { foldedNodes: number }).foldedNodes).toBeGreaterThan(0);
+    expect((out.nodes as Fixture[]).every((n) => n.intent === undefined)).toBe(true);
+    expect((out.budget as Record<string, unknown>).devResources)
+      .toEqual({ found: 2, attached: 2, readMs: 0 });
   });
 
   it('counts a resource with no readable nodeId instead of dropping it', async () => {

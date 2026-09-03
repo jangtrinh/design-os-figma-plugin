@@ -50,7 +50,9 @@ exactly one JSON object to stdout and exits 0, or `{error:{code,message}}` and e
    a file where nobody used Dev Mode is every node. Dev-resource links are read only with
    `--dev-resources`: one subtree-wide read, measured at a fixed ~2s on a Free file (a
    server round trip, not a walk), reported as
-   `budget.devResources {found, attached, readMs}`.
+   `budget.devResources {found, attached, unaddressed?, readMs}` — `found` and
+   `attached` both count LINKS, and `attached` only on records that shipped, so a gap
+   points at the frontier.
    `--dedup` (opt-in) shares repeated css/layout blocks and repeated subtrees through
    `refs.literals`/`refs.templates`; it never merges two named refs, it reports
    `dedup {applied, savedBytes?, foldedNodes?}`, and it ships the raw form with

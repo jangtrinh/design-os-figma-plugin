@@ -11,7 +11,9 @@
 import { assertDedupConservation, dedupContextPayload } from '../../../shared/context-dedup';
 import { CHUNK_LIMIT, CONTEXT_SCHEMA, EXEC_JS_MAX_TIMEOUT_MS } from '../../../shared/protocol';
 import { utf8ByteLength } from '../../../shared/utf8-byte-length';
-import { createContextIntentReader, noDevResourcesRead, readSubtreeDevResources } from './context-intent';
+import {
+  countAttachedDevResources, createContextIntentReader, noDevResourcesRead, readSubtreeDevResources,
+} from './context-intent';
 import type { ContextNodeLike } from './context-node-record';
 import {
   contextBoundedNumber, contextFlag, contextMaxDepth, resolveContextTarget,
@@ -138,7 +140,9 @@ export async function opGetContext(params: Params, env: GetContextEnv): Promise<
   const payload = transformed === null
     ? { nodes: walk.nodes, refs }
     : { nodes: transformed.nodes, refs: transformed.refs };
-  const attached = intent.attachedDevResources();
+  // Over the PRE-dedup list: those are the records that ship, and `--dedup` folds a record's
+  // fields into `refs.templates` rather than dropping them.
+  const attached = countAttachedDevResources(walk.nodes);
   // The reply-level law after folding: every record the walk emitted is either still in
   // `nodes[]` or counted as folded into a template occurrence. Asserted here as well as
   // inside the transform because THIS is the object that goes on the wire.
@@ -165,10 +169,14 @@ export async function opGetContext(params: Params, env: GetContextEnv): Promise<
       // Present whenever `--dev-resources` was passed, INCLUDING at `found: 0`. Presence then
       // means exactly "you asked", so a caller can tell "this subtree has none" from "nobody
       // looked" — and `readMs` keeps the ~2s round trip visible rather than mysterious.
-      // `attached` counts the EMITTED records a resource landed on, so `attached < found`
-      // means the rest belong to nodes that are not in this reply: descendants the budget or
-      // the deadline never enqueued (below the frontier), nodes outside the `--depth` bound,
-      // or a record whose own identity read refused and which therefore carries no intent.
+      // `found` and `attached` both count LINKS, never layers (one layer routinely takes
+      // several), and `attached` counts only links on records that SHIPPED. So
+      // `attached < found` means those links belong to nodes absent from this reply:
+      // descendants the budget or the deadline never enqueued (below the frontier), nodes
+      // outside the `--depth` bound, or a record whose own identity read refused and which
+      // therefore carries no intent. `unaddressed` splits out the links that named no readable
+      // node id and so could never land anywhere:
+      // `found = attached + unaddressed + links on nodes absent from the reply`.
       ...(wantDevResources && {
         devResources: {
           found: devResources.found,
