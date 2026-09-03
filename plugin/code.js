@@ -43,10 +43,10 @@
   }
 
   // shared/utf8-byte-length.ts
-  function utf8ByteLength(str3) {
+  function utf8ByteLength(str5) {
     let bytes = 0;
-    for (let i = 0; i < str3.length; i++) {
-      const code = str3.charCodeAt(i);
+    for (let i = 0; i < str5.length; i++) {
+      const code = str5.charCodeAt(i);
       if (code < 128) bytes += 1;
       else if (code < 2048) bytes += 2;
       else if (code >= 55296 && code <= 56319) {
@@ -82,9 +82,9 @@
   function messageOf(err) {
     return err instanceof Error ? err.message : String(err);
   }
-  function parseBaseline(raw) {
-    if (!raw || typeof raw !== "object") return null;
-    const candidate = raw;
+  function parseBaseline(raw2) {
+    if (!raw2 || typeof raw2 !== "object") return null;
+    const candidate = raw2;
     if (typeof candidate.writtenAt !== "string" || !Array.isArray(candidate.pages)) return null;
     return {
       writtenAt: candidate.writtenAt,
@@ -104,13 +104,13 @@
     return baseline.fileName === identity.fileName;
   }
   async function readFileBaseline(store, key, identity) {
-    let raw;
+    let raw2;
     try {
-      raw = await store.get(key);
+      raw2 = await store.get(key);
     } catch (err) {
       return { baseline: null, readFailed: true, error: `baseline read failed: ${messageOf(err)}` };
     }
-    const baseline = parseBaseline(raw);
+    const baseline = parseBaseline(raw2);
     if (baseline && !belongsToFile(baseline, identity)) {
       return {
         baseline: null,
@@ -121,8 +121,8 @@
   }
   async function clearStaleBaseline(store, legacyKey) {
     try {
-      const raw = await store.get(legacyKey);
-      if (raw === void 0 || raw === null) return { cleared: 0 };
+      const raw2 = await store.get(legacyKey);
+      if (raw2 === void 0 || raw2 === null) return { cleared: 0 };
       await store.delete(legacyKey);
       return { cleared: 1 };
     } catch (err) {
@@ -906,10 +906,10 @@
     return properties.every((property) => property === "pluginData");
   }
   var OP_RANK = { deleted: 3, created: 2, updated: 1 };
-  function coalesceChanges(raw) {
+  function coalesceChanges(raw2) {
     const byId = /* @__PURE__ */ new Map();
     const propSets = /* @__PURE__ */ new Map();
-    for (const c of raw) {
+    for (const c of raw2) {
       const props = propSets.get(c.nodeId) ?? /* @__PURE__ */ new Set();
       for (const p of c.changedProps) props.add(p);
       propSets.set(c.nodeId, props);
@@ -933,10 +933,10 @@
   }
 
   // shared/edit-feed.ts
-  function coalesceEdits(raw) {
+  function coalesceEdits(raw2) {
     const byId = /* @__PURE__ */ new Map();
     const propSets = /* @__PURE__ */ new Map();
-    for (const e of raw) {
+    for (const e of raw2) {
       const props = propSets.get(e.nodeId) ?? /* @__PURE__ */ new Set();
       for (const p of e.changedProps) props.add(p);
       propSets.set(e.nodeId, props);
@@ -1003,7 +1003,7 @@
       deps.onBatchStart(now);
       const correctionBatch = deps.corrections.begin();
       let correctionsUsable = true;
-      const raw = [];
+      const raw2 = [];
       const edits = [];
       for (const dc of event.documentChanges) {
         const op = mapChangeType(dc.type);
@@ -1026,7 +1026,7 @@
         connectorTouched.push(node.id);
         const identity = resolveComponentIdentity(node);
         if (identity) {
-          raw.push({
+          raw2.push({
             op,
             nodeId: identity.id,
             nodeName: identity.name,
@@ -1062,7 +1062,7 @@
         }
       }
       if (connectorTouched.length > 0) deps.noteChangedNodes(connectorTouched);
-      const changes = coalesceChanges(raw);
+      const changes = coalesceChanges(raw2);
       if (changes.length > 0) {
         deps.post({
           // fileName rides alongside fileKey — fileKey is null whenever the manifest lacks
@@ -1117,10 +1117,10 @@
   function normalizeFamily(name) {
     return name.toLowerCase().replace(/["']/g, "").replace(/\s+/g, " ").trim();
   }
-  function parseFontStack(raw) {
-    if (!raw) return [];
+  function parseFontStack(raw2) {
+    if (!raw2) return [];
     const out = [];
-    for (const part of raw.split(",")) {
+    for (const part of raw2.split(",")) {
       const fam = part.replace(/["']/g, "").trim();
       if (!fam) continue;
       if (GENERIC_FAMILIES.has(normalizeFamily(fam))) continue;
@@ -3028,74 +3028,292 @@
     };
   }
 
-  // plugin/src/main/context-refs.ts
-  function collectRefIds(records) {
-    const variables = [];
-    const styles = [];
-    const components = [];
-    const seenComponent = /* @__PURE__ */ new Set();
-    for (const record of records) {
-      for (const [field, into] of [["bindings", variables], ["styles", styles]]) {
-        const table2 = record[field];
-        if (!table2 || typeof table2 !== "object") continue;
-        for (const id of Object.values(table2)) {
-          if (typeof id === "string" && id !== "" && !into.includes(id)) into.push(id);
-        }
-      }
-      const main = record.mainComponent;
-      if (main && typeof main.key === "string" && main.key !== "" && !seenComponent.has(main.key)) {
-        seenComponent.add(main.key);
-        components.push({ key: main.key, name: typeof main.name === "string" ? main.name : "" });
-      }
+  // shared/canonical-content-hash.ts
+  function canonicalContent(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalContent).join(",")}]`;
+    if (value && typeof value === "object") {
+      const entries = Object.entries(value).filter(([, child]) => child !== void 0).sort(([a], [b]) => a.localeCompare(b));
+      return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonicalContent(child)}`).join(",")}}`;
     }
-    return { variables, styles, components };
+    return JSON.stringify(value) ?? "null";
   }
-  var str = (value, fallback = "") => typeof value === "string" ? value : fallback;
-  async function resolveContextRefs(records, deps) {
-    const ids = collectRefIds(records);
-    const refs = { variables: {}, styles: {}, components: {} };
-    const collections = /* @__PURE__ */ new Map();
-    for (const id of ids.variables) {
-      try {
-        const variable = await deps.variableById(id);
-        if (!variable) {
-          refs.variables[id] = { unresolved: "no variable answers to this id" };
-          continue;
-        }
-        const collectionId = str(safe(() => variable.variableCollectionId));
-        if (collectionId !== "" && !collections.has(collectionId)) {
-          try {
-            const collection = await deps.collectionById(collectionId);
-            const modes = collection ? safe(() => collection.modes) : void 0;
-            collections.set(collectionId, collection ? { name: str(safe(() => collection.name)), modeCount: Array.isArray(modes) ? modes.length : null } : null);
-          } catch {
-            collections.set(collectionId, null);
-          }
-        }
-        const resolved = collections.get(collectionId) ?? null;
-        refs.variables[id] = {
-          name: str(safe(() => variable.name)),
-          collection: resolved ? resolved.name : null,
-          modeCount: resolved ? resolved.modeCount : null
-        };
-      } catch (err) {
-        refs.variables[id] = { unresolved: err instanceof Error ? err.message : String(err) };
+  function fnv1aHex(text) {
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  // shared/context-dedup-literals.ts
+  var LITERAL_FIELDS = [["css", "cssRef"], ["layout", "layoutRef"]];
+  var hashCanonical = (text) => fnv1aHex(text);
+  function createInterner(hash = hashCanonical) {
+    const byKey = /* @__PURE__ */ new Map();
+    const byContent = /* @__PURE__ */ new Map();
+    return {
+      intern: (canonical) => {
+        const existing = byContent.get(canonical);
+        if (existing !== void 0) return existing;
+        const base = hash(canonical);
+        let key = base;
+        for (let n = 1; byKey.has(key); n += 1) key = `${base}#${n}`;
+        byKey.set(key, canonical);
+        byContent.set(canonical, key);
+        return key;
+      },
+      contentOf: (key) => byKey.get(key)
+    };
+  }
+  var isBlock = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0;
+  function foldContextLiterals(nodes, hash = hashCanonical) {
+    const counts = /* @__PURE__ */ new Map();
+    const firstSeen = /* @__PURE__ */ new Map();
+    const order = [];
+    for (const record of nodes) {
+      for (const [field] of LITERAL_FIELDS) {
+        const value = record[field];
+        if (!isBlock(value)) continue;
+        const canonical = canonicalContent(value);
+        const seen = counts.get(canonical);
+        if (seen === void 0) {
+          counts.set(canonical, 1);
+          firstSeen.set(canonical, value);
+          order.push(canonical);
+        } else counts.set(canonical, seen + 1);
       }
     }
-    for (const id of ids.styles) {
-      try {
-        const style = await deps.styleById(id);
-        if (!style) {
-          refs.styles[id] = { unresolved: "no style answers to this id" };
-          continue;
-        }
-        refs.styles[id] = { name: str(safe(() => style.name)), type: str(safe(() => style.type), "UNKNOWN") };
-      } catch (err) {
-        refs.styles[id] = { unresolved: err instanceof Error ? err.message : String(err) };
+    const interner = createInterner(hash);
+    const keys = /* @__PURE__ */ new Map();
+    const literals = {};
+    for (const canonical of order) {
+      if ((counts.get(canonical) ?? 0) < 2) continue;
+      const key = interner.intern(canonical);
+      keys.set(canonical, key);
+      literals[key] = firstSeen.get(canonical);
+    }
+    if (keys.size === 0) return { nodes: nodes.map((record) => ({ ...record })), literals: {} };
+    const folded = nodes.map((record) => {
+      const out = { ...record };
+      for (const [field, refField] of LITERAL_FIELDS) {
+        const value = out[field];
+        if (!isBlock(value)) continue;
+        const key = keys.get(canonicalContent(value));
+        if (key === void 0) continue;
+        delete out[field];
+        out[refField] = key;
+      }
+      return out;
+    });
+    return { nodes: folded, literals };
+  }
+
+  // shared/context-dedup-signature.ts
+  var PER_OCCURRENCE = ["id", "name", "parentId", "depth"];
+  var POISON = "!";
+  var isPoisoned = (sig) => sig.startsWith(POISON);
+  function addressable(record, id, duplicated) {
+    if (duplicated || id === "") return false;
+    if (typeof record.name !== "string") return false;
+    if (typeof record.depth !== "number") return false;
+    if (!("parentId" in record)) return false;
+    return record.parentId === null || typeof record.parentId === "string";
+  }
+  function buildSlots(nodes) {
+    const idCounts = /* @__PURE__ */ new Map();
+    for (const record of nodes) {
+      if (typeof record.id === "string" && record.id !== "") {
+        idCounts.set(record.id, (idCounts.get(record.id) ?? 0) + 1);
       }
     }
-    for (const { key, name } of ids.components) refs.components[key] = { name };
-    return refs;
+    const slots = nodes.map((record, at) => {
+      const id = typeof record.id === "string" ? record.id : "";
+      return {
+        record,
+        at,
+        id,
+        parentId: typeof record.parentId === "string" ? record.parentId : null,
+        depth: typeof record.depth === "number" ? record.depth : 0,
+        children: [],
+        parentIndex: null,
+        addressable: addressable(record, id, (idCounts.get(id) ?? 0) > 1),
+        sig: "",
+        size: 1
+      };
+    });
+    const byId = /* @__PURE__ */ new Map();
+    slots.forEach((slot, i) => {
+      if (slot.addressable) byId.set(slot.id, i);
+    });
+    const roots = [];
+    slots.forEach((slot, i) => {
+      const parent = slot.parentId === null ? void 0 : byId.get(slot.parentId);
+      if (parent === void 0) roots.push(i);
+      else {
+        slots[parent].children.push(i);
+        slot.parentIndex = parent;
+      }
+    });
+    return { slots, roots };
+  }
+  function computeSignatures(slots, roots, hash) {
+    const interner = createInterner(hash);
+    const stack = roots.map((at) => ({ at, expanded: false }));
+    while (stack.length > 0) {
+      const frame = stack.pop();
+      const slot = slots[frame.at];
+      if (!frame.expanded) {
+        stack.push({ at: frame.at, expanded: true });
+        for (let i = slot.children.length - 1; i >= 0; i -= 1) {
+          stack.push({ at: slot.children[i], expanded: false });
+        }
+        continue;
+      }
+      slot.size = 1 + slot.children.reduce((sum, child) => sum + slots[child].size, 0);
+      if (!slot.addressable || slot.children.some((child) => isPoisoned(slots[child].sig))) {
+        slot.sig = `${POISON}${frame.at}`;
+        continue;
+      }
+      const shape2 = { ...slot.record };
+      for (const field of PER_OCCURRENCE) delete shape2[field];
+      slot.sig = interner.intern(`${canonicalContent(shape2)}|${slot.children.map((c) => slots[c].sig).join(",")}`);
+    }
+  }
+  function subtreeOrder(slots, root) {
+    const order = [];
+    const queue = [root];
+    while (queue.length > 0) {
+      const at = queue.shift();
+      order.push(at);
+      for (const child of slots[at].children) queue.push(child);
+    }
+    return order;
+  }
+
+  // shared/context-dedup-templates.ts
+  var MIN_TEMPLATE_NODES = 2;
+  var MIN_OCCURRENCES = 2;
+  function countSignatures(slots) {
+    const groups = /* @__PURE__ */ new Map();
+    for (const slot of slots) {
+      if (!slot.addressable || slot.size < MIN_TEMPLATE_NODES || isPoisoned(slot.sig)) continue;
+      groups.set(slot.sig, (groups.get(slot.sig) ?? 0) + 1);
+    }
+    return groups;
+  }
+  function collectCandidates(slots, roots, groups) {
+    const bySig = /* @__PURE__ */ new Map();
+    const stack = [...roots].reverse();
+    while (stack.length > 0) {
+      const at = stack.pop();
+      const slot = slots[at];
+      if (slot.size >= MIN_TEMPLATE_NODES && (groups.get(slot.sig) ?? 0) >= MIN_OCCURRENCES) {
+        const list3 = bySig.get(slot.sig);
+        if (list3 === void 0) bySig.set(slot.sig, [at]);
+        else list3.push(at);
+        continue;
+      }
+      for (let i = slot.children.length - 1; i >= 0; i -= 1) stack.push(slot.children[i]);
+    }
+    return bySig;
+  }
+  function buildTemplate(slots, order, root) {
+    const relativeOf = /* @__PURE__ */ new Map();
+    order.forEach((at, rel) => relativeOf.set(at, String(rel)));
+    return {
+      nodes: order.map((at, rel) => {
+        const shape2 = { ...slots[at].record };
+        delete shape2.name;
+        shape2.id = String(rel);
+        const parentIndex = slots[at].parentIndex;
+        shape2.parentId = rel === 0 || parentIndex === null ? null : relativeOf.get(parentIndex) ?? null;
+        shape2.depth = slots[at].depth - slots[root].depth;
+        return shape2;
+      })
+    };
+  }
+  function foldContextTemplates(nodes, hash = hashCanonical) {
+    const { slots, roots } = buildSlots(nodes);
+    computeSignatures(slots, roots, hash);
+    const candidates = collectCandidates(slots, roots, countSignatures(slots));
+    const templates = {};
+    const occurrenceOf = /* @__PURE__ */ new Map();
+    const consumed = /* @__PURE__ */ new Set();
+    for (const [sig, occurrences] of candidates) {
+      if (occurrences.length < MIN_OCCURRENCES) continue;
+      for (const root of occurrences) {
+        const order = subtreeOrder(slots, root);
+        const rootMap = {};
+        order.forEach((at, rel) => {
+          if (rel === 0) return;
+          consumed.add(at);
+          rootMap[String(rel)] = { id: slots[at].id, name: slots[at].record.name, at };
+        });
+        occurrenceOf.set(root, { sig, rootMap });
+        if (templates[sig] === void 0) templates[sig] = buildTemplate(slots, order, root);
+      }
+    }
+    const folded = [];
+    for (let at = 0; at < slots.length; at += 1) {
+      if (consumed.has(at)) continue;
+      const occurrence = occurrenceOf.get(at);
+      const slot = slots[at];
+      if (occurrence === void 0) {
+        folded.push({ ...slot.record });
+        continue;
+      }
+      folded.push({
+        id: slot.id,
+        name: slot.record.name,
+        type: slot.record.type,
+        depth: slot.depth,
+        parentId: slot.record.parentId,
+        templateRef: occurrence.sig,
+        rootMap: occurrence.rootMap
+      });
+    }
+    return { nodes: folded, templates, folded: consumed.size };
+  }
+
+  // shared/context-dedup.ts
+  var measure = (nodes, refs) => utf8ByteLength(JSON.stringify({ nodes, refs }));
+  function assertDedupConservation(emitted, nodeCount, foldedNodes) {
+    if (emitted !== nodeCount + foldedNodes) {
+      throw new Error(
+        `context dedup conservation law violated: emitted ${emitted} !== nodes ${nodeCount} + folded ${foldedNodes}`
+      );
+    }
+  }
+  var raw = (payload, reason) => ({
+    nodes: payload.nodes.map((record) => ({ ...record })),
+    refs: { ...payload.refs },
+    dedup: { applied: false, reason }
+  });
+  function dedupContextPayload(payload) {
+    const rawBytes = measure(payload.nodes, payload.refs);
+    const literalFold = foldContextLiterals(payload.nodes);
+    const templateFold = foldContextTemplates(literalFold.nodes);
+    const literalCount = Object.keys(literalFold.literals).length;
+    const templateCount = Object.keys(templateFold.templates).length;
+    if (literalCount === 0 && templateCount === 0) {
+      return raw(payload, "nothing repeated in this subtree \u2014 no literal block and no subtree occurs twice");
+    }
+    const refs = {
+      ...payload.refs,
+      ...literalCount > 0 && { literals: literalFold.literals },
+      ...templateCount > 0 && { templates: templateFold.templates }
+    };
+    const finalBytes = measure(templateFold.nodes, refs);
+    if (finalBytes >= rawBytes) {
+      return raw(payload, `the deduped form was not smaller (${finalBytes} bytes against ${rawBytes})`);
+    }
+    assertDedupConservation(payload.nodes.length, templateFold.nodes.length, templateFold.folded);
+    return {
+      nodes: templateFold.nodes,
+      refs,
+      dedup: { applied: true, savedBytes: rawBytes - finalBytes, foldedNodes: templateFold.folded }
+    };
   }
 
   // plugin/src/main/context-node-record.ts
@@ -3113,15 +3331,15 @@
       const v = safe(() => node[field]);
       return typeof v === "number" ? r2(v) : void 0;
     };
-    const str3 = (field) => {
+    const str5 = (field) => {
       const v = safe(() => node[field]);
       return typeof v === "string" ? v : void 0;
     };
-    const layoutMode = str3("layoutMode");
+    const layoutMode = str5("layoutMode");
     if (layoutMode !== void 0) out.layoutMode = layoutMode;
-    const sizingH = str3("layoutSizingHorizontal");
+    const sizingH = str5("layoutSizingHorizontal");
     if (sizingH !== void 0) out.sizingH = sizingH;
-    const sizingV = str3("layoutSizingVertical");
+    const sizingV = str5("layoutSizingVertical");
     if (sizingV !== void 0) out.sizingV = sizingV;
     const gap = num("itemSpacing");
     if (gap !== void 0) out.gap = gap;
@@ -3172,23 +3390,23 @@
     };
     let id = "";
     try {
-      const raw = node.id;
-      if (typeof raw === "string" && raw !== "") id = raw;
+      const raw2 = node.id;
+      if (typeof raw2 === "string" && raw2 !== "") id = raw2;
       else note("id could not be read");
     } catch (err) {
       note(messageOf4(err));
     }
     let name = "";
     try {
-      const raw = node.name;
-      if (typeof raw === "string") name = raw;
+      const raw2 = node.name;
+      if (typeof raw2 === "string") name = raw2;
     } catch (err) {
       note(messageOf4(err));
     }
     let type = "";
     try {
-      const raw = node.type;
-      if (typeof raw === "string" && raw !== "") type = raw;
+      const raw2 = node.type;
+      if (typeof raw2 === "string" && raw2 !== "") type = raw2;
       else note("type could not be read");
     } catch (err) {
       note(messageOf4(err));
@@ -3283,6 +3501,295 @@
     return { record, children: read.children, incomplete };
   }
 
+  // plugin/src/main/context-intent-readers.ts
+  var noDevResourcesRead = () => ({ byNode: /* @__PURE__ */ new Map(), found: 0 });
+  var str = (value) => typeof value === "string" ? value : "";
+  function readOnlyField(value, field) {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((entry) => {
+      const read = entry === null || typeof entry !== "object" ? "" : str(safe(() => entry[field]));
+      return read === "" ? [] : [read];
+    });
+  }
+  async function readSubtreeDevResources(root, scope = { includeChildren: true }) {
+    const byNode = /* @__PURE__ */ new Map();
+    const read = safe(() => root.getDevResourcesAsync);
+    if (typeof read !== "function") {
+      return { byNode, found: 0, error: "getDevResourcesAsync is not available on this node" };
+    }
+    let list3;
+    try {
+      list3 = await read.call(root, { includeChildren: scope.includeChildren });
+    } catch (err) {
+      return { byNode, found: 0, error: messageOf4(err) };
+    }
+    if (!Array.isArray(list3)) return { byNode, found: 0, error: "getDevResourcesAsync did not answer with a list" };
+    for (const raw2 of list3) {
+      if (raw2 === null || typeof raw2 !== "object") continue;
+      const resource = raw2;
+      const nodeId = str(safe(() => resource.nodeId));
+      if (nodeId === "") continue;
+      const inherited = str(safe(() => resource.inheritedNodeId));
+      const entry = {
+        name: str(safe(() => resource.name)),
+        url: str(safe(() => resource.url)),
+        ...inherited !== "" && { inheritedNodeId: inherited }
+      };
+      const existing = byNode.get(nodeId);
+      if (existing === void 0) byNode.set(nodeId, [entry]);
+      else existing.push(entry);
+    }
+    return { byNode, found: list3.length };
+  }
+  function readDevStatus(node) {
+    const raw2 = node.devStatus;
+    if (raw2 === null || typeof raw2 !== "object") return null;
+    const status = raw2;
+    const type = str(safe(() => status.type));
+    if (type === "") return null;
+    const description = str(safe(() => status.description));
+    return { type, ...description !== "" && { description } };
+  }
+  function readAnnotations(node) {
+    const raw2 = node.annotations;
+    if (!Array.isArray(raw2) || raw2.length === 0) return null;
+    return raw2.map((entry) => {
+      if (entry === null || typeof entry !== "object") return {};
+      const annotation = entry;
+      const label = str(safe(() => annotation.label));
+      const labelMarkdown = str(safe(() => annotation.labelMarkdown));
+      const categoryId = str(safe(() => annotation.categoryId));
+      const types = readOnlyField(safe(() => annotation.properties), "type");
+      return {
+        ...label !== "" && { label },
+        ...labelMarkdown !== "" && { labelMarkdown },
+        ...types.length > 0 && { properties: types },
+        ...categoryId !== "" && { categoryId }
+      };
+    });
+  }
+  function readComponentIntent(component) {
+    const description = str(safe(() => component.description));
+    const markdown = str(safe(() => component.descriptionMarkdown));
+    const uris = readOnlyField(safe(() => component.documentationLinks), "uri");
+    return {
+      name: str(safe(() => component.name)),
+      ...description !== "" && { description },
+      ...markdown !== "" && markdown !== description && { descriptionMarkdown: markdown },
+      ...uris.length > 0 && { documentationLinks: uris }
+    };
+  }
+  var hasComponentIntent = (intent) => intent.description !== void 0 || intent.descriptionMarkdown !== void 0 || intent.documentationLinks !== void 0;
+
+  // plugin/src/main/context-intent.ts
+  var str2 = (value) => typeof value === "string" ? value : "";
+  var defaultMainComponentOf = async (node) => {
+    const get2 = safe(() => node.getMainComponentAsync);
+    return typeof get2 === "function" ? get2.call(node) : null;
+  };
+  function createContextIntentReader(opts) {
+    const build = opts.build ?? buildContextRecord;
+    const mainComponentOf = opts.mainComponentOf ?? defaultMainComponentOf;
+    const asked = /* @__PURE__ */ new Map();
+    let attached = 0;
+    async function resolveByKey(key, source) {
+      const known = asked.get(key);
+      if (known !== void 0) return hasComponentIntent(known) ? key : null;
+      const component = await source();
+      const intent = component === null ? { name: "" } : readComponentIntent(component);
+      asked.set(key, intent);
+      return hasComponentIntent(intent) ? key : null;
+    }
+    async function readComponent(node, record, type) {
+      if (type === "COMPONENT" || type === "COMPONENT_SET") {
+        const key2 = str2(safe(() => node.key));
+        if (key2 === "") {
+          const intent = readComponentIntent(node);
+          return hasComponentIntent(intent) ? { component: intent } : {};
+        }
+        const pointed2 = await resolveByKey(key2, async () => node);
+        return pointed2 === null ? {} : { componentKey: pointed2 };
+      }
+      if (type !== "INSTANCE") return {};
+      const main = record.mainComponent;
+      const key = str2(safe(() => main?.key));
+      if (key === "") return {};
+      const pointed = await resolveByKey(key, () => mainComponentOf(node));
+      return pointed === null ? {} : { componentKey: pointed };
+    }
+    const buildRecord = async (node, recordOpts) => {
+      const result = await build(node, recordOpts);
+      if (typeof result.record.readError === "string") return result;
+      let firstError = null;
+      const note = (message) => {
+        if (firstError === null) firstError = message;
+      };
+      const intent = {};
+      try {
+        const devStatus = readDevStatus(node);
+        if (devStatus !== null) intent.devStatus = devStatus;
+      } catch (err) {
+        note(messageOf4(err));
+      }
+      try {
+        const annotations = readAnnotations(node);
+        if (annotations !== null) intent.annotations = annotations;
+      } catch (err) {
+        note(messageOf4(err));
+      }
+      const id = str2(result.record.id);
+      const resources = id === "" ? void 0 : opts.devResources.byNode.get(id);
+      if (resources !== void 0 && resources.length > 0) {
+        intent.devResources = resources;
+        attached += 1;
+      }
+      try {
+        const component = await readComponent(node, result.record, str2(result.record.type));
+        if (component.componentKey !== void 0) intent.componentKey = component.componentKey;
+        if (component.component !== void 0) intent.component = component.component;
+      } catch (err) {
+        note(messageOf4(err));
+      }
+      if (Object.keys(intent).length > 0) result.record.intent = intent;
+      if (firstError !== null) {
+        result.record.intentError = firstError;
+        return { ...result, incomplete: true };
+      }
+      return result;
+    };
+    return {
+      buildRecord,
+      components: () => {
+        const out = {};
+        for (const [key, intent] of asked) if (hasComponentIntent(intent)) out[key] = intent;
+        return out;
+      },
+      attachedDevResources: () => attached
+    };
+  }
+
+  // plugin/src/main/context-params.ts
+  function contextBoundedNumber(params, key, fallback, max) {
+    const raw2 = params[key];
+    if (raw2 === void 0) return fallback;
+    if (typeof raw2 !== "number" || !Number.isFinite(raw2) || raw2 <= 0) {
+      throw withCode(new Error(`${key} must be a positive number, got ${JSON.stringify(raw2)}`), "E_INVALID_ARGS");
+    }
+    if (raw2 > max) {
+      throw withCode(new Error(`${key} ${raw2} is past the ${max} maximum`), "E_INVALID_ARGS");
+    }
+    return raw2;
+  }
+  function contextFlag(params, key) {
+    const raw2 = params[key];
+    if (raw2 === void 0) return false;
+    if (typeof raw2 !== "boolean") {
+      throw withCode(new Error(`${key} must be true or false, got ${JSON.stringify(raw2)}`), "E_INVALID_ARGS");
+    }
+    return raw2;
+  }
+  function contextMaxDepth(params) {
+    const raw2 = params.depth;
+    if (raw2 === void 0) return Number.POSITIVE_INFINITY;
+    if (typeof raw2 !== "number" || !Number.isInteger(raw2) || raw2 < 0) {
+      throw withCode(new Error(`depth must be a non-negative integer, got ${JSON.stringify(raw2)}`), "E_INVALID_ARGS");
+    }
+    return raw2;
+  }
+  function refuseNonSubtree(node) {
+    if (safe(() => node.type) === "DOCUMENT") {
+      throw withCode(
+        new Error("a document is not a subtree \u2014 pass a page or a node id"),
+        "E_INVALID_ARGS"
+      );
+    }
+  }
+  async function resolveContextTarget(params, env) {
+    const nodeId = params.nodeId;
+    if (typeof nodeId === "string" && nodeId !== "") {
+      const found = await env.nodeById(nodeId);
+      if (!found) throw withCode(new Error(`no node answers to "${nodeId}"`), "E_INVALID_ARGS");
+      refuseNonSubtree(found);
+      return found;
+    }
+    const selected = env.selection()[0];
+    if (!selected) {
+      throw withCode(new Error("no target: pass a node id, or select one node in Figma"), "E_INVALID_ARGS");
+    }
+    refuseNonSubtree(selected);
+    return selected;
+  }
+
+  // plugin/src/main/context-refs.ts
+  function collectRefIds(records) {
+    const variables = [];
+    const styles = [];
+    const components = [];
+    const seenComponent = /* @__PURE__ */ new Set();
+    for (const record of records) {
+      for (const [field, into] of [["bindings", variables], ["styles", styles]]) {
+        const table2 = record[field];
+        if (!table2 || typeof table2 !== "object") continue;
+        for (const id of Object.values(table2)) {
+          if (typeof id === "string" && id !== "" && !into.includes(id)) into.push(id);
+        }
+      }
+      const main = record.mainComponent;
+      if (main && typeof main.key === "string" && main.key !== "" && !seenComponent.has(main.key)) {
+        seenComponent.add(main.key);
+        components.push({ key: main.key, name: typeof main.name === "string" ? main.name : "" });
+      }
+    }
+    return { variables, styles, components };
+  }
+  var str3 = (value, fallback = "") => typeof value === "string" ? value : fallback;
+  async function resolveContextRefs(records, deps) {
+    const ids = collectRefIds(records);
+    const refs = { variables: {}, styles: {}, components: {} };
+    const collections = /* @__PURE__ */ new Map();
+    for (const id of ids.variables) {
+      try {
+        const variable = await deps.variableById(id);
+        if (!variable) {
+          refs.variables[id] = { unresolved: "no variable answers to this id" };
+          continue;
+        }
+        const collectionId = str3(safe(() => variable.variableCollectionId));
+        if (collectionId !== "" && !collections.has(collectionId)) {
+          try {
+            const collection = await deps.collectionById(collectionId);
+            const modes = collection ? safe(() => collection.modes) : void 0;
+            collections.set(collectionId, collection ? { name: str3(safe(() => collection.name)), modeCount: Array.isArray(modes) ? modes.length : null } : null);
+          } catch {
+            collections.set(collectionId, null);
+          }
+        }
+        const resolved = collections.get(collectionId) ?? null;
+        refs.variables[id] = {
+          name: str3(safe(() => variable.name)),
+          collection: resolved ? resolved.name : null,
+          modeCount: resolved ? resolved.modeCount : null
+        };
+      } catch (err) {
+        refs.variables[id] = { unresolved: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    for (const id of ids.styles) {
+      try {
+        const style = await deps.styleById(id);
+        if (!style) {
+          refs.styles[id] = { unresolved: "no style answers to this id" };
+          continue;
+        }
+        refs.styles[id] = { name: str3(safe(() => style.name)), type: str3(safe(() => style.type), "UNKNOWN") };
+      } catch (err) {
+        refs.styles[id] = { unresolved: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    for (const { key, name } of ids.components) refs.components[key] = { name };
+    return refs;
+  }
+
   // plugin/src/main/context-walk.ts
   var DEFAULT_CSS_BATCH_SIZE = 16;
   var FRONTIER_LIMIT = 50;
@@ -3302,8 +3809,8 @@
   function idOf(node, record) {
     const fromRecord = record?.id;
     if (typeof fromRecord === "string" && fromRecord !== "") return fromRecord;
-    const raw = safe(() => node.id);
-    return typeof raw === "string" ? raw : "";
+    const raw2 = safe(() => node.id);
+    return typeof raw2 === "string" ? raw2 : "";
   }
   async function walkContext(root, deps, opts) {
     const build = opts.buildRecord ?? buildContextRecord;
@@ -3445,80 +3952,73 @@
       changeCount
     };
   }
-  function bounded(params, key, fallback, max) {
-    const raw = params[key];
-    if (raw === void 0) return fallback;
-    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
-      throw withCode(new Error(`${key} must be a positive number, got ${JSON.stringify(raw)}`), "E_INVALID_ARGS");
-    }
-    if (raw > max) {
-      throw withCode(new Error(`${key} ${raw} is past the ${max} maximum`), "E_INVALID_ARGS");
-    }
-    return raw;
-  }
-  function maxDepth(params) {
-    const raw = params.depth;
-    if (raw === void 0) return Number.POSITIVE_INFINITY;
-    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
-      throw withCode(new Error(`depth must be a non-negative integer, got ${JSON.stringify(raw)}`), "E_INVALID_ARGS");
-    }
-    return raw;
-  }
-  function refuseNonSubtree(node) {
-    if (safe(() => node.type) === "DOCUMENT") {
-      throw withCode(
-        new Error("a document is not a subtree \u2014 pass a page or a node id"),
-        "E_INVALID_ARGS"
-      );
-    }
-  }
-  async function resolveTarget(params, env) {
-    const nodeId = params.nodeId;
-    if (typeof nodeId === "string" && nodeId !== "") {
-      const found = await env.nodeById(nodeId);
-      if (!found) throw withCode(new Error(`no node answers to "${nodeId}"`), "E_INVALID_ARGS");
-      refuseNonSubtree(found);
-      return found;
-    }
-    const selected = env.selection()[0];
-    if (!selected) {
-      throw withCode(new Error("no target: pass a node id, or select one node in Figma"), "E_INVALID_ARGS");
-    }
-    refuseNonSubtree(selected);
-    return selected;
-  }
   async function opGetContext(params, env) {
-    const budgetBytes = bounded(params, "budgetBytes", DEFAULT_CONTEXT_BUDGET_BYTES, CHUNK_LIMIT);
-    const deadlineMs = bounded(params, "deadlineMs", DEFAULT_CONTEXT_DEADLINE_MS, EXEC_JS_MAX_TIMEOUT_MS);
-    const depth = maxDepth(params);
+    const budgetBytes = contextBoundedNumber(params, "budgetBytes", DEFAULT_CONTEXT_BUDGET_BYTES, CHUNK_LIMIT);
+    const deadlineMs = contextBoundedNumber(params, "deadlineMs", DEFAULT_CONTEXT_DEADLINE_MS, EXEC_JS_MAX_TIMEOUT_MS);
+    const depth = contextMaxDepth(params);
     const includeCss = params.noCss !== true;
-    const node = await resolveTarget(params, env);
+    const dedup = contextFlag(params, "dedup");
+    const node = await resolveContextTarget(params, env);
+    const wantDevResources = contextFlag(params, "devResources");
+    const devResourcesStartedAt = env.now();
+    const devResources = wantDevResources ? await readSubtreeDevResources(node, { includeChildren: depth > 0 }) : noDevResourcesRead();
+    const devResourcesMs = wantDevResources ? env.now() - devResourcesStartedAt : 0;
+    const intent = createContextIntentReader({ devResources });
     const changesBefore = env.changeCount();
     const walk2 = await walkContext(node, { now: env.now, hop: env.hop }, {
       budgetBytes,
       maxDepth: depth,
       deadlineAt: env.now() + deadlineMs,
-      includeCss
+      includeCss,
+      buildRecord: intent.buildRecord
     });
     const refsStartedAt = env.now();
     const refs = await resolveContextRefs(walk2.nodes, env.refs);
     const refsMs = env.now() - refsStartedAt;
+    for (const [key, component] of Object.entries(intent.components())) {
+      refs.components[key] = { ...component, ...refs.components[key] };
+    }
     const changeBatchesDuringWalk = Math.max(0, env.changeCount() - changesBefore);
-    const payload = { nodes: walk2.nodes, refs };
+    const transformed = dedup ? dedupContextPayload({ nodes: walk2.nodes, refs: { ...refs } }) : null;
+    const payload = transformed === null ? { nodes: walk2.nodes, refs } : { nodes: transformed.nodes, refs: transformed.refs };
+    const attached = intent.attachedDevResources();
+    assertDedupConservation(
+      walk2.accounting.emitted,
+      payload.nodes.length,
+      transformed?.dedup.foldedNodes ?? 0
+    );
     return {
       schema: CONTEXT_SCHEMA,
       nodeId: String(walk2.nodes[0]?.id ?? ""),
       ...payload,
+      ...transformed !== null && { dedup: transformed.dedup },
       budget: {
         ...walk2.accounting,
         // `--budget` bounds the node RECORDS (`estimatedBytes`), measured in the plugin
         // before the wire. The ref tables are resolved AFTER the walk and are NOT budgeted —
         // so they are measured and reported on their own rather than folded into a total the
         // caller would read as bounded. `finalBytes` is the whole payload as it goes out.
-        refsBytes: utf8ByteLength(JSON.stringify(refs)),
+        // Under `--dedup` this covers the WHOLE `refs` object, so it includes `literals` and
+        // `templates` — content, not only identity tables.
+        refsBytes: utf8ByteLength(JSON.stringify(payload.refs)),
         finalBytes: utf8ByteLength(JSON.stringify(payload)),
         refsMs,
-        changeBatchesDuringWalk
+        changeBatchesDuringWalk,
+        // Present whenever `--dev-resources` was passed, INCLUDING at `found: 0`. Presence then
+        // means exactly "you asked", so a caller can tell "this subtree has none" from "nobody
+        // looked" — and `readMs` keeps the ~2s round trip visible rather than mysterious.
+        // `attached` counts the EMITTED records a resource landed on, so `attached < found`
+        // means the rest belong to nodes that are not in this reply: descendants the budget or
+        // the deadline never enqueued (below the frontier), nodes outside the `--depth` bound,
+        // or a record whose own identity read refused and which therefore carries no intent.
+        ...wantDevResources && {
+          devResources: {
+            found: devResources.found,
+            attached,
+            readMs: devResourcesMs,
+            ...devResources.error !== void 0 && { error: devResources.error }
+          }
+        }
       }
     };
   }
@@ -4573,12 +5073,12 @@
     const categoryMap = new Map(categories2.map((c) => [c.id, c.name]));
     const nodeAnnotations = (node.annotations ?? []).map((a) => toOutput(a, categoryMap));
     const includeChildren = opts.includeChildren ?? false;
-    const maxDepth2 = opts.depth ?? 1;
+    const maxDepth = opts.depth ?? 1;
     const childResults = [];
     let skippedChildren = 0;
     if (includeChildren && "children" in node) {
       const walk2 = (parent, depth) => {
-        if (depth > maxDepth2) return;
+        if (depth > maxDepth) return;
         for (const child of parent.children) {
           try {
             const anns = "annotations" in child ? (child.annotations ?? []).map((a) => toOutput(a, categoryMap)) : [];
@@ -5563,10 +6063,10 @@
     const bracket = params.undoGroup === true ? figmaUndoBracket() : null;
     const t0 = Date.now();
     try {
-      const raw = await runInUndoGroup(bracket, () => compiled.fn(consoleProxy, createExecStdlib()));
-      const warning = resultWarning(raw, compiled.mode);
+      const raw2 = await runInUndoGroup(bracket, () => compiled.fn(consoleProxy, createExecStdlib()));
+      const warning = resultWarning(raw2, compiled.mode);
       return {
-        result: summarize(raw),
+        result: summarize(raw2),
         console: logs,
         ms: Date.now() - t0,
         executed: true,
@@ -5593,8 +6093,8 @@
     "text"
   ];
   function requestedTraits(value) {
-    const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
-    const traits = raw.map(String).map((item) => item.trim()).filter(Boolean);
+    const raw2 = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+    const traits = raw2.map(String).map((item) => item.trim()).filter(Boolean);
     const unknown = traits.filter((item) => !TRAIT_GROUPS.includes(item));
     if (unknown.length > 0) {
       throw withCode(new Error(`unknown traits: ${unknown.join(", ")}; valid: ${TRAIT_GROUPS.join(", ")}`), "E_INVALID_ARGS");
@@ -5698,11 +6198,11 @@
 
   // plugin/src/main/executor-gradient.ts
   var GRADIENT_DATA_KEY = "shaderGradientConfig";
-  function toBytes(raw) {
-    if (raw instanceof Uint8Array) return raw;
-    if (Array.isArray(raw)) return new Uint8Array(raw);
-    if (raw !== null && typeof raw === "object") {
-      const values = Object.values(raw).filter((v) => typeof v === "number");
+  function toBytes(raw2) {
+    if (raw2 instanceof Uint8Array) return raw2;
+    if (Array.isArray(raw2)) return new Uint8Array(raw2);
+    if (raw2 !== null && typeof raw2 === "object") {
+      const values = Object.values(raw2).filter((v) => typeof v === "number");
       if (values.length > 0) return new Uint8Array(values);
     }
     throw new Error("IMPORT_GRADIENT: params.bytes did not carry image data");
@@ -5898,15 +6398,15 @@
   function route(input) {
     const anchors = input.intent === "annotation" ? resolveAnnotationAnchors(input.source, input.target) : resolveAnchors(input.source, input.target);
     const clearance = input.clearance ?? DEFAULT_CLEARANCE;
-    let raw;
+    let raw2;
     if (input.intent === "annotation") {
-      raw = [anchors.source.point, anchors.target.point];
+      raw2 = [anchors.source.point, anchors.target.point];
     } else if (isBackEdge(input.source, input.target, input.intent)) {
-      raw = backEdge(input.source, input.target, clearance);
+      raw2 = backEdge(input.source, input.target, clearance);
     } else {
-      raw = orthogonal(anchors.source, anchors.target, clearance);
+      raw2 = orthogonal(anchors.source, anchors.target, clearance);
     }
-    const simplified = simplify(raw.map(roundPoint));
+    const simplified = simplify(raw2.map(roundPoint));
     return simplified.length >= 2 ? simplified : [roundPoint(anchors.source.point), roundPoint(anchors.target.point)];
   }
 
@@ -5943,10 +6443,10 @@
   var NAMESPACE = "ease_design";
   var KEY = "connections-v1";
   var cache = null;
-  function parse(raw) {
-    if (!raw) return [];
+  function parse(raw2) {
+    if (!raw2) return [];
     try {
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw2);
       return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
@@ -6068,22 +6568,8 @@
   var CORRECTION_SCHEMA_VERSION = 1;
   var EDGE_RAW_LIMIT = 250;
   var RAW_RETENTION_DAYS = 30;
-  function canonical(value) {
-    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-    if (value && typeof value === "object") {
-      const entries = Object.entries(value).filter(([, child]) => child !== void 0).sort(([a], [b]) => a.localeCompare(b));
-      return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`).join(",")}}`;
-    }
-    return JSON.stringify(value) ?? "null";
-  }
   function correctionContentHash(value) {
-    const text = canonical(value);
-    let hash = 2166136261;
-    for (let i = 0; i < text.length; i += 1) {
-      hash ^= text.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+    return `fnv1a-${fnv1aHex(canonicalContent(value))}`;
   }
   function buildCorrectionEvent(input) {
     const body = { ...input, v: CORRECTION_SCHEMA_VERSION };
@@ -6128,10 +6614,10 @@
     return `${CHUNK_PREFIX}${i}`;
   }
   function readManifest() {
-    const raw = figma.root.getSharedPluginData(NAMESPACE2, MANIFEST_KEY);
-    if (!raw) return void 0;
+    const raw2 = figma.root.getSharedPluginData(NAMESPACE2, MANIFEST_KEY);
+    if (!raw2) return void 0;
     try {
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw2);
       if (parsed.v === 2 && typeof parsed.chunks === "number" && Number.isInteger(parsed.chunks) && parsed.chunks >= 0) {
         const evictedUnresolved = typeof parsed.evictedUnresolved === "number" && Number.isInteger(parsed.evictedUnresolved) && parsed.evictedUnresolved >= 0 ? parsed.evictedUnresolved : 0;
         return { v: 2, chunks: parsed.chunks, evictedUnresolved };
@@ -6468,7 +6954,7 @@
     });
     if (refusal) throw withCode(new Error(refusal), "E_WRONG_EDITOR");
   }
-  function str2(params, ...keys) {
+  function str4(params, ...keys) {
     for (const key of keys) {
       const value = params[key];
       if (typeof value === "string" && value.trim() !== "") return value.trim();
@@ -6514,19 +7000,19 @@
   }
   async function opConnect(params) {
     requireDesignFile2("drawing a connector");
-    const fromName = str2(params, "fromName");
-    const toName = str2(params, "toName");
-    const pageName = str2(params, "page");
-    let fromId = str2(params, "from", "source");
-    let toId = str2(params, "to", "target");
+    const fromName = str4(params, "fromName");
+    const toName = str4(params, "toName");
+    const pageName = str4(params, "page");
+    let fromId = str4(params, "from", "source");
+    let toId = str4(params, "to", "target");
     if (fromName) fromId = (await resolveByName(fromName, pageName, "source")).id;
     if (toName) toId = (await resolveByName(toName, pageName, "target")).id;
     if (!fromId || !toId) throw withCode(new Error("CONNECT requires params.from/params.to (ids) or params.fromName/params.toName"), "E_INVALID_ARGS");
     if (fromId === toId) throw withCode(new Error("CONNECT needs two different nodes"), "E_INVALID_ARGS");
-    const intent = str2(params, "intent") === "annotation" ? "annotation" : "flow";
-    const label = str2(params, "label");
-    const flowName = str2(params, "flow", "flowName");
-    const transitionId = str2(params, "transition", "transitionId");
+    const intent = str4(params, "intent") === "annotation" ? "annotation" : "flow";
+    const label = str4(params, "label");
+    const flowName = str4(params, "flow", "flowName");
+    const transitionId = str4(params, "transition", "transitionId");
     const clearance = typeof params.clearance === "number" ? params.clearance : void 0;
     const source = await resolveEndpoint2(fromId, "source");
     const target = await resolveEndpoint2(toId, "target");
@@ -6567,9 +7053,9 @@
   }
   async function opDisconnect(params) {
     requireDesignFile2("removing a connector");
-    const id = str2(params, "id", "connectionId");
-    const fromId = str2(params, "from");
-    const toId = str2(params, "to");
+    const id = str4(params, "id", "connectionId");
+    const fromId = str4(params, "from");
+    const toId = str4(params, "to");
     const record = id ? findConnection(id) : fromId && toId ? findConnectionByEndpoints(fromId, toId) : null;
     if (!record) throw withCode(new Error("DISCONNECT requires params.id, or both params.from and params.to"), "E_INVALID_ARGS");
     const vector = await existingNode(record.vectorNodeId, "VECTOR");
@@ -6582,8 +7068,8 @@
   }
   async function opReroute(params) {
     requireDesignFile2("rerouting connectors");
-    const id = str2(params, "id", "connectionId");
-    const flowName = str2(params, "flow", "flowName");
+    const id = str4(params, "id", "connectionId");
+    const flowName = str4(params, "flow", "flowName");
     const scoped = id ? [id] : flowName ? listConnections().filter((r) => r.flow?.name === flowName).map((r) => r.id) : void 0;
     const outcomes = await rerouteConnections(scoped);
     const counts = { redrawn: 0, unchanged: 0, orphan: 0 };
@@ -6798,8 +7284,8 @@
     }
     if (chrome && chrome.type === "SYNC_CONFIG") {
       const data = chrome.data;
-      const raw = data?.idleMs;
-      if (typeof raw === "number" && Number.isFinite(raw)) idleMs = Math.max(MIN_IDLE_MS, Math.floor(raw));
+      const raw2 = data?.idleMs;
+      if (typeof raw2 === "number" && Number.isFinite(raw2)) idleMs = Math.max(MIN_IDLE_MS, Math.floor(raw2));
       maybeSetRelaunchData(data?.bound === true);
       return;
     }
@@ -6884,8 +7370,8 @@
       "CLONE_TRAITS"
     ];
     if (!mutating.includes(cmd)) return [];
-    const raw = cmd === "CLONE_TRAITS" ? params.targetId ?? params.target : params.nodeId ?? params.node;
-    return typeof raw === "string" && raw ? [raw] : [];
+    const raw2 = cmd === "CLONE_TRAITS" ? params.targetId ?? params.target : params.nodeId ?? params.node;
+    return typeof raw2 === "string" && raw2 ? [raw2] : [];
   }
   async function dispatch(cmd, params) {
     switch (cmd) {

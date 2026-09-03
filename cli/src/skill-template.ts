@@ -42,7 +42,8 @@ export const SKILL_WORKFLOW = `## Typical workflow
    or refuses (E_AMBIGUOUS lists the duplicates; pass \`--page\` or use an id).
    For code context — CSS declarations, bound tokens, text, component props — use
    \`context <nodeId>\` (a page id works; a document id is refused). Read its \`budget\`
-   block before trusting the tree: \`emitted\` is always \`nodes.length\`, \`partial\`
+   block before trusting the tree: \`emitted\` is always \`nodes.length\` — except under
+   \`--dedup\`, where \`emitted = nodes.length + dedup.foldedNodes\` — \`partial\`
    counts records that arrived incomplete, and \`complete: false\` means something is
    missing. \`frontier[]\` says what: reason \`budget\`/\`deadline\` → re-run \`context\`
    on that id; reason \`depth\` → re-run with a larger \`--depth\`. \`--budget\` bounds the
@@ -50,6 +51,19 @@ export const SKILL_WORKFLOW = `## Typical workflow
    deadline covers the WALK only: ref resolution runs after it unbounded (\`refsMs\`), so a
    very large \`--budget\` can still hit the wire timeout — then \`E_TIMEOUT\` carries a
    \`jobId\`, and \`job <id> --wait\` collects the answer.
+   A record's \`intent\` block is what the designer MEANT — \`devStatus\`, \`annotations\`,
+   and a \`componentKey\` into \`refs.components\`, where a component's description and
+   documentation links are resolved once per key; it is absent when nothing was set, which on
+   a file where nobody used Dev Mode is every node. Dev-resource links are read only with
+   \`--dev-resources\`: one subtree-wide read, measured at a fixed ~2s on a Free file (a
+   server round trip, not a walk), reported as
+   \`budget.devResources {found, attached, readMs}\`.
+   \`--dedup\` (opt-in) shares repeated css/layout blocks and repeated subtrees through
+   \`refs.literals\`/\`refs.templates\`; it never merges two named refs, it reports
+   \`dedup {applied, savedBytes?, foldedNodes?}\`, and it ships the raw form with
+   \`applied: false\` plus a reason when it would not be smaller. Under it a \`frontier\`
+   entry may name a node folded into a template occurrence — resolve it through that
+   occurrence's \`rootMap\`, or inflate first.
 4. Mutate with the typed commands (\`create-frame\`, \`set-text\`, \`clone-traits\`, ...)
    before falling back to \`exec-js\` for anything they don't cover. Every mutating
    command first waits (up to 60s) for the plugin to register, so the first call after

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCorrectionEvent,
+  correctionContentHash,
   mergeCorrectionStores,
   retainCorrectionEvents,
 } from '../shared/supervised-memory';
@@ -14,6 +15,24 @@ const event = (eventId: string, timestamp: string, unresolved = false) => buildC
   timestamp,
   unresolved,
   traits: { spacing: { from: 8, to: 12 } },
+});
+
+describe('correction content hash — pinned values', () => {
+  // These three strings are the CURRENT implementation's output, captured before the
+  // canonicaliser and the FNV-1a loop were lifted into `shared/canonical-content-hash.ts` for
+  // reuse. A hash written into every stored correction event is a durable identity: if a
+  // refactor changes it, every event on disk reads as corrupt (`hasValidCorrectionHash`
+  // recomputes and compares). Pinning literals is the only way a move can be proved to be a
+  // move.
+  it('hashes a body to the same string before and after any refactor', () => {
+    expect(correctionContentHash({ v: 1, a: 'x', b: [1, 2, { c: null }] })).toBe('fnv1a-34a7cae6');
+    expect(correctionContentHash('plain')).toBe('fnv1a-b17f217f');
+  });
+
+  it('is insensitive to key order, which is what makes it a CONTENT hash', () => {
+    expect(correctionContentHash({ b: [1, 2, { c: null }], a: 'x', v: 1 }))
+      .toBe(correctionContentHash({ v: 1, a: 'x', b: [1, 2, { c: null }] }));
+  });
 });
 
 describe('supervised correction memory', () => {

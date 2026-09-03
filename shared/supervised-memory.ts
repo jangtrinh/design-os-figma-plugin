@@ -1,3 +1,5 @@
+import { canonicalContent, fnv1aHex } from './canonical-content-hash.ts';
+
 export const CORRECTION_SCHEMA_VERSION = 1 as const;
 export const PROJECT_RAW_LIMIT = 1_000;
 export const EDGE_RAW_LIMIT = 250;
@@ -32,26 +34,15 @@ export interface CorrectionMerge {
   tombstonedIds: string[];
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, child]) => child !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`).join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-/** Stable non-secret content fingerprint suitable for corruption detection. */
+/** Stable non-secret content fingerprint suitable for corruption detection.
+ *
+ *  The canonicaliser and the FNV-1a loop moved to `shared/canonical-content-hash.ts` when
+ *  `context-dedup-literals.ts` needed the same pair; the OUTPUT is unchanged, and
+ *  `tests/supervised-memory.test.ts` pins two values as literals so it stays that way. It has
+ *  to: this hash is written into every stored correction event and recomputed to validate it,
+ *  so a changed hash reads as corruption across every event already on disk. */
 export function correctionContentHash(value: unknown): string {
-  const text = canonical(value);
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  return `fnv1a-${fnv1aHex(canonicalContent(value))}`;
 }
 
 export function buildCorrectionEvent(
