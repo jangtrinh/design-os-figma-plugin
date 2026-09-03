@@ -495,11 +495,11 @@ describe('runGapfillDiff — the baseline must belong to THIS file', () => {
 
   it('the coverage an agent sees for that case: two true rows, one cause', async () => {
     // A foreign baseline is `baseline: null` PLUS a recorded error, so the boot takes the
-    // first-run path AND records failures. Both rows are true — nothing was diffed, and
+    // first-run path AND records a failure. Both rows are true — nothing was diffed, and
     // gap-fill did refuse a stored value — and this pins the shape so a later change cannot
-    // quietly drop either one. The error COUNT is 2 for the one condition: the foreign
-    // value is refused twice, once by the boot read and once by the write's own read-back;
-    // the messages themselves stay in `status.plugin.gapfill.errors`.
+    // quietly drop either one. The error COUNT is 1 for the one condition: the
+    // write read-back re-reads the SAME refusal the boot already recorded and must not
+    // record it again; the message itself stays in `status.plugin.gapfill.errors`.
     const pagesA = [fakePage('pA', 'Screens', [fakeNode('a1')])];
     installFigma({ pages: pagesA, fileKey: null, fileName: 'VSF - PCP' });
     const store = createMemoryBaselineStore();
@@ -516,9 +516,67 @@ describe('runGapfillDiff — the baseline must belong to THIS file', () => {
       complete: false,
       gaps: [
         { kind: 'baseline-missing', count: 1, see: 'status.plugin.gapfill' },
-        { kind: 'gapfill-errors', count: 2, see: 'status.plugin.gapfill' },
+        { kind: 'gapfill-errors', count: 1, see: 'status.plugin.gapfill' },
       ],
     });
+  });
+
+  it('a GENUINE second failure on the write itself still counts 2 — not every re-read is a duplicate', async () => {
+    // The boot refusal (foreign baseline) is suppressed on the write's read-back — but a
+    // DIFFERENT, later failure in the SAME write (the `set` itself, not the read-back) is a
+    // real second cause and must still be recorded on its own.
+    const pagesA = [fakePage('pA', 'Screens', [fakeNode('a1')])];
+    installFigma({ pages: pagesA, fileKey: null, fileName: 'VSF - PCP' });
+    const backing = createMemoryBaselineStore();
+    await runGapfillDiff(pagesA, backing, createGapfillStats()); // seeds the foreign baseline B will collide with
+
+    installFigma({ pages: [fakePage('pB', 'Cover', [fakeNode('b1')])], fileKey: null, fileName: 'VSF / PCP' });
+    const stats = createGapfillStats();
+    // Reads delegate to the seeded store (so boot finds the SAME foreign value as above);
+    // every `set` rejects, with no other file's baseline in the store to evict instead.
+    const failingWriteStore = {
+      get: (key: string) => backing.get(key),
+      keys: () => backing.keys(),
+      delete: (key: string) => backing.delete(key),
+      set: async () => { throw new Error('quota exceeded'); },
+    };
+
+    await runGapfillDiff([fakePage('pB', 'Cover', [fakeNode('b1')])], failingWriteStore, stats);
+
+    expect(stats.errorCount).toBe(2);
+    expect(stats.firstError).toContain('another file'); // the FIRST cause, kept
+  });
+
+  it('an IDLE write later in the SAME session never re-records the boot refusal, but its own write failure still counts', async () => {
+    // Same boot as above: foreign baseline (1) + the boot's own write refused (1) = 2. Then
+    // main.ts's idle debounce fires later in this SAME session, on the SAME `stats` — its
+    // read-back hits the identical foreign-baseline refusal (must NOT become 3 by itself),
+    // but its own `set` genuinely fails again too (a REPEATING real failure, not a fact
+    // already on record) and that must still count: 2 + 1 = 3, never 4.
+    const pagesA = [fakePage('pA', 'Screens', [fakeNode('a1')])];
+    installFigma({ pages: pagesA, fileKey: null, fileName: 'VSF - PCP' });
+    const backing = createMemoryBaselineStore();
+    await runGapfillDiff(pagesA, backing, createGapfillStats());
+
+    const pagesB = [fakePage('pB', 'Cover', [fakeNode('b1')])];
+    installFigma({ pages: pagesB, fileKey: null, fileName: 'VSF / PCP' });
+    const stats = createGapfillStats();
+    const failingWriteStore = {
+      get: (key: string) => backing.get(key),
+      keys: () => backing.keys(),
+      delete: (key: string) => backing.delete(key),
+      set: async () => { throw new Error('quota exceeded'); },
+    };
+    await runGapfillDiff(pagesB, failingWriteStore, stats);
+    expect(stats.errorCount).toBe(2); // boot read (1) + boot write refused (1)
+
+    // The idle debounce: main.ts:253 calls `writeBaseline` directly, reusing the session's
+    // one `gapfillStats` — never `runGapfillDiff` again, so nothing re-establishes the boot
+    // verdict; it must already be on `stats` from the boot call above.
+    await writeBaseline(pagesB, snapshotPageBounded, failingWriteStore, stats);
+
+    expect(stats.errorCount).toBe(3); // NOT 4 — the read-back refusal was not re-recorded
+    expect(stats.firstError).toContain('another file');
   });
 
   it('a KEYED file keeps its baseline across a RENAME — the fileKey, not the name, is the identity', async () => {
