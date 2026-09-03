@@ -78,19 +78,29 @@ export function resolveScanTimeout(requested?: number): number {
  * EXEC_JS source is not inspectable by the broker, so every walker invocation enters the
  * mutation admission path. The runner surface intentionally has no readOnly override.
  */
-export async function scanNodeSpec(
-  nodeId: string,
-  timeoutMs: number,
-  run: Runner = runCommand,
-  activity = `Scan · ${nodeId}`,
-): Promise<ScannedSpec> {
-  const code = `${SCAN_NODE_WALKER_BUNDLE}
+/**
+ * PURE. The exact EXEC_JS source scanNodeSpec ships to the sandbox — split out so a
+ * test can run the REAL generated script through the plugin's real compile()/lint
+ * seam without a live plugin connection (see
+ * tests/exec-js-generated-scripts-compile.test.ts).
+ */
+export function buildScanNodeCode(nodeId: string): string {
+  return `${SCAN_NODE_WALKER_BUNDLE}
 const node = await figma.getNodeByIdAsync(${JSON.stringify(nodeId)});
 if (!node) throw new Error('node not found: ' + ${JSON.stringify(nodeId)});
 const tokenNames = await __scan.readTokenNameMap();
 const mainComps = await __scan.readMainComponentMap(node);
 const keyedVars = await __scan.readKeyedVariableMap(node);
 return __scan.nodeToSpec(node, tokenNames, mainComps, keyedVars);`;
+}
+
+export async function scanNodeSpec(
+  nodeId: string,
+  timeoutMs: number,
+  run: Runner = runCommand,
+  activity = `Scan · ${nodeId}`,
+): Promise<ScannedSpec> {
+  const code = buildScanNodeCode(nodeId);
   // The label is the caller's, because EXEC_JS says nothing: this same walker runs
   // as a bare `scan-node`, as mirror-verify's "scan original" and as its "scan
   // rebuild" — three different waits the panel must be able to tell apart.
