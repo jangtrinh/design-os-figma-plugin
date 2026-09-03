@@ -197,7 +197,10 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + 'of that node in <dir> predates the earliest edit (then it is kept as <node-id>.before.png, '
       + 'beforeSource:"prior-export") — otherwise before:null with the reason, never a guess. Nodes '
       + 'deleted in the window and nodes the plugin cannot find are listed in skipped with a reason; '
-      + '--limit bounds the export count the same way it bounds the listing.',
+      + '--limit bounds the export count the same way it bounds the listing. A transport failure '
+      + '(E_NO_PLUGIN/E_NO_BROKER/E_TIMEOUT/E_VERSION_MISMATCH) stops the export at that node: the '
+      + 'same JSON is still printed with everything that landed plus png.error:{code,message,atNodeId}, '
+      + 'and the command exits 1.',
   },
   {
     name: 'errors',

@@ -9,7 +9,9 @@
 // `<dir>/<node-id-stem>.after.png` / `.before.png`; a qualifying prior `.after.png` is
 // renamed to `.before.png` AFTER the new export succeeds, so a failed export never moves
 // anything. Deleted nodes and nodes the plugin cannot find are listed as skipped with a
-// reason; a transport failure aborts (an empty success would be a wrong fact).
+// reason; a transport failure stops the export and is reported as `error` NEXT TO what
+// already landed — the PNGs written and renames made before it are never dropped from
+// the record (nothing vanishes silently), and the caller exits non-zero.
 import { mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCommand } from '../transport/broker-client.ts';
@@ -37,6 +39,9 @@ export interface ChangePngExport {
   scale: number;
   exported: ChangePngEntry[];
   skipped: ChangePngSkipped[];
+  /** Set when a transport failure stopped the export: nodes after `atNodeId` were never
+   *  attempted, and `exported`/`skipped` hold exactly what landed before it. */
+  error?: { code: string; message: string; atNodeId: string };
 }
 
 export interface ChangePngOptions {
@@ -88,6 +93,7 @@ export async function exportChangePngs(
   const runner = opts.runner ?? runCommand;
   const exported: ChangePngEntry[] = [];
   const skipped: ChangePngSkipped[] = [];
+  let error: ChangePngExport['error'];
   const groups = groupByNode(frames);
   if (groups.size > 0) mkdirSync(dir, { recursive: true });
 
@@ -107,11 +113,15 @@ export async function exportChangePngs(
         readOnly: true, activity: `Export · ${last.nodeName ?? nodeId}`,
       })) as { base64?: unknown } | null;
     } catch (err) {
-      if (err instanceof CliError && !ABORTING_CODES.has(err.code)) {
+      if (!(err instanceof CliError)) throw err;
+      if (!ABORTING_CODES.has(err.code)) {
         skipped.push({ nodeId, nodeName: last.nodeName, reason: `${err.code}: ${err.message}` });
         continue;
       }
-      throw err;
+      // Nothing was renamed or written for THIS node (the rename happens only after a
+      // successful export below), so the record so far is exactly what is on disk.
+      error = { code: err.code, message: err.message, atNodeId: nodeId };
+      break;
     }
     if (!reply || typeof reply.base64 !== 'string') {
       skipped.push({ nodeId, nodeName: last.nodeName, reason: 'EXPORT_PNG reply missing base64 image data' });
@@ -126,5 +136,5 @@ export async function exportChangePngs(
       ...(before.path === null && { note: 'no prior export predates the edit — only the after PNG exists' }),
     });
   }
-  return { dir, scale: opts.scale, exported, skipped };
+  return { dir, scale: opts.scale, exported, skipped, ...(error !== undefined && { error }) };
 }

@@ -18,6 +18,7 @@ import type { CommandArgs } from '../figma-agent.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 import { editFeedDir } from '../transport/edit-feed-log.ts';
 import { exportChangePngs } from './changes-png-export.ts';
+import { printJson, withFileContext } from '../util/json-out.ts';
 import { editSentence } from '../../../shared/edit-vocabulary.ts';
 import { isValidEditFrame, type EditActor, type EditFrame } from '../../../shared/edit-feed.ts';
 
@@ -245,7 +246,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     ? await exportChangePngs(limited, resolve(pngDir), { scale: args.num('scale') ?? 2 })
     : undefined;
 
-  return {
+  const result = {
     file: slug,
     // Resolved path printed so a cwd/broker spawn-cwd mismatch (spec unresolved q5) is
     // visible instead of silent.
@@ -256,4 +257,12 @@ export async function run(args: CommandArgs): Promise<unknown> {
     ...(warnings > 0 && { warnings }),
     ...(pngExport !== undefined && { png: pngExport }),
   };
+  if (pngExport?.error !== undefined) {
+    // A stopped export is still ONE JSON object on stdout — the PNGs already written and
+    // renamed are in `png.exported`, the failure in `png.error` — and a non-zero exit, so a
+    // script sees both the partial work and that the window is not fully covered.
+    printJson(withFileContext(result));
+    process.exit(1);
+  }
+  return result;
 }

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../cli/src/transport/broker-client.ts', () => ({ runCommand: vi.fn() }));
+vi.mock('../cli/src/transport/broker-client.ts', () => ({ runCommand: vi.fn(), getLastFileContext: () => undefined }));
 
 import { parseArgs } from '../cli/src/arg-parse.ts';
 import { exportChangePngs, pngFileStem } from '../cli/src/commands/changes-png-export.ts';
@@ -142,9 +142,39 @@ describe('exportChangePngs', () => {
     expect(out.exported.map((e) => e.nodeId)).toEqual(['1:23']);
   });
 
-  it('a transport failure (no plugin) aborts the whole export rather than reporting an empty success', async () => {
+  it('a transport failure on the FIRST node stops the export and reports the error — never an empty success', async () => {
     const runner = (async () => { throw new CliError('E_NO_PLUGIN', 'no plugin'); }) as unknown as typeof runCommand;
-    await expect(exportChangePngs([frame()], join(dir, 'shots'), { scale: 2, runner })).rejects.toMatchObject({ code: 'E_NO_PLUGIN' });
+    const out = await exportChangePngs([frame()], join(dir, 'shots'), { scale: 2, runner });
+    expect(out.exported).toEqual([]);
+    expect(out.error).toEqual({ code: 'E_NO_PLUGIN', message: 'no plugin', atNodeId: '1:23' });
+  });
+
+  it('a transport failure mid-window keeps the record of what already landed, stops, and leaves no half-done rename', async () => {
+    const shots = join(dir, 'shots');
+    mkdirSync(shots, { recursive: true });
+    // Node 2 has a qualifying prior export: it must NOT be renamed when its export fails.
+    const priorTwo = join(shots, '2-2.after.png');
+    writeFileSync(priorTwo, 'prior-two');
+    utimesSync(priorTwo, new Date(EDIT_TS - 60_000), new Date(EDIT_TS - 60_000));
+    const calls: string[] = [];
+    const runner = (async (_cmd: string, params: unknown) => {
+      const id = (params as { nodeId: string }).nodeId;
+      calls.push(id);
+      if (id === '2:2') throw new CliError('E_TIMEOUT', 'EXPORT_PNG timed out after 15000ms');
+      return png(`png-${id}`);
+    }) as unknown as typeof runCommand;
+
+    const out = await exportChangePngs(
+      [frame({ nodeId: '1:23' }), frame({ nodeId: '2:2', nodeName: 'Two' }), frame({ nodeId: '3:3', nodeName: 'Three' })],
+      shots, { scale: 2, runner },
+    );
+
+    expect(out.exported.map((e) => e.nodeId)).toEqual(['1:23']);
+    expect(readFileSync(out.exported[0]!.after!, 'utf8')).toBe('png-1:23');
+    expect(out.error).toEqual({ code: 'E_TIMEOUT', message: 'EXPORT_PNG timed out after 15000ms', atNodeId: '2:2' });
+    expect(calls).toEqual(['1:23', '2:2']); // node 3 never attempted
+    expect(readFileSync(priorTwo, 'utf8')).toBe('prior-two'); // untouched
+    expect(existsSync(join(shots, '2-2.before.png'))).toBe(false);
   });
 
   it('an empty window exports nothing and says so without touching the plugin', async () => {
@@ -201,6 +231,29 @@ describe('changes --png (run)', () => {
     const out = await run(parseArgs(['--owner-only'])) as { png?: unknown };
     expect(out.png).toBeUndefined();
     expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('an aborted export still prints the full JSON (exported paths + png.error) and exits non-zero', async () => {
+    vi.mocked(runCommand).mockImplementation(async (_cmd, params) => {
+      const id = (params as { nodeId: string }).nodeId;
+      if (id === '3:3') throw new CliError('E_NO_PLUGIN', 'Figma plugin disconnected while waiting for the reply');
+      return png(`png-${id}`);
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code: number) => { throw new Error(`__exit ${code}`); }) as never);
+    try {
+      await expect(run(parseArgs(['--owner-only', '--png', join(dir, 'shots')]))).rejects.toThrow('__exit 1');
+      const printed = JSON.parse(stdout.mock.calls.map((c) => String(c[0])).join('')) as {
+        png: { exported: Array<{ nodeId: string; after: string }>; error: { code: string; atNodeId: string } };
+      };
+      expect(printed.png.exported.map((e) => e.nodeId)).toEqual(['1:23']);
+      expect(existsSync(printed.png.exported[0]!.after)).toBe(true);
+      expect(printed.png.error).toMatchObject({ code: 'E_NO_PLUGIN', atNodeId: '3:3' });
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      stdout.mockRestore();
+      exit.mockRestore();
+    }
   });
 
   it('--png with no directory value is refused', async () => {
