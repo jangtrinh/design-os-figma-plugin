@@ -1,21 +1,24 @@
-// Reconnect gap-fill (wave 4.4 phase 02 §2) — covers the window the live event stream
-// cannot see: the plugin was CLOSED. Page switches need no gap-fill — `documentchange` is
-// document-wide once `loadAllPagesAsync` has run (spec's own verdict), so only the
-// plugin-closed window is a real gap.
+// Reconnect gap-fill — covers the window the live event stream cannot see: the plugin was
+// CLOSED. Page switches need no gap-fill — `documentchange` is document-wide once
+// `loadAllPagesAsync` has run — so only the plugin-closed window is a real gap.
 //
-// A compact snapshot — existence/name/position ONLY (property-level diffing for the
-// offline window is a stated non-goal) — is persisted in `figma.root`'s sharedPluginData,
-// CHUNKED AND PER PAGE, for two measured reasons: (1) Figma caps one sharedPluginData
-// entry at 100kB (`@figma/plugin-typings`) — 4,000 six-field records is far past that; (2)
-// `documentchange` is document-wide, but a snapshot of only `figma.currentPage` would
-// leave every OTHER page invisible while the plugin is closed — the exact gap this closes.
+// A compact baseline — existence/name/position ONLY (property-level diffing for the
+// offline window is a stated non-goal) — is persisted per FILE in `figma.clientStorage`
+// (see gapfill-baseline-store.ts for why it is not in the document, and why one value now
+// replaces the old per-page chunk/manifest machinery). The baseline covers EVERY page, not
+// just `figma.currentPage`: a page nobody visited is exactly where a closed-window edit
+// hides.
 //
-// Split cleanly into a PURE core (`diffSnapshots`/`splitSnapshotChunks` — no figma access,
-// fully unit-tested in tests/edit-gapfill.test.ts) and the figma-dependent read/write/diff
-// halves, which inherit main.ts's own untestability (cannot be imported outside a live
-// plugin sandbox) — verified instead by the real-canvas run budgeted in phase 02's
-// validation section.
+// Split cleanly into a PURE core (diff, merge, record codec, write decision — no figma
+// access, unit-tested in tests/edit-gapfill.test.ts) and the figma-dependent walk/read/
+// write halves, which are exercised through an injected store and fake pages in
+// tests/edit-gapfill-baseline.test.ts.
 import type { EditInput, EditOp } from '../../../shared/edit-feed';
+import {
+  baselineKeyFor, readFileBaseline, writeFileBaseline,
+  type BaselineIdentity, type BaselinePage, type BaselineRecord, type BaselineStore, type FileBaseline,
+} from './gapfill-baseline-store';
+import { recordGapfillError, recordGapfillEviction, type GapfillStats } from './gapfill-status';
 
 export interface NodeSnapshot {
   id: string;
@@ -26,63 +29,33 @@ export interface NodeSnapshot {
   parent: string | null;
 }
 
-const SNAPSHOT_NS = 'ease_design';
-const SNAPSHOT_MANIFEST_KEY = 'figma-edit-snapshot-v1';
-const chunkKey = (pageId: string, i: number): string => `figma-edit-snap-${pageId}-${i}`;
+/** The pre-clientStorage baseline: a manifest plus per-page chunks written into
+ *  `figma.root`'s sharedPluginData. Cleared once, never read — the write path that
+ *  produced it threw on its first record on every file, so the data behind these keys is
+ *  either absent or a fragment no diff may trust. */
+const LEGACY_NS = 'ease_design';
+const LEGACY_MANIFEST_KEY = 'figma-edit-snapshot-v1';
+const LEGACY_CHUNK_PREFIX = 'figma-edit-snap-';
 
-/** Comfortably under Figma's real 100kB per-entry cap (mirrors correction-edge-store.ts's
- *  own CHUNK_BYTE_BUDGET headroom). */
-export const SNAPSHOT_CHUNK_BYTES = 64_000;
 /** The repo's existing scan budget — a page over this reports `truncated: true` rather
- *  than silently under-reporting (risk register: deleted nodes past the cap are
- *  unknowable, and saying so is the honest answer). */
+ *  than silently under-reporting (deleted nodes past the cap are unknowable, and saying so
+ *  is the honest answer). */
 export const SNAPSHOT_NODE_CAP_PER_PAGE = 4_000;
-
-interface PageManifestEntry {
-  pageId: string;
-  /** Stage-4 fix round (M4) — the last-known page NAME, so a page that vanished entirely
-   *  (deleted while the plugin was closed) can still be named in its own deletion notice;
-   *  a bare page id is not something a human/agent can act on. */
-  pageName: string;
-  chunks: number;
-  truncated: boolean;
-}
-interface SnapshotManifest { v: 1; pages: PageManifestEntry[] }
 
 // ── Pure core (unit-tested directly, no figma access) ───────────────────────────────
 
-/** Rounds to 0.5px — a sub-pixel re-layout must not churn the snapshot or spuriously
+/** Rounds to 0.5px — a sub-pixel re-layout must not churn the baseline or spuriously
  *  report a "moved" node between two sessions. */
 export function normalizeSnapshotCoord(n: number): number {
   return Math.round(n * 2) / 2;
 }
 
-function utf8ByteLength(s: string): number {
-  return new TextEncoder().encode(s).length;
+export function toBaselineRecord(rec: NodeSnapshot): BaselineRecord {
+  return [rec.id, rec.name, rec.type, rec.x, rec.y, rec.parent];
 }
 
-/** Splits one page's records into JSON-array chunks within `SNAPSHOT_CHUNK_BYTES`,
- *  strictly on RECORD boundaries (never mid-JSON) — mirrors correction-edge-store.ts's
- *  `splitIntoChunks`. A single oversized record still lands whole, in its own chunk,
- *  never silently dropped or truncated here (the `SNAPSHOT_NODE_CAP_PER_PAGE` count cap
- *  is the honest truncation signal; this is pure byte-packing). */
-export function splitSnapshotChunks(records: readonly NodeSnapshot[]): string[] {
-  const chunks: string[] = [];
-  let current: NodeSnapshot[] = [];
-  let currentBytes = 2; // "[]"
-  for (const rec of records) {
-    const recBytes = utf8ByteLength(JSON.stringify(rec));
-    const commaBeforeAdd = current.length > 0 ? 1 : 0;
-    if (current.length > 0 && currentBytes + commaBeforeAdd + recBytes > SNAPSHOT_CHUNK_BYTES) {
-      chunks.push(JSON.stringify(current));
-      current = [];
-      currentBytes = 2;
-    }
-    currentBytes += (current.length > 0 ? 1 : 0) + recBytes;
-    current.push(rec);
-  }
-  if (current.length > 0) chunks.push(JSON.stringify(current));
-  return chunks;
+export function fromBaselineRecord(rec: BaselineRecord): NodeSnapshot {
+  return { id: rec[0], name: rec[1], type: rec[2], x: rec[3], y: rec[4], parent: rec[5] };
 }
 
 /** Boot-path seam: `runGapfillDiff` has ALREADY walked every page once for its diff, so
@@ -161,30 +134,37 @@ export function mergeUpdatedRecords(renamed: readonly RecordPair[], moved: reado
   return [...byId.values()].map(({ rec, props }) => ({ rec, changedProps: [...props].sort() }));
 }
 
-/** Stage-4 fix round (M4) — which page ids the PREVIOUS manifest knew about that no
- *  longer appear among the currently-loaded pages at all (the whole page was deleted
- *  while the plugin was closed). Pure — figma-dependent callers pass in plain ids. */
+/** Which page ids the PREVIOUS baseline knew about that no longer appear among the
+ *  currently-loaded pages at all (the whole page was deleted while the plugin was
+ *  closed). Pure — figma-dependent callers pass in plain ids. */
 export function deletedPageIds(prevPageIds: readonly string[], currentPageIds: ReadonlySet<string>): string[] {
   return prevPageIds.filter((id) => !currentPageIds.has(id));
 }
 
-/** Stage-4 fix round (M5) — either side of a page's own snapshot being truncated makes
- *  created/deleted facts unreliable (a node pushed past the cap by unrelated tree growth
- *  reads as a false deletion; one that only now fits reads as a false creation). Pure. */
+/** Either side of a page's own snapshot being truncated makes created/deleted facts
+ *  unreliable (a node pushed past the cap by unrelated tree growth reads as a false
+ *  deletion; one that only now fits reads as a false creation). Pure. */
 export function pageWasTruncated(prevTruncated: boolean | undefined, nextTruncated: boolean): boolean {
   return prevTruncated === true || nextTruncated;
+}
+
+/** A deleted page is named with its node count only when the baseline actually stored the
+ *  records to count. A truncated page stored none, and inventing "(0 node(s))" for it
+ *  would be a wrong fact where an absent one costs nothing. */
+export function deletedPageLabel(page: BaselinePage): string {
+  return page.records ? `${page.name} (${page.records.length} node(s))` : page.name;
 }
 
 function toGapfillEdit(op: EditOp, rec: NodeSnapshot, page: string, changedProps: string[] = []): EditInput {
   return {
     op, nodeId: rec.id, nodeName: rec.name, nodeType: rec.type,
     // Gap-fill is existence/name/position only (spec non-goal: no property-level diff for
-    // the offline window) — the snapshot itself never tracked a parent NAME (only a
+    // the offline window) — the baseline itself never tracked a parent NAME (only a
     // parent id, for a future use), so this is null rather than invented.
     parentName: null,
     page, changedProps, origin: 'LOCAL',
     // The agent cannot have acted while its bridge was down — every gap-fill frame is
-    // unambiguously the owner's (spec §2).
+    // unambiguously the owner's.
     actor: 'owner',
   };
 }
@@ -201,14 +181,78 @@ export function gapfillEditsForPage(diff: GapfillDiff, pageName: string): EditIn
   return edits;
 }
 
-// ── Figma-dependent halves (untestable outside a live sandbox, same as main.ts) ────────
+/** The one frame a session emits when it had NO baseline to diff against — first run on
+ *  this file, a cleared cache, or a renamed Free-tier file whose slug-keyed baseline was
+ *  orphaned. Reported instead of a silent empty diff, and instead of diffing against an
+ *  empty baseline, which would fabricate a "created" frame for every node in the file. */
+export function baselineMissingNotice(fileName: string, pageName: string): EditInput {
+  return toGapfillEdit(
+    'updated',
+    { id: 'gapfill:baseline-missing', name: fileName, type: 'DOCUMENT', x: 0, y: 0, parent: null },
+    pageName,
+    ['baseline-missing'],
+  );
+}
 
-interface PageSnapshotResult { records: NodeSnapshot[]; truncated: boolean }
+export interface PageSnapshotResult { records: NodeSnapshot[]; truncated: boolean }
+
+/**
+ * The per-page write DECISION, pure so it is testable without a live sandbox: `snapshot`
+ * is the figma-dependent page walk (real caller: `snapshotPage`), free to throw — e.g.
+ * `PageNode.findAll` on a page that isn't loaded under `dynamic-page`. On success: a fresh
+ * page entry, carrying records only when the page is not truncated. On failure: the
+ * PREVIOUS entry carries forward VERBATIM, so one page's failure never discards that
+ * page's usable history nor any OTHER page's fresh data; `null` when there was no previous
+ * entry either (a brand-new page whose first snapshot attempt failed — nothing to keep).
+ */
+export function resolveBaselinePage(
+  page: { id: string; name: string },
+  prevEntry: BaselinePage | undefined,
+  snapshot: () => PageSnapshotResult,
+): BaselinePage | null {
+  try {
+    const { records, truncated } = snapshot();
+    return truncated
+      ? { id: page.id, name: page.name, truncated: true }
+      : { id: page.id, name: page.name, truncated: false, records: records.map(toBaselineRecord) };
+  } catch {
+    return prevEntry ?? null;
+  }
+}
+
+/**
+ * Coalescing trigger for an ASYNC write that must never run twice at once. A trigger
+ * arriving while a write is in flight re-arms it exactly once for after that write
+ * settles, so the request is neither dropped nor allowed to interleave two writes racing
+ * for the same key. Any number of triggers during one flight collapse into that single
+ * re-run — the later run reads the newer scene anyway. Pure control flow, unit-tested.
+ */
+export function createSingleFlightWriter(write: () => Promise<void>): () => void {
+  let inFlight = false;
+  let rearmed = false;
+
+  function settle(): void {
+    inFlight = false;
+    if (rearmed) { rearmed = false; trigger(); }
+  }
+
+  function trigger(): void {
+    if (inFlight) { rearmed = true; return; }
+    inFlight = true;
+    let started: Promise<void>;
+    try { started = write(); } catch { settle(); return; }
+    started.then(settle, settle);
+  }
+
+  return trigger;
+}
+
+// ── Figma-dependent halves ─────────────────────────────────────────────────────────
 
 /** Walks one page's tree (existence/name/position only), capped at
  *  `SNAPSHOT_NODE_CAP_PER_PAGE` — a page over the cap sets `truncated: true` rather than
  *  silently under-reporting. */
-function snapshotPage(page: PageNode): PageSnapshotResult {
+export function snapshotPage(page: PageNode): PageSnapshotResult {
   const all = page.findAll(() => true);
   const truncated = all.length > SNAPSHOT_NODE_CAP_PER_PAGE;
   const records: NodeSnapshot[] = [];
@@ -227,203 +271,183 @@ function snapshotPage(page: PageNode): PageSnapshotResult {
   return { records, truncated };
 }
 
-function readManifest(): SnapshotManifest | null {
-  const raw = figma.root.getSharedPluginData(SNAPSHOT_NS, SNAPSHOT_MANIFEST_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as SnapshotManifest;
-    return parsed?.v === 1 && Array.isArray(parsed.pages) ? parsed : null;
-  } catch {
-    return null; // a corrupt manifest degrades to "no previous snapshot", never a crash
-  }
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
-function readPageChunks(entry: PageManifestEntry): NodeSnapshot[] {
-  const records: NodeSnapshot[] = [];
-  for (let i = 0; i < entry.chunks; i++) {
-    const raw = figma.root.getSharedPluginData(SNAPSHOT_NS, chunkKey(entry.pageId, i));
-    if (!raw) continue;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed)) records.push(...(parsed as NodeSnapshot[]));
-    } catch { /* a corrupt chunk degrades to fewer records for this page, never a crash */ }
-  }
-  return records;
+function currentIdentity(): BaselineIdentity {
+  return { fileKey: figma.fileKey ?? null, fileName: figma.root.name };
 }
 
-export interface PageWriteResult {
-  entry: PageManifestEntry;
-  /** `null` = this page's own snapshot attempt failed — write NOTHING for it (its
-   *  existing chunks on disk stay exactly as they were) rather than mixing a fresh
-   *  manifest entry with stale/partial chunk data. */
-  chunksToWrite: string[] | null;
+function currentBaselineKey(): string {
+  const { fileKey, fileName } = currentIdentity();
+  return baselineKeyFor(fileKey, fileName);
+}
+
+async function readBaseline(store: BaselineStore, stats: GapfillStats): Promise<{ baseline: FileBaseline | null; readFailed: boolean }> {
+  const { baseline, error, readFailed } = await readFileBaseline(store, currentBaselineKey(), currentIdentity());
+  if (error) recordGapfillError(stats, error);
+  return { baseline, readFailed: readFailed === true };
 }
 
 /**
- * Stage-4 fix round (N1) — the per-page write DECISION, injectable so it is testable
- * without a live figma sandbox: `snapshot` is the figma-dependent page walk (real caller:
- * `snapshotPage`), free to throw — e.g. `PageNode.findAll` on a page that isn't loaded
- * under `dynamic-page` (a real risk now that the close hook can fire mid-teardown). On
- * success: fresh chunks + a fresh manifest entry. On failure: the PREVIOUS entry carries
- * forward VERBATIM (never a partial/mixed write for that one page — the old chunks under
- * its keys are simply left untouched); `null` when there was no previous entry either (a
- * brand-new page whose very first snapshot attempt failed — nothing yet to preserve, and
- * nothing to write). One page's failure never touches any OTHER page's fresh write, and
- * never aborts the whole function the way a single wrapping try/catch used to.
+ * Writes the baseline for every loaded page as ONE clientStorage value — called after the
+ * boot diff and on the idle debounce. Never throws: a failure is recorded in STATUS and
+ * leaves the PREVIOUS baseline in place, which makes the next session's diff report some
+ * already-reported edits again (duplicates) but lose none.
  */
-export function resolvePageWrite(
-  page: { id: string; name: string },
-  prevEntry: PageManifestEntry | undefined,
-  snapshot: () => PageSnapshotResult,
-): PageWriteResult | null {
-  try {
-    const { records, truncated } = snapshot();
-    const chunks = splitSnapshotChunks(records);
-    return { entry: { pageId: page.id, pageName: page.name, chunks: chunks.length, truncated }, chunksToWrite: chunks };
-  } catch {
-    return prevEntry ? { entry: prevEntry, chunksToWrite: null } : null;
+export async function writeBaseline(
+  pages: readonly PageNode[],
+  // Injectable so the boot path can reuse the walk `runGapfillDiff` already took (see
+  // `snapshotProviderFrom`). The idle caller, which has no prior walk to reuse, passes
+  // `snapshotPage` itself — there is no implicit default, so no caller can silently write
+  // a baseline built by the wrong walker.
+  snapshotFor: (page: PageNode) => PageSnapshotResult,
+  store: BaselineStore,
+  stats: GapfillStats,
+  // Injectable so a test can pin the stamp to a known moment. `writtenAt` is not
+  // decoration: eviction ranks every file's baseline by it, so a stamp that does not parse
+  // back to the write moment silently breaks which file gets dropped under quota.
+  now: () => number = Date.now,
+): Promise<void> {
+  const key = currentBaselineKey();
+  const { baseline: prev, readFailed } = await readBaseline(store, stats);
+  // A read that FAILED is not an empty baseline. Writing the current scene over a value we
+  // could not load would discard the only record of the window the plugin was closed —
+  // turning "reported late" into "never reported". Skip this write and keep the stored
+  // one; the next write (idle fire or next boot) reads again.
+  if (readFailed) {
+    recordGapfillError(stats, 'baseline write skipped: the previous baseline could not be read');
+    return;
+  }
+  const prevById = new Map((prev?.pages ?? []).map((p) => [p.id, p]));
+  const nextPages: BaselinePage[] = [];
+  for (const page of pages) {
+    const resolved = resolveBaselinePage(page, prevById.get(page.id), () => snapshotFor(page));
+    if (resolved) nextPages.push(resolved);
+  }
+  const identity = currentIdentity();
+  const baseline: FileBaseline = {
+    writtenAt: new Date(now()).toISOString(),
+    writtenBy: figma.currentUser ? figma.currentUser.name : null,
+    fileKey: identity.fileKey,
+    fileName: identity.fileName,
+    pages: nextPages,
+  };
+  const result = await writeFileBaseline(store, key, baseline);
+  if (result.evicted) recordGapfillEviction(stats, result.evicted);
+  if (result.error) recordGapfillError(stats, result.error);
+  if (result.ok) {
+    stats.baselineWrittenAt = baseline.writtenAt;
+    stats.baselineBytes = result.bytes;
   }
 }
 
-/** Writes the snapshot for every loaded page — called on a debounce after each idle
- *  window and on plugin close (main.ts wiring, both best-effort). Clears any now-stale
- *  chunk keys past the new count, so a page that shrank never leaves orphaned chunks a
- *  future read would wrongly append.
- *
- *  Stage-4 fix round (M4) — ALSO clears chunk keys for a page that existed in the
- *  PREVIOUS manifest but is no longer loaded at all (the whole page was deleted while the
- *  plugin was closed) — otherwise those chunks leak in `figma.root`'s sharedPluginData
- *  forever, since nothing else ever visits a page id that no longer exists.
- *
- *  Stage-4 fix round (N1) — per-page atomicity via `resolvePageWrite`: one page's own
- *  snapshot/write failure can never corrupt or discard any OTHER page's fresh data, and
- *  never silently mixes stale chunks under a manifest entry that claims a different count.
- *
- *  Best-effort throughout: a write failure degrades to "no gap-fill this session", never
- *  a crash (risk register). */
-export function writeSnapshot(
-  pages: readonly PageNode[],
-  // Injectable so the boot path can reuse the walk `runGapfillDiff` already took (see
-  // `snapshotProviderFrom`). The default keeps every OTHER caller — idle debounce and the
-  // `close` handler, both of which have no prior walk to reuse and MUST stay fully
-  // synchronous — exactly as it was.
-  snapshotFor: (page: PageNode) => PageSnapshotResult = snapshotPage,
-): void {
-  const prevManifest = readManifest();
-  const manifest: SnapshotManifest = { v: 1, pages: [] };
-  const currentPageIds = new Set(pages.map((p) => p.id));
-
-  for (const page of pages) {
-    const prevEntry = prevManifest?.pages.find((p) => p.pageId === page.id);
-    const result = resolvePageWrite(page, prevEntry, () => snapshotFor(page));
-    if (!result) continue; // brand-new page, first attempt failed — nothing to carry, nothing to write
-    if (result.chunksToWrite === null) {
-      manifest.pages.push(result.entry); // carrying the previous entry forward verbatim
-      continue;
-    }
-    try {
-      const prevChunkCount = prevEntry?.chunks ?? 0;
-      for (let i = 0; i < result.chunksToWrite.length; i++) {
-        figma.root.setSharedPluginData(SNAPSHOT_NS, chunkKey(page.id, i), result.chunksToWrite[i]!);
-      }
-      for (let i = result.chunksToWrite.length; i < prevChunkCount; i++) figma.root.setSharedPluginData(SNAPSHOT_NS, chunkKey(page.id, i), '');
-      manifest.pages.push(result.entry);
-    } catch {
-      // The WRITE itself failed (not the snapshot walk) — same reasoning: never claim
-      // fresh chunks landed when they didn't; carry the previous entry forward instead.
-      if (prevEntry) manifest.pages.push(prevEntry);
-    }
-  }
-
-  if (prevManifest) {
-    for (const prevEntry of prevManifest.pages) {
-      if (currentPageIds.has(prevEntry.pageId)) continue;
-      try {
-        for (let i = 0; i < prevEntry.chunks; i++) figma.root.setSharedPluginData(SNAPSHOT_NS, chunkKey(prevEntry.pageId, i), '');
-      } catch {
-        // Best-effort clear — a failure here just leaves those stale chunks for next time.
-      }
-    }
-  }
-
+/**
+ * Clears the pre-clientStorage in-document baseline keys, ONCE, when a manifest is still
+ * present. Gated on the manifest so an already-clean file pays no document write at all.
+ * Deliberately never READS those keys as a baseline: the value behind them is at best a
+ * fragment of a walk that threw, and diffing against a fragment invents a "created" frame
+ * for every node it is missing. Returns the number of keys cleared.
+ */
+export function clearLegacyGapfillDocumentData(stats: GapfillStats): number {
+  let cleared = 0;
   try {
-    figma.root.setSharedPluginData(SNAPSHOT_NS, SNAPSHOT_MANIFEST_KEY, JSON.stringify(manifest));
-  } catch {
-    // Manifest write itself failed — best-effort, degrades to "no gap-fill next session".
+    if (!figma.root.getSharedPluginData(LEGACY_NS, LEGACY_MANIFEST_KEY)) return 0;
+    const keys = figma.root.getSharedPluginDataKeys(LEGACY_NS);
+    for (const key of keys) {
+      if (key !== LEGACY_MANIFEST_KEY && !key.startsWith(LEGACY_CHUNK_PREFIX)) continue;
+      figma.root.setSharedPluginData(LEGACY_NS, key, '');
+      cleared += 1;
+    }
+  } catch (err) {
+    recordGapfillError(stats, `legacy gap-fill cleanup failed: ${messageOf(err)}`);
   }
+  stats.legacyCleared += cleared;
+  return cleared;
 }
 
 /**
  * Runs ONCE at boot (main.ts wiring, after `loadAllPagesAsync`): diffs the PREVIOUS
- * session's snapshot against the CURRENT scene, across every loaded page, and returns the
+ * session's baseline against the CURRENT scene, across every loaded page, and returns the
  * gap-fill edits ready to post as one EDIT_FEED batch (`source: 'gapfill'`, stamped by the
- * caller). Budget: one diff per reconnect (brief #4) — this must be called exactly once
- * at boot, never on an interval. Returns `[]` on a first-ever run (nothing to diff against
- * yet) — also writes a FRESH snapshot immediately after, so the window between "diffed"
- * and "next observation" never grows stale.
+ * caller). Budget: one diff per reconnect — called exactly once at boot, never on an
+ * interval. Writes a FRESH baseline before resolving, so the window between "diffed" and
+ * "next observation" never grows stale.
  *
- * Stage-4 fix round:
- *   M4 — a page that existed in the PREVIOUS session but is no longer loaded AT ALL (the
- *   whole page was deleted while the plugin was closed) never appears in `pages`, so it
- *   would otherwise never be diffed. ONE honest notice frame here (never N synthetic
- *   per-node deletions — we only know the page is gone, not whether each node was
- *   individually deleted or the whole page vanished); the stale chunk keys themselves are
- *   cleared by `writeSnapshot` below.
- *   M5 — when EITHER side of a page's own snapshot was truncated, created/deleted facts
- *   are UNRELIABLE (a node pushed past the cap by unrelated tree growth reads as a false
- *   deletion; a node that was always there but only now fits reads as a false creation).
- *   Honest under-reporting beats a wrong fact: suppress the WHOLE diff for that page and
- *   emit only the truncation notice.
+ * Two honest under-reports rather than wrong facts:
+ *   - No baseline at all → ONE `baseline-missing` notice, never a whole-file "created"
+ *     storm diffed against nothing.
+ *   - A page that existed in the PREVIOUS session but is no longer loaded AT ALL → ONE
+ *     notice naming the page (never N synthetic per-node deletions — we know the page is
+ *     gone, not whether each node was individually deleted).
+ *   - Either side of a page truncated → the WHOLE diff for that page is suppressed and
+ *     only the truncation notice is emitted.
+ *   - A page whose walk THROWS → that page's diff is skipped and the failure recorded;
+ *     its previous baseline entry carries forward and every other page still reports.
  */
-export async function runGapfillDiff(pages: readonly PageNode[]): Promise<EditInput[]> {
-  const prev = readManifest();
+export async function runGapfillDiff(
+  pages: readonly PageNode[],
+  store: BaselineStore,
+  stats: GapfillStats,
+): Promise<EditInput[]> {
+  const { baseline: prev } = await readBaseline(store, stats);
   if (!prev) {
-    // First-ever run — nothing to diff, but start the baseline now. Walked here (with
-    // yields) so the write below reuses the results; a page whose walk throws is simply
-    // not cached, and `resolvePageWrite`'s own fallback attempt keeps its per-page skip
-    // semantics for exactly that page.
+    // Nothing to diff, but start the baseline now. Walked here (with yields) so the write
+    // below reuses the results; a page whose walk throws is simply not cached, and
+    // `resolveBaselinePage`'s own fallback attempt keeps its per-page skip semantics.
     const firstRun = new Map<string, PageSnapshotResult>();
     for (const page of pages) {
       await yieldToHost();
-      try { firstRun.set(page.id, snapshotPage(page)); } catch { /* resolvePageWrite re-attempts and skips */ }
+      try { firstRun.set(page.id, snapshotPage(page)); } catch { /* resolveBaselinePage re-attempts and skips */ }
     }
-    writeSnapshot(pages, snapshotProviderFrom(firstRun, snapshotPage));
-    return [];
+    await writeBaseline(pages, snapshotProviderFrom(firstRun, snapshotPage), store, stats);
+    return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
   }
+
   const edits: EditInput[] = [];
   const walked = new Map<string, PageSnapshotResult>();
   const currentPageIds = new Set(pages.map((p) => p.id));
+  const prevById = new Map(prev.pages.map((p) => [p.id, p]));
 
-  for (const deletedId of deletedPageIds(prev.pages.map((p) => p.pageId), currentPageIds)) {
-    const prevEntry = prev.pages.find((p) => p.pageId === deletedId)!;
-    const nodeCount = readPageChunks(prevEntry).length;
+  for (const deletedId of deletedPageIds(prev.pages.map((p) => p.id), currentPageIds)) {
+    const prevPage = prevById.get(deletedId)!;
     edits.push(toGapfillEdit(
       'deleted',
-      { id: `page-deleted:${prevEntry.pageId}`, name: `${prevEntry.pageName} (${nodeCount} node(s))`, type: 'PAGE', x: 0, y: 0, parent: null },
-      prevEntry.pageName,
+      { id: `page-deleted:${prevPage.id}`, name: deletedPageLabel(prevPage), type: 'PAGE', x: 0, y: 0, parent: null },
+      prevPage.name,
       ['page-deleted'],
     ));
   }
 
   for (const page of pages) {
     await yieldToHost();
-    const prevEntry = prev.pages.find((p) => p.pageId === page.id);
-    const prevRecords = prevEntry ? readPageChunks(prevEntry) : [];
-    // A throw here still aborts the whole diff (caught by main.ts's `.catch` → capture
-    // disabled), exactly as before — only the DOUBLE walk and the single-tick execution
-    // changed, never the failure semantics.
-    const { records: nextRecords, truncated: nextTruncated } = snapshotPage(page);
-    walked.set(page.id, { records: nextRecords, truncated: nextTruncated });
-    if (pageWasTruncated(prevEntry?.truncated, nextTruncated)) {
+    const prevPage = prevById.get(page.id);
+    // A page that refuses to walk (an unloaded dynamic page, a host refusal) costs THIS
+    // page's diff for this boot and nothing more: the failure is recorded, every other
+    // page still reports, and `writeBaseline` carries this page's previous entry forward
+    // verbatim (`resolveBaselinePage`) rather than overwriting its history with nothing.
+    let walk: PageSnapshotResult;
+    try {
+      walk = snapshotPage(page);
+    } catch (err) {
+      recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf(err)}`);
+      continue;
+    }
+    const { records: nextRecords, truncated: nextTruncated } = walk;
+    walked.set(page.id, walk);
+    stats.pagesDiffed += 1;
+    if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
+      stats.pagesTruncated += 1;
       edits.push(toGapfillEdit('updated', { id: `truncated:${page.id}`, name: page.name, type: 'PAGE', x: 0, y: 0, parent: null }, page.name, ['truncated']));
       continue; // never a created/deleted/renamed/moved fact for this page this round
     }
-    const diff = diffSnapshots(prevRecords, nextRecords);
+    const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
     edits.push(...gapfillEditsForPage(diff, page.name));
   }
   // The diff window now starts at THIS observation, not session start — and the baseline
   // is the walk taken ABOVE, never a re-walk: an edit made during a yield stays absent
   // from the baseline, so the next session's gap-fill reports it instead of losing it.
-  writeSnapshot(pages, snapshotProviderFrom(walked, snapshotPage));
+  await writeBaseline(pages, snapshotProviderFrom(walked, snapshotPage), store, stats);
   return edits;
 }

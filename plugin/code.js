@@ -102,35 +102,164 @@
     return out;
   }
 
+  // shared/utf8-byte-length.ts
+  function utf8ByteLength(str2) {
+    let bytes = 0;
+    for (let i = 0; i < str2.length; i++) {
+      const code = str2.charCodeAt(i);
+      if (code < 128) bytes += 1;
+      else if (code < 2048) bytes += 2;
+      else if (code >= 55296 && code <= 56319) {
+        bytes += 4;
+        i += 1;
+      } else bytes += 3;
+    }
+    return bytes;
+  }
+
+  // plugin/src/main/gapfill-baseline-store.ts
+  var BASELINE_KEY_PREFIX = "figma-edit-baseline-v2:";
+  function baselineKeyFor(fileKey, fileName) {
+    if (typeof fileKey === "string" && fileKey.trim() !== "") return `${BASELINE_KEY_PREFIX}${fileKey}`;
+    const slug = (fileName ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return `${BASELINE_KEY_PREFIX}${slug.length > 0 ? slug : "unknown"}`;
+  }
+  function createClientStorageBaselineStore() {
+    return {
+      get: (key) => figma.clientStorage.getAsync(key),
+      set: (key, value) => figma.clientStorage.setAsync(key, value),
+      keys: () => figma.clientStorage.keysAsync(),
+      delete: (key) => figma.clientStorage.deleteAsync(key)
+    };
+  }
+  function messageOf(err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  function parseBaseline(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const candidate = raw;
+    if (typeof candidate.writtenAt !== "string" || !Array.isArray(candidate.pages)) return null;
+    return {
+      writtenAt: candidate.writtenAt,
+      writtenBy: candidate.writtenBy ?? null,
+      // A value written before identity was stamped carries neither, which reads as "belongs
+      // to no known file" and degrades to missing — an absent fact instead of an unverifiable one.
+      fileKey: typeof candidate.fileKey === "string" ? candidate.fileKey : null,
+      fileName: typeof candidate.fileName === "string" ? candidate.fileName : null,
+      pages: candidate.pages
+    };
+  }
+  function describeIdentity(id) {
+    return id.fileKey !== null ? `fileKey ${id.fileKey}` : `name "${id.fileName ?? ""}"`;
+  }
+  function belongsToFile(baseline, identity) {
+    if (baseline.fileKey !== null || identity.fileKey !== null) return baseline.fileKey === identity.fileKey;
+    return baseline.fileName === identity.fileName;
+  }
+  async function readFileBaseline(store, key, identity) {
+    let raw;
+    try {
+      raw = await store.get(key);
+    } catch (err) {
+      return { baseline: null, readFailed: true, error: `baseline read failed: ${messageOf(err)}` };
+    }
+    const baseline = parseBaseline(raw);
+    if (baseline && !belongsToFile(baseline, identity)) {
+      return {
+        baseline: null,
+        error: `baseline at ${key} belongs to another file (stored ${describeIdentity(baseline)}, current ${describeIdentity(identity)}) \u2014 treated as missing`
+      };
+    }
+    return { baseline };
+  }
+  async function oldestOtherBaselineKey(store, selfKey) {
+    const keys = (await store.keys()).filter((k) => k !== selfKey && k.startsWith(BASELINE_KEY_PREFIX));
+    let oldestKey = null;
+    let oldestAt = Infinity;
+    for (const key of keys) {
+      let at = -1;
+      try {
+        const parsed = parseBaseline(await store.get(key));
+        at = parsed ? Date.parse(parsed.writtenAt) : -1;
+      } catch {
+        at = -1;
+      }
+      const rank = Number.isFinite(at) ? at : -1;
+      if (rank < oldestAt) {
+        oldestAt = rank;
+        oldestKey = key;
+      }
+    }
+    return oldestKey;
+  }
+  async function writeFileBaseline(store, key, baseline) {
+    const bytes = utf8ByteLength(JSON.stringify(baseline));
+    try {
+      await store.set(key, baseline);
+      return { ok: true, bytes };
+    } catch (first) {
+      let evicted = null;
+      try {
+        evicted = await oldestOtherBaselineKey(store, key);
+        if (evicted) await store.delete(evicted);
+      } catch (evictErr) {
+        return { ok: false, bytes: 0, error: `baseline write failed: ${messageOf(first)}; eviction failed: ${messageOf(evictErr)}` };
+      }
+      if (!evicted) return { ok: false, bytes: 0, error: `baseline write failed: ${messageOf(first)}; no other baseline to evict` };
+      try {
+        await store.set(key, baseline);
+        return { ok: true, bytes, evicted };
+      } catch (second) {
+        return { ok: false, bytes: 0, evicted, error: `baseline write failed after evicting ${evicted}: ${messageOf(second)}` };
+      }
+    }
+  }
+
+  // plugin/src/main/gapfill-status.ts
+  function createGapfillStats() {
+    return {
+      pagesDiffed: 0,
+      pagesTruncated: 0,
+      baselineWrittenAt: null,
+      baselineBytes: 0,
+      legacyCleared: 0,
+      evicted: [],
+      errorCount: 0,
+      firstError: null
+    };
+  }
+  function recordGapfillError(stats, message) {
+    stats.errorCount += 1;
+    if (stats.firstError === null) stats.firstError = message;
+  }
+  function recordGapfillEviction(stats, key) {
+    if (!stats.evicted.includes(key)) stats.evicted.push(key);
+  }
+  function toGapfillStatus(stats) {
+    return {
+      pagesDiffed: stats.pagesDiffed,
+      pagesTruncated: stats.pagesTruncated,
+      baselineWrittenAt: stats.baselineWrittenAt,
+      baselineBytes: stats.baselineBytes,
+      ...stats.legacyCleared > 0 && { legacyCleared: stats.legacyCleared },
+      ...stats.evicted.length > 0 && { baselineEvicted: [...stats.evicted] },
+      ...stats.firstError !== null && { errors: [stats.firstError], errorCount: stats.errorCount }
+    };
+  }
+
   // plugin/src/main/edit-gapfill.ts
-  var SNAPSHOT_NS = "ease_design";
-  var SNAPSHOT_MANIFEST_KEY = "figma-edit-snapshot-v1";
-  var chunkKey = (pageId, i) => `figma-edit-snap-${pageId}-${i}`;
-  var SNAPSHOT_CHUNK_BYTES = 64e3;
+  var LEGACY_NS = "ease_design";
+  var LEGACY_MANIFEST_KEY = "figma-edit-snapshot-v1";
+  var LEGACY_CHUNK_PREFIX = "figma-edit-snap-";
   var SNAPSHOT_NODE_CAP_PER_PAGE = 4e3;
   function normalizeSnapshotCoord(n) {
     return Math.round(n * 2) / 2;
   }
-  function utf8ByteLength(s) {
-    return new TextEncoder().encode(s).length;
+  function toBaselineRecord(rec) {
+    return [rec.id, rec.name, rec.type, rec.x, rec.y, rec.parent];
   }
-  function splitSnapshotChunks(records) {
-    const chunks = [];
-    let current = [];
-    let currentBytes = 2;
-    for (const rec of records) {
-      const recBytes = utf8ByteLength(JSON.stringify(rec));
-      const commaBeforeAdd = current.length > 0 ? 1 : 0;
-      if (current.length > 0 && currentBytes + commaBeforeAdd + recBytes > SNAPSHOT_CHUNK_BYTES) {
-        chunks.push(JSON.stringify(current));
-        current = [];
-        currentBytes = 2;
-      }
-      currentBytes += (current.length > 0 ? 1 : 0) + recBytes;
-      current.push(rec);
-    }
-    if (current.length > 0) chunks.push(JSON.stringify(current));
-    return chunks;
+  function fromBaselineRecord(rec) {
+    return { id: rec[0], name: rec[1], type: rec[2], x: rec[3], y: rec[4], parent: rec[5] };
   }
   function snapshotProviderFrom(precomputed, fallback) {
     return (page) => precomputed.get(page.id) ?? fallback(page);
@@ -181,6 +310,9 @@
   function pageWasTruncated(prevTruncated, nextTruncated) {
     return prevTruncated === true || nextTruncated;
   }
+  function deletedPageLabel(page) {
+    return page.records ? `${page.name} (${page.records.length} node(s))` : page.name;
+  }
   function toGapfillEdit(op, rec, page, changedProps = []) {
     return {
       op,
@@ -188,14 +320,14 @@
       nodeName: rec.name,
       nodeType: rec.type,
       // Gap-fill is existence/name/position only (spec non-goal: no property-level diff for
-      // the offline window) — the snapshot itself never tracked a parent NAME (only a
+      // the offline window) — the baseline itself never tracked a parent NAME (only a
       // parent id, for a future use), so this is null rather than invented.
       parentName: null,
       page,
       changedProps,
       origin: "LOCAL",
       // The agent cannot have acted while its bridge was down — every gap-fill frame is
-      // unambiguously the owner's (spec §2).
+      // unambiguously the owner's.
       actor: "owner"
     };
   }
@@ -207,6 +339,49 @@
       edits.push(toGapfillEdit("updated", rec, pageName, changedProps));
     }
     return edits;
+  }
+  function baselineMissingNotice(fileName, pageName) {
+    return toGapfillEdit(
+      "updated",
+      { id: "gapfill:baseline-missing", name: fileName, type: "DOCUMENT", x: 0, y: 0, parent: null },
+      pageName,
+      ["baseline-missing"]
+    );
+  }
+  function resolveBaselinePage(page, prevEntry, snapshot) {
+    try {
+      const { records, truncated } = snapshot();
+      return truncated ? { id: page.id, name: page.name, truncated: true } : { id: page.id, name: page.name, truncated: false, records: records.map(toBaselineRecord) };
+    } catch {
+      return prevEntry ?? null;
+    }
+  }
+  function createSingleFlightWriter(write) {
+    let inFlight = false;
+    let rearmed = false;
+    function settle() {
+      inFlight = false;
+      if (rearmed) {
+        rearmed = false;
+        trigger();
+      }
+    }
+    function trigger() {
+      if (inFlight) {
+        rearmed = true;
+        return;
+      }
+      inFlight = true;
+      let started;
+      try {
+        started = write();
+      } catch {
+        settle();
+        return;
+      }
+      started.then(settle, settle);
+    }
+    return trigger;
   }
   function snapshotPage(page) {
     const all = page.findAll(() => true);
@@ -226,77 +401,68 @@
     }
     return { records, truncated };
   }
-  function readManifest() {
-    const raw = figma.root.getSharedPluginData(SNAPSHOT_NS, SNAPSHOT_MANIFEST_KEY);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed?.v === 1 && Array.isArray(parsed.pages) ? parsed : null;
-    } catch {
-      return null;
-    }
+  function messageOf2(err) {
+    return err instanceof Error ? err.message : String(err);
   }
-  function readPageChunks(entry) {
-    const records = [];
-    for (let i = 0; i < entry.chunks; i++) {
-      const raw = figma.root.getSharedPluginData(SNAPSHOT_NS, chunkKey(entry.pageId, i));
-      if (!raw) continue;
-      try {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) records.push(...parsed);
-      } catch {
-      }
-    }
-    return records;
+  function currentIdentity() {
+    return { fileKey: figma.fileKey ?? null, fileName: figma.root.name };
   }
-  function resolvePageWrite(page, prevEntry, snapshot) {
-    try {
-      const { records, truncated } = snapshot();
-      const chunks = splitSnapshotChunks(records);
-      return { entry: { pageId: page.id, pageName: page.name, chunks: chunks.length, truncated }, chunksToWrite: chunks };
-    } catch {
-      return prevEntry ? { entry: prevEntry, chunksToWrite: null } : null;
-    }
+  function currentBaselineKey() {
+    const { fileKey, fileName } = currentIdentity();
+    return baselineKeyFor(fileKey, fileName);
   }
-  function writeSnapshot(pages, snapshotFor = snapshotPage) {
-    const prevManifest = readManifest();
-    const manifest = { v: 1, pages: [] };
-    const currentPageIds = new Set(pages.map((p) => p.id));
+  async function readBaseline(store, stats) {
+    const { baseline, error, readFailed } = await readFileBaseline(store, currentBaselineKey(), currentIdentity());
+    if (error) recordGapfillError(stats, error);
+    return { baseline, readFailed: readFailed === true };
+  }
+  async function writeBaseline(pages, snapshotFor, store, stats, now = Date.now) {
+    const key = currentBaselineKey();
+    const { baseline: prev, readFailed } = await readBaseline(store, stats);
+    if (readFailed) {
+      recordGapfillError(stats, "baseline write skipped: the previous baseline could not be read");
+      return;
+    }
+    const prevById = new Map((prev?.pages ?? []).map((p) => [p.id, p]));
+    const nextPages = [];
     for (const page of pages) {
-      const prevEntry = prevManifest?.pages.find((p) => p.pageId === page.id);
-      const result = resolvePageWrite(page, prevEntry, () => snapshotFor(page));
-      if (!result) continue;
-      if (result.chunksToWrite === null) {
-        manifest.pages.push(result.entry);
-        continue;
-      }
-      try {
-        const prevChunkCount = prevEntry?.chunks ?? 0;
-        for (let i = 0; i < result.chunksToWrite.length; i++) {
-          figma.root.setSharedPluginData(SNAPSHOT_NS, chunkKey(page.id, i), result.chunksToWrite[i]);
-        }
-        for (let i = result.chunksToWrite.length; i < prevChunkCount; i++) figma.root.setSharedPluginData(SNAPSHOT_NS, chunkKey(page.id, i), "");
-        manifest.pages.push(result.entry);
-      } catch {
-        if (prevEntry) manifest.pages.push(prevEntry);
-      }
+      const resolved = resolveBaselinePage(page, prevById.get(page.id), () => snapshotFor(page));
+      if (resolved) nextPages.push(resolved);
     }
-    if (prevManifest) {
-      for (const prevEntry of prevManifest.pages) {
-        if (currentPageIds.has(prevEntry.pageId)) continue;
-        try {
-          for (let i = 0; i < prevEntry.chunks; i++) figma.root.setSharedPluginData(SNAPSHOT_NS, chunkKey(prevEntry.pageId, i), "");
-        } catch {
-        }
-      }
-    }
-    try {
-      figma.root.setSharedPluginData(SNAPSHOT_NS, SNAPSHOT_MANIFEST_KEY, JSON.stringify(manifest));
-    } catch {
+    const identity = currentIdentity();
+    const baseline = {
+      writtenAt: new Date(now()).toISOString(),
+      writtenBy: figma.currentUser ? figma.currentUser.name : null,
+      fileKey: identity.fileKey,
+      fileName: identity.fileName,
+      pages: nextPages
+    };
+    const result = await writeFileBaseline(store, key, baseline);
+    if (result.evicted) recordGapfillEviction(stats, result.evicted);
+    if (result.error) recordGapfillError(stats, result.error);
+    if (result.ok) {
+      stats.baselineWrittenAt = baseline.writtenAt;
+      stats.baselineBytes = result.bytes;
     }
   }
-  async function runGapfillDiff(pages) {
-    const prev = readManifest();
+  function clearLegacyGapfillDocumentData(stats) {
+    let cleared = 0;
+    try {
+      if (!figma.root.getSharedPluginData(LEGACY_NS, LEGACY_MANIFEST_KEY)) return 0;
+      const keys = figma.root.getSharedPluginDataKeys(LEGACY_NS);
+      for (const key of keys) {
+        if (key !== LEGACY_MANIFEST_KEY && !key.startsWith(LEGACY_CHUNK_PREFIX)) continue;
+        figma.root.setSharedPluginData(LEGACY_NS, key, "");
+        cleared += 1;
+      }
+    } catch (err) {
+      recordGapfillError(stats, `legacy gap-fill cleanup failed: ${messageOf2(err)}`);
+    }
+    stats.legacyCleared += cleared;
+    return cleared;
+  }
+  async function runGapfillDiff(pages, store, stats) {
+    const { baseline: prev } = await readBaseline(store, stats);
     if (!prev) {
       const firstRun = /* @__PURE__ */ new Map();
       for (const page of pages) {
@@ -306,37 +472,68 @@
         } catch {
         }
       }
-      writeSnapshot(pages, snapshotProviderFrom(firstRun, snapshotPage));
-      return [];
+      await writeBaseline(pages, snapshotProviderFrom(firstRun, snapshotPage), store, stats);
+      return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
     }
     const edits = [];
     const walked = /* @__PURE__ */ new Map();
     const currentPageIds = new Set(pages.map((p) => p.id));
-    for (const deletedId of deletedPageIds(prev.pages.map((p) => p.pageId), currentPageIds)) {
-      const prevEntry = prev.pages.find((p) => p.pageId === deletedId);
-      const nodeCount = readPageChunks(prevEntry).length;
+    const prevById = new Map(prev.pages.map((p) => [p.id, p]));
+    for (const deletedId of deletedPageIds(prev.pages.map((p) => p.id), currentPageIds)) {
+      const prevPage = prevById.get(deletedId);
       edits.push(toGapfillEdit(
         "deleted",
-        { id: `page-deleted:${prevEntry.pageId}`, name: `${prevEntry.pageName} (${nodeCount} node(s))`, type: "PAGE", x: 0, y: 0, parent: null },
-        prevEntry.pageName,
+        { id: `page-deleted:${prevPage.id}`, name: deletedPageLabel(prevPage), type: "PAGE", x: 0, y: 0, parent: null },
+        prevPage.name,
         ["page-deleted"]
       ));
     }
     for (const page of pages) {
       await yieldToHost();
-      const prevEntry = prev.pages.find((p) => p.pageId === page.id);
-      const prevRecords = prevEntry ? readPageChunks(prevEntry) : [];
-      const { records: nextRecords, truncated: nextTruncated } = snapshotPage(page);
-      walked.set(page.id, { records: nextRecords, truncated: nextTruncated });
-      if (pageWasTruncated(prevEntry?.truncated, nextTruncated)) {
+      const prevPage = prevById.get(page.id);
+      let walk2;
+      try {
+        walk2 = snapshotPage(page);
+      } catch (err) {
+        recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf2(err)}`);
+        continue;
+      }
+      const { records: nextRecords, truncated: nextTruncated } = walk2;
+      walked.set(page.id, walk2);
+      stats.pagesDiffed += 1;
+      if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
+        stats.pagesTruncated += 1;
         edits.push(toGapfillEdit("updated", { id: `truncated:${page.id}`, name: page.name, type: "PAGE", x: 0, y: 0, parent: null }, page.name, ["truncated"]));
         continue;
       }
-      const diff = diffSnapshots(prevRecords, nextRecords);
+      const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
       edits.push(...gapfillEditsForPage(diff, page.name));
     }
-    writeSnapshot(pages, snapshotProviderFrom(walked, snapshotPage));
+    await writeBaseline(pages, snapshotProviderFrom(walked, snapshotPage), store, stats);
     return edits;
+  }
+
+  // plugin/src/main/boot-capture.ts
+  function messageOf3(err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  async function runBootCapture(deps) {
+    try {
+      await deps.loadAllPages();
+    } catch (err) {
+      deps.notify(`live-sync capture disabled: ${messageOf3(err)}`);
+      return;
+    }
+    try {
+      await deps.gapfill();
+    } catch (err) {
+      deps.notify(`live-sync gap-fill skipped: ${messageOf3(err)}`);
+    }
+    try {
+      deps.subscribe();
+    } catch (err) {
+      deps.notify(`live-sync capture disabled: ${messageOf3(err)}`);
+    }
   }
 
   // plugin/src/main/edit-actor.ts
@@ -2378,7 +2575,7 @@
     if (typeof params.x === "number") node.x = params.x;
     if (typeof params.y === "number") node.y = params.y;
   }
-  function opStatus(bootSkipped2 = [], readOnlyViolations2 = 0) {
+  function opStatus(bootSkipped2 = [], readOnlyViolations2 = 0, gapfill) {
     return {
       fileName: figma.root.name,
       page: figma.currentPage.name,
@@ -2408,7 +2605,14 @@
       // never seen a mis-declared `--read-only` EXEC_JS keeps this payload byte-identical
       // to before the field existed; a non-zero count makes a real pattern visible instead
       // of vanishing into a silently-applied mutation.
-      ...readOnlyViolations2 > 0 && { readOnlyViolations: readOnlyViolations2 }
+      ...readOnlyViolations2 > 0 && { readOnlyViolations: readOnlyViolations2 },
+      // Reconnect gap-fill's own session record (shared/protocol.ts's GapfillStatus). Unlike
+      // the two counters above this block is ALWAYS present once main.ts supplies it, even
+      // when every number is zero: "the baseline was never written" is precisely the fact
+      // that stayed invisible while the feature was silently broken, so it must have a
+      // reading of its own rather than an absence that looks like health. Caller-supplied —
+      // this function never re-derives what gap-fill did.
+      ...gapfill && { gapfill }
     };
   }
   function opGetSelection(params) {
@@ -4878,23 +5082,10 @@
       return [];
     }
   }
-  function utf8ByteLength2(str2) {
-    let bytes = 0;
-    for (let i = 0; i < str2.length; i++) {
-      const code = str2.charCodeAt(i);
-      if (code < 128) bytes += 1;
-      else if (code < 2048) bytes += 2;
-      else if (code >= 55296 && code <= 56319) {
-        bytes += 4;
-        i += 1;
-      } else bytes += 3;
-    }
-    return bytes;
-  }
-  function chunkKey2(i) {
+  function chunkKey(i) {
     return `${CHUNK_PREFIX}${i}`;
   }
-  function readManifest2() {
+  function readManifest() {
     const raw = figma.root.getSharedPluginData(NAMESPACE2, MANIFEST_KEY);
     if (!raw) return void 0;
     try {
@@ -4909,14 +5100,14 @@
     }
   }
   function readEvictedUnresolvedCount() {
-    return readManifest2()?.evictedUnresolved ?? 0;
+    return readManifest()?.evictedUnresolved ?? 0;
   }
   function splitIntoChunks(events) {
     const chunks = [];
     let current = [];
     let currentBytes = 2;
     for (const event of events) {
-      const eventBytes = utf8ByteLength2(JSON.stringify(event));
+      const eventBytes = utf8ByteLength(JSON.stringify(event));
       const commaBeforeAdd = current.length > 0 ? 1 : 0;
       if (current.length > 0 && currentBytes + commaBeforeAdd + eventBytes > CHUNK_BYTE_BUDGET) {
         chunks.push(JSON.stringify(current));
@@ -4933,29 +5124,29 @@
   function readChunked(manifest) {
     const events = [];
     for (let i = 0; i < manifest.chunks; i++) {
-      events.push(...parseEvents(figma.root.getSharedPluginData(NAMESPACE2, chunkKey2(i))));
+      events.push(...parseEvents(figma.root.getSharedPluginData(NAMESPACE2, chunkKey(i))));
     }
     return events;
   }
   function clearChunkRange(startInclusive, endExclusive) {
-    for (let i = startInclusive; i < endExclusive; i++) figma.root.setSharedPluginData(NAMESPACE2, chunkKey2(i), "");
+    for (let i = startInclusive; i < endExclusive; i++) figma.root.setSharedPluginData(NAMESPACE2, chunkKey(i), "");
   }
   function readEdgeCorrections() {
-    const manifest = readManifest2();
+    const manifest = readManifest();
     if (manifest !== void 0) return readChunked(manifest);
     return parseEvents(figma.root.getSharedPluginData(NAMESPACE2, KEY_V1));
   }
   function writeEdgeCorrections(events) {
-    const priorManifest = readManifest2();
+    const priorManifest = readManifest();
     let { kept, evictedUnresolved } = retainCorrectionEvents(events, /* @__PURE__ */ new Date(), EDGE_RAW_LIMIT);
     let chunks = splitIntoChunks(kept);
     let byteCapEvictedUnresolved = 0;
-    while (kept.length > 0 && chunks.some((c) => utf8ByteLength2(c) > FIGMA_ENTRY_BYTE_CAP)) {
+    while (kept.length > 0 && chunks.some((c) => utf8ByteLength(c) > FIGMA_ENTRY_BYTE_CAP)) {
       if (kept[0].unresolved === true) byteCapEvictedUnresolved += 1;
       kept = kept.slice(1);
       chunks = splitIntoChunks(kept);
     }
-    for (let i = 0; i < chunks.length; i++) figma.root.setSharedPluginData(NAMESPACE2, chunkKey2(i), chunks[i]);
+    for (let i = 0; i < chunks.length; i++) figma.root.setSharedPluginData(NAMESPACE2, chunkKey(i), chunks[i]);
     if (priorManifest !== void 0 && priorManifest.chunks > chunks.length) {
       clearChunkRange(chunks.length, priorManifest.chunks);
     }
@@ -5497,6 +5688,11 @@
   var idleTimer = null;
   var changesSinceCommit = 0;
   var hasEditsSinceSnapshot = false;
+  var baselineStore = createClientStorageBaselineStore();
+  var gapfillStats = createGapfillStats();
+  var triggerBaselineWrite = createSingleFlightWriter(
+    () => writeBaseline(figma.root.children, snapshotPage, baselineStore, gapfillStats)
+  );
   function resetIdleTimer() {
     if (idleTimer !== null) clearTimeout(idleTimer);
     idleTimer = setTimeout(fireIdle, idleMs);
@@ -5504,8 +5700,8 @@
   function fireIdle() {
     idleTimer = null;
     if (hasEditsSinceSnapshot) {
-      writeSnapshot(figma.root.children);
       hasEditsSinceSnapshot = false;
+      triggerBaselineWrite();
     }
     if (changesSinceCommit <= 0) return;
     figma.ui.postMessage({ type: "IDLE_READY", data: { count: changesSinceCommit } });
@@ -5584,8 +5780,8 @@
     }
     if (changes.length > 0 || edits.length > 0) resetIdleTimer();
   }
-  figma.loadAllPagesAsync().then(async () => {
-    const gapfillEdits = await runGapfillDiff(figma.root.children);
+  async function reportGapfill() {
+    const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats);
     if (gapfillEdits.length > 0) {
       figma.ui.postMessage({
         type: "EDIT_FEED",
@@ -5597,12 +5793,16 @@
         }
       });
     }
-    figma.on("documentchange", onDocumentChange);
-  }).catch((err) => figma.notify(`live-sync capture disabled: ${err instanceof Error ? err.message : String(err)}`));
-  figma.on("close", () => {
-    try {
-      writeSnapshot(figma.root.children);
-    } catch {
+    clearLegacyGapfillDocumentData(gapfillStats);
+  }
+  void runBootCapture({
+    loadAllPages: () => figma.loadAllPagesAsync(),
+    gapfill: reportGapfill,
+    subscribe: () => {
+      figma.on("documentchange", onDocumentChange);
+    },
+    notify: (message) => {
+      figma.notify(message);
     }
   });
   figma.ui.onmessage = async (msg) => {
@@ -5706,7 +5906,7 @@
   async function dispatch(cmd, params) {
     switch (cmd) {
       case "STATUS":
-        return opStatus(bootSkipped, readOnlyViolations);
+        return opStatus(bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats));
       case "GET_SELECTION":
         return opGetSelection(params);
       case "SCAN_DESIGN_SYSTEM":

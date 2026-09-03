@@ -1,13 +1,15 @@
-// Reconnect gap-fill (wave 4.4 phase 02 §2) — the PURE core: snapshot chunking, coordinate
-// normalization, and the diff. No figma access — the read/write/boot-diff halves in
-// edit-gapfill.ts cannot be unit-tested outside a live plugin sandbox (same limitation as
-// main.ts itself), verified instead by the phase's budgeted real-canvas run.
+// Reconnect gap-fill — the PURE core: coordinate normalization, the diff, the record
+// codec, and the per-page write decision. No figma access. The store-backed halves
+// (baseline read/write, quota refusal, boot diff) live in edit-gapfill-baseline.test.ts,
+// which drives them through an injected store and fake pages.
 import { describe, it, expect } from 'vitest';
 import {
-  SNAPSHOT_CHUNK_BYTES, deletedPageIds, diffSnapshots, gapfillEditsForPage, mergeUpdatedRecords,
-  normalizeSnapshotCoord, pageWasTruncated, resolvePageWrite, snapshotProviderFrom, splitSnapshotChunks,
+  baselineMissingNotice, createSingleFlightWriter, deletedPageIds, deletedPageLabel, diffSnapshots,
+  fromBaselineRecord, gapfillEditsForPage, mergeUpdatedRecords, normalizeSnapshotCoord,
+  pageWasTruncated, resolveBaselinePage, snapshotProviderFrom, toBaselineRecord,
   type NodeSnapshot,
 } from '../plugin/src/main/edit-gapfill.ts';
+import type { BaselinePage } from '../plugin/src/main/gapfill-baseline-store.ts';
 
 function node(over: Partial<NodeSnapshot> = {}): NodeSnapshot {
   return { id: 'n1', name: 'Hero', type: 'FRAME', x: 0, y: 0, parent: null, ...over };
@@ -22,37 +24,6 @@ describe('normalizeSnapshotCoord — rounds to 0.5px', () => {
 
   it('a sub-pixel jitter within the same half-pixel bucket produces the SAME value', () => {
     expect(normalizeSnapshotCoord(10.01)).toBe(normalizeSnapshotCoord(10.02));
-  });
-});
-
-describe('splitSnapshotChunks — packs records within the byte budget, never mid-record', () => {
-  it('a small set fits in one chunk', () => {
-    const chunks = splitSnapshotChunks([node({ id: 'a' }), node({ id: 'b' })]);
-    expect(chunks).toHaveLength(1);
-    expect(JSON.parse(chunks[0]!)).toHaveLength(2);
-  });
-
-  it('an empty set produces zero chunks', () => {
-    expect(splitSnapshotChunks([])).toEqual([]);
-  });
-
-  it('splits across multiple chunks once the byte budget is exceeded', () => {
-    // A big name pushes each record's own JSON size up so a handful together exceed the
-    // (real) 64_000-byte budget without needing thousands of records in the test.
-    const bigName = 'x'.repeat(SNAPSHOT_CHUNK_BYTES / 3);
-    const records = Array.from({ length: 5 }, (_, i) => node({ id: `n${i}`, name: bigName }));
-    const chunks = splitSnapshotChunks(records);
-    expect(chunks.length).toBeGreaterThan(1);
-    // Every chunk parses independently as valid JSON (never split mid-record).
-    const total = chunks.flatMap((c) => JSON.parse(c) as NodeSnapshot[]);
-    expect(total).toHaveLength(5);
-  });
-
-  it('a single record larger than the whole budget still lands whole, in its own chunk', () => {
-    const hugeName = 'x'.repeat(SNAPSHOT_CHUNK_BYTES * 2);
-    const chunks = splitSnapshotChunks([node({ name: hugeName })]);
-    expect(chunks).toHaveLength(1);
-    expect(JSON.parse(chunks[0]!)).toHaveLength(1);
   });
 });
 
@@ -212,40 +183,6 @@ describe('pageWasTruncated — either side truncated makes created/deleted unrel
   });
 });
 
-describe('resolvePageWrite — per-page atomicity: one page\'s failure never corrupts or drops another\'s data (N1)', () => {
-  const page = { id: 'page-1', name: 'Screens' };
-  const prevEntry = { pageId: 'page-1', pageName: 'Screens', chunks: 2, truncated: false };
-
-  it('a successful snapshot produces a fresh entry + the chunks to write', () => {
-    const result = resolvePageWrite(page, prevEntry, () => ({ records: [node()], truncated: false }));
-    expect(result).not.toBeNull();
-    expect(result!.entry).toEqual({ pageId: 'page-1', pageName: 'Screens', chunks: 1, truncated: false });
-    expect(result!.chunksToWrite).toEqual([JSON.stringify([node()])]);
-  });
-
-  // The core N1 case: a page's own snapshot walk throws (e.g. `findAll` on an unloaded
-  // page stub) — the PREVIOUS entry carries forward VERBATIM, and chunksToWrite is null
-  // (write NOTHING for this page — its existing chunks on disk stay exactly as they were).
-  it('a throwing snapshot carries the PREVIOUS entry forward verbatim, writes nothing', () => {
-    const result = resolvePageWrite(page, prevEntry, () => { throw new Error('findAll failed'); });
-    expect(result).toEqual({ entry: prevEntry, chunksToWrite: null });
-  });
-
-  it('a throwing snapshot with NO previous entry (brand-new page, first attempt failed) returns null — nothing to carry, nothing to write', () => {
-    const result = resolvePageWrite(page, undefined, () => { throw new Error('findAll failed'); });
-    expect(result).toBeNull();
-  });
-
-  it('the previous entry is never mutated by a later successful write for a DIFFERENT page', () => {
-    const otherPage = { id: 'page-2', name: 'Other' };
-    const otherPrev = { pageId: 'page-2', pageName: 'Other', chunks: 5, truncated: true };
-    resolvePageWrite(page, prevEntry, () => { throw new Error('boom'); });
-    const otherResult = resolvePageWrite(otherPage, otherPrev, () => ({ records: [], truncated: false }));
-    expect(otherResult!.entry).toEqual({ pageId: 'page-2', pageName: 'Other', chunks: 0, truncated: false });
-    expect(prevEntry).toEqual({ pageId: 'page-1', pageName: 'Screens', chunks: 2, truncated: false }); // untouched
-  });
-});
-
 describe('snapshotProviderFrom — the boot write reuses the walk the diff already took', () => {
   it('a cached page returns the precomputed result WITHOUT invoking the fallback walker', () => {
     const cached = { records: [node()], truncated: false };
@@ -269,5 +206,119 @@ describe('snapshotProviderFrom — the boot write reuses the walk the diff alrea
     expect(walks).toBe(1);
     provider({ id: 'page-1' });
     expect(walks).toBe(1); // the cached page still never re-walks
+  });
+});
+
+describe('baseline record codec — the persisted tuple round-trips a NodeSnapshot exactly', () => {
+  it('a record survives encode → decode unchanged, including a null parent', () => {
+    const rec = node({ id: 'a', name: 'Hero', type: 'FRAME', x: 12.5, y: -4, parent: null });
+    expect(fromBaselineRecord(toBaselineRecord(rec))).toEqual(rec);
+  });
+
+  it('a nested node keeps its parent id', () => {
+    const rec = node({ id: 'b', parent: 'a' });
+    expect(toBaselineRecord(rec)).toEqual(['b', 'Hero', 'FRAME', 0, 0, 'a']);
+    expect(fromBaselineRecord(toBaselineRecord(rec)).parent).toBe('a');
+  });
+});
+
+describe('resolveBaselinePage — per-page atomicity, and no records for a truncated page', () => {
+  const page = { id: 'page-1', name: 'Screens' };
+  const prevEntry: BaselinePage = { id: 'page-1', name: 'Screens', truncated: false, records: [toBaselineRecord(node())] };
+
+  it('a successful non-truncated snapshot stores the records as tuples', () => {
+    const resolved = resolveBaselinePage(page, prevEntry, () => ({ records: [node({ id: 'x' })], truncated: false }));
+    expect(resolved).toEqual({ id: 'page-1', name: 'Screens', truncated: false, records: [toBaselineRecord(node({ id: 'x' }))] });
+  });
+
+  it('a TRUNCATED page stores no records at all — its diff is suppressed, so they would only cost bytes', () => {
+    const resolved = resolveBaselinePage(page, prevEntry, () => ({ records: [node(), node({ id: 'y' })], truncated: true }));
+    expect(resolved).toEqual({ id: 'page-1', name: 'Screens', truncated: true });
+    expect(resolved && 'records' in resolved).toBe(false);
+  });
+
+  it('a throwing snapshot carries the PREVIOUS entry forward verbatim', () => {
+    expect(resolveBaselinePage(page, prevEntry, () => { throw new Error('findAll failed'); })).toBe(prevEntry);
+  });
+
+  it('a throwing snapshot with NO previous entry returns null — nothing to carry, nothing to write', () => {
+    expect(resolveBaselinePage(page, undefined, () => { throw new Error('findAll failed'); })).toBeNull();
+  });
+});
+
+describe('deletedPageLabel — a node count only when the baseline actually stored records', () => {
+  it('a page with records is named with its count', () => {
+    expect(deletedPageLabel({ id: 'p', name: 'Archive', truncated: false, records: [toBaselineRecord(node())] }))
+      .toBe('Archive (1 node(s))');
+  });
+
+  it('a TRUNCATED page (no records stored) is named WITHOUT a fabricated "(0 node(s))"', () => {
+    expect(deletedPageLabel({ id: 'p', name: 'Archive', truncated: true })).toBe('Archive');
+  });
+});
+
+describe('baselineMissingNotice — one honest frame, never a whole-file "created" storm', () => {
+  it('carries the baseline-missing marker, the file name, and the owner attribution', () => {
+    const frame = baselineMissingNotice('VSF - PCP', 'Cover');
+    expect(frame.changedProps).toEqual(['baseline-missing']);
+    expect(frame.op).toBe('updated');
+    expect(frame.nodeName).toBe('VSF - PCP');
+    expect(frame.page).toBe('Cover');
+    expect(frame.actor).toBe('owner');
+  });
+});
+
+describe('createSingleFlightWriter — an async write never overlaps itself, and a request is never dropped', () => {
+  function deferred(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  it('a trigger while a write is IN FLIGHT re-arms exactly one more run after it settles', async () => {
+    const gates = [deferred(), deferred()];
+    let started = 0;
+    const trigger = createSingleFlightWriter(() => gates[started++]!.promise);
+
+    trigger();
+    expect(started).toBe(1);
+    trigger(); // arrives mid-flight
+    trigger(); // and again — both collapse into ONE re-run
+    expect(started).toBe(1); // still no overlap
+
+    gates[0]!.resolve();
+    await gates[0]!.promise;
+    await Promise.resolve();
+    expect(started).toBe(2); // re-armed once, not twice
+
+    gates[1]!.resolve();
+    await gates[1]!.promise;
+    await Promise.resolve();
+    expect(started).toBe(2); // nothing left pending
+  });
+
+  it('a REJECTED write still releases the lock, and still re-arms a mid-flight request', async () => {
+    const gates = [deferred(), deferred()];
+    let started = 0;
+    const trigger = createSingleFlightWriter(() => {
+      const g = gates[started++]!;
+      return started === 1 ? g.promise.then(() => { throw new Error('quota'); }) : g.promise;
+    });
+
+    trigger();
+    trigger();
+    gates[0]!.resolve();
+    await gates[0]!.promise.then(() => {}, () => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toBe(2); // a failed write must not wedge the writer shut
+  });
+
+  it('a write that throws SYNCHRONOUSLY releases the lock too', () => {
+    let started = 0;
+    const trigger = createSingleFlightWriter(() => { started += 1; throw new Error('boom'); });
+    trigger();
+    trigger();
+    expect(started).toBe(2); // second trigger runs — the lock was released, not held forever
   });
 });

@@ -87,6 +87,16 @@ export function editSentence(frame: SceneEditSentenceInput): string {
     const label = frame.nodeName ?? frame.parentName ?? 'this page';
     return `Gap-fill is disabled for "${label}" while it exceeds the scan cap`;
   }
+  // The other gap-fill notice, same shape and the same reason for existing: an
+  // `op: 'updated'` frame carrying `changedProps: ['baseline-missing']` is not an edit at
+  // all, and the generic verb path would render it as the actively wrong "Restyled ...".
+  // It states only what is known — there was no baseline for this file, so whatever was
+  // edited before this session cannot be listed. It never guesses that anything WAS
+  // edited.
+  if (frame.changedProps.includes('baseline-missing')) {
+    const label = frame.nodeName ?? 'this file';
+    return `Gap-fill had no previous baseline for "${label}" — edits made before this session are unreported`;
+  }
   const verb = sceneEditVerb(frame.op, frame.changedProps);
   const verbText = VERB_TEXT[verb];
   if (frame.nodeName === null || frame.nodeName === '') {

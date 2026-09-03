@@ -355,6 +355,35 @@ export interface EventMsg {
 export const DEFAULT_IDLE_MS = 300_000;
 export const MIN_IDLE_MS = 1_000;
 
+// ── STATUS: the gap-fill block ──────────────────────────────────────
+/**
+ * What reconnect gap-fill actually did this session, carried on the STATUS reply so
+ * `figma-agent status` can answer "is the baseline real?" without a live probe. Every
+ * number here is measured, never assumed: `baselineWrittenAt` is null until a write has
+ * genuinely landed, and a session that wrote nothing says so instead of looking healthy.
+ * The optional fields follow the same present-only-when-meaningful contract as
+ * `bootSkipped`/`senderMismatchCount` — a clean session's payload is byte-identical to one
+ * from before they existed.
+ */
+export interface GapfillStatus {
+  pagesDiffed: number;
+  pagesTruncated: number;
+  /** ISO timestamp of the last baseline write that SUCCEEDED, else null. */
+  baselineWrittenAt: string | null;
+  /** Serialized size of that baseline. 0 while none has landed. */
+  baselineBytes: number;
+  /** Legacy in-document snapshot keys cleared once at boot. Present only when > 0. */
+  legacyCleared?: number;
+  /** Other files' baseline keys dropped to fit this one under the storage quota — an
+   *  eviction is a deletion of real data and is never left off the record. */
+  baselineEvicted?: string[];
+  /** The FIRST failure message this session, verbatim. Present only when there was one. */
+  errors?: string[];
+  /** Total failures this session (≥ `errors.length`) — a single message plus a count keeps
+   *  a repeating failure visible without an unbounded log in a status payload. */
+  errorCount?: number;
+}
+
 // ── Multi-plugin registry (P4) ──────────────────────────────────────
 // A plugin instance's scene identity, carried on PLUGIN_HELLO and grown by
 // FILE_INFO. Two Figma files open at once each keep their own scene + slot.
