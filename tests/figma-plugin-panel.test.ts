@@ -48,47 +48,79 @@ describe('adaptive panel source contract', () => {
     expect(contentErrors(html), 'content errors').toBe(0);
   });
 
-  it('opens as the exact rail and whitelists only named viewport modes', () => {
-    expect(model).toContain('RAIL_COMPACT_WIDTH = 200');
-    expect(model).toContain('RAIL_ONE_ACTION_WIDTH = 220');
-    expect(model).toContain('RAIL_TWO_ACTIONS_WIDTH = 240');
+  it('opens at the width the host title needs and accepts only a hug request', () => {
+    expect(model).toContain('RAIL_MIN_WIDTH = 240');
+    expect(model).toContain('RAIL_MAX_WIDTH = 560');
     expect(model).toContain('RAIL_HEIGHT = 44');
-    expect(model).toContain('INSPECTOR_WIDTH = 288');
-    expect(model).toContain('INSPECTOR_HEIGHT = 280');
-    expect(main).toMatch(/width:\s*RAIL_COMPACT_WIDTH,\s*height:\s*RAIL_HEIGHT/);
-    expect(main).toContain("chrome.type === 'PANEL_VIEWPORT'");
-    for (const mode of ['rail-compact', 'rail-one-action', 'rail-two-actions', 'inspector']) {
-      expect(main).toContain(`chrome.mode === '${mode}'`);
-    }
-    expect(main).toContain("chrome.mode === 'inspector'");
-    expect(main).toContain('viewportFor(chrome.mode)');
+    expect(main).toMatch(/width:\s*RAIL_MIN_WIDTH,\s*height:\s*RAIL_HEIGHT/);
+    expect(main).toContain("title: 'design:os by JANG'");
+    expect(main).toContain('resolveViewportRequest(msg)');
     expect(main).toContain('figma.ui.resize(viewport.width, viewport.height)');
-    expect(main).not.toMatch(/chrome\.(?:width|height)/);
-    expect(panelUi).toContain('railViewportMode(!targetRailBtn.hidden, !syncRailBtn.hidden)');
-    expect(panelUi).toContain('if (lastViewportMode === mode) return');
+    // main never reads a dimension off the wire: the clamp is the only source.
+    expect(main).not.toMatch(/chrome\.(?:width|height|mode)/);
+    expect(model).toContain('Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH');
   });
 
-  it('owns a compact rail and a mounted three-view inspector', () => {
-    for (const id of [
-      'fga-panel', 'fga-rail', 'fga-connection-btn', 'fga-current-btn',
-      'fga-target-rail-btn', 'fga-sync-rail-btn', 'fga-toggle-btn', 'fga-inspector',
-      'fga-tab-activity', 'fga-tab-context', 'fga-tab-details',
-      'fga-panel-activity', 'fga-panel-context', 'fga-panel-details',
-    ]) expect(html, `missing #${id}`).toContain(`id="${id}"`);
-    expect(html).toContain('role="tablist"');
-    expect((html.match(/role="tab"/g) ?? []).length).toBe(3);
-    expect((html.match(/role="tabpanel"/g) ?? []).length).toBe(3);
-    expect(html).toMatch(/id="fga-inspector"[^>]*hidden/);
+  it('measures the rendered row and only asks for a width that changed', () => {
+    expect(panelUi).toContain("type: 'PANEL_VIEWPORT', mode: 'hug'");
+    expect(panelUi).toContain('rail.getBoundingClientRect().width');
+    expect(panelUi).toContain('Math.abs(width - lastWidth) < 1');
+    expect(declarationsFor('body')).toMatch(/width:\s*max-content/);
+    expect(declarationsFor('.agent-rail')).toMatch(/width:\s*max-content/);
+    expect(declarationsFor('body')).not.toMatch(/min-width/);
   });
 
-  it('keeps context, activity, sync, onboarding, recovery, and version information', () => {
+  it('is one row and nothing else — no expanded state anywhere', () => {
     for (const id of [
-      'fga-sentence', 'fga-onboarding', 'fga-ctx-file', 'fga-ctx-file-note',
-      'fga-ctx-page', 'fga-ctx-selection', 'fga-target-btn', 'fga-activity',
-      'fga-sync', 'fga-sync-msg', 'fga-sync-now', 'fga-sync-later', 'fga-version',
+      'fga-rail', 'fga-orb', 'fga-sentence', 'fga-sentence-lead', 'fga-sentence-rest',
+      'fga-failure-count', 'fga-target-rail-btn', 'fga-sync-rail-btn', 'fga-sync-badge',
     ]) expect(html, `missing #${id}`).toContain(`id="${id}"`);
-    expect((html.match(/aria-live="polite"/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    for (const gone of [
+      'fga-inspector', 'fga-toggle-btn', 'fga-tab-activity', 'fga-onboarding',
+      'fga-version', 'fga-sync-later', 'fga-sync-now', 'fga-activity', 'fga-ctx-file',
+      'role="tab"', 'role="tablist"', 'role="tabpanel"',
+    ]) expect(html, `${gone} must be gone`).not.toContain(gone);
+    // Prose may still explain what the surface used to be; no code may name it.
+    for (const source of [model, panelUi, activityView, main]) {
+      for (const dead of [
+        "'inspector'", 'INSPECTOR_WIDTH', 'INSPECTOR_HEIGHT', 'shouldForceInspector',
+        'setInspector', 'inspectorOpen', 'railViewportMode', 'viewportFor(',
+      ]) expect(source, `${dead} must be gone`).not.toContain(dead);
+    }
+  });
+
+  it('keeps the sentence on one line and the full text reachable', () => {
+    const sentence = declarationsFor('.rail-sentence');
+    expect(sentence).toMatch(/white-space:\s*nowrap/);
+    expect(sentence).toMatch(/text-overflow:\s*ellipsis/);
+    expect(sentence).toMatch(/overflow:\s*hidden/);
+    expect(sentence).toMatch(/max-width:\s*\d+px/);
+    expect(panelUi).toContain('sentence.title = view.title');
+    expect(panelUi).toContain('railSentence({');
+    expect(html).toContain('aria-live="polite"');
     expect(html).toContain('aria-atomic="true"');
+  });
+
+  it('spends the ellipsis on the tail, never on a lost edit', () => {
+    // The lead carries the lost-edit note at its own width; only the tail may be cut.
+    expect(declarationsFor('.sentence-lead')).toMatch(/flex:\s*0\s+0\s+auto/);
+    const tail = declarationsFor('.sentence-rest');
+    expect(tail).toMatch(/text-overflow:\s*ellipsis/);
+    expect(tail).toMatch(/min-width:\s*0/);
+    expect(declarationsFor('.rail-sentence')).toMatch(/display:\s*flex/);
+    expect(panelUi).toContain('sentenceLead.textContent = view.lead');
+    expect(panelUi).toContain('sentenceRest.textContent = view.rest');
+    expect(model).toContain('if (dropped > 0) layers.push');
+  });
+
+  it('makes the row\'s own text the acknowledgement, with no surface to open', () => {
+    const button = /<button[^>]*id="fga-sentence"[^>]*>/s.exec(html)?.[0] ?? '';
+    expect(button, 'the sentence must be a real button').toContain('type="button"');
+    expect(button).not.toContain('role="status"'); // a status role would erase the button
+    expect(panelUi).toContain('activityView.acknowledgeFailures()');
+    expect(activityView).toContain('this.failures.acknowledge()');
+    expect(viewState).toContain('acknowledge(): void');
+    expect(declarationsFor('.rail-sentence:focus-visible')).toMatch(/outline:\s*2px/);
   });
 });
 
@@ -108,27 +140,34 @@ describe('Lucide and control accessibility', () => {
     expect(packageJson.devDependencies?.['thinking-orbs']).toBe('0.3.1');
     expect(thinkingOrb).toContain("from 'thinking-orbs/engine'");
     expect(thinkingOrb).not.toMatch(/from ['"]thinking-orbs['"]|from ['"]react['"]/);
-    expect(panelUi).toContain('mountThinkingOrb(connectionBtn)');
+    expect(panelUi).toContain('mountThinkingOrb(orbHost)');
   });
 
-  it('uses one aggregate canvas status and no current-activity outcome glyph', () => {
+  it('uses one aggregate canvas status and never an icon in the orb cell', () => {
     expect(thinkingOrb).toContain("document.createElement('canvas')");
     expect((thinkingOrb.match(/document\.createElement\('canvas'\)/g) ?? []).length).toBe(1);
-    expect(panelUi).not.toContain('replaceIcon(connectionBtn');
-    expect(activityView).not.toContain('replaceIcon(this.currentButton');
-    expect(activityView).toContain('makeLucideIcon(record.pending');
+    expect(panelUi).not.toContain('replaceIcon(orbHost');
     expect(activityView).toContain('railPhase()');
+    // The rail carries the current sentence and the count; the feed list is gone with the
+    // surface that showed it, so this view builds no DOM of its own.
+    expect(activityView).not.toContain('document.createElement');
   });
 
-  it('recomputes aggregate orb status immediately when activity is acknowledged', () => {
+  it('recomputes the aggregate orb status on every render', () => {
     expect(panelUi).toContain('function renderOrb()');
-    const acknowledge = /function acknowledgeActivity\(\): void \{([\s\S]*?)\}/.exec(panelUi)?.[1] ?? '';
-    expect(acknowledge).toContain('activityView.acknowledgeFailures()');
-    expect(acknowledge).toContain('renderOrb()');
+    const render = /function render\(\): void \{([\s\S]*?)\n\}/.exec(panelUi)?.[1] ?? '';
+    expect(render).toContain('renderOrb()');
+    expect(render).toContain('hugViewport()');
+    expect(panelUi).toContain('orbHost.title = `${orb.status}');
+    expect(panelUi).toContain("orbHost.setAttribute('aria-label', orb.status)");
   });
 
-  it('gives every icon-only rail control a title, accessible name, and native button', () => {
-    for (const id of ['fga-connection-btn', 'fga-target-rail-btn', 'fga-sync-rail-btn', 'fga-toggle-btn']) {
+  it('names the orb and gives every rail button a title, name, and native type', () => {
+    const orb = /<div[^>]*id="fga-orb"[^>]*>/s.exec(html)?.[0] ?? '';
+    expect(orb).toContain('role="img"');
+    expect(orb).toContain('aria-label=');
+    expect(orb).toContain('title=');
+    for (const id of ['fga-target-rail-btn', 'fga-sync-rail-btn']) {
       const button = new RegExp(`<button[^>]*id="${id}"[^>]*>`, 's').exec(html)?.[0] ?? '';
       expect(button, `${id} must be a button`).toContain('<button');
       expect(button, `${id} missing title`).toContain('title=');
@@ -137,18 +176,10 @@ describe('Lucide and control accessibility', () => {
     }
     expect(declarationsFor('.rail-control')).toMatch(/(?:width|min-width):\s*32px/);
     expect(declarationsFor('.rail-control')).toMatch(/height:\s*32px/);
+    expect(declarationsFor('.rail-orb')).toMatch(/width:\s*32px/);
     expect(declarationsFor('.fga-icon')).toMatch(/width:\s*16px/);
     expect(declarationsFor('.fga-icon')).toMatch(/height:\s*16px/);
     expect(declarationsFor('.rail-control:focus-visible')).toMatch(/outline:\s*2px/);
-  });
-
-  it('implements keyboard tabs, Escape collapse, and focus restoration', () => {
-    for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End', 'Escape']) {
-      expect(panelUi, `missing ${key} keyboard handling`).toContain(`'${key}'`);
-    }
-    expect(panelUi).toContain('toggleBtn.focus()');
-    expect(panelUi).toContain("setAttribute('aria-selected'");
-    expect(panelUi).toContain('tabIndex = selected ? 0 : -1');
   });
 });
 
@@ -158,27 +189,29 @@ describe('disclosure, authority, and motion', () => {
     expect(panelUi).toContain('targetRailBtn.hidden = peersCount <= 1');
     expect(panelUi).toContain("peersPinned ? 'figma-agent:clear-target' : 'figma-agent:set-target'");
     expect(panelUi).toContain('targetRailBtn.onclick = toggleTarget');
-    expect(panelUi).toContain('targetBtn.onclick = toggleTarget');
     expect(panelUi).not.toContain('peersPinned = !peersPinned');
   });
 
-  it('keeps sync conditional and failure retry semantics intact', () => {
+  it('runs the sync from the rail button and keeps a failure retryable', () => {
     expect(html).toMatch(/id="fga-sync-rail-btn"[^>]*hidden/);
+    expect(panelUi).toContain('syncRailBtn.onclick');
+    expect(panelUi).toContain("new CustomEvent('figma-agent:sync-request')");
     expect(panelUi).toContain('pendingSyncCount');
     expect(panelUi).toContain('shouldClearPendingCount(ok)');
-    expect(panelUi).toContain('syncNowLabel(unbound)');
+    expect(panelUi).toContain('syncNowLabel(syncUnbound)');
     expect(panelUi).toContain('SYNC_STUCK_TIMEOUT_MS');
+    expect(panelUi).toContain("type: 'SYNC_DONE', commit");
+    // A failure keeps the button on the rail; only a genuine success clears the count.
+    expect(panelUi).toContain('const showSync = pendingSyncCount > 0 || syncFailure');
+    expect(panelUi).toContain('syncFailure = !ok');
   });
 
-  it('dedupes forced expansion while leaving unresolved state on the rail', () => {
-    expect(panelUi).toContain('const disclosed = new BoundedKeySet()');
-    expect(panelUi).toContain('forceOnce');
+  it('leaves unresolved failures visible on the rail', () => {
     expect(panelUi).toContain('activityView.failures.unresolvedCount > 0');
     expect(viewState).toContain('records.find((record) => record.pending)');
     expect(html).toContain('id="fga-failure-count"');
-    expect(panelUi).toContain('activityView.acknowledgeFailures()');
-    expect(panelUi).toContain("if (tab === 'activity') acknowledgeActivity()");
     expect(activityView).toContain('failures.unresolvedCount');
+    expect(panelUi).toContain('activityView.renderBadge()');
   });
 
   it('uses named transitions and honors reduced motion', () => {
