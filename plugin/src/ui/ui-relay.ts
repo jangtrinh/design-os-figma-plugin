@@ -16,10 +16,15 @@ import {
   PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
   RECONNECT_BACKOFF_MAX_MS, RECONNECT_BACKOFF_MIN_MS,
   makeStatePayload, nextBackoff, reduceConnState,
-  type BrokerHelloData,
   type ChunkMsg, type CommandName, type ConnectionEvent, type ConnectionState, type ConnectionStatePayload,
   type ErrorCode, type FileContext, type ReplyMsg, type RequestMsg, type WireError,
 } from '../../../shared/protocol';
+import {
+  probeBrokerPort, scanPortsForBroker,
+  type BrokerProbeResult, type ProbeTransport,
+} from './broker-scan';
+import { createPreOpenBuffer, handshakeBatch, isBufferableFrame, stampCapturedFrame } from './outbound-buffer';
+import { flushHandshake, refuseAdoption } from './socket-adoption';
 import { renderHtmlToPayload } from './render-host';
 import { renderGradientToPng, GradientRenderError } from './gradient-host';
 import { summarizeError, summarizeResult } from './activity-summary';
@@ -140,8 +145,31 @@ function setStatusText(text: string, cls: '' | 'ok' | 'err' = ''): void {
 }
 
 // ─── Outbound WS (with chunking for big replies) ────────────────────
+// Frames captured while the socket is down wait here instead of evaporating; the
+// tally of what did NOT fit is shown in the panel and reported to the broker at the
+// next handshake (see adoptSocket).
+const preOpenBuffer = createPreOpenBuffer();
+let announcedDropFrames = 0;
+
+function announceDrops(): void {
+  const { frames, chars } = preOpenBuffer.dropped;
+  if (frames === announcedDropFrames) return;
+  announcedDropFrames = frames;
+  try { window.dispatchEvent(new CustomEvent('figma-agent:dropped', { detail: { frames, chars } })); }
+  catch { /* no DOM event support */ }
+}
+
 function wsSend(msg: ReplyMsg | { type: string; data: Record<string, unknown> }): void {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    if (isBufferableFrame(msg)) {
+      // Stamped with the capture time HERE, not at flush: the broker files a replayed
+      // frame under this timestamp, so a gap lands in the feed dated to the edits that
+      // made it instead of to the reconnect that delivered them.
+      preOpenBuffer.enqueue(stampCapturedFrame(msg as { type: string; data?: unknown }, Date.now()));
+      announceDrops();
+    }
+    return;
+  }
   const json = JSON.stringify(msg);
   if (json.length <= CHUNK_LIMIT || !('id' in msg)) {
     ws.send(json);
@@ -479,54 +507,32 @@ function teardown(socket: WebSocket, reason: string): void {
   scheduleReconnect();
 }
 
-// ─── Broker discovery: probe each port until BROKER_HELLO ───────────
+// ─── Broker discovery: probe every port at once, adopt the first greeting ───
 // Use a dedicated `.localhost` hostname. Figma Desktop can fail bare
 // `ws://localhost`, while its manifest rejects literal IP-address domains.
-interface BrokerProbe {
-  socket: WebSocket;
-  hello: BrokerHelloData;
-}
+// The race itself (first BROKER_HELLO wins, losers cancelled) lives in broker-scan.ts;
+// this file only supplies the real socket and the panel transitions.
+const PROBE_HOST = 'figma-agent.localhost';
+const PROBE_PORTS: number[] = [];
+for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) PROBE_PORTS.push(port);
 
-function probePort(port: number, host: string): Promise<BrokerProbe | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    let socket: WebSocket;
-    try {
-      socket = new WebSocket(`ws://${host}:${port}`);
-    } catch {
-      resolve(null);
-      return;
-    }
-    const finish = (result: BrokerProbe | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (!result) {
-        try { socket.close(); } catch { /* already closed */ }
-      }
-      resolve(result);
-    };
-    const timer = setTimeout(() => finish(null), PORT_PROBE_TIMEOUT_MS);
-    socket.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data));
-        if (msg?.type === 'BROKER_HELLO') {
-          finish({ socket, hello: (msg.data as BrokerHelloData | undefined) ?? {} });
-        }
-      } catch { /* not the greeting — keep waiting until timeout */ }
-    };
-    socket.onerror = () => finish(null);
-    socket.onclose = () => finish(null);
-  });
-}
+const probeTransport: ProbeTransport<WebSocket> = {
+  open: (port) => new WebSocket(`ws://${PROBE_HOST}:${port}`),
+  listen: (socket, on) => {
+    socket.onmessage = (ev) => on.message(ev.data);
+    socket.onerror = () => on.fail();
+    socket.onclose = () => on.fail();
+  },
+  detach: (socket) => { socket.onmessage = null; socket.onerror = null; socket.onclose = null; },
+  close: (socket) => { try { socket.close(); } catch { /* already closed */ } },
+};
 
-async function scanForBroker(): Promise<BrokerProbe | null> {
-  for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) {
-    transition('PROBE', { detail: `probing figma-agent.localhost:${port}…`, port });
-    const probe = await probePort(port, 'figma-agent.localhost');
-    if (probe) return probe;
-  }
-  return null;
+function scanForBroker(): Promise<BrokerProbeResult<WebSocket> | null> {
+  return scanPortsForBroker(
+    PROBE_PORTS,
+    (port) => probeBrokerPort(port, probeTransport, PORT_PROBE_TIMEOUT_MS),
+    (port) => transition('PROBE', { detail: `probing ${PROBE_HOST}:${port}…`, port }),
+  );
 }
 
 function socketConnectionInfo(socket: WebSocket): { url: string; port?: number } {
@@ -535,10 +541,17 @@ function socketConnectionInfo(socket: WebSocket): { url: string; port?: number }
   return { url, port: portMatch ? Number(portMatch[1]) : undefined };
 }
 
-function adoptSocket(probe: BrokerProbe): void {
+function adoptSocket(probe: BrokerProbeResult<WebSocket>): void {
   const { socket, hello } = probe;
-  if (ws !== null) {
-    if (ws !== socket) try { socket.close(); } catch { /* superseded probe */ }
+  // Both guards live in socket-adoption.ts, where they are unit-testable against a fake
+  // socket. A socket that greeted and then died must be refused BEFORE the handshake
+  // batch is built, because building it drains the buffer and a dead socket discards
+  // what it is handed without a word.
+  const refusal = refuseAdoption(ws, socket);
+  if (refusal === 'already-adopted') return;
+  if (refusal === 'socket-not-open') {
+    transition('LOST', { detail: 'broker closed before the handshake — retrying…' });
+    scheduleReconnect(); // the gap is still buffered; the next adopt carries it
     return;
   }
   ws = socket;
@@ -560,13 +573,25 @@ function adoptSocket(probe: BrokerProbe): void {
   // instanceId is stable across reconnects so the broker updates this file's slot
   // instead of spawning a duplicate. `caps` advertises the guards this bundle honours —
   // the broker refuses to route a `--file` request to a plugin that predates `fileGuard`.
-  wsSend({ type: 'PLUGIN_HELLO', data: { ...fileInfo, instanceId: INSTANCE_ID, caps: [...PLUGIN_CAPABILITIES],
-                                          pluginVersion: PLUGIN_VERSION, protocolV: PROTOCOL_VERSION } });
+  // The handshake, the drop report when there is one, then everything captured while
+  // there was no socket — one ordered batch, built by handshakeBatch. Sent straight on
+  // the socket: these frames are already serialized, and none of them is a reply, so
+  // wsSend's chunking path would not apply anyway. The heartbeat starts only once that
+  // batch is out (flushHandshake's `onFlushed`), so no control frame can overtake it.
+  const flushed = flushHandshake({
+    socket,
+    batch: handshakeBatch({
+      ...fileInfo, instanceId: INSTANCE_ID, caps: [...PLUGIN_CAPABILITIES],
+      pluginVersion: PLUGIN_VERSION, protocolV: PROTOCOL_VERSION,
+    }, preOpenBuffer),
+    buffer: preOpenBuffer,
+    onFlushed: () => heartbeatDriver.start(heartbeatMode),
+  });
+  if (flushed.reBuffered > 0) announceDrops(); // a re-queue can push the cap over
   // `fileInfo` is normally populated by main's own FILE_INFO push, but that race is not
   // guaranteed to have landed yet — ask explicitly so an iframe-originated error raised
   // before the first push still has an identity to attach (see localFileContext above).
   if (Object.keys(fileInfo).length === 0) parent.postMessage({ pluginMessage: { type: 'UI_READY' } }, '*');
-  heartbeatDriver.start(heartbeatMode);
 }
 
 function scheduleReconnect(): void {

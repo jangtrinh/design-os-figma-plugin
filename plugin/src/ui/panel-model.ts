@@ -12,7 +12,24 @@ export type RailViewportMode = 'rail-compact' | 'rail-one-action' | 'rail-two-ac
 export type ViewportMode = RailViewportMode | 'inspector';
 export type SyncSource = 'manual' | 'auto';
 
-export function statusSentence(state: ConnectionState, ageMs: number, hadConnection: boolean): { text: string; tone: Tone } {
+/** Edits the relay had to drop because the offline buffer was full. Never hidden: a
+ *  lost edit the user is not told about is the one failure this panel must not have. */
+export function droppedNote(frames: number): string {
+  return `${frames} edit${frames === 1 ? '' : 's'} lost while offline`;
+}
+
+export function statusSentence(
+  state: ConnectionState,
+  ageMs: number,
+  hadConnection: boolean,
+  droppedFrames = 0,
+): { text: string; tone: Tone } {
+  const base = baseStatusSentence(state, ageMs, hadConnection);
+  if (!(droppedFrames > 0)) return base;
+  return { text: `${base.text} · ${droppedNote(droppedFrames)}`, tone: 'warning' };
+}
+
+function baseStatusSentence(state: ConnectionState, ageMs: number, hadConnection: boolean): { text: string; tone: Tone } {
   if (state === 'connected') return { text: 'Connected', tone: 'success' };
   if (state === 'probing') return ageMs >= 10_000
     ? { text: 'Broker not running — run figma-agent status.', tone: 'warning' }

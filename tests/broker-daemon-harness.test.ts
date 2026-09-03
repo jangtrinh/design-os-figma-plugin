@@ -2276,3 +2276,121 @@ describe('daemon harness — broker-restart reconnect visibility (last-plugins.j
     expect((helloLate.data as AwaitingReconnectHelloData).awaitingReconnect).toBeUndefined();
   });
 });
+
+// A frame the relay buffered through an outage is HISTORY: it must land in the feed
+// dated to when the edit happened, marked as a replay, and it must not read as live
+// activity. `appendEditFrames`/`appendChangeFrames` stamped broker-append time — true
+// while an unsendable frame was destroyed, wrong the moment a whole outage gets
+// replayed on reconnect.
+describe('daemon harness — a replayed capture is filed at its CAPTURE time, never at reconnect time', () => {
+  const slug = 'replay-file';
+  const editAt = (nodeId: string): EditInputLike => ({
+    op: 'updated', nodeId, nodeName: `Node ${nodeId}`, nodeType: 'FRAME', parentName: null,
+    changedProps: ['x'], origin: 'LOCAL', page: 'Page 1', actor: 'owner',
+  });
+
+  it('stamps the plugin\'s capturedAt onto the frame and marks it replayed', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-replay-1', 'Replay File');
+    const stagingPath = join(scratchDir, 'unbound-root', 'changes', 'unbound', `${slug}.jsonl`);
+    const capturedAt = Date.now() - 40 * 60_000; // a 40-minute outage, replayed in one batch
+
+    plugin.send(JSON.stringify({
+      type: 'EDIT_FEED',
+      data: {
+        edits: [editAt('gap:1')], fileKey: null, fileName: 'Replay File', source: 'live',
+        capturedAt, replayed: true,
+      },
+    } satisfies EventMsg));
+
+    await waitFor(() => existsSync(stagingPath));
+    const frame = JSON.parse(readFileSync(stagingPath, 'utf8').trim()) as { ts: number; replayed?: boolean };
+    expect(frame.ts, 'the edit is dated when it happened, not when the socket came back').toBe(capturedAt);
+    expect(frame.replayed).toBe(true);
+    expect(readFileSync(scratchLogFile, 'utf8')).toMatch(/replayed 1 frame\(s\)/);
+  });
+
+  it('a batch with no capturedAt (an older plugin bundle) is still dated broker-now', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-replay-2', 'Replay File');
+    const stagingPath = join(scratchDir, 'unbound-root', 'changes', 'unbound', `${slug}.jsonl`);
+    const before = Date.now();
+
+    sendEditFeed(plugin, [editAt('live:1')], { fileKey: null, fileName: 'Replay File' });
+
+    await waitFor(() => existsSync(stagingPath));
+    const frame = JSON.parse(readFileSync(stagingPath, 'utf8').trim()) as { ts: number; replayed?: boolean };
+    expect(frame.ts).toBeGreaterThanOrEqual(before);
+    expect(frame.ts).toBeLessThanOrEqual(Date.now());
+    expect(frame, 'a live frame carries no replay marker at all').not.toHaveProperty('replayed');
+  });
+
+  it('a capturedAt in the future is refused, dated broker-now, and counted in the log', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-replay-3', 'Replay File');
+    const stagingPath = join(scratchDir, 'unbound-root', 'changes', 'unbound', `${slug}.jsonl`);
+    const before = Date.now();
+
+    plugin.send(JSON.stringify({
+      type: 'EDIT_FEED',
+      data: {
+        edits: [editAt('skewed:1')], fileKey: null, fileName: 'Replay File', source: 'live',
+        capturedAt: Date.now() + 24 * 60 * 60_000, replayed: true,
+      },
+    } satisfies EventMsg));
+
+    await waitFor(() => existsSync(stagingPath));
+    const frame = JSON.parse(readFileSync(stagingPath, 'utf8').trim()) as { ts: number };
+    expect(frame.ts).toBeGreaterThanOrEqual(before);
+    // Refused, but never silently: an edit parked in the future would never surface in
+    // `changes --since` again.
+    expect(readFileSync(scratchLogFile, 'utf8')).toMatch(/capturedAt refused/);
+  });
+});
+
+describe('daemon harness — the relay drop tally is logged as a delta, never the same total twice', () => {
+  it('logs each report\'s increment and stays silent on a re-report of a tally already recorded', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-drops-1', 'Drop File');
+
+    const stats = (frames: number, chars: number): void => {
+      plugin.send(JSON.stringify({
+        type: 'PLUGIN_RELAY_STATS', data: { preOpenDropped: { frames, chars } },
+      } satisfies EventMsg));
+    };
+
+    stats(5, 40);
+    await waitFor(() => /lost 5 capture frame\(s\)/.test(readFileSync(scratchLogFile, 'utf8')));
+    stats(9, 100);
+    await waitFor(() => /lost 4 capture frame\(s\)/.test(readFileSync(scratchLogFile, 'utf8')));
+    stats(9, 100); // the plugin re-sends its cumulative tally on every reconnect
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+
+    const lines = readFileSync(scratchLogFile, 'utf8').split('\n').filter((l) => l.includes('capture frame(s)'));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('lost 5 capture frame(s) (40 chars)');
+    expect(lines[1]).toContain('lost 4 capture frame(s) (60 chars)');
+    expect(lines[1], 'the session total is named alongside the increment').toContain('9');
+    // The handshake itself never carried the tally, so the registration line cannot
+    // double-log it.
+    expect(readFileSync(scratchLogFile, 'utf8')).not.toContain('preOpenDropped');
+  });
+
+  it('an event type this broker has never heard of is ignored without disturbing the connection', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'inst-unknown-evt', 'Unknown Event File');
+
+    plugin.send(JSON.stringify({ type: 'PLUGIN_FUTURE_TELEMETRY', data: { whatever: [1, 2, 3] } } satisfies EventMsg));
+
+    // The socket still works: an app-level PING is still answered.
+    const pong = nextFrame<EventMsg>(plugin, (m) => (m as EventMsg).type === 'PONG');
+    plugin.send(JSON.stringify({ type: 'PING', data: { t: Date.now() } } satisfies EventMsg));
+    expect((await pong).type).toBe('PONG');
+    expect(plugin.readyState).toBe(WebSocket.OPEN);
+  });
+});

@@ -13,6 +13,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import {
   BROKER_FILE, BROKER_IDLE_SHUTDOWN_MS, COWORK_MAX_TIMEOUT_MS, EXEC_JS_MAX_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS,
   LOOPBACK_HOST, PLUGIN_PONG_TIMEOUT_MS, PLUGIN_WAIT_MS, PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
+  readCapturedAt, readPreOpenDropped, readReplayed,
   type BrokerAdvertisement, type ErrorCode, type EventMsg, type JobInfo, type JobRecovery, type ReplyErr, type ReplyOk,
   type RequestMsg, type WireMsg,
 } from '../../../shared/protocol.ts';
@@ -321,10 +322,32 @@ export function reservedForceReleaseReason(
     : null;
 }
 
+/** Capture stamps this broker had to refuse since it started (a plugin clock running
+ *  ahead, or a malformed frame). Logged with the running total on every refusal, same
+ *  shape as errorLogAppendFailures below — a repeatedly-skewed plugin is visible as a
+ *  trend rather than one easy-to-miss line. */
+let capturedAtRejected = 0;
+
+/**
+ * The timestamp to file a capture batch under: the plugin's own `capturedAt` when it
+ * carries a trustworthy one (a batch replayed out of the relay's pre-connect buffer),
+ * else this broker's append time (an older plugin bundle, or a live batch). A stamp
+ * present but out of range is refused and COUNTED — an edit parked in the future would
+ * never surface in `changes --since` again.
+ */
+function captureTimestamp(kind: string, data: Record<string, unknown>): number {
+  const { ts, rejected } = readCapturedAt(data, Date.now());
+  if (rejected) {
+    capturedAtRejected += 1;
+    log(`${kind}: capturedAt refused (${capturedAtRejected} total) — filed at broker time instead`);
+  }
+  return ts;
+}
+
 /**
  * Extract a DOC_CHANGE batch's fields and append every frame to the change log.
  * Best-effort: malformed data or an fs error is swallowed (logged) — capture must
- * never break the relay. `ts` is stamped here (broker append time), near-real-time.
+ * never break the relay. `ts` is the batch's capture time (see captureTimestamp).
  */
 function appendDocChange(changesPath: string, data: Record<string, unknown>): void {
   try {
@@ -336,8 +359,11 @@ function appendDocChange(changesPath: string, data: Record<string, unknown>): vo
     // null) still has a second rung on the identity chain instead of collapsing to
     // 'unknown'. Optional — an older plugin bundle omitting it degrades to today's shape.
     const fileName = typeof data.fileName === 'string' ? data.fileName : undefined;
-    const written = appendChangeFrames(changesPath, changes, { page, fileKey, fileName }, Date.now());
-    if (written > 0) log(`DOC_CHANGE: appended ${written} change frame(s) → ${changesPath}`);
+    const written = appendChangeFrames(changesPath, changes, { page, fileKey, fileName }, captureTimestamp('DOC_CHANGE', data));
+    if (written > 0) {
+      const replayNote = readReplayed(data) ? ` — replayed ${written} frame(s) captured while no broker was reachable` : '';
+      log(`DOC_CHANGE: appended ${written} change frame(s) → ${changesPath}${replayNote}`);
+    }
   } catch (err) {
     log(`DOC_CHANGE append failed: ${(err as Error).message}`);
   }
@@ -361,11 +387,18 @@ function appendEditFeed(path: string, data: Record<string, unknown>): void {
     const fileKey = typeof data.fileKey === 'string' ? data.fileKey : null;
     const fileName = typeof data.fileName === 'string' ? data.fileName : null;
     const source: EditSource = data.source === 'gapfill' ? 'gapfill' : 'live';
-    const { written, droppedInvalid } = appendEditFrames(path, edits, { fileKey, fileName: fileName ?? '', source }, Date.now());
+    // A replayed batch keeps the `source` it was captured with (it really was a live
+    // edit when it happened); `replayed` is the separate, explicit fact that it reached
+    // this broker late, and it rides every frame so a reader of the feed can tell.
+    const replayed = readReplayed(data);
+    const { written, droppedInvalid } = appendEditFrames(
+      path, edits, { fileKey, fileName: fileName ?? '', source, replayed }, captureTimestamp('EDIT_FEED', data),
+    );
     // droppedInvalid is logged even at 0 alongside a non-zero write, and always when
     // itself non-zero, so a malformed batch never disappears silently (post-review fix).
     if (written > 0 || droppedInvalid > 0) {
-      log(`EDIT_FEED: appended ${written} edit frame(s), dropped ${droppedInvalid} invalid → ${path}`);
+      const replayNote = replayed ? ` — replayed ${written} frame(s) captured while no broker was reachable` : '';
+      log(`EDIT_FEED: appended ${written} edit frame(s), dropped ${droppedInvalid} invalid → ${path}${replayNote}`);
     }
   } catch (err) {
     log(`EDIT_FEED append failed: ${(err as Error).message}`);
@@ -2085,6 +2118,26 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         sendEvent(ws, 'SYNC_CONFIG', { idleMs: helloBound ? readIdleMsFor(helloBound) : idleMs, bound: Boolean(helloBound) });
         flushWaiting({ targetInstanceId: instanceId }); // HELLO is fresh app evidence
         broadcastPeers();
+      } else if (msg.type === 'PLUGIN_RELAY_STATS') {
+        // A plugin that could not reach any broker buffers what it captured and drops the
+        // oldest frames once that buffer is full. It reports the tally right after its
+        // handshake so the loss is recorded HERE too — the panel is the only other place
+        // that knows, and it dies with the iframe.
+        //
+        // The plugin's tally is session-cumulative and re-sent on every reconnect
+        // (nothing acknowledges it, so its report has to stay idempotent). The registry
+        // remembers what has already been logged for this instance and hands back only
+        // the increment, so five reconnects after one loss no longer print the same
+        // total five times.
+        if (isPlugin) {
+          const report = readPreOpenDropped(msg.data);
+          const entry = st.registry.getByWs(ws);
+          const delta = report ? st.registry.reportPreOpenDropped(ws, report) : null;
+          if (report && delta) {
+            log(`plugin [${entry?.instanceId ?? '?'}] lost ${delta.frames} capture frame(s) ` +
+                `(${delta.chars} chars) while no broker was reachable — ${report.frames} this session`);
+          }
+        }
       } else if (msg.type === 'APP_PROBE_ACK') {
         // touchApp + resumeReadiness above own the correlated wake-up. The ACK is
         // broker-local control traffic and is never broadcast to CLI clients.
@@ -2185,7 +2238,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           // wire event: cowork observes exactly what the durable feed already durably
           // recorded. Ignoring `source: 'gapfill'` / agent-only batches is
           // cowork-waiter.ts's own job (`onEdits`), not re-checked here.
-          if (st.coworkWaiters.length > 0) {
+          //
+          // A REPLAYED batch is deliberately excluded here. Its frames
+          // still carry `source: 'live'` (they were live when captured), so without this
+          // check a cowork session started AFTER an outage would be told that edits made
+          // before it even began are its own. The durable feed still records every one of
+          // them, dated to capture; only the "is the designer working right now" signal
+          // refuses to count history as activity.
+          if (st.coworkWaiters.length > 0 && !readReplayed(data)) {
             const edits = Array.isArray(data.edits) ? (data.edits as EditInput[]) : [];
             const source: EditSource = data.source === 'gapfill' ? 'gapfill' : 'live';
             const editNow = Date.now();

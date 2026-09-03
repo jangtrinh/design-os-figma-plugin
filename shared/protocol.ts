@@ -24,6 +24,77 @@ export interface PluginHelloData {
   [key: string]: unknown;
 }
 
+/** Frames (and their serialized character cost) the plugin lost before it could
+ *  connect. Carried by `PLUGIN_RELAY_STATS`, sent right after the handshake and only
+ *  once something was actually lost — a dropped edit that only the plugin's own panel
+ *  knows about is still a silent one, and the panel dies with the iframe.
+ *
+ *  Deliberately NOT a PLUGIN_HELLO field: a broker strips a fixed set of protocol keys
+ *  out of the hello payload and treats the REST as scene identity, so a broker predating
+ *  this report would read a growing tally as a changing scene and reset the flapper
+ *  streak its zombie watchdog counts on — exactly while the plugin is dropping frames.
+ *  An unknown event type costs that same broker nothing. */
+export interface PreOpenDroppedReport {
+  frames: number;
+  chars: number;
+}
+
+/**
+ * Read a `preOpenDropped` report off a PLUGIN_RELAY_STATS payload. Returns null when the
+ * field is absent and for any malformed or zero report, so a reader can treat a non-null
+ * result as "this plugin lost something worth logging". The tally is session-cumulative
+ * and re-sent on every reconnect (nothing acknowledges it), so the reader owns
+ * de-duplication — see `PluginRegistry.reportPreOpenDropped`.
+ */
+export function readPreOpenDropped(data: unknown): PreOpenDroppedReport | null {
+  const raw = (data as { preOpenDropped?: unknown } | null | undefined)?.preOpenDropped;
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { frames, chars } = raw as { frames?: unknown; chars?: unknown };
+  if (typeof frames !== 'number' || !Number.isFinite(frames) || frames <= 0) return null;
+  const size = typeof chars === 'number' && Number.isFinite(chars) && chars >= 0 ? chars : 0;
+  return { frames: Math.floor(frames), chars: Math.floor(size) };
+}
+
+/**
+ * How far ahead of the broker's own clock a plugin-stamped capture time may sit and
+ * still be trusted. Two loopback processes on one machine share a clock, so this is
+ * slack for scheduling jitter, not for a genuinely different clock. A stamp beyond it
+ * is refused: an edit parked in the future would never surface in `changes --since`
+ * again, which is the silent-loss class this whole capture path exists to remove.
+ */
+export const CAPTURED_AT_MAX_SKEW_MS = 60_000;
+
+/** What timestamp to file a capture batch under, and whether a stamp had to be refused. */
+export interface CapturedAtReading {
+  /** The plugin's own capture time when trustworthy, else the reader's `now`. */
+  ts: number;
+  /** True ONLY when a `capturedAt` was present and refused — the counter's trigger.
+   *  An absent stamp (an older plugin bundle) is normal and is never a rejection. */
+  rejected: boolean;
+}
+
+/**
+ * Read the capture time off an EDIT_FEED / DOC_CHANGE payload. The relay stamps it when
+ * the frame is CAPTURED, not when it is sent, so a batch replayed after a 40-minute
+ * outage lands in the feed dated to the edit rather than to the reconnect.
+ */
+export function readCapturedAt(
+  data: unknown, now: number, maxSkewMs: number = CAPTURED_AT_MAX_SKEW_MS,
+): CapturedAtReading {
+  const raw = (data as { capturedAt?: unknown } | null | undefined)?.capturedAt;
+  if (raw === undefined) return { ts: now, rejected: false };
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0 || raw > now + maxSkewMs) {
+    return { ts: now, rejected: true };
+  }
+  return { ts: raw, rejected: false };
+}
+
+/** Whether this batch is the relay replaying what it buffered while no broker was
+ *  reachable. History, not activity: it is recorded, but it never wakes a live waiter. */
+export function readReplayed(data: unknown): boolean {
+  return (data as { replayed?: unknown } | null | undefined)?.replayed === true;
+}
+
 export interface HeartbeatData {
   t: number;
   probeId?: string;
@@ -337,6 +408,12 @@ export interface EventMsg {
   // round found a fire-and-forget event could never report migratedCount/fileKey back to
   // the CLI. See broker-daemon.ts's broker-local PROJECT_BIND handler.)
   //
+  // PLUGIN_RELAY_STATS: plugin → broker, sent right behind PLUGIN_HELLO and ONLY when the
+  // relay's pre-connect buffer had to drop something. Payload shape:
+  // { preOpenDropped: PreOpenDroppedReport }. Deliberately not a hello field — see
+  // `PreOpenDroppedReport` above for why a growing tally inside the hello payload would
+  // read as a changing scene to a broker that predates it.
+  //
   // JOB_STATE (concurrency & jobs, backlog 1.1+2.6+4.3): broker → the waiting CLI, sent the
   // moment a mutating request is admitted ("your request is job X, currently queued at
   // position N") — BEFORE any timeout can fire, so a CLI that gives up waiting still knows
@@ -345,7 +422,7 @@ export interface EventMsg {
     | 'BROKER_HELLO' | 'PLUGIN_HELLO' | 'FILE_INFO' | 'PLUGIN_GONE' | 'PING' | 'PONG'
     | 'APP_PROBE' | 'APP_PROBE_ACK'
     | 'DOC_CHANGE' | 'SYNC_CONFIG' | 'SYNC_REQUEST' | 'SYNC_RESULT' | 'PEERS' | 'EDIT_FEED'
-    | 'JOB_STATE' | 'SET_TARGET' | 'CLEAR_TARGET';
+    | 'JOB_STATE' | 'SET_TARGET' | 'CLEAR_TARGET' | 'PLUGIN_RELAY_STATS';
   data: Record<string, unknown>;
 }
 
