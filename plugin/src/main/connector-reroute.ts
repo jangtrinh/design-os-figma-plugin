@@ -15,7 +15,8 @@ import { route } from '../../../shared/connector-route';
 import { ROUTER_VERSION, type ConnectionRecord, type Point, type Rect } from '../../../shared/connector-types';
 import { beginAgentMutation } from './correction-edge-store';
 import { listConnections, upsertConnection } from './connector-store';
-import { pageOf, renderConnector } from './connector-render';
+import { renderConnector } from './connector-render';
+import { pageOf } from './page-of-node';
 
 const DEBOUNCE_MS = 120;
 

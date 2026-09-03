@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   isDesignerCorrectionCandidate, readEdgeCorrections, readEvictedUnresolvedCount, writeEdgeCorrections,
   recordAgentMutationBatch, recordDesignerCorrection,
+  beginCorrectionBatch, flushCorrectionBatch, recordDesignerCorrectionInBatch,
 } from '../plugin/src/main/correction-edge-store';
 import { buildCorrectionEvent, type CorrectionEvent } from '../shared/supervised-memory';
 
@@ -23,11 +24,25 @@ describe('designer correction classification', () => {
 // A minimal `figma.root` mock (a Map-backed key/value store implementing just the two
 // methods this module calls) — no live plugin runtime needed, this is pure storage-shape
 // logic, not anything Figma-specific.
-function mockFigmaRoot(): { getSharedPluginData: (ns: string, key: string) => string; setSharedPluginData: (ns: string, key: string, value: string) => void } {
+interface MockFigmaRoot {
+  getSharedPluginData: (ns: string, key: string) => string;
+  setSharedPluginData: (ns: string, key: string, value: string) => void;
+  /** Every call this root has served — the store's only I/O surface, so these ARE the
+   *  document reads and writes, not a proxy for them. */
+  counts: { get: number; set: number };
+}
+
+function mockFigmaRoot(): MockFigmaRoot {
   const store = new Map<string, string>();
+  const counts = { get: 0, set: 0 };
   return {
-    getSharedPluginData: (ns, key) => store.get(`${ns}:${key}`) ?? '',
+    counts,
+    getSharedPluginData: (ns, key) => {
+      counts.get += 1;
+      return store.get(`${ns}:${key}`) ?? '';
+    },
     setSharedPluginData: (ns, key, value) => {
+      counts.set += 1;
       if (value === '') store.delete(`${ns}:${key}`);
       else store.set(`${ns}:${key}`, value);
     },
@@ -244,5 +259,89 @@ describe('recordAgentMutationBatch — provenance + suppression for ids only kno
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// One `documentchange` batch used to read + parse the WHOLE correction store once per
+// changed node (0.63 ms at 102 events — 50 times over in one drag delivery) and write it
+// back per correction. The batch reads once, writes once, and the parsed copy never
+// outlives the batch that read it: the same lifetime rule connector-store.ts pays for,
+// because a second tab or another plugin instance can move the document underneath us.
+describe('the correction store per documentchange batch — read once, write once', () => {
+  /** The mock root installed by `beforeEach`, with its call counters. */
+  const root = (): MockFigmaRoot => (globalThis as any).figma.root as MockFigmaRoot;
+
+  const propertyChange = (properties: string[]) => ({ changeType: 'PROPERTY_CHANGE', properties });
+
+  it('a batch whose changes are all non-candidates never touches the document at all', () => {
+    const batch = beginCorrectionBatch();
+    for (let i = 0; i < 50; i++) {
+      // A drag: every change carries relativeTransform, so none is a correction candidate.
+      recordDesignerCorrectionInBatch(batch, `n${i}`, propertyChange(['relativeTransform', 'x', 'y']));
+    }
+    flushCorrectionBatch(batch);
+
+    expect(root().counts.get).toBe(0);
+    expect(root().counts.set).toBe(0);
+  });
+
+  it('reads the store ONCE however many candidate changes the batch carries', () => {
+    const batch = beginCorrectionBatch();
+    for (let i = 0; i < 200; i++) recordDesignerCorrectionInBatch(batch, `n${i}`, propertyChange(['fills']));
+    flushCorrectionBatch(batch);
+
+    expect(root().counts.get).toBe(2); // the manifest, then the one chunk it names
+    expect(root().counts.set).toBe(0); // no causal parent exists → no correction, no write
+  });
+
+  it('two corrections in ONE batch cost ONE write, and the second sees the first', () => {
+    vi.useFakeTimers();
+    try {
+      recordAgentMutationBatch(['a1', 'a2'], { command: 'SET_TEXT' });
+      vi.advanceTimersByTime(2_001); // past the trailing agent-echo suppression window
+      root().counts.set = 0;
+
+      const batch = beginCorrectionBatch();
+      expect(recordDesignerCorrectionInBatch(batch, 'a1', propertyChange(['fills']))).not.toBeNull();
+      expect(recordDesignerCorrectionInBatch(batch, 'a2', propertyChange(['fills']))).not.toBeNull();
+      expect(batch.events?.filter((e) => e.kind === 'designer-correction')).toHaveLength(2);
+      expect(root().counts.set).toBe(0); // nothing written until the flush
+      flushCorrectionBatch(batch);
+
+      expect(root().counts.set).toBe(2); // one chunk + its manifest = one write
+      expect(readEdgeCorrections().filter((e) => e.kind === 'designer-correction')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // No copy of the store outlives the read that produced it. A second Figma tab, another
+  // plugin instance, or a direct edit to the blob can move the document at any moment, and
+  // a held parse would be flushed back OVER whatever they appended. The batch's own
+  // `events` already buys the whole read-once-per-batch win; a module-level copy bought
+  // nothing on top of it and widened that clobber window across commands.
+  it('a read never answers from an earlier read — the document is asked every time', () => {
+    writeEdgeCorrections([event('a', recentIso(1))]);
+    readEdgeCorrections();
+    root().counts.get = 0;
+
+    expect(readEdgeCorrections().map((e) => e.eventId)).toEqual(['a']);
+    expect(root().counts.get).toBe(2); // the manifest, then the one chunk it names
+  });
+
+  it('a read after a write sees the WRITE, never a copy parsed before it', () => {
+    writeEdgeCorrections([event('a', recentIso(1))]);
+    readEdgeCorrections();
+    writeEdgeCorrections([event('b', recentIso(1))]);
+
+    expect(readEdgeCorrections().map((e) => e.eventId)).toEqual(['b']);
+  });
+
+  it('the returned events are a COPY — appending to them cannot corrupt the parsed copy', () => {
+    writeEdgeCorrections([event('a', recentIso(1))]);
+    const first = readEdgeCorrections();
+    first.push(event('ghost', recentIso(0)));
+
+    expect(readEdgeCorrections().map((e) => e.eventId)).toEqual(['a']);
   });
 });
