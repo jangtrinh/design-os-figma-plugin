@@ -8,6 +8,7 @@ import { createExecStdlib } from './exec-stdlib';
 import {
   compile, resultWarning, summarize, type ConsoleProxy, type ExecFn,
 } from './exec-js-normalize';
+import { registerSentinel } from './undo-sentinel-registry';
 
 // Re-exported so existing callers/tests of the normalization functions keep importing them
 // from this module — executor-exec-js.ts stays the public face of the EXEC_JS feature, the
@@ -58,6 +59,11 @@ export function figmaUndoBracket(): UndoBracket {
       f.visible = false;
       page.appendChild(f);
       sentinel = f;
+      // Registered by id right after creation, BEFORE any documentchange for it can be
+      // delivered — document-change-capture.ts drops the sentinel's own CREATE/PROPERTY_
+      // CHANGE/DELETE lifecycle from the feed by checking this registry, so it never reads
+      // as a designer's own edit.
+      registerSentinel(f.id);
     },
     commit() {
       // A script that swept `currentPage` (e.g. deleted everything on it) may have already

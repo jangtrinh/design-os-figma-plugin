@@ -140,12 +140,17 @@ export function opStatus(
     //     change whose every property is `pluginData`): a filtered change is still a change,
     //     and without a count the only way to notice the predicate had started eating real
     //     edits would be a designer reporting a missing one;
+    //   · how many entries were dropped as the undo sentinel's own CREATE/PROPERTY_CHANGE/
+    //     DELETE lifecycle (undo-sentinel-registry.ts) — the plugin's own invisible
+    //     bookkeeping node, never a designer edit, matched by id;
     //   · how many changed nodes (live or deleted-unseen) had no resolvable page and were
     //     filed under the current one: that page name is a guess about someone else's edit;
     //   · correction-store failures, as first message + count (the gapfill block's shape) —
     //     the feed is posted regardless, so nothing else would ever report the refusal.
     ...(capture && capture.pluginDataChangesDropped > 0
       && { pluginDataChangesDropped: capture.pluginDataChangesDropped }),
+    ...(capture && capture.sentinelChangesDropped > 0
+      && { sentinelChangesDropped: capture.sentinelChangesDropped }),
     ...(capture && capture.pageFallbacks > 0 && { pageFallbacks: capture.pageFallbacks }),
     ...(capture && capture.firstError !== null
       && { captureErrors: [capture.firstError], captureErrorCount: capture.errorCount }),

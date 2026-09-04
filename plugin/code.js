@@ -1521,10 +1521,26 @@
     return Object.keys(intent).length > 0 ? capIntent(intent) : void 0;
   }
 
+  // plugin/src/main/undo-sentinel-registry.ts
+  var MAX_TRACKED = 32;
+  var tracked = /* @__PURE__ */ new Set();
+  function registerSentinel(id) {
+    if (tracked.has(id)) return;
+    if (tracked.size >= MAX_TRACKED) {
+      const oldest = tracked.values().next().value;
+      if (oldest !== void 0) tracked.delete(oldest);
+    }
+    tracked.add(id);
+  }
+  function isSentinelId(id) {
+    return tracked.has(id);
+  }
+
   // plugin/src/main/document-change-capture.ts
   function createDocumentChangeCapture(deps) {
     const stats = {
       pluginDataChangesDropped: 0,
+      sentinelChangesDropped: 0,
       pageFallbacks: 0,
       errorCount: 0,
       firstError: null
@@ -1561,6 +1577,10 @@
         const node = dc.node;
         if (!node) continue;
         const changedProps = dc.type === "PROPERTY_CHANGE" ? [...dc.properties] : [];
+        if (isSentinelId(node.id)) {
+          stats.sentinelChangesDropped += 1;
+          continue;
+        }
         if (isPluginBookkeepingChange(dc.type, changedProps)) {
           stats.pluginDataChangesDropped += 1;
           continue;
@@ -4251,10 +4271,12 @@
       // carries those frames under a guessed page name.
       coverageRow("page-fallbacks", capture2?.pageFallbacks ?? 0, "changes"),
       coverageRow("capture-errors", capture2?.errorCount ?? 0, "status.plugin.captureErrors"),
-      // `capture.pluginDataChangesDropped` deliberately gets NO row: those entries are the
-      // plugin's own bookkeeping echo (a property change whose every property is
-      // `pluginData`), not a designer edit this session failed to see — it stays readable
-      // on STATUS as its own counter.
+      // `capture.pluginDataChangesDropped` and `capture.sentinelChangesDropped` deliberately
+      // get NO row: the first is the plugin's own bookkeeping echo (a property change whose
+      // every property is `pluginData`), the second is the undo sentinel's own CREATE/DELETE
+      // lifecycle (undo-sentinel-registry.ts) — the plugin's own invisible node, never a
+      // designer edit this session failed to see. Both stay readable on STATUS as their own
+      // counters instead.
       // Nodes dropped mid-walk because their properties threw: absent from the walk, so
       // absent from what any diff built on it could report.
       coverageRow("property-read-errors", perf?.propertyReadErrors ?? 0, "status.plugin.perf")
@@ -4388,11 +4410,15 @@
       //     change whose every property is `pluginData`): a filtered change is still a change,
       //     and without a count the only way to notice the predicate had started eating real
       //     edits would be a designer reporting a missing one;
+      //   · how many entries were dropped as the undo sentinel's own CREATE/PROPERTY_CHANGE/
+      //     DELETE lifecycle (undo-sentinel-registry.ts) — the plugin's own invisible
+      //     bookkeeping node, never a designer edit, matched by id;
       //   · how many changed nodes (live or deleted-unseen) had no resolvable page and were
       //     filed under the current one: that page name is a guess about someone else's edit;
       //   · correction-store failures, as first message + count (the gapfill block's shape) —
       //     the feed is posted regardless, so nothing else would ever report the refusal.
       ...capture2 && capture2.pluginDataChangesDropped > 0 && { pluginDataChangesDropped: capture2.pluginDataChangesDropped },
+      ...capture2 && capture2.sentinelChangesDropped > 0 && { sentinelChangesDropped: capture2.sentinelChangesDropped },
       ...capture2 && capture2.pageFallbacks > 0 && { pageFallbacks: capture2.pageFallbacks },
       ...capture2 && capture2.firstError !== null && { captureErrors: [capture2.firstError], captureErrorCount: capture2.errorCount },
       // Where the session's time went (shared/protocol.ts's PerfStatus). Caller-supplied and
@@ -6246,6 +6272,7 @@
         f.visible = false;
         page.appendChild(f);
         sentinel = f;
+        registerSentinel(f.id);
       },
       commit() {
         try {

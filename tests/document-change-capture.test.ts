@@ -18,6 +18,9 @@ import {
   beginCorrectionBatch, flushCorrectionBatch,
   recordAgentMutationBatch, recordDesignerCorrectionInBatch, type CorrectionBatch,
 } from '../plugin/src/main/correction-edge-store.ts';
+import {
+  registerSentinel, resetSentinelRegistryForTest,
+} from '../plugin/src/main/undo-sentinel-registry.ts';
 import { INTENT_PROPS, INTENT_TEXT_CAP, INTENT_ANNOTATION_CAP } from '../shared/edit-intent.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -116,6 +119,68 @@ const feed = (log: Log) => log.posted.filter((m) => m.type === 'EDIT_FEED');
 
 beforeEach(() => {
   countingFigma();
+  resetSentinelRegistryForTest();
+});
+
+describe('the undo sentinel\'s own lifecycle never enters the edit feed', () => {
+  const SENTINEL_FRAME: FakeNode = { id: 'sentinel-1', name: '[figma-agent] undo sentinel', type: 'FRAME', parent: PAGE };
+
+  it('a registered sentinel\'s CREATE+DELETE+PROPERTY_CHANGE post NOTHING for it, while another node in the same batch still lands', () => {
+    registerSentinel('sentinel-1');
+    const { capture, log } = harness();
+    const removedSentinel: FakeNode = { ...SENTINEL_FRAME, parent: null, removed: true };
+
+    capture.onDocumentChange({
+      documentChanges: [
+        change(SENTINEL_FRAME, 'CREATE'),
+        change(SENTINEL_FRAME, 'PROPERTY_CHANGE', ['name']),
+        change(removedSentinel, 'DELETE'),
+        change(text('t1'), 'PROPERTY_CHANGE', ['characters']),
+      ],
+    } as any);
+
+    const edits = feed(log)[0]?.data.edits ?? [];
+    expect(edits.map((e: any) => e.nodeId)).toEqual(['t1']); // the sentinel never rides along
+    expect(capture.stats.sentinelChangesDropped).toBe(3); // every raw change dropped, counted
+    expect(log.idleArmed).toBe(1); // still armed — by the OTHER node's real edit
+  });
+
+  it('sentinelChangesDropped counts every raw change dropped, across a batch with only sentinel noise', () => {
+    registerSentinel('sentinel-1');
+    const { capture, log } = harness();
+    const removedSentinel: FakeNode = { ...SENTINEL_FRAME, parent: null, removed: true };
+
+    capture.onDocumentChange({
+      documentChanges: [change(SENTINEL_FRAME, 'CREATE'), change(removedSentinel, 'DELETE')],
+    } as any);
+
+    expect(capture.stats.sentinelChangesDropped).toBe(2);
+    expect(log.posted).toHaveLength(0); // nothing at all — the batch was pure sentinel noise
+    expect(log.idleArmed).toBe(0);
+  });
+
+  it('an UNREGISTERED frame merely named like the sentinel is NOT dropped — name is not identity', () => {
+    const { capture, log } = harness();
+    const lookalike: FakeNode = { id: 'not-a-sentinel', name: '[figma-agent] undo sentinel', type: 'FRAME', parent: PAGE };
+
+    capture.onDocumentChange({ documentChanges: [change(lookalike, 'CREATE')] } as any);
+
+    expect(feed(log)[0]?.data.edits[0]).toMatchObject({ nodeId: 'not-a-sentinel', op: 'created' });
+    expect(capture.stats.sentinelChangesDropped).toBe(0);
+  });
+
+  it('the correction store and connector index never see a registered sentinel\'s changes', () => {
+    registerSentinel('sentinel-1');
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(SENTINEL_FRAME, 'PROPERTY_CHANGE', ['name'])],
+    } as any);
+
+    expect(log.corrections).toEqual([]);
+    expect(log.connector).toEqual([]);
+    expect(capture.stats.sentinelChangesDropped).toBe(1);
+  });
 });
 
 describe('the plugin\'s own bookkeeping write never becomes an owner edit', () => {
