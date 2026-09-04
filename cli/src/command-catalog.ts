@@ -279,7 +279,18 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + '--limit bounds the export count the same way it bounds the listing. A transport failure '
       + '(E_NO_PLUGIN/E_NO_BROKER/E_TIMEOUT/E_VERSION_MISMATCH) stops the export at that node: the '
       + 'same JSON is still printed with everything that landed plus png.error:{code,message,atNodeId}, '
-      + 'and the command exits 1.',
+      + 'and the command exits 1. A frame for a description or annotation edit also carries the '
+      + "designer's new words in intent:{description,descriptionMarkdown,annotations} — read live at "
+      + 'capture time, so it exists only on source:"live" frames: a description or annotation edit '
+      + 'made while the plugin was closed is not reported at all, because the stored baseline holds '
+      + 'no description or annotation to diff against. Text is capped at 2 000 chars per field '
+      + '(description, markdown, and each annotation label) and 20 annotations per frame, with '
+      + 'intentTruncated:true when any text was cut; annotationsTotal appears ONLY when the list is '
+      + 'partial (absent means complete). description:"" means the designer cleared it, while '
+      + 'intentReadError (prefixed with the field name) means the read refused and the value is '
+      + 'unknown — never the same thing. A frame whose intent block fails its shape guard is still '
+      + 'listed, without that block, and the drop is counted in intentWarnings (present only when '
+      + 'non-zero) — an unreadable value never costs the edit it rode on.',
   },
   {
     name: 'errors',

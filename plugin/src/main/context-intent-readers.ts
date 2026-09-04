@@ -132,6 +132,15 @@ export function readDevStatus(node: ContextNodeLike): Record<string, unknown> | 
 export function readAnnotations(node: ContextNodeLike): Record<string, unknown>[] | null {
   const raw = node.annotations;
   if (!Array.isArray(raw) || raw.length === 0) return null;
+  return shapeAnnotations(raw);
+}
+
+/** The shaping half of `readAnnotations`, over a list the caller has ALREADY read. Split out
+ *  so the live edit-feed capture — which must tell an EMPTY list (the designer cleared them)
+ *  apart from an absent field (this node type never had any), a distinction `readAnnotations`
+ *  deliberately folds into one `null` — can reuse the exact field shape instead of growing a
+ *  second, drifting copy of it. */
+export function shapeAnnotations(raw: readonly unknown[]): Record<string, unknown>[] {
   return raw.map((entry) => {
     if (entry === null || typeof entry !== 'object') return {};
     const annotation = entry as Record<string, unknown>;
@@ -148,6 +157,13 @@ export function readAnnotations(node: ContextNodeLike): Record<string, unknown>[
   });
 }
 
+/** Markdown that repeats the plain description (or says nothing) is not a second fact —
+ *  Figma populates both on read. Shared with the edit-feed capture so the two paths can
+ *  never disagree about when the markdown twin is worth carrying. */
+export function distinctMarkdown(markdown: string, description: string): string | undefined {
+  return markdown !== '' && markdown !== description ? markdown : undefined;
+}
+
 /** A component's own words. `descriptionMarkdown` is dropped when it repeats `description` —
  *  the same rule `exec-stdlib-annotate` follows for a label, and for the same reason: Figma
  *  populates both on read. */
@@ -155,10 +171,11 @@ export function readComponentIntent(component: ContextNodeLike): ComponentIntent
   const description = str(safe(() => component.description));
   const markdown = str(safe(() => component.descriptionMarkdown));
   const uris = readOnlyField(safe(() => component.documentationLinks), 'uri');
+  const distinct = distinctMarkdown(markdown, description);
   return {
     name: str(safe(() => component.name)),
     ...(description !== '' && { description }),
-    ...(markdown !== '' && markdown !== description && { descriptionMarkdown: markdown }),
+    ...(distinct !== undefined && { descriptionMarkdown: distinct }),
     ...(uris.length > 0 && { documentationLinks: uris }),
   };
 }
