@@ -290,7 +290,17 @@ export const COMMANDS: CommandCatalogEntry[] = [
       + 'intentReadError (prefixed with the field name) means the read refused and the value is '
       + 'unknown — never the same thing. A frame whose intent block fails its shape guard is still '
       + 'listed, without that block, and the drop is counted in intentWarnings (present only when '
-      + 'non-zero) — an unreadable value never costs the edit it rode on.',
+      + 'non-zero) — an unreadable value never costs the edit it rode on. Figma delivers every '
+      + 'keystroke of a description as its own change batch, so a typed description arrives as TWO '
+      + 'frames, not one per letter: the first keystroke, at once, then one carrying the final '
+      + 'value and coalescedFrames:N — the total number of keystrokes it stands for, the first '
+      + 'included — posted 1.5 s after the last one and timestamped at that last keystroke, not at '
+      + 'the flush. coalescedFrames is absent when nothing was folded (a one-keystroke edit is a '
+      + 'single ordinary frame); a count that says nothing is dropped and tallied in '
+      + 'coalescedWarnings (present only when non-zero). If the panel closes inside that 1.5 s the '
+      + 'second frame is lost — the first keystroke is still reported, so the feed holds an '
+      + 'earlier value of the description rather than nothing (the plugin has no usable close '
+      + 'hook); status.plugin.intentFramesParked counts what a session was still holding.',
   },
   {
     name: 'errors',

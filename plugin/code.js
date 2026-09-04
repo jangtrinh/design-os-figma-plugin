@@ -1536,6 +1536,90 @@
     return tracked.has(id);
   }
 
+  // plugin/src/main/intent-frame-parking.ts
+  var INTENT_QUIET_WINDOW_MS = 1500;
+  var MAX_PARKED_INTENT_NODES = 64;
+  function isIntentOnlyProps(changedProps) {
+    return changedProps.length > 0 && changedProps.every((p) => INTENT_PROPS.includes(p));
+  }
+  function createIntentFrameParking(deps) {
+    const slots = /* @__PURE__ */ new Map();
+    function closeSlot(nodeId, slot) {
+      slots.delete(nodeId);
+      slot.cancel();
+      if (slot.frame.frames < 2) return;
+      deps.stats.intentFramesParked -= 1;
+      deps.flush(slot.frame);
+    }
+    function release(nodeId) {
+      if (slots.size === 0) return;
+      const slot = slots.get(nodeId);
+      if (slot !== void 0) closeSlot(nodeId, slot);
+    }
+    function evictOldest() {
+      let oldestId = null;
+      let oldestAt = Infinity;
+      for (const [id, slot] of slots) {
+        if (slot.firstAt < oldestAt) {
+          oldestAt = slot.firstAt;
+          oldestId = id;
+        }
+      }
+      if (oldestId === null) return;
+      closeSlot(oldestId, slots.get(oldestId));
+    }
+    function arm(nodeId, frame, firstAt) {
+      slots.set(nodeId, {
+        frame,
+        firstAt,
+        cancel: deps.setTimer(() => {
+          const current = slots.get(nodeId);
+          if (current !== void 0) closeSlot(nodeId, current);
+        }, INTENT_QUIET_WINDOW_MS)
+      });
+    }
+    const normalise = (props) => [...new Set(props)].sort();
+    function fold({ edit, change, page, resolvePageAtFlush, at }) {
+      const slot = slots.get(edit.nodeId);
+      if (slot === void 0) {
+        if (slots.size >= MAX_PARKED_INTENT_NODES) evictOldest();
+        const changedProps2 = normalise(edit.changedProps);
+        arm(edit.nodeId, {
+          edit: { ...edit, changedProps: changedProps2 },
+          change: change === null ? null : { ...change, changedProps: changedProps2 },
+          page,
+          resolvePageAtFlush,
+          frames: 1,
+          capturedAt: at
+        }, at);
+        return false;
+      }
+      const prev = slot.frame;
+      slot.cancel();
+      const changedProps = normalise([...prev.edit.changedProps, ...edit.changedProps]);
+      const merged = {
+        ...edit,
+        changedProps,
+        ...prev.edit.intent !== void 0 || edit.intent !== void 0 ? { intent: mergeIntent(prev.edit.intent, edit.intent ?? {}) } : {}
+      };
+      const twin = change ?? prev.change;
+      if (prev.frames === 1) deps.stats.intentFramesParked += 1;
+      deps.stats.intentFramesCoalesced += 1;
+      arm(edit.nodeId, {
+        edit: merged,
+        change: twin === null ? null : { ...twin, changedProps },
+        page,
+        // the LAST keystroke's page
+        resolvePageAtFlush,
+        // …and the newest way to re-read it
+        frames: prev.frames + 1,
+        capturedAt: at
+      }, slot.firstAt);
+      return true;
+    }
+    return { fold, release };
+  }
+
   // plugin/src/main/document-change-capture.ts
   function createDocumentChangeCapture(deps) {
     const stats = {
@@ -1543,8 +1627,48 @@
       sentinelChangesDropped: 0,
       pageFallbacks: 0,
       errorCount: 0,
-      firstError: null
+      firstError: null,
+      intentFramesParked: 0,
+      intentFramesCoalesced: 0
     };
+    function postParkedFrame(frame) {
+      try {
+        postParkedFrameOrThrow(frame);
+      } catch (error) {
+        recordCaptureError(error);
+      }
+    }
+    function postParkedFrameOrThrow(frame) {
+      const page = frame.resolvePageAtFlush() ?? frame.page;
+      if (frame.change !== null) {
+        deps.post({
+          type: "DOC_CHANGE",
+          data: {
+            changes: [frame.change],
+            page,
+            fileKey: figma.fileKey ?? null,
+            fileName: figma.root.name,
+            capturedAt: frame.capturedAt
+          }
+        });
+        deps.noteComponentChanges(1);
+      }
+      deps.post({
+        type: "EDIT_FEED",
+        data: {
+          // The count is what the folded duplicates leave behind. It is only ever posted from
+          // here, and this function only runs for a window that folded something, so a reader
+          // never sees a count that says "stands for 1".
+          edits: [{ ...frame.edit, page, coalescedFrames: frame.frames }],
+          fileKey: figma.fileKey ?? null,
+          fileName: figma.root.name,
+          source: "live",
+          capturedAt: frame.capturedAt
+        }
+      });
+      deps.armIdle();
+    }
+    const parking = createIntentFrameParking({ setTimer: deps.setTimer, flush: postParkedFrame, stats });
     function resolvedPage(node, remembered) {
       const own = pageOf(node);
       if (own) return { name: own.name, id: own.id };
@@ -1595,16 +1719,14 @@
         }
         connectorTouched.push(node.id);
         const identity = resolveComponentIdentity(node);
-        if (identity) {
-          raw2.push({
-            op,
-            nodeId: identity.id,
-            nodeName: identity.name,
-            nodeType: identity.type,
-            changedProps,
-            origin: dc.origin
-          });
-        }
+        const componentChange = identity ? {
+          op,
+          nodeId: identity.id,
+          nodeName: identity.name,
+          nodeType: identity.type,
+          changedProps,
+          origin: dc.origin
+        } : null;
         const removed = "removed" in node && node.removed;
         const known = deps.identity.get(node.id);
         const parentName = removed ? known?.parentName ?? null : enclosingName(node);
@@ -1618,7 +1740,7 @@
             recordCaptureError(error);
           }
         }
-        edits.push({
+        const edit = {
           op,
           nodeId: node.id,
           nodeName: removed ? known?.name ?? null : node.name,
@@ -1629,7 +1751,34 @@
           origin: dc.origin,
           actor: classifyActor(node.id, op, now, deps.actorState()),
           ...intent !== void 0 && { intent }
-        });
+        };
+        let posting = true;
+        if (!removed && isIntentOnlyProps(changedProps)) {
+          const held = node;
+          posting = !parking.fold({
+            edit,
+            change: componentChange,
+            page: page.name,
+            // Re-read at flush, not now: the whole point is the page as it is 1.5 s later.
+            // Guarded like every other host read in this pass — an invalidated reference
+            // throws on `parent` — and a refusal costs the re-read, never the frame.
+            resolvePageAtFlush: () => {
+              try {
+                return pageOf(held)?.name ?? null;
+              } catch (error) {
+                recordCaptureError(error);
+                return null;
+              }
+            },
+            at: now
+          });
+        } else {
+          parking.release(node.id);
+        }
+        if (posting) {
+          if (componentChange !== null) raw2.push(componentChange);
+          edits.push(edit);
+        }
         if (!removed) {
           deps.identity.remember(node.id, {
             name: node.name,
@@ -4277,6 +4426,13 @@
       // lifecycle (undo-sentinel-registry.ts) — the plugin's own invisible node, never a
       // designer edit this session failed to see. Both stay readable on STATUS as their own
       // counters instead.
+      // `capture.intentFramesCoalesced` gets no row for the same reason: a folded keystroke
+      // frame is a DUPLICATE of a fact this session did report — the final description value
+      // rode out on the frame that folded it — so counting it as coverage lost would claim a
+      // gap that does not exist. `capture.intentFramesParked` gets none either, but for the
+      // opposite reason: a held frame has not been lost, it has not gone out YET, and this
+      // statement describes the session as it stands rather than predicting a close inside
+      // the 1.5 s window. Both stay readable on STATUS as their own counters.
       // Nodes dropped mid-walk because their properties threw: absent from the walk, so
       // absent from what any diff built on it could report.
       coverageRow("property-read-errors", perf?.propertyReadErrors ?? 0, "status.plugin.perf")
@@ -4401,11 +4557,11 @@
       // reading of its own rather than an absence that looks like health. Caller-supplied —
       // this function never re-derives what gap-fill did.
       ...gapfill && { gapfill },
-      // Live capture's own session record (document-change-capture.ts). All three keep the
-      // present-only-when-meaningful contract of the counters above — a session that filtered
-      // nothing, guessed no page and hit no store failure keeps the payload byte-identical to
-      // before these fields existed — because each records something that DID happen and
-      // would otherwise leave no trace at all:
+      // Live capture's own session record (document-change-capture.ts). Every one of these
+      // keeps the present-only-when-meaningful contract of the counters above — a session that
+      // filtered nothing, guessed no page, hit no store failure and folded no keystroke keeps
+      // the payload byte-identical to before these fields existed — because each records
+      // something that DID happen and would otherwise leave no trace at all, in this order:
       //   · how many entries were dropped as the plugin's own bookkeeping echo (a property
       //     change whose every property is `pluginData`): a filtered change is still a change,
       //     and without a count the only way to notice the predicate had started eating real
@@ -4416,11 +4572,22 @@
       //   · how many changed nodes (live or deleted-unseen) had no resolvable page and were
       //     filed under the current one: that page name is a guess about someone else's edit;
       //   · correction-store failures, as first message + count (the gapfill block's shape) —
-      //     the feed is posted regardless, so nothing else would ever report the refusal.
+      //     the feed is posted regardless, so nothing else would ever report the refusal;
+      //   · how many capture frames the intent quiet window folded away this session
+      //     (intent-frame-parking.ts): a description is typed one keystroke at a time and
+      //     each keystroke is its own `documentchange` batch, so 17 of them cost two frames
+      //     instead of seventeen — the 16 that never got a post of their own are duplicates
+      //     of a kept fact, but the FOLD itself is not allowed to be invisible;
+      //   · how many folded follow-ups are held RIGHT NOW. The plugin has no usable close
+      //     hook (see main.ts), so a panel closed inside the 1.5 s window takes the finished
+      //     value with it (the first keystroke was already reported); this is the number that
+      //     says how many, rather than leaving the loss to be inferred from a stale value.
       ...capture2 && capture2.pluginDataChangesDropped > 0 && { pluginDataChangesDropped: capture2.pluginDataChangesDropped },
       ...capture2 && capture2.sentinelChangesDropped > 0 && { sentinelChangesDropped: capture2.sentinelChangesDropped },
       ...capture2 && capture2.pageFallbacks > 0 && { pageFallbacks: capture2.pageFallbacks },
       ...capture2 && capture2.firstError !== null && { captureErrors: [capture2.firstError], captureErrorCount: capture2.errorCount },
+      ...capture2 && capture2.intentFramesCoalesced > 0 && { intentFramesCoalesced: capture2.intentFramesCoalesced },
+      ...capture2 && capture2.intentFramesParked > 0 && { intentFramesParked: capture2.intentFramesParked },
       // Where the session's time went (shared/protocol.ts's PerfStatus). Caller-supplied and
       // absent until BOOT HAS COMPLETED: mid-walk totals read like final ones, and "the boot
       // walk took 40 ms" is a claim only the finished walk can make. Once present it stays,
@@ -7487,6 +7654,13 @@
   var editIdentityCache = createEditIdentityCache();
   var capture = createDocumentChangeCapture({
     now: () => Date.now(),
+    // The intent quiet window's timer (intent-frame-parking.ts). The sandbox has
+    // `setTimeout`; the pass takes it as a dep so its tests can hold a fake clock, and gets
+    // back a canceller rather than a handle so the host's timer type stays in this file.
+    setTimer: (fn, ms) => {
+      const handle = setTimeout(fn, ms);
+      return () => clearTimeout(handle);
+    },
     onBatchStart: (now) => {
       pruneDeclaredIds(declaredIds, now);
       recordDocumentChangeBatch(readOnlyGuard, activeCount);

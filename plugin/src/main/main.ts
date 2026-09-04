@@ -282,6 +282,13 @@ function fireIdle(): void {
 const editIdentityCache = createEditIdentityCache();
 const capture = createDocumentChangeCapture({
   now: () => Date.now(),
+  // The intent quiet window's timer (intent-frame-parking.ts). The sandbox has
+  // `setTimeout`; the pass takes it as a dep so its tests can hold a fake clock, and gets
+  // back a canceller rather than a handle so the host's timer type stays in this file.
+  setTimer: (fn, ms) => {
+    const handle = setTimeout(fn, ms);
+    return () => clearTimeout(handle);
+  },
   onBatchStart: (now) => {
     pruneDeclaredIds(declaredIds, now); // once per batch — nothing reads `declared` between batches
     // Read-only EXEC_JS enforcement — once per batch, not per node: this records
@@ -370,6 +377,17 @@ void runBootCapture({
 // mid-session therefore leaves an OLDER baseline, which the next boot diffs against: some
 // edits already reported live get reported once more (duplicates, net-correct), and none
 // is lost.
+//
+// The intent quiet window (intent-frame-parking.ts) inherits that absence, and a close hook
+// would not rescue it either: a held follow-up leaves through `figma.ui.postMessage`, and
+// the UI iframe that relays it to the broker is torn down in the same instant the close
+// callback returns — a "flush on close" would post into a socket nobody is left to send,
+// which is a silent loss wearing the costume of a fix. So the limit is stated instead of
+// pretended away, and the leading-edge fold keeps it small: the FIRST keystroke of a
+// description is always reported, so a panel closed inside the window loses the FINAL value
+// (the feed keeps an earlier one), never the fact that the description was edited.
+// `capture.stats.intentFramesParked` (STATUS, `capture` block) says how many follow-ups
+// were being held at the time.
 
 type Params = Record<string, unknown>;
 

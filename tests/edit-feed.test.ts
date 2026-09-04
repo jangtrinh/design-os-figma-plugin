@@ -434,3 +434,59 @@ describe('buildEditFrame — the caps hold at the write boundary', () => {
     expect(frame.changedProps).toEqual(['annotations']);
   });
 });
+
+// A description is typed one keystroke at a time and Figma delivers each as its own batch,
+// so the plugin holds an intent-only edit for a quiet window and posts ONE frame for the
+// lot (plugin/src/main/intent-frame-parking.ts). `coalescedFrames` is how many capture
+// frames that one frame stands for — the folded duplicates leave a number behind instead of
+// vanishing. Additive, same contract as `fileName`/`replayed`/`intent`: absent on every
+// frame that folded nothing, so an unfolded frame stays byte-identical to before it existed.
+describe('coalescedFrames — the folded keystroke frames leave a number behind', () => {
+  it('rides onto the frame when the capture folded more than one', () => {
+    const frame = buildEditFrame(baseInput({ coalescedFrames: 17 }), baseMeta(), 1_700_000_000_000);
+    expect(frame.coalescedFrames).toBe(17);
+  });
+
+  it('is absent — not zero, not one — on a frame that folded nothing', () => {
+    const frame = buildEditFrame(baseInput(), baseMeta(), 1_700_000_000_000);
+    expect('coalescedFrames' in frame).toBe(false);
+  });
+
+  it('an input without it is admitted: a frame that folded nothing is the normal case', () => {
+    expect(isValidEditInput(baseInput())).toBe(true);
+  });
+
+  it('a count of 2 or more is admitted', () => {
+    expect(isValidEditInput(baseInput({ coalescedFrames: 2 }))).toBe(true);
+    expect(isValidEditInput(baseInput({ coalescedFrames: 17 }))).toBe(true);
+  });
+
+  // A count that says nothing ("stands for 1 frame", "for 0", a fraction, a string) is
+  // STRIPPED, never a reason to throw the edit away — the same policy `intent` is held to,
+  // and for the same reason: the edit is the fact this feed exists to carry, the count is
+  // an extra riding along with it.
+  it('admits an edit whose count is meaningless — the edit is never the casualty', () => {
+    expect(isValidEditInput(baseInput({ coalescedFrames: 1 }))).toBe(true);
+    expect(isValidEditInput(baseInput({ coalescedFrames: 0 }))).toBe(true);
+    expect(isValidEditInput(baseInput({ coalescedFrames: -3 }))).toBe(true);
+    expect(isValidEditInput(baseInput({ coalescedFrames: 2.5 }))).toBe(true);
+    expect(isValidEditInput(baseInput({ coalescedFrames: '17' as unknown as number }))).toBe(true);
+  });
+
+  it('the frame guard holds the same line, and a frame without the key still parses', () => {
+    const folded = buildEditFrame(baseInput({ coalescedFrames: 3 }), baseMeta(), 1_700_000_000_000);
+    expect(isValidEditFrame(folded)).toBe(true);
+    expect(isValidEditFrame({ ...folded, coalescedFrames: 1 })).toBe(true);
+    expect(isValidEditFrame({ ...folded, coalescedFrames: undefined })).toBe(true);
+  });
+
+  // The write boundary is where a meaningless count actually dies: it never reaches disk,
+  // and the edit it rode on lands regardless.
+  it('a meaningless count is left OFF the frame rather than written, and never costs the edit', () => {
+    for (const bad of [1, 0, -3, 2.5, '17' as unknown as number]) {
+      const frame = buildEditFrame(baseInput({ coalescedFrames: bad }), baseMeta(), 1_700_000_000_000);
+      expect('coalescedFrames' in frame, `count ${String(bad)} reached the frame`).toBe(false);
+      expect(frame.nodeId).toBe('node-1'); // the edit itself still lands
+    }
+  });
+});

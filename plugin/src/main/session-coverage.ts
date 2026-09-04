@@ -73,6 +73,13 @@ export function buildPluginCoverage({ gapfill, capture, perf }: PluginCoverageIn
     // lifecycle (undo-sentinel-registry.ts) — the plugin's own invisible node, never a
     // designer edit this session failed to see. Both stay readable on STATUS as their own
     // counters instead.
+    // `capture.intentFramesCoalesced` gets no row for the same reason: a folded keystroke
+    // frame is a DUPLICATE of a fact this session did report — the final description value
+    // rode out on the frame that folded it — so counting it as coverage lost would claim a
+    // gap that does not exist. `capture.intentFramesParked` gets none either, but for the
+    // opposite reason: a held frame has not been lost, it has not gone out YET, and this
+    // statement describes the session as it stands rather than predicting a close inside
+    // the 1.5 s window. Both stay readable on STATUS as their own counters.
     // Nodes dropped mid-walk because their properties threw: absent from the walk, so
     // absent from what any diff built on it could report.
     coverageRow('property-read-errors', perf?.propertyReadErrors ?? 0, 'status.plugin.perf'),

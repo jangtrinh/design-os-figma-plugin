@@ -22,6 +22,10 @@ import {
 } from './change-node-identity';
 import { pageOf } from './page-of-node';
 import { isSentinelId } from './undo-sentinel-registry';
+import {
+  createIntentFrameParking, isIntentOnlyProps,
+  type IntentParkingStats, type ParkedIntentFrame,
+} from './intent-frame-parking';
 
 /**
  * The correction store, as this handler uses it: ONE read and at most ONE write per
@@ -36,6 +40,11 @@ export interface CorrectionRecorder<TBatch> {
 
 export interface DocumentChangeCaptureDeps<TBatch> {
   now: () => number;
+  /** Arm a one-shot timer, returning its canceller — the intent quiet window
+   *  (intent-frame-parking.ts) is the only thing in this pass that needs one. Injected
+   *  rather than reaching for the sandbox's own `setTimeout` so a test drives it with a
+   *  fake clock, and so the host's timer handle type never crosses into this module. */
+  setTimer: (fn: () => void, ms: number) => () => void;
   /** Per-batch bookkeeping main.ts owns: pruning expired agent declarations and recording
    *  the batch for read-only EXEC_JS attribution. Called once, before the pass. */
   onBatchStart: (now: number) => void;
@@ -62,7 +71,7 @@ export interface DocumentChangeCaptureDeps<TBatch> {
  * it may not belong, and a refused store read is still a refusal — each leaves a counter
  * behind rather than vanishing.
  */
-export interface DocumentChangeCaptureStats {
+export interface DocumentChangeCaptureStats extends IntentParkingStats {
   pluginDataChangesDropped: number;
   /** Raw `documentchange` entries dropped because the node id belongs to the plugin's OWN
    *  undo sentinel (executor-exec-js.ts's `figmaUndoBracket`, tracked by
@@ -94,7 +103,77 @@ export function createDocumentChangeCapture<TBatch>(
 ): DocumentChangeCapture {
   const stats: DocumentChangeCaptureStats = {
     pluginDataChangesDropped: 0, sentinelChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null,
+    intentFramesParked: 0, intentFramesCoalesced: 0,
   };
+
+  /**
+   * Post one folded follow-up the quiet window held (intent-frame-parking.ts). Both feeds
+   * go out together — `figma.changes.jsonl` is flooded by the same keystrokes as the edit
+   * feed — and both are stamped `capturedAt` with the LAST keystroke's time: the broker
+   * files a batch under that stamp (shared/protocol.ts's `readCapturedAt`), so without it a
+   * folded frame would be dated 1.5 s late and sort after edits that happened after it.
+   *
+   * `armIdle` runs here as well as on the leading edge. It is NOT re-armed per keystroke,
+   * so a designer typing continuously for longer than the idle window (5 minutes by
+   * default) can see the idle-commit prompt fire mid-sentence. That is the honest cost of
+   * not paying for the fold twice, and it is bounded: the follow-up still arrives, and the
+   * next prompt counts it.
+   *
+   * The WHOLE body is guarded, unlike the batch path's targeted guards, because this runs
+   * in a bare timer callback rather than inside Figma's `documentchange` dispatch: a throw
+   * from the post, from `figma.fileKey`/`figma.root.name`, or from `armIdle` would escape
+   * into the sandbox's own timer queue with nothing to catch it. A refusal here DOES lose
+   * the held follow-up — the slot is already out of the table and the gauge has already
+   * dropped, and re-parking a frame whose window has passed would only date it wrong — so
+   * the loss is counted instead, in the same `captureErrors` every other refusal in this
+   * pass reports through. The leading frame for that same description is already on the
+   * wire, so what is lost is the final value, never the fact that it was edited.
+   */
+  function postParkedFrame(frame: ParkedIntentFrame): void {
+    try {
+      postParkedFrameOrThrow(frame);
+    } catch (error) {
+      recordCaptureError(error);
+    }
+  }
+
+  function postParkedFrameOrThrow(frame: ParkedIntentFrame): void {
+    // The page of the LAST keystroke, preferring what the node says NOW: a node moved to
+    // another page while its follow-up was held belongs where it ended up. A node that is
+    // gone, detached, or refuses the read keeps the page recorded at that last keystroke —
+    // an observation that really happened — rather than the current page, which would be a
+    // guess about someone else's edit.
+    const page = frame.resolvePageAtFlush() ?? frame.page;
+    if (frame.change !== null) {
+      deps.post({
+        type: 'DOC_CHANGE',
+        data: {
+          changes: [frame.change],
+          page,
+          fileKey: figma.fileKey ?? null,
+          fileName: figma.root.name,
+          capturedAt: frame.capturedAt,
+        },
+      });
+      deps.noteComponentChanges(1);
+    }
+    deps.post({
+      type: 'EDIT_FEED',
+      data: {
+        // The count is what the folded duplicates leave behind. It is only ever posted from
+        // here, and this function only runs for a window that folded something, so a reader
+        // never sees a count that says "stands for 1".
+        edits: [{ ...frame.edit, page, coalescedFrames: frame.frames }],
+        fileKey: figma.fileKey ?? null,
+        fileName: figma.root.name,
+        source: 'live',
+        capturedAt: frame.capturedAt,
+      },
+    });
+    deps.armIdle();
+  }
+
+  const parking = createIntentFrameParking({ setTimer: deps.setTimer, flush: postParkedFrame, stats });
 
   /** WHERE an edit happened: the name the feed files it under AND the id the idle re-walk
    *  needs. One resolution, so the two can never disagree about the same edit. */
@@ -202,16 +281,16 @@ export function createDocumentChangeCapture<TBatch>(
 
       // ── Component-scoped capture (figma.changes.jsonl) ──
       const identity = resolveComponentIdentity(node);
-      if (identity) {
-        raw.push({
+      const componentChange: ComponentChange | null = identity
+        ? {
           op,
           nodeId: identity.id,
           nodeName: identity.name,
           nodeType: identity.type,
           changedProps,
           origin: dc.origin as ChangeOrigin,
-        });
-      }
+        }
+        : null;
 
       // ── Widened capture — every node, not just components ──
       const removed = 'removed' in node && node.removed;
@@ -249,7 +328,7 @@ export function createDocumentChangeCapture<TBatch>(
           recordCaptureError(error);
         }
       }
-      edits.push({
+      const edit: EditInput = {
         op,
         nodeId: node.id,
         nodeName: removed ? known?.name ?? null : node.name,
@@ -260,7 +339,43 @@ export function createDocumentChangeCapture<TBatch>(
         origin: dc.origin as EditOrigin,
         actor: classifyActor(node.id, op, now, deps.actorState()),
         ...(intent !== undefined && { intent }),
-      });
+      };
+      // An edit that is NOTHING BUT designer intent, on a node that is still there, is
+      // offered to the quiet window: Figma delivers every keystroke of a description as its
+      // own batch, so the fold has to happen across batches (see intent-frame-parking.ts).
+      // The window folds on the LEADING edge — the first keystroke is posted right here,
+      // with this batch, and only the ones after it are held — so the frame that arms the
+      // cowork waiter and the idle prompt still goes out while the designer is typing.
+      // Anything else — including a delete of a node whose follow-up is currently held —
+      // first FLUSHES that follow-up, so the two facts reach the feed in the order they
+      // happened, and then goes out on exactly today's timing.
+      let posting = true;
+      if (!removed && isIntentOnlyProps(changedProps)) {
+        const held = node as SceneNode;
+        posting = !parking.fold({
+          edit,
+          change: componentChange,
+          page: page.name,
+          // Re-read at flush, not now: the whole point is the page as it is 1.5 s later.
+          // Guarded like every other host read in this pass — an invalidated reference
+          // throws on `parent` — and a refusal costs the re-read, never the frame.
+          resolvePageAtFlush: () => {
+            try {
+              return pageOf(held)?.name ?? null;
+            } catch (error) {
+              recordCaptureError(error);
+              return null;
+            }
+          },
+          at: now,
+        });
+      } else {
+        parking.release(node.id);
+      }
+      if (posting) {
+        if (componentChange !== null) raw.push(componentChange);
+        edits.push(edit);
+      }
       if (!removed) {
         deps.identity.remember(node.id, {
           name: node.name, type: node.type, parentName, page: page.name, pageId: page.id,

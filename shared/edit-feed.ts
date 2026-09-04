@@ -54,6 +54,17 @@ export interface EditInput {
    * value rather than with a guessed one.
    */
   intent?: EditIntent;
+  /**
+   * How many capture frames this ONE frame stands for. A description is typed one keystroke
+   * at a time and Figma delivers each keystroke as its OWN `documentchange` batch, so
+   * `coalesceEdits` — which never sees more than one batch — cannot merge them; the plugin
+   * holds an intent-only edit for a quiet window instead and posts the final value once
+   * (plugin/src/main/intent-frame-parking.ts). This count is what the folded duplicates
+   * leave behind rather than vanishing. Present ONLY when something was actually folded
+   * (≥ 2): a frame that folded nothing is byte-identical to one written before this key
+   * existed.
+   */
+  coalescedFrames?: number;
 }
 
 /** One line of the per-file edit feed. Append-only, versioned. */
@@ -95,6 +106,9 @@ export interface EditFrame {
    * sees exactly the frame it saw before.
    */
   intent?: EditIntent;
+  /** How many capture frames this frame stands for (see `EditInput.coalescedFrames`).
+   *  Additive/optional, same contract as `fileName`, `replayed` and `intent`. */
+  coalescedFrames?: number;
 }
 
 /**
@@ -134,6 +148,12 @@ export function isValidEditInput(v: unknown): v is EditInput {
   if (!Array.isArray(r.changedProps) || !r.changedProps.every((p) => typeof p === 'string')) return false;
   if (r.origin !== 'LOCAL' && r.origin !== 'REMOTE') return false;
   if (typeof r.page !== 'string') return false;
+  // `coalescedFrames` is deliberately NOT a rejection reason either, for the same reason
+  // `intent` is not: it is a number ABOUT the edit, not part of it. A count that says
+  // nothing ("stands for 1 frame", "for 0", a fraction, a string) is STRIPPED — by
+  // `buildEditFrame` on the way to disk and by the reader on the way back (changes.ts,
+  // which counts what it dropped) — and the edit it rode on still lands. Refusing the whole
+  // edit over a bad count would trade a real design fact for a bookkeeping one.
   // `intent` is deliberately NOT a rejection reason. Every field above is load-bearing —
   // without them there is no edit to report — while the intent block is an EXTRA carried
   // alongside `changedProps`. One policy on every side of the feed: a malformed intent
@@ -173,6 +193,11 @@ export function buildEditFrame(e: EditInput, meta: EditBatchMeta, ts: number): E
     // is idempotent, so this costs a well-behaved frame nothing while a replay, a relay or
     // any future producer writing straight to the broker cannot widen them.
     ...(isValidEditIntent(e.intent) && { intent: capIntent(e.intent) }),
+    // Same defensive line as the fields above, re-drawn at the write boundary so it belongs
+    // to the FEED and not to one producer: a count that says nothing (1, 0, a fraction) is
+    // left off the frame rather than written to disk, and the edit it rode on still lands.
+    ...(typeof e.coalescedFrames === 'number' && Number.isInteger(e.coalescedFrames)
+      && e.coalescedFrames >= 2 && { coalescedFrames: e.coalescedFrames }),
   };
 }
 

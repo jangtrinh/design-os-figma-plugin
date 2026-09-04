@@ -49,7 +49,7 @@ describe('readEditFeed', () => {
 
   it('a missing file reads as empty, not an error', () => {
     const result = readEditFeed(join(dir, 'nope.jsonl'));
-    expect(result).toEqual({ frames: [], warnings: 0, intentWarnings: 0 });
+    expect(result).toEqual({ frames: [], warnings: 0, intentWarnings: 0, coalescedWarnings: 0 });
   });
 
   it('parses every well-formed line', () => {
@@ -403,5 +403,50 @@ describe('run — a malformed intent is stripped, and the edit still reaches the
     expect(out.counts.total).toBe(2);          // the edit is not lost
     expect(out.warnings).toBeUndefined();      // and it is not counted as a bad LINE
     expect(out.intentWarnings).toBe(1);        // the value that was dropped leaves a count
+  });
+});
+
+// A folded frame stands for N keystrokes (the plugin's quiet window). The count has to
+// survive the read, or the catalog's promise — "absent means it folded nothing" — becomes a
+// wrong fact for every folded frame an agent reads.
+describe('run — coalescedFrames reaches the agent, and a meaningless one is stripped', () => {
+  let dir: string;
+  const prevEnv = process.env['FIGMA_AGENT_CHANGES_DIR'];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fa-changes-folded-'));
+    process.env['FIGMA_AGENT_CHANGES_DIR'] = dir;
+    mkdirSync(join(dir, 'changes'), { recursive: true });
+    const lines = [
+      JSON.stringify({ ...frame({ nodeId: 'folded', ts: 100, changedProps: ['description'] }), coalescedFrames: 17 }),
+      JSON.stringify({ ...frame({ nodeId: 'bogus', ts: 200, changedProps: ['description'] }), coalescedFrames: 1 }),
+      JSON.stringify(frame({ nodeId: 'plain', ts: 300 })),
+    ].join('\n') + '\n';
+    writeFileSync(join(dir, 'changes', 'vsf-pcp.jsonl'), lines);
+  });
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
+    else process.env['FIGMA_AGENT_CHANGES_DIR'] = prevEnv;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('passes a real count through, strips one that says nothing, and leaves every edit listed', async () => {
+    const out = await run(parseArgs([])) as {
+      changes: Array<{ nodeId: string; coalescedFrames?: number }>;
+      counts: ActorCounts; warnings?: number; coalescedWarnings?: number;
+    };
+    const byId = new Map(out.changes.map((c) => [c.nodeId, c]));
+    expect(byId.get('folded')!.coalescedFrames).toBe(17);
+    expect(byId.get('bogus')).not.toHaveProperty('coalescedFrames'); // "stands for 1" says nothing
+    expect(byId.get('plain')).not.toHaveProperty('coalescedFrames'); // the ordinary case
+    expect(out.counts.total).toBe(3);            // no edit was the casualty
+    expect(out.warnings).toBeUndefined();        // and none was counted as a bad LINE
+    expect(out.coalescedWarnings).toBe(1);       // the dropped count leaves a count
+  });
+
+  it('a feed with no folded frame at all reports no counter', async () => {
+    writeFileSync(join(dir, 'changes', 'vsf-pcp.jsonl'), `${JSON.stringify(frame({ nodeId: 'plain' }))}\n`);
+    const out = await run(parseArgs([])) as { coalescedWarnings?: number };
+    expect(out.coalescedWarnings).toBeUndefined();
   });
 });
