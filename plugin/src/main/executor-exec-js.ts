@@ -49,7 +49,16 @@ export function figmaUndoBracket(): UndoBracket {
       const page = figma.currentPage;
       // Identify strays by OUR plugin data, never by name: a user frame that happens to be called
       // "[figma-agent] undo sentinel" must not be deleted by a tool sweep.
-      for (const n of page.findChildren((c) => c.getPluginData(SENTINEL_KEY) === '1')) n.remove();
+      // Registered BEFORE remove(): a stray is a leftover from a run whose commit() threw, or
+      // one interrupted by a plugin reload (the registry is per plugin session, so a reload
+      // forgets every id it held) — its DELETE documentchange still arrives, asynchronously,
+      // after this sweep. Registering first means capture recognizes it as the plugin's own
+      // lifecycle instead of an uncounted "Deleted a FRAME node"; it also re-registers a
+      // stray whose id had already fallen out of the FIFO bound.
+      for (const n of page.findChildren((c) => c.getPluginData(SENTINEL_KEY) === '1')) {
+        registerSentinel(n.id);
+        n.remove();
+      }
       figma.commitUndo();
       const f = figma.createFrame();
       f.name = SENTINEL_NAME;

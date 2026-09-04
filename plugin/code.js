@@ -6261,7 +6261,10 @@
     return {
       begin() {
         const page = figma.currentPage;
-        for (const n of page.findChildren((c) => c.getPluginData(SENTINEL_KEY) === "1")) n.remove();
+        for (const n of page.findChildren((c) => c.getPluginData(SENTINEL_KEY) === "1")) {
+          registerSentinel(n.id);
+          n.remove();
+        }
         figma.commitUndo();
         const f = figma.createFrame();
         f.name = SENTINEL_NAME;

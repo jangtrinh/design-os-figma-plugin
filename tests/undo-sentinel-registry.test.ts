@@ -1,4 +1,4 @@
-// The undo-sentinel registry's own contract (issue #121): membership by id, bounded FIFO,
+// The undo-sentinel registry's own contract: membership by id, bounded FIFO,
 // lazy release (no explicit release function exists — see undo-sentinel-registry.ts for why).
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
