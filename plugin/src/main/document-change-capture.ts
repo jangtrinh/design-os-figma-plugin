@@ -21,6 +21,7 @@ import {
   enclosingName, resolveComponentIdentity, type CachedIdentity, type EditIdentityCache,
 } from './change-node-identity';
 import { pageOf } from './page-of-node';
+import { isSentinelId } from './undo-sentinel-registry';
 
 /**
  * The correction store, as this handler uses it: ONE read and at most ONE write per
@@ -63,6 +64,12 @@ export interface DocumentChangeCaptureDeps<TBatch> {
  */
 export interface DocumentChangeCaptureStats {
   pluginDataChangesDropped: number;
+  /** Raw `documentchange` entries dropped because the node id belongs to the plugin's OWN
+   *  undo sentinel (executor-exec-js.ts's `figmaUndoBracket`, tracked by
+   *  undo-sentinel-registry.ts) — its CREATE, PROPERTY_CHANGE and DELETE are the sentinel's
+   *  own lifecycle, never a designer edit, and matched by id so a user frame that happens
+   *  to share its name is never caught. */
+  sentinelChangesDropped: number;
   /** How many changed nodes this session had NO page for — a live node with neither its
    *  own chain nor an identity-cache entry, or a deleted node the session never saw — and
    *  were therefore filed under `figma.currentPage`. That name is a guess about someone
@@ -86,7 +93,7 @@ export function createDocumentChangeCapture<TBatch>(
   deps: DocumentChangeCaptureDeps<TBatch>,
 ): DocumentChangeCapture {
   const stats: DocumentChangeCaptureStats = {
-    pluginDataChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null,
+    pluginDataChangesDropped: 0, sentinelChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null,
   };
 
   /** WHERE an edit happened: the name the feed files it under AND the id the idle re-walk
@@ -158,6 +165,18 @@ export function createDocumentChangeCapture<TBatch>(
       // `coalesceEdits` mutates an input's array (both build a fresh one), so sharing is
       // safe and saves a copy per change in the middle of a drag batch.
       const changedProps = dc.type === 'PROPERTY_CHANGE' ? [...dc.properties] : [];
+
+      // The undo sentinel's own lifecycle (executor-exec-js.ts's `figmaUndoBracket`) comes
+      // back through this very handler too: its CREATE, any PROPERTY_CHANGE, and — the leak
+      // a designer could otherwise see as "Deleted a FRAME node" — its DELETE once
+      // `commit()` removes it. Matched by node id (undo-sentinel-registry.ts), never by
+      // name, so a user frame merely NAMED like the sentinel is never caught. Dropped
+      // before the bookkeeping filter, same reason as that filter below: none of the
+      // correction store, connector index, feed or idle timer may ever see it.
+      if (isSentinelId(node.id)) {
+        stats.sentinelChangesDropped += 1;
+        continue;
+      }
 
       // The plugin's own bookkeeping writes (correction store, connector index, relaunch
       // data) come back through this very handler. Dropped HERE, at the top — before the
