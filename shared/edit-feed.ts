@@ -12,6 +12,8 @@
 // EditInput per node per batch, posts EDIT_FEED over the wire; the broker stamps each
 // EditInput into an EditFrame and appends it to design/changes/<slug>.jsonl.
 
+import { isValidEditIntent, mergeIntent, type EditIntent } from './edit-intent';
+
 /** Bump when EditFrame's shape changes. Independent of CHANGE_LOG_SCHEMA_VERSION. */
 export const EDIT_FEED_SCHEMA_VERSION = 1;
 
@@ -44,6 +46,14 @@ export interface EditInput {
   origin: EditOrigin;
   page: string;
   actor: EditActor;
+  /**
+   * What the designer SAID, read at capture time — present only when `changedProps` names
+   * one of `INTENT_PROPS` (shared/edit-intent.ts) and the read produced something. Live
+   * capture only: gap-fill diffs a stored baseline that holds no description or
+   * annotation, so a closed-window intent edit is reported as a property change with no
+   * value rather than with a guessed one.
+   */
+  intent?: EditIntent;
 }
 
 /** One line of the per-file edit feed. Append-only, versioned. */
@@ -78,6 +88,13 @@ export interface EditFrame {
    * still parses and `EDIT_FEED_SCHEMA_VERSION` stays 1.
    */
   replayed?: true;
+  /**
+   * The designer's own words for this edit (see `EditInput.intent`). Additive/optional,
+   * same contract as `fileName` and `replayed`: every frame written before intent existed
+   * still parses, `EDIT_FEED_SCHEMA_VERSION` stays 1, and a consumer that ignores this key
+   * sees exactly the frame it saw before.
+   */
+  intent?: EditIntent;
 }
 
 /**
@@ -117,6 +134,11 @@ export function isValidEditInput(v: unknown): v is EditInput {
   if (!Array.isArray(r.changedProps) || !r.changedProps.every((p) => typeof p === 'string')) return false;
   if (r.origin !== 'LOCAL' && r.origin !== 'REMOTE') return false;
   if (typeof r.page !== 'string') return false;
+  // `intent` is deliberately NOT a rejection reason. Every field above is load-bearing —
+  // without them there is no edit to report — while the intent block is an EXTRA carried
+  // alongside `changedProps`. One policy on every side of the feed: a malformed intent
+  // costs the intent (the writer's `buildEditFrame` and the reader's own strip both drop
+  // it, and the reader counts what it dropped), never the edit it was attached to.
   return true;
 }
 
@@ -143,6 +165,11 @@ export function buildEditFrame(e: EditInput, meta: EditBatchMeta, ts: number): E
     fileKey: meta.fileKey ?? null,
     ...(typeof meta.fileName === 'string' && meta.fileName.length > 0 && { fileName: meta.fileName }),
     ...(meta.replayed === true && { replayed: true as const }),
+    // Same defensive coercion as the fields above: an intent that fails the guard is left
+    // OFF the frame rather than written to disk in a shape no reader can trust. The edit
+    // itself still lands — the property name in `changedProps` is the fact, the value is
+    // the extra.
+    ...(isValidEditIntent(e.intent) && { intent: e.intent }),
   };
 }
 
@@ -204,6 +231,15 @@ export function coalesceEdits(raw: readonly EditInput[]): EditInput[] {
     if (!prev.nodeType && e.nodeType) prev.nodeType = e.nodeType;
     if (e.origin === 'REMOTE') prev.origin = 'REMOTE';
     prev.actor = e.actor; // last classification in the batch wins
+    // Intent merges FIELD BY FIELD with the last value winning (see `mergeIntent`), not
+    // wholesale: one batch can carry a description change and an annotation change for the
+    // same node, and a wholesale replace would drop whichever the designer edited first.
+    // INVARIANT this relies on: every intent in one call comes from ONE synchronous capture
+    // pass over ONE delivered batch, so two blocks for the same node were read from the same
+    // live node microseconds apart — they cannot disagree about a value, only cover different
+    // fields. The one cross-field coupling that could still go stale (`annotationsTotal`
+    // outliving the list it counted) is handled inside `mergeIntent` rather than assumed away.
+    if (e.intent !== undefined) prev.intent = mergeIntent(prev.intent, e.intent);
   }
   const out: EditInput[] = [];
   for (const [id, e] of byId) {

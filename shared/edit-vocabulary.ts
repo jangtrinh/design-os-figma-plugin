@@ -8,12 +8,16 @@
 // distill step (phase 03), and later a panel row — that is the DRY the brief asks for;
 // copying the panel's command table would not be.
 import type { EditOp } from './edit-feed';
+import type { EditIntent } from './edit-intent';
 
-export type SceneEditVerb = 'created' | 'renamed' | 'moved' | 'restyled' | 'deleted';
+export type SceneEditVerb =
+  'created' | 'renamed' | 'described' | 'annotated' | 'moved' | 'restyled' | 'deleted';
 
 const VERB_TEXT: Record<SceneEditVerb, string> = {
   created: 'Created',
   renamed: 'Renamed',
+  described: 'Described',
+  annotated: 'Annotated',
   moved: 'Moved',
   restyled: 'Restyled',
   deleted: 'Deleted',
@@ -25,6 +29,16 @@ const POSITION_PROPS: ReadonlySet<string> = new Set([
 ]);
 const NAME_PROP = 'name';
 
+/** The designer-intent props, each with the verb that names what the designer DID. The
+ *  residual `restyled` bucket would otherwise claim a paint/text edit for a description or
+ *  an annotation — and say nothing about the words themselves. Kept in step with
+ *  `INTENT_PROPS` (shared/edit-intent.ts) by a test: a trigger prop with no verb here
+ *  would reach the feed as a wrong sentence. */
+const INTENT_VERBS: ReadonlyArray<readonly [string, 'described' | 'annotated']> = [
+  ['description', 'described'],
+  ['annotations', 'annotated'],
+];
+
 /**
  * Which scene-edit verb an `updated` op's changedProps set implies. `renamed` wins if
  * `name` is present (the single clearest fact); else `moved` if any position/layout prop
@@ -34,8 +48,12 @@ const NAME_PROP = 'name';
  * happen upstream, but this is untrusted wire data) still resolves, honestly, to `restyled`
  * rather than throwing.
  */
-function updateVerb(changedProps: readonly string[]): 'renamed' | 'moved' | 'restyled' {
+function updateVerb(changedProps: readonly string[]): Exclude<SceneEditVerb, 'created' | 'deleted'> {
   if (changedProps.includes(NAME_PROP)) return 'renamed';
+  // Ordered, not a set lookup: a batch that carries both intent props settles on the
+  // component's own words, which say more about the designer's thinking than the count of
+  // annotations does — and BOTH names stay listed in changedProps either way.
+  for (const [prop, verb] of INTENT_VERBS) if (changedProps.includes(prop)) return verb;
   if (changedProps.some((p) => POSITION_PROPS.has(p))) return 'moved';
   return 'restyled';
 }
@@ -61,6 +79,10 @@ export interface SceneEditSentenceInput {
   nodeType: string;
   parentName: string | null;
   changedProps: readonly string[];
+  /** The designer's own words, when the frame carried them. Only the annotation COUNT is
+   *  rendered — the text itself is the caller's to show, and a sentence that quoted a
+   *  2 000-character description would stop being a sentence. */
+  intent?: EditIntent;
 }
 
 /**
@@ -142,6 +164,27 @@ export function editSentence(frame: SceneEditSentenceInput): string {
   // fingerprint states exactly. Checked after the verb, so a rename or a move alongside it
   // still reads as itself (both are facts about this same frame, and the clearest one
   // wins, with `width`/`height` still listed in changedProps).
+  // Clearing a description is an edit whose value is "nothing" — "Described …" would state
+  // the opposite of what the designer did. Driven by the VALUE the frame carries, never by
+  // its absence: a frame whose read refused (`intentReadError`, no `description` key) says
+  // only that the description was edited, because that is all anyone knows.
+  if (verb === 'described' && frame.intent?.description === ''
+    && frame.nodeName !== null && frame.nodeName !== '') {
+    const base = `Cleared the description on "${frame.nodeName}"`;
+    return frame.parentName ? `${base} in "${frame.parentName}"` : base;
+  }
+  // An annotation edit states a NUMBER, not a style: "Annotated \"Search field\" (2)".
+  // The count comes from the frame's own intent block and from nowhere else — a frame that
+  // carried no value says only that the node was annotated, and a frame whose list was
+  // capped states the REAL total (`annotationsTotal`), never the truncated length. An empty
+  // list is the designer CLEARING the annotations, which "(0)" would not say.
+  if (verb === 'annotated' && frame.nodeName !== null && frame.nodeName !== '') {
+    const total = frame.intent?.annotationsTotal ?? frame.intent?.annotations?.length;
+    const base = total === 0
+      ? `Cleared the annotations on "${frame.nodeName}"`
+      : `Annotated "${frame.nodeName}"${total === undefined ? '' : ` (${total})`}`;
+    return frame.parentName ? `${base} in "${frame.parentName}"` : base;
+  }
   const resized = verb === 'restyled' && (frame.changedProps.includes('width') || frame.changedProps.includes('height'));
   const verbText = resized ? 'Resized' : VERB_TEXT[verb];
   if (frame.nodeName === null || frame.nodeName === '') {

@@ -958,6 +958,61 @@
     return out;
   }
 
+  // shared/edit-intent.ts
+  var INTENT_PROPS = ["description", "annotations"];
+  var INTENT_TEXT_CAP = 2e3;
+  var INTENT_ANNOTATION_CAP = 20;
+  function hasIntentProp(changedProps) {
+    return changedProps.some((p) => INTENT_PROPS.includes(p));
+  }
+  function capText(value) {
+    if (value === void 0) return { cut: false };
+    if (value.length <= INTENT_TEXT_CAP) return { text: value, cut: false };
+    return { text: value.slice(0, INTENT_TEXT_CAP), cut: true };
+  }
+  var ANNOTATION_TEXT_FIELDS = ["label", "labelMarkdown"];
+  function capAnnotation(entry) {
+    let cut = false;
+    let out = entry;
+    for (const field of ANNOTATION_TEXT_FIELDS) {
+      const value = entry[field];
+      if (typeof value !== "string" || value.length <= INTENT_TEXT_CAP) continue;
+      out = { ...out, [field]: value.slice(0, INTENT_TEXT_CAP) };
+      cut = true;
+    }
+    return { entry: out, cut };
+  }
+  function capIntent(intent) {
+    const description = capText(intent.description);
+    const markdown = capText(intent.descriptionMarkdown);
+    let truncated = description.cut || markdown.cut;
+    const list3 = intent.annotations;
+    let annotations;
+    let total;
+    if (Array.isArray(list3)) {
+      if (list3.length > INTENT_ANNOTATION_CAP) total = list3.length;
+      annotations = list3.slice(0, INTENT_ANNOTATION_CAP).map((entry) => {
+        const capped = capAnnotation(entry);
+        if (capped.cut) truncated = true;
+        return capped.entry;
+      });
+    }
+    return {
+      ...intent,
+      ...description.text !== void 0 && { description: description.text },
+      ...markdown.text !== void 0 && { descriptionMarkdown: markdown.text },
+      ...annotations !== void 0 && { annotations },
+      ...total !== void 0 && { annotationsTotal: total },
+      ...truncated && { intentTruncated: true }
+    };
+  }
+  function mergeIntent(prev, next) {
+    if (prev === void 0) return next;
+    const merged = { ...prev, ...next };
+    if (next.annotations !== void 0 && next.annotationsTotal === void 0) delete merged.annotationsTotal;
+    return merged;
+  }
+
   // shared/edit-feed.ts
   function coalesceEdits(raw2) {
     const byId = /* @__PURE__ */ new Map();
@@ -977,6 +1032,7 @@
       if (!prev.nodeType && e.nodeType) prev.nodeType = e.nodeType;
       if (e.origin === "REMOTE") prev.origin = "REMOTE";
       prev.actor = e.actor;
+      if (e.intent !== void 0) prev.intent = mergeIntent(prev.intent, e.intent);
     }
     const out = [];
     for (const [id, e] of byId) {
@@ -995,6 +1051,471 @@
       current = current.parent;
     }
     return null;
+  }
+
+  // plugin/src/main/serialize-node.ts
+  var SERIALIZED_NODE_FIELDS = /* @__PURE__ */ new Set(["id", "name", "type", "x", "y", "width", "height", "children"]);
+  function serializeNode(node, depth = 1) {
+    const out = {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      x: "x" in node ? Math.round(node.x * 100) / 100 : 0,
+      y: "y" in node ? Math.round(node.y * 100) / 100 : 0,
+      width: "width" in node ? Math.round(node.width * 100) / 100 : 0,
+      height: "height" in node ? Math.round(node.height * 100) / 100 : 0
+    };
+    if (depth > 0 && "children" in node) {
+      out.children = node.children.map((c) => serializeNode(c, depth - 1));
+    }
+    return out;
+  }
+  function jsonSafe(value) {
+    if (value === void 0) return null;
+    try {
+      return JSON.parse(JSON.stringify(value, (_k, v) => {
+        if (typeof v === "function") return "[Function]";
+        if (typeof v === "bigint") return String(v);
+        return v;
+      }));
+    } catch {
+      return String(value);
+    }
+  }
+  function safeStringify(v) {
+    if (typeof v === "string") return v;
+    try {
+      return JSON.stringify(v) ?? String(v);
+    } catch {
+      return String(v);
+    }
+  }
+  async function serializeDesignSystem() {
+    await figma.loadAllPagesAsync();
+    const nodes = figma.root.findAllWithCriteria({ types: ["COMPONENT", "COMPONENT_SET"] });
+    const components = serializeComponentEntries(nodes);
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const variables = await figma.variables.getLocalVariablesAsync();
+    const collectionName = new Map(collections.map((c) => [c.id, c.name]));
+    const defaultMode = new Map(collections.map((c) => [c.id, c.modes[0] ? c.modes[0].modeId : ""]));
+    const tokens = variables.map((v) => ({
+      id: v.id,
+      name: v.name,
+      type: v.resolvedType,
+      collection: collectionName.get(v.variableCollectionId) ?? v.variableCollectionId,
+      value: jsonSafe(v.valuesByMode[defaultMode.get(v.variableCollectionId) ?? ""] ?? null)
+    }));
+    const paint = await figma.getLocalPaintStylesAsync();
+    const text = await figma.getLocalTextStylesAsync();
+    const effect = await figma.getLocalEffectStylesAsync();
+    const styles = [
+      ...paint.map((s) => ({ id: s.id, name: s.name, type: "PAINT" })),
+      ...text.map((s) => ({ id: s.id, name: s.name, type: "TEXT" })),
+      ...effect.map((s) => ({ id: s.id, name: s.name, type: "EFFECT" }))
+    ];
+    return {
+      components,
+      tokens,
+      styles,
+      counts: { components: components.length, tokens: tokens.length, styles: styles.length }
+    };
+  }
+  function serializeComponentEntries(nodes) {
+    const components = [];
+    for (const n of nodes) {
+      if (n.type === "COMPONENT" && n.parent && n.parent.type === "COMPONENT_SET") continue;
+      const page = pageOf(n);
+      const entry = {
+        id: n.id,
+        key: n.key,
+        name: n.name,
+        type: n.type,
+        page: page ? { id: page.id, name: page.name } : null
+      };
+      try {
+        const defs = n.componentPropertyDefinitions;
+        const axes = {};
+        for (const [prop, def] of Object.entries(defs)) {
+          if (def.type === "VARIANT") axes[prop] = def.variantOptions ?? [];
+        }
+        if (Object.keys(axes).length > 0) entry.variantAxes = axes;
+      } catch {
+      }
+      components.push(entry);
+    }
+    return components;
+  }
+
+  // plugin/src/main/scan-node-utils.ts
+  var r2 = (n) => Math.round(n * 100) / 100;
+  function safe(read) {
+    try {
+      const v = read();
+      if (typeof v === "symbol") return void 0;
+      return v;
+    } catch {
+      return void 0;
+    }
+  }
+  function aliasId(val) {
+    const alias = Array.isArray(val) ? val[0] : val;
+    return alias?.id;
+  }
+  function readBindings(n) {
+    const rec = {};
+    const bound = safe(() => n.boundVariables);
+    if (bound && typeof bound === "object") {
+      for (const [field, val] of Object.entries(bound)) {
+        const id = aliasId(val);
+        if (id) rec[field] = id;
+      }
+    }
+    for (const field of ["fills", "strokes"]) {
+      const paints = safe(() => n[field]);
+      if (!Array.isArray(paints)) continue;
+      for (const p of paints) {
+        const id = aliasId(p.boundVariables?.color);
+        if (id) {
+          rec[field] = id;
+          break;
+        }
+      }
+    }
+    return rec;
+  }
+
+  // plugin/src/main/context-node-record.ts
+  function readStyles(node) {
+    const out = {};
+    for (const [key, field] of [["fill", "fillStyleId"], ["text", "textStyleId"], ["effect", "effectStyleId"]]) {
+      const id = safe(() => node[field]);
+      if (typeof id === "string" && id !== "") out[key] = id;
+    }
+    return out;
+  }
+  function readLayout(node) {
+    const out = {};
+    const num = (field) => {
+      const v = safe(() => node[field]);
+      return typeof v === "number" ? r2(v) : void 0;
+    };
+    const str5 = (field) => {
+      const v = safe(() => node[field]);
+      return typeof v === "string" ? v : void 0;
+    };
+    const layoutMode = str5("layoutMode");
+    if (layoutMode !== void 0) out.layoutMode = layoutMode;
+    const sizingH = str5("layoutSizingHorizontal");
+    if (sizingH !== void 0) out.sizingH = sizingH;
+    const sizingV = str5("layoutSizingVertical");
+    if (sizingV !== void 0) out.sizingV = sizingV;
+    const gap = num("itemSpacing");
+    if (gap !== void 0) out.gap = gap;
+    const padding = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].map(num);
+    if (padding.some((p) => p !== void 0)) out.padding = padding.map((p) => p ?? 0);
+    for (const [key, field] of [["w", "width"], ["h", "height"], ["x", "x"], ["y", "y"]]) {
+      const v = num(field);
+      if (v !== void 0) out[key] = v;
+    }
+    return out;
+  }
+  function childrenOf(node) {
+    const has = safe(() => "children" in node);
+    if (has === false) return { children: [], refused: null };
+    try {
+      const kids = node.children;
+      if (Array.isArray(kids)) return { children: kids, refused: null };
+      return { children: [], refused: has === void 0 ? "children could not be read" : "children is not an array" };
+    } catch (err) {
+      return { children: [], refused: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  function countCollapsed(children) {
+    let descendants = 0;
+    let readErrors = 0;
+    const types = {};
+    const stack = [...children];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      descendants += 1;
+      const type = safe(() => node.type);
+      const key = typeof type === "string" ? type : "UNKNOWN";
+      types[key] = (types[key] ?? 0) + 1;
+      const read = childrenOf(node);
+      if (read.refused !== null) readErrors += 1;
+      for (const child of read.children) stack.push(child);
+    }
+    return { descendants, types, readErrors };
+  }
+  var messageOf4 = (err) => err instanceof Error ? err.message : String(err);
+  function locate(opts) {
+    return opts.parentId === null ? "(unreadable target)" : `(unreadable child ${opts.childIndex ?? 0} of ${opts.parentId})`;
+  }
+  function readIdentity(node) {
+    let readError = null;
+    const note = (message) => {
+      if (readError === null) readError = message;
+    };
+    let id = "";
+    try {
+      const raw2 = node.id;
+      if (typeof raw2 === "string" && raw2 !== "") id = raw2;
+      else note("id could not be read");
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    let name = "";
+    try {
+      const raw2 = node.name;
+      if (typeof raw2 === "string") name = raw2;
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    let type = "";
+    try {
+      const raw2 = node.type;
+      if (typeof raw2 === "string" && raw2 !== "") type = raw2;
+      else note("type could not be read");
+    } catch (err) {
+      note(messageOf4(err));
+    }
+    return { id, name, type, readError };
+  }
+  async function buildContextRecord(node, opts) {
+    const identity = readIdentity(node);
+    if (identity.readError !== null) {
+      return {
+        record: {
+          id: identity.id !== "" ? identity.id : locate(opts),
+          readError: identity.readError
+        },
+        children: [],
+        incomplete: true
+      };
+    }
+    const record = {
+      id: identity.id,
+      name: identity.name,
+      type: identity.type,
+      depth: opts.depth,
+      parentId: opts.parentId
+    };
+    const visible = safe(() => node.visible);
+    if (typeof visible === "boolean") record.visible = visible;
+    const layout = readLayout(node);
+    if (Object.keys(layout).length > 0) record.layout = layout;
+    const bindings = readBindings(node);
+    if (Object.keys(bindings).length > 0) record.bindings = bindings;
+    const styles = readStyles(node);
+    if (Object.keys(styles).length > 0) record.styles = styles;
+    let incomplete = false;
+    const type = identity.type;
+    if (type === "TEXT") {
+      const characters = safe(() => node.characters);
+      if (typeof characters === "string") record.characters = characters;
+      if (safe(() => node.fontName) === void 0) {
+        const read2 = safe(() => node.getStyledTextSegments?.(
+          ["characters", "fontName", "fontSize", "fills", "fontWeight", "textDecoration"]
+        ));
+        if (Array.isArray(read2) && read2.length > 0) record.segments = jsonSafe(read2);
+      }
+    }
+    if (type === "INSTANCE") {
+      const getMain = safe(() => node.getMainComponentAsync);
+      if (typeof getMain === "function") {
+        try {
+          const main = await getMain.call(node);
+          const key = main ? safe(() => main.key) : void 0;
+          const name = main ? safe(() => main.name) : void 0;
+          if (typeof key === "string") record.mainComponent = { key, name: typeof name === "string" ? name : "" };
+        } catch (err) {
+          record.mainComponentError = err instanceof Error ? err.message : String(err);
+          incomplete = true;
+        }
+      }
+      const props = safe(() => node.componentProperties);
+      if (props && typeof props === "object") record.componentProperties = jsonSafe(props);
+    }
+    if (type === "COMPONENT" || type === "COMPONENT_SET") {
+      const defs = safe(() => node.componentPropertyDefinitions);
+      if (defs && typeof defs === "object") record.componentPropertyDefinitions = jsonSafe(defs);
+    }
+    const read = childrenOf(node);
+    if (read.refused !== null) {
+      record.childrenError = read.refused;
+      record.childCount = null;
+      incomplete = true;
+    } else {
+      record.childCount = read.children.length;
+    }
+    if (opts.includeCss) {
+      const getCss = safe(() => node.getCSSAsync);
+      if (typeof getCss === "function") {
+        try {
+          record.css = jsonSafe(await getCss.call(node));
+        } catch (err) {
+          record.cssError = err instanceof Error ? err.message : String(err);
+          incomplete = true;
+        }
+      }
+    }
+    const isAsset = safe(() => node.isAsset);
+    if (isAsset === true && read.children.length > 0) {
+      const collapsed = countCollapsed(read.children);
+      record.collapsed = collapsed;
+      if (collapsed.readErrors > 0) incomplete = true;
+      return { record, children: [], incomplete };
+    }
+    return { record, children: read.children, incomplete };
+  }
+
+  // plugin/src/main/context-intent-readers.ts
+  var noDevResourcesRead = () => ({ byNode: /* @__PURE__ */ new Map(), found: 0, unaddressed: 0 });
+  var str = (value) => typeof value === "string" ? value : "";
+  function readOnlyField(value, field) {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((entry) => {
+      const read = entry === null || typeof entry !== "object" ? "" : str(safe(() => entry[field]));
+      return read === "" ? [] : [read];
+    });
+  }
+  async function readSubtreeDevResources(root, scope = { includeChildren: true }) {
+    const byNode = /* @__PURE__ */ new Map();
+    const read = safe(() => root.getDevResourcesAsync);
+    if (typeof read !== "function") {
+      return { byNode, found: 0, unaddressed: 0, error: "getDevResourcesAsync is not available on this node" };
+    }
+    let list3;
+    try {
+      list3 = await read.call(root, { includeChildren: scope.includeChildren });
+    } catch (err) {
+      return { byNode, found: 0, unaddressed: 0, error: messageOf4(err) };
+    }
+    if (!Array.isArray(list3)) {
+      return { byNode, found: 0, unaddressed: 0, error: "getDevResourcesAsync did not answer with a list" };
+    }
+    let unaddressed = 0;
+    for (const raw2 of list3) {
+      if (raw2 === null || typeof raw2 !== "object") {
+        unaddressed += 1;
+        continue;
+      }
+      const resource = raw2;
+      const nodeId = str(safe(() => resource.nodeId));
+      if (nodeId === "") {
+        unaddressed += 1;
+        continue;
+      }
+      const inherited = str(safe(() => resource.inheritedNodeId));
+      const entry = {
+        name: str(safe(() => resource.name)),
+        url: str(safe(() => resource.url)),
+        ...inherited !== "" && { inheritedNodeId: inherited }
+      };
+      const existing = byNode.get(nodeId);
+      if (existing === void 0) byNode.set(nodeId, [entry]);
+      else existing.push(entry);
+    }
+    return { byNode, found: list3.length, unaddressed };
+  }
+  function readDevStatus(node) {
+    const raw2 = node.devStatus;
+    if (raw2 === null || typeof raw2 !== "object") return null;
+    const status = raw2;
+    const type = str(safe(() => status.type));
+    if (type === "") return null;
+    const description = str(safe(() => status.description));
+    return { type, ...description !== "" && { description } };
+  }
+  function readAnnotations(node) {
+    const raw2 = node.annotations;
+    if (!Array.isArray(raw2) || raw2.length === 0) return null;
+    return shapeAnnotations(raw2);
+  }
+  function shapeAnnotations(raw2) {
+    return raw2.map((entry) => {
+      if (entry === null || typeof entry !== "object") return {};
+      const annotation = entry;
+      const label = str(safe(() => annotation.label));
+      const labelMarkdown = str(safe(() => annotation.labelMarkdown));
+      const categoryId = str(safe(() => annotation.categoryId));
+      const types = readOnlyField(safe(() => annotation.properties), "type");
+      return {
+        ...label !== "" && { label },
+        ...labelMarkdown !== "" && { labelMarkdown },
+        ...types.length > 0 && { properties: types },
+        ...categoryId !== "" && { categoryId }
+      };
+    });
+  }
+  function distinctMarkdown(markdown, description) {
+    return markdown !== "" && markdown !== description ? markdown : void 0;
+  }
+  function readComponentIntent(component) {
+    const description = str(safe(() => component.description));
+    const markdown = str(safe(() => component.descriptionMarkdown));
+    const uris = readOnlyField(safe(() => component.documentationLinks), "uri");
+    const distinct = distinctMarkdown(markdown, description);
+    return {
+      name: str(safe(() => component.name)),
+      ...description !== "" && { description },
+      ...distinct !== void 0 && { descriptionMarkdown: distinct },
+      ...uris.length > 0 && { documentationLinks: uris }
+    };
+  }
+  function countAttachedDevResources(records) {
+    let attached = 0;
+    for (const record of records) {
+      const intent = record.intent;
+      if (intent === null || typeof intent !== "object") continue;
+      const links = intent.devResources;
+      if (Array.isArray(links)) attached += links.length;
+    }
+    return attached;
+  }
+  var hasComponentIntent = (intent) => intent.description !== void 0 || intent.descriptionMarkdown !== void 0 || intent.documentationLinks !== void 0;
+
+  // plugin/src/main/edit-intent-reader.ts
+  var DESCRIPTION_PROP = "description";
+  var MARKDOWN_FIELD = "descriptionMarkdown";
+  var ANNOTATIONS_PROP = "annotations";
+  var refusal = (field, err) => `${field}: ${messageOf4(err)}`;
+  function readEditIntent(node, changedProps) {
+    if (!hasIntentProp(changedProps)) return void 0;
+    const intent = {};
+    let readError;
+    const note = (message) => {
+      if (readError === void 0) readError = message;
+    };
+    if (changedProps.includes(DESCRIPTION_PROP)) {
+      let description;
+      try {
+        const raw2 = node[DESCRIPTION_PROP];
+        if (typeof raw2 === "string") {
+          description = raw2;
+          intent.description = raw2;
+        }
+      } catch (err) {
+        note(refusal(DESCRIPTION_PROP, err));
+      }
+      try {
+        const raw2 = node[MARKDOWN_FIELD];
+        const distinct = typeof raw2 === "string" ? distinctMarkdown(raw2, description ?? "") : void 0;
+        if (distinct !== void 0) intent.descriptionMarkdown = distinct;
+      } catch (err) {
+        note(refusal(MARKDOWN_FIELD, err));
+      }
+    }
+    if (changedProps.includes(ANNOTATIONS_PROP)) {
+      try {
+        const raw2 = node[ANNOTATIONS_PROP];
+        if (Array.isArray(raw2)) intent.annotations = shapeAnnotations(raw2);
+      } catch (err) {
+        note(refusal(ANNOTATIONS_PROP, err));
+      }
+    }
+    if (readError !== void 0) intent.intentReadError = readError;
+    return Object.keys(intent).length > 0 ? capIntent(intent) : void 0;
   }
 
   // plugin/src/main/document-change-capture.ts
@@ -1066,6 +1587,14 @@
         const parentName = removed ? known?.parentName ?? null : enclosingName(node);
         const page = removed ? resolvedRemovedPage(known) : resolvedPage(node, known);
         deps.notePageDirty(page.id);
+        let intent;
+        if (!removed) {
+          try {
+            intent = readEditIntent(node, changedProps);
+          } catch (error) {
+            recordCaptureError(error);
+          }
+        }
         edits.push({
           op,
           nodeId: node.id,
@@ -1075,7 +1604,8 @@
           page: page.name,
           changedProps,
           origin: dc.origin,
-          actor: classifyActor(node.id, op, now, deps.actorState())
+          actor: classifyActor(node.id, op, now, deps.actorState()),
+          ...intent !== void 0 && { intent }
         });
         if (!removed) {
           deps.identity.remember(node.id, {
@@ -1896,44 +2426,6 @@
     }
   }
 
-  // plugin/src/main/scan-node-utils.ts
-  var r2 = (n) => Math.round(n * 100) / 100;
-  function safe(read) {
-    try {
-      const v = read();
-      if (typeof v === "symbol") return void 0;
-      return v;
-    } catch {
-      return void 0;
-    }
-  }
-  function aliasId(val) {
-    const alias = Array.isArray(val) ? val[0] : val;
-    return alias?.id;
-  }
-  function readBindings(n) {
-    const rec = {};
-    const bound = safe(() => n.boundVariables);
-    if (bound && typeof bound === "object") {
-      for (const [field, val] of Object.entries(bound)) {
-        const id = aliasId(val);
-        if (id) rec[field] = id;
-      }
-    }
-    for (const field of ["fills", "strokes"]) {
-      const paints = safe(() => n[field]);
-      if (!Array.isArray(paints)) continue;
-      for (const p of paints) {
-        const id = aliasId(p.boundVariables?.color);
-        if (id) {
-          rec[field] = id;
-          break;
-        }
-      }
-    }
-    return rec;
-  }
-
   // plugin/src/main/instance-inner-override-keys.ts
   var INNER_OVERRIDE_FIELDS = [
     "name",
@@ -2703,99 +3195,6 @@
     return frame;
   }
 
-  // plugin/src/main/serialize-node.ts
-  var SERIALIZED_NODE_FIELDS = /* @__PURE__ */ new Set(["id", "name", "type", "x", "y", "width", "height", "children"]);
-  function serializeNode(node, depth = 1) {
-    const out = {
-      id: node.id,
-      name: node.name,
-      type: node.type,
-      x: "x" in node ? Math.round(node.x * 100) / 100 : 0,
-      y: "y" in node ? Math.round(node.y * 100) / 100 : 0,
-      width: "width" in node ? Math.round(node.width * 100) / 100 : 0,
-      height: "height" in node ? Math.round(node.height * 100) / 100 : 0
-    };
-    if (depth > 0 && "children" in node) {
-      out.children = node.children.map((c) => serializeNode(c, depth - 1));
-    }
-    return out;
-  }
-  function jsonSafe(value) {
-    if (value === void 0) return null;
-    try {
-      return JSON.parse(JSON.stringify(value, (_k, v) => {
-        if (typeof v === "function") return "[Function]";
-        if (typeof v === "bigint") return String(v);
-        return v;
-      }));
-    } catch {
-      return String(value);
-    }
-  }
-  function safeStringify(v) {
-    if (typeof v === "string") return v;
-    try {
-      return JSON.stringify(v) ?? String(v);
-    } catch {
-      return String(v);
-    }
-  }
-  async function serializeDesignSystem() {
-    await figma.loadAllPagesAsync();
-    const nodes = figma.root.findAllWithCriteria({ types: ["COMPONENT", "COMPONENT_SET"] });
-    const components = serializeComponentEntries(nodes);
-    const collections = await figma.variables.getLocalVariableCollectionsAsync();
-    const variables = await figma.variables.getLocalVariablesAsync();
-    const collectionName = new Map(collections.map((c) => [c.id, c.name]));
-    const defaultMode = new Map(collections.map((c) => [c.id, c.modes[0] ? c.modes[0].modeId : ""]));
-    const tokens = variables.map((v) => ({
-      id: v.id,
-      name: v.name,
-      type: v.resolvedType,
-      collection: collectionName.get(v.variableCollectionId) ?? v.variableCollectionId,
-      value: jsonSafe(v.valuesByMode[defaultMode.get(v.variableCollectionId) ?? ""] ?? null)
-    }));
-    const paint = await figma.getLocalPaintStylesAsync();
-    const text = await figma.getLocalTextStylesAsync();
-    const effect = await figma.getLocalEffectStylesAsync();
-    const styles = [
-      ...paint.map((s) => ({ id: s.id, name: s.name, type: "PAINT" })),
-      ...text.map((s) => ({ id: s.id, name: s.name, type: "TEXT" })),
-      ...effect.map((s) => ({ id: s.id, name: s.name, type: "EFFECT" }))
-    ];
-    return {
-      components,
-      tokens,
-      styles,
-      counts: { components: components.length, tokens: tokens.length, styles: styles.length }
-    };
-  }
-  function serializeComponentEntries(nodes) {
-    const components = [];
-    for (const n of nodes) {
-      if (n.type === "COMPONENT" && n.parent && n.parent.type === "COMPONENT_SET") continue;
-      const page = pageOf(n);
-      const entry = {
-        id: n.id,
-        key: n.key,
-        name: n.name,
-        type: n.type,
-        page: page ? { id: page.id, name: page.name } : null
-      };
-      try {
-        const defs = n.componentPropertyDefinitions;
-        const axes = {};
-        for (const [prop, def] of Object.entries(defs)) {
-          if (def.type === "VARIANT") axes[prop] = def.variantOptions ?? [];
-        }
-        if (Object.keys(axes).length > 0) entry.variantAxes = axes;
-      } catch {
-      }
-      components.push(entry);
-    }
-    return components;
-  }
-
   // shared/audit-types.ts
   var AUDIT_FACTS_SCHEMA = 2;
 
@@ -3341,290 +3740,6 @@
       dedup: { applied: true, savedBytes: rawBytes - finalBytes, foldedNodes: templateFold.folded }
     };
   }
-
-  // plugin/src/main/context-node-record.ts
-  function readStyles(node) {
-    const out = {};
-    for (const [key, field] of [["fill", "fillStyleId"], ["text", "textStyleId"], ["effect", "effectStyleId"]]) {
-      const id = safe(() => node[field]);
-      if (typeof id === "string" && id !== "") out[key] = id;
-    }
-    return out;
-  }
-  function readLayout(node) {
-    const out = {};
-    const num = (field) => {
-      const v = safe(() => node[field]);
-      return typeof v === "number" ? r2(v) : void 0;
-    };
-    const str5 = (field) => {
-      const v = safe(() => node[field]);
-      return typeof v === "string" ? v : void 0;
-    };
-    const layoutMode = str5("layoutMode");
-    if (layoutMode !== void 0) out.layoutMode = layoutMode;
-    const sizingH = str5("layoutSizingHorizontal");
-    if (sizingH !== void 0) out.sizingH = sizingH;
-    const sizingV = str5("layoutSizingVertical");
-    if (sizingV !== void 0) out.sizingV = sizingV;
-    const gap = num("itemSpacing");
-    if (gap !== void 0) out.gap = gap;
-    const padding = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].map(num);
-    if (padding.some((p) => p !== void 0)) out.padding = padding.map((p) => p ?? 0);
-    for (const [key, field] of [["w", "width"], ["h", "height"], ["x", "x"], ["y", "y"]]) {
-      const v = num(field);
-      if (v !== void 0) out[key] = v;
-    }
-    return out;
-  }
-  function childrenOf(node) {
-    const has = safe(() => "children" in node);
-    if (has === false) return { children: [], refused: null };
-    try {
-      const kids = node.children;
-      if (Array.isArray(kids)) return { children: kids, refused: null };
-      return { children: [], refused: has === void 0 ? "children could not be read" : "children is not an array" };
-    } catch (err) {
-      return { children: [], refused: err instanceof Error ? err.message : String(err) };
-    }
-  }
-  function countCollapsed(children) {
-    let descendants = 0;
-    let readErrors = 0;
-    const types = {};
-    const stack = [...children];
-    while (stack.length > 0) {
-      const node = stack.pop();
-      descendants += 1;
-      const type = safe(() => node.type);
-      const key = typeof type === "string" ? type : "UNKNOWN";
-      types[key] = (types[key] ?? 0) + 1;
-      const read = childrenOf(node);
-      if (read.refused !== null) readErrors += 1;
-      for (const child of read.children) stack.push(child);
-    }
-    return { descendants, types, readErrors };
-  }
-  var messageOf4 = (err) => err instanceof Error ? err.message : String(err);
-  function locate(opts) {
-    return opts.parentId === null ? "(unreadable target)" : `(unreadable child ${opts.childIndex ?? 0} of ${opts.parentId})`;
-  }
-  function readIdentity(node) {
-    let readError = null;
-    const note = (message) => {
-      if (readError === null) readError = message;
-    };
-    let id = "";
-    try {
-      const raw2 = node.id;
-      if (typeof raw2 === "string" && raw2 !== "") id = raw2;
-      else note("id could not be read");
-    } catch (err) {
-      note(messageOf4(err));
-    }
-    let name = "";
-    try {
-      const raw2 = node.name;
-      if (typeof raw2 === "string") name = raw2;
-    } catch (err) {
-      note(messageOf4(err));
-    }
-    let type = "";
-    try {
-      const raw2 = node.type;
-      if (typeof raw2 === "string" && raw2 !== "") type = raw2;
-      else note("type could not be read");
-    } catch (err) {
-      note(messageOf4(err));
-    }
-    return { id, name, type, readError };
-  }
-  async function buildContextRecord(node, opts) {
-    const identity = readIdentity(node);
-    if (identity.readError !== null) {
-      return {
-        record: {
-          id: identity.id !== "" ? identity.id : locate(opts),
-          readError: identity.readError
-        },
-        children: [],
-        incomplete: true
-      };
-    }
-    const record = {
-      id: identity.id,
-      name: identity.name,
-      type: identity.type,
-      depth: opts.depth,
-      parentId: opts.parentId
-    };
-    const visible = safe(() => node.visible);
-    if (typeof visible === "boolean") record.visible = visible;
-    const layout = readLayout(node);
-    if (Object.keys(layout).length > 0) record.layout = layout;
-    const bindings = readBindings(node);
-    if (Object.keys(bindings).length > 0) record.bindings = bindings;
-    const styles = readStyles(node);
-    if (Object.keys(styles).length > 0) record.styles = styles;
-    let incomplete = false;
-    const type = identity.type;
-    if (type === "TEXT") {
-      const characters = safe(() => node.characters);
-      if (typeof characters === "string") record.characters = characters;
-      if (safe(() => node.fontName) === void 0) {
-        const read2 = safe(() => node.getStyledTextSegments?.(
-          ["characters", "fontName", "fontSize", "fills", "fontWeight", "textDecoration"]
-        ));
-        if (Array.isArray(read2) && read2.length > 0) record.segments = jsonSafe(read2);
-      }
-    }
-    if (type === "INSTANCE") {
-      const getMain = safe(() => node.getMainComponentAsync);
-      if (typeof getMain === "function") {
-        try {
-          const main = await getMain.call(node);
-          const key = main ? safe(() => main.key) : void 0;
-          const name = main ? safe(() => main.name) : void 0;
-          if (typeof key === "string") record.mainComponent = { key, name: typeof name === "string" ? name : "" };
-        } catch (err) {
-          record.mainComponentError = err instanceof Error ? err.message : String(err);
-          incomplete = true;
-        }
-      }
-      const props = safe(() => node.componentProperties);
-      if (props && typeof props === "object") record.componentProperties = jsonSafe(props);
-    }
-    if (type === "COMPONENT" || type === "COMPONENT_SET") {
-      const defs = safe(() => node.componentPropertyDefinitions);
-      if (defs && typeof defs === "object") record.componentPropertyDefinitions = jsonSafe(defs);
-    }
-    const read = childrenOf(node);
-    if (read.refused !== null) {
-      record.childrenError = read.refused;
-      record.childCount = null;
-      incomplete = true;
-    } else {
-      record.childCount = read.children.length;
-    }
-    if (opts.includeCss) {
-      const getCss = safe(() => node.getCSSAsync);
-      if (typeof getCss === "function") {
-        try {
-          record.css = jsonSafe(await getCss.call(node));
-        } catch (err) {
-          record.cssError = err instanceof Error ? err.message : String(err);
-          incomplete = true;
-        }
-      }
-    }
-    const isAsset = safe(() => node.isAsset);
-    if (isAsset === true && read.children.length > 0) {
-      const collapsed = countCollapsed(read.children);
-      record.collapsed = collapsed;
-      if (collapsed.readErrors > 0) incomplete = true;
-      return { record, children: [], incomplete };
-    }
-    return { record, children: read.children, incomplete };
-  }
-
-  // plugin/src/main/context-intent-readers.ts
-  var noDevResourcesRead = () => ({ byNode: /* @__PURE__ */ new Map(), found: 0, unaddressed: 0 });
-  var str = (value) => typeof value === "string" ? value : "";
-  function readOnlyField(value, field) {
-    if (!Array.isArray(value)) return [];
-    return value.flatMap((entry) => {
-      const read = entry === null || typeof entry !== "object" ? "" : str(safe(() => entry[field]));
-      return read === "" ? [] : [read];
-    });
-  }
-  async function readSubtreeDevResources(root, scope = { includeChildren: true }) {
-    const byNode = /* @__PURE__ */ new Map();
-    const read = safe(() => root.getDevResourcesAsync);
-    if (typeof read !== "function") {
-      return { byNode, found: 0, unaddressed: 0, error: "getDevResourcesAsync is not available on this node" };
-    }
-    let list3;
-    try {
-      list3 = await read.call(root, { includeChildren: scope.includeChildren });
-    } catch (err) {
-      return { byNode, found: 0, unaddressed: 0, error: messageOf4(err) };
-    }
-    if (!Array.isArray(list3)) {
-      return { byNode, found: 0, unaddressed: 0, error: "getDevResourcesAsync did not answer with a list" };
-    }
-    let unaddressed = 0;
-    for (const raw2 of list3) {
-      if (raw2 === null || typeof raw2 !== "object") {
-        unaddressed += 1;
-        continue;
-      }
-      const resource = raw2;
-      const nodeId = str(safe(() => resource.nodeId));
-      if (nodeId === "") {
-        unaddressed += 1;
-        continue;
-      }
-      const inherited = str(safe(() => resource.inheritedNodeId));
-      const entry = {
-        name: str(safe(() => resource.name)),
-        url: str(safe(() => resource.url)),
-        ...inherited !== "" && { inheritedNodeId: inherited }
-      };
-      const existing = byNode.get(nodeId);
-      if (existing === void 0) byNode.set(nodeId, [entry]);
-      else existing.push(entry);
-    }
-    return { byNode, found: list3.length, unaddressed };
-  }
-  function readDevStatus(node) {
-    const raw2 = node.devStatus;
-    if (raw2 === null || typeof raw2 !== "object") return null;
-    const status = raw2;
-    const type = str(safe(() => status.type));
-    if (type === "") return null;
-    const description = str(safe(() => status.description));
-    return { type, ...description !== "" && { description } };
-  }
-  function readAnnotations(node) {
-    const raw2 = node.annotations;
-    if (!Array.isArray(raw2) || raw2.length === 0) return null;
-    return raw2.map((entry) => {
-      if (entry === null || typeof entry !== "object") return {};
-      const annotation = entry;
-      const label = str(safe(() => annotation.label));
-      const labelMarkdown = str(safe(() => annotation.labelMarkdown));
-      const categoryId = str(safe(() => annotation.categoryId));
-      const types = readOnlyField(safe(() => annotation.properties), "type");
-      return {
-        ...label !== "" && { label },
-        ...labelMarkdown !== "" && { labelMarkdown },
-        ...types.length > 0 && { properties: types },
-        ...categoryId !== "" && { categoryId }
-      };
-    });
-  }
-  function readComponentIntent(component) {
-    const description = str(safe(() => component.description));
-    const markdown = str(safe(() => component.descriptionMarkdown));
-    const uris = readOnlyField(safe(() => component.documentationLinks), "uri");
-    return {
-      name: str(safe(() => component.name)),
-      ...description !== "" && { description },
-      ...markdown !== "" && markdown !== description && { descriptionMarkdown: markdown },
-      ...uris.length > 0 && { documentationLinks: uris }
-    };
-  }
-  function countAttachedDevResources(records) {
-    let attached = 0;
-    for (const record of records) {
-      const intent = record.intent;
-      if (intent === null || typeof intent !== "object") continue;
-      const links = intent.devResources;
-      if (Array.isArray(links)) attached += links.length;
-    }
-    return attached;
-  }
-  var hasComponentIntent = (intent) => intent.description !== void 0 || intent.descriptionMarkdown !== void 0 || intent.documentationLinks !== void 0;
 
   // plugin/src/main/context-intent.ts
   var str2 = (value) => typeof value === "string" ? value : "";
@@ -7074,12 +7189,12 @@
   var connectionSequence = 0;
   function requireDesignFile2(capability) {
     resetConnectionCache();
-    const refusal = editorRefusal({
+    const refusal2 = editorRefusal({
       capability,
       required: ["figma"],
       found: figma.editorType ?? null
     });
-    if (refusal) throw withCode(new Error(refusal), "E_WRONG_EDITOR");
+    if (refusal2) throw withCode(new Error(refusal2), "E_WRONG_EDITOR");
   }
   function str4(params, ...keys) {
     for (const key of keys) {

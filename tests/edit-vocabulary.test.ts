@@ -3,6 +3,7 @@
 // parentName-present/absent branch.
 import { describe, it, expect } from 'vitest';
 import { editSentence, sceneEditVerb, type SceneEditSentenceInput } from '../shared/edit-vocabulary.ts';
+import { INTENT_PROPS } from '../shared/edit-intent.ts';
 
 const base = (over: Partial<SceneEditSentenceInput> = {}): SceneEditSentenceInput => ({
   op: 'updated',
@@ -218,5 +219,104 @@ describe('the top-level subtree signal gets its OWN sentence', () => {
 
   it('a move alongside it still reads as a move', () => {
     expect(editSentence(base({ changedProps: ['subtree', 'x', 'y'] }))).toContain('Moved');
+  });
+});
+
+// What the designer SAID gets its own two verbs. The generic mapper would file a
+// description edit under "Restyled", which claims a paint/text change that did not happen
+// — and would say nothing at all about the words the designer just wrote.
+describe('designer intent gets its own verbs', () => {
+  it('a description change reads as described, an annotation change as annotated', () => {
+    expect(sceneEditVerb('updated', ['description'])).toBe('described');
+    expect(sceneEditVerb('updated', ['annotations'])).toBe('annotated');
+  });
+
+  // Drift guard: a prop added to the closed trigger list without a verb here would ship as
+  // "Restyled", i.e. a wrong fact about an edit the feed went out of its way to capture.
+  it('every prop in the closed trigger list has a verb of its own', () => {
+    for (const prop of INTENT_PROPS) {
+      expect(['described', 'annotated']).toContain(sceneEditVerb('updated', [prop]));
+    }
+  });
+
+  it('a rename still wins over both — the single clearest fact about a node', () => {
+    expect(sceneEditVerb('updated', ['description', 'name'])).toBe('renamed');
+    expect(sceneEditVerb('updated', ['annotations', 'name'])).toBe('renamed');
+  });
+
+  it('a description wins over an annotation and over a move in the same set', () => {
+    expect(sceneEditVerb('updated', ['annotations', 'description'])).toBe('described');
+    expect(sceneEditVerb('updated', ['description', 'x'])).toBe('described');
+    expect(sceneEditVerb('updated', ['annotations', 'y'])).toBe('annotated');
+  });
+
+  it('describes a component by name', () => {
+    expect(editSentence(base({
+      nodeName: 'Button / Primary', nodeType: 'COMPONENT', changedProps: ['description'],
+    }))).toBe('Described component "Button / Primary"');
+  });
+
+  it('keeps the location the frame carries, like every other sentence', () => {
+    expect(editSentence(base({
+      nodeName: 'Button / Primary', nodeType: 'COMPONENT', parentName: 'Controls', changedProps: ['description'],
+    }))).toBe('Described component "Button / Primary" in "Controls"');
+  });
+
+  it('counts the annotations the frame actually carries', () => {
+    expect(editSentence(base({
+      nodeName: 'Search field', nodeType: 'FRAME', changedProps: ['annotations'],
+      intent: { annotations: [{ label: 'a11y' }, { label: 'behaviour' }] },
+    }))).toBe('Annotated "Search field" (2)');
+  });
+
+  it('counts the REAL total when the list was capped, never the truncated length', () => {
+    expect(editSentence(base({
+      nodeName: 'Search field', nodeType: 'FRAME', changedProps: ['annotations'],
+      intent: { annotations: [{ label: 'a11y' }], annotationsTotal: 34 },
+    }))).toBe('Annotated "Search field" (34)');
+  });
+
+  it('states no count when the frame carries no value — a frame is not a guess', () => {
+    expect(editSentence(base({
+      nodeName: 'Search field', nodeType: 'FRAME', changedProps: ['annotations'],
+    }))).toBe('Annotated "Search field"');
+  });
+
+  it('says the annotations were cleared rather than inventing "(0)"', () => {
+    expect(editSentence(base({
+      nodeName: 'Search field', nodeType: 'FRAME', changedProps: ['annotations'], intent: { annotations: [] },
+    }))).toBe('Cleared the annotations on "Search field"');
+  });
+
+  // A cleared description is an edit with a value, and the value is "nothing". Reading it
+  // as a plain "Described …" would say the opposite of what the designer did.
+  it('says the description was cleared rather than claiming it was written', () => {
+    expect(editSentence(base({
+      nodeName: 'Button / Primary', nodeType: 'COMPONENT', changedProps: ['description'],
+      intent: { description: '' },
+    }))).toBe('Cleared the description on "Button / Primary"');
+  });
+
+  it('keeps the location on a cleared description too', () => {
+    expect(editSentence(base({
+      nodeName: 'Button / Primary', nodeType: 'COMPONENT', parentName: 'Controls',
+      changedProps: ['description'], intent: { description: '' },
+    }))).toBe('Cleared the description on "Button / Primary" in "Controls"');
+  });
+
+  it('an unreadable description is NOT reported as cleared', () => {
+    expect(editSentence(base({
+      nodeName: 'Button / Primary', nodeType: 'COMPONENT', changedProps: ['description'],
+      intent: { intentReadError: 'description: not loaded' },
+    }))).toBe('Described component "Button / Primary"');
+  });
+
+  it('degrades to the raw type when the frame never learned a name', () => {
+    expect(editSentence(base({
+      nodeName: null, nodeType: 'COMPONENT', changedProps: ['description'],
+    }))).toBe('Described a COMPONENT node');
+    expect(editSentence(base({
+      nodeName: null, nodeType: 'FRAME', changedProps: ['annotations'], intent: { annotations: [{}] },
+    }))).toBe('Annotated a FRAME node');
   });
 });

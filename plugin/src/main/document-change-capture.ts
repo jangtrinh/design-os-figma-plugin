@@ -14,7 +14,9 @@ import {
   type ChangeOrigin, type ComponentChange,
 } from '../../../shared/figma-changes';
 import { coalesceEdits, type EditInput, type EditOrigin } from '../../../shared/edit-feed';
+import type { EditIntent } from '../../../shared/edit-intent';
 import { classifyActor, type ActorState } from './edit-actor';
+import { readEditIntent } from './edit-intent-reader';
 import {
   enclosingName, resolveComponentIdentity, type CachedIdentity, type EditIdentityCache,
 } from './change-node-identity';
@@ -66,9 +68,9 @@ export interface DocumentChangeCaptureStats {
    *  were therefore filed under `figma.currentPage`. That name is a guess about someone
    *  else's edit, so it is never made silently. */
   pageFallbacks: number;
-  /** Correction-store failures this session (a per-node read, or the batch's flush write,
-   *  that threw). The feed is posted regardless — bookkeeping about the edits must not
-   *  cost the edits. */
+  /** Capture-side failures this session: a correction-store per-node read or batch flush
+   *  that threw, or a designer-intent read that escaped its own guard. The feed is posted
+   *  regardless — bookkeeping about the edits must not cost the edits. */
   errorCount: number;
   /** The FIRST failure message, verbatim: the one describing the original cause rather
    *  than a cascade from it. Same convention as `gapfill.errors` in STATUS. */
@@ -210,6 +212,24 @@ export function createDocumentChangeCapture<TBatch>(
         // guess and is counted as one rather than passed off as a resolved fact.
         : resolvedPage(node, known);
       deps.notePageDirty(page.id);
+      // What the designer SAID, read HERE or never: `documentchange` names the property
+      // (`description`, `annotations`) and never the value, and nothing recovers it later.
+      // A removed node is skipped — a RemovedNode carries only id + type, so every read
+      // would refuse and the frame would fill with refusals that say nothing. Gap-fill posts
+      // its own batches and never reaches this pass, so a closed-window intent edit is
+      // reported as a property change with no value rather than with a guessed one.
+      let intent: EditIntent | undefined;
+      if (!removed) {
+        // Guarded like every other host read in this loop, not because `readEditIntent`
+        // throws today (each getter sits in its own try, and a refusal comes back as
+        // `intentReadError` ON the frame) but because an escaping throw here would take the
+        // whole delivered batch with it — including the edits already processed.
+        try {
+          intent = readEditIntent(node as unknown as Record<string, unknown>, changedProps);
+        } catch (error) {
+          recordCaptureError(error);
+        }
+      }
       edits.push({
         op,
         nodeId: node.id,
@@ -220,6 +240,7 @@ export function createDocumentChangeCapture<TBatch>(
         changedProps,
         origin: dc.origin as EditOrigin,
         actor: classifyActor(node.id, op, now, deps.actorState()),
+        ...(intent !== undefined && { intent }),
       });
       if (!removed) {
         deps.identity.remember(node.id, {

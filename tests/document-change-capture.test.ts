@@ -18,10 +18,14 @@ import {
   beginCorrectionBatch, flushCorrectionBatch,
   recordAgentMutationBatch, recordDesignerCorrectionInBatch, type CorrectionBatch,
 } from '../plugin/src/main/correction-edge-store.ts';
+import { INTENT_PROPS, INTENT_TEXT_CAP, INTENT_ANNOTATION_CAP } from '../shared/edit-intent.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-interface FakeNode { id: string; name: string; type: string; parent: FakeNode | null; removed?: boolean }
+interface FakeNode {
+  id: string; name: string; type: string; parent: FakeNode | null; removed?: boolean;
+  description?: string; descriptionMarkdown?: string; annotations?: unknown[];
+}
 
 const PAGE: FakeNode = { id: 'p1', name: 'Page 1', type: 'PAGE', parent: null };
 const FRAME: FakeNode = { id: 'f1', name: 'Card', type: 'FRAME', parent: PAGE };
@@ -537,5 +541,206 @@ describe('the idle re-walk is told WHICH pages changed', () => {
     expect(log.dirtyPages).toEqual(['p-cover']);
     expect(feed(log)[0]!.data.edits[0].page).toBe('Cover');
     expect(capture.stats.pageFallbacks).toBe(1); // one guess, one counter — not two
+  });
+});
+
+// Designer intent — the words behind an edit. Figma names the property that changed
+// (`description`, `annotations`) but never the new value, and the value is unreadable once
+// the moment has passed: `figma.changes` has no history for it and REST answers
+// `description: ""` at every version. So the value is read HERE, at capture time, or not
+// at all. A refusal is reported as one; it never reads as "the designer cleared it".
+describe('designer intent rides along with the property name', () => {
+  const component = (over: Partial<FakeNode> = {}): FakeNode => ({
+    id: 'c1', name: 'Button / Primary', type: 'COMPONENT', parent: FRAME, ...over,
+  });
+
+  const intentOf = (log: Log) => feed(log)[0]?.data.edits[0]?.intent;
+
+  it('a description change carries the new words, and both forms of them', () => {
+    const { capture, log } = harness();
+    const node = component({ description: 'The primary action', descriptionMarkdown: '**The primary action**' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    expect(feed(log)[0]?.data.edits[0]).toMatchObject({ nodeId: 'c1', changedProps: ['description'] });
+    expect(intentOf(log)).toEqual({
+      description: 'The primary action', descriptionMarkdown: '**The primary action**',
+    });
+  });
+
+  it('an annotation change carries the annotations themselves', () => {
+    const { capture, log } = harness();
+    const node = component({ annotations: [{ label: 'Announce on focus', categoryId: 'a11y' }] });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['annotations'])] } as any);
+
+    expect(intentOf(log)).toEqual({ annotations: [{ label: 'Announce on focus', categoryId: 'a11y' }] });
+  });
+
+  it('a cleared annotation list is a VALUE, not a missing read', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(component({ annotations: [] }), 'PROPERTY_CHANGE', ['annotations'])],
+    } as any);
+
+    expect(intentOf(log)).toEqual({ annotations: [] });
+  });
+
+  it('caps a long description and says it was cut', () => {
+    const { capture, log } = harness();
+    const node = component({ description: 'x'.repeat(INTENT_TEXT_CAP + 42) });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    expect(intentOf(log).description).toHaveLength(INTENT_TEXT_CAP);
+    expect(intentOf(log).intentTruncated).toBe(true);
+  });
+
+  it('caps a long annotation list and keeps the real count', () => {
+    const { capture, log } = harness();
+    const many = Array.from({ length: INTENT_ANNOTATION_CAP + 5 }, (_, i) => ({ label: `note ${i}` }));
+
+    capture.onDocumentChange({
+      documentChanges: [change(component({ annotations: many }), 'PROPERTY_CHANGE', ['annotations'])],
+    } as any);
+
+    expect(intentOf(log).annotations).toHaveLength(INTENT_ANNOTATION_CAP);
+    expect(intentOf(log).annotationsTotal).toBe(INTENT_ANNOTATION_CAP + 5);
+  });
+
+  // Figma's own getters refuse: a dynamic-page file throws on a getter for a node whose
+  // page is not loaded, and an invalidated reference throws on everything. The property
+  // NAME is still a fact the event carried; the value is not.
+  it('a refused read reports the refusal and keeps the property name', () => {
+    const { capture, log } = harness();
+    const node = component();
+    Object.defineProperty(node, 'description', {
+      get() { throw new Error('Cannot read description: node is not loaded'); },
+    });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    expect(feed(log)[0]?.data.edits[0].changedProps).toEqual(['description']);
+    expect(intentOf(log)).toEqual({ intentReadError: 'description: Cannot read description: node is not loaded' });
+    expect(intentOf(log).description).toBeUndefined();
+  });
+
+  it('a refused annotation read is reported the same way, and never crashes the batch', () => {
+    const { capture, log } = harness();
+    const node = component();
+    Object.defineProperty(node, 'annotations', {
+      get() { throw new Error('Cannot read annotations of a removed node'); },
+    });
+
+    capture.onDocumentChange({
+      documentChanges: [
+        change(node, 'PROPERTY_CHANGE', ['annotations']),
+        change(text('t9'), 'PROPERTY_CHANGE', ['x']),
+      ],
+    } as any);
+
+    const edits = feed(log)[0]?.data.edits;
+    expect(edits).toHaveLength(2); // the rest of the batch survives the refusal
+    expect(edits.find((e: any) => e.nodeId === 'c1').intent)
+      .toEqual({ intentReadError: 'annotations: Cannot read annotations of a removed node' });
+  });
+
+  it('an ordinary edit gains no intent key at all', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({ documentChanges: [change(text('t1'), 'PROPERTY_CHANGE', ['x'])] } as any);
+
+    expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
+  });
+
+  it('a node with the property named but nothing readable on it says nothing', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(text('t1'), 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
+  });
+
+  // Drift guard: the capture path must read EVERY prop the closed list names, or the feed
+  // would list a property whose value nothing ever went and got.
+  it('every prop in the closed trigger list is read by the capture pass', () => {
+    for (const prop of INTENT_PROPS) {
+      const { capture, log } = harness();
+      const node = component({ description: 'words', annotations: [{ label: 'note' }] });
+
+      capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', [prop])] } as any);
+
+      expect(feed(log)[0]?.data.edits[0].intent, `no intent read for "${prop}"`).toBeDefined();
+    }
+  });
+
+  // A CLEARED description is a successful read of an empty string, and it must not look
+  // like a refused read: the first says "the designer deleted these words", the second says
+  // "nobody knows". They are different facts and they reach the wire differently.
+  it('a cleared description is a VALUE, distinct from an unreadable one', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(component({ description: '', descriptionMarkdown: '' }), 'PROPERTY_CHANGE', ['description'])],
+    } as any);
+
+    expect(intentOf(log)).toEqual({ description: '' });
+  });
+
+  it('an empty description with markdown that still says something keeps both', () => {
+    const { capture, log } = harness();
+    const node = component({ description: '', descriptionMarkdown: '**still here**' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    expect(intentOf(log)).toEqual({ description: '', descriptionMarkdown: '**still here**' });
+  });
+
+  // One refusing getter must not take a value that WAS read down with it.
+  it('a refused markdown read keeps the description that succeeded', () => {
+    const { capture, log } = harness();
+    const node = component({ description: 'The primary action' });
+    Object.defineProperty(node, 'descriptionMarkdown', {
+      get() { throw new Error('not loaded'); },
+    });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    expect(intentOf(log)).toEqual({
+      description: 'The primary action', intentReadError: 'descriptionMarkdown: not loaded',
+    });
+  });
+
+  it('caps the prose inside an annotation, not just how many there are', () => {
+    const { capture, log } = harness();
+    const node = component({ annotations: [{ label: 'x'.repeat(50_000), labelMarkdown: 'y'.repeat(50_000) }] });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['annotations'])] } as any);
+
+    expect(intentOf(log).annotations[0].label).toHaveLength(INTENT_TEXT_CAP);
+    expect(intentOf(log).intentTruncated).toBe(true);
+    expect(JSON.stringify(feed(log)[0]?.data.edits[0]).length).toBeLessThan(4_800);
+  });
+
+  // "Cleared the annotations" is a claim about a node that CAN hold them. A TEXT node with
+  // no annotations field never held any, so the honest answer is no answer.
+  it('a node type with no annotations field gains no annotations key', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(text('t2'), 'PROPERTY_CHANGE', ['annotations'])] } as any);
+
+    expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
+  });
+
+  it('a deleted node carries no intent — a RemovedNode has nothing left to read', () => {
+    const { capture, log } = harness();
+    const node = component({ removed: true, description: 'stale' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
   });
 });

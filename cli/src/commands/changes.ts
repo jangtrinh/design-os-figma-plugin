@@ -21,6 +21,7 @@ import { exportChangePngs } from './changes-png-export.ts';
 import { printJson, withFileContext } from '../util/json-out.ts';
 import { editSentence } from '../../../shared/edit-vocabulary.ts';
 import { isValidEditFrame, type EditActor, type EditFrame } from '../../../shared/edit-feed.ts';
+import { isValidEditIntent, type EditIntent } from '../../../shared/edit-intent.ts';
 
 const VALID_ACTORS: ReadonlySet<string> = new Set(['owner', 'agent', 'ambiguous']);
 const DEFAULT_LIMIT = 50;
@@ -51,6 +52,10 @@ export interface ReadEditFeedResult {
   frames: EditFrame[];
   /** Lines that failed to JSON.parse — skipped, never fatal (see module header). */
   warnings: number;
+  /** Frames whose `intent` block failed its shape guard and was STRIPPED — the edit itself
+   *  was listed. Counted separately from `warnings` because nothing was skipped: conflating
+   *  "a line was unreadable" with "a value on a readable line was" would misstate both. */
+  intentWarnings: number;
 }
 
 /** Reads and parses one feed file, line by line. A missing file (nothing captured yet
@@ -77,11 +82,12 @@ export function readEditFeed(path: string): ReadEditFeedResult {
   try {
     raw = readFileSync(path, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { frames: [], warnings: 0 };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { frames: [], warnings: 0, intentWarnings: 0 };
     throw err;
   }
   const frames: EditFrame[] = [];
   let warnings = 0;
+  let intentWarnings = 0;
   for (const line of raw.split('\n')) {
     if (line.trim().length === 0) continue;
     let parsed: unknown;
@@ -92,10 +98,18 @@ export function readEditFeed(path: string): ReadEditFeedResult {
       continue;
     }
     if (!isValidEditFrame(parsed)) { warnings++; continue; }
+    // The frame guard deliberately admits a line whose `intent` is malformed (shared/
+    // edit-feed.ts) — the property name in `changedProps` is still the fact this feed
+    // exists to carry. The unreadable VALUE is dropped here, and counted: a consumer sees
+    // the edit, and can see that something it cannot be shown was there.
+    if (parsed.intent !== undefined && !isValidEditIntent(parsed.intent)) {
+      delete parsed.intent;
+      intentWarnings++;
+    }
     frames.push(parsed);
   }
   frames.sort((a, b) => a.ts - b.ts);
-  return { frames, warnings };
+  return { frames, warnings, intentWarnings };
 }
 
 function listFeedSlugs(dir: string): string[] {
@@ -199,6 +213,11 @@ export interface ChangesOutputFrame {
    *  doc). `null` for a frame written before that fix landed. */
   fileName: string | null;
   sentence: string;
+  /** What the designer SAID, when the frame carried it — passed through UNTOUCHED (the
+   *  capture already capped it; re-shaping a quote here would be this layer inventing
+   *  words). Absent on every frame without one, which is nearly all of them: a consumer
+   *  that ignores this key sees exactly the output it saw before intent existed. */
+  intent?: EditIntent;
 }
 
 function toOutputFrame(f: EditFrame): ChangesOutputFrame {
@@ -207,6 +226,7 @@ function toOutputFrame(f: EditFrame): ChangesOutputFrame {
     nodeName: f.nodeName, nodeType: f.nodeType, parentName: f.parentName,
     changedProps: f.changedProps, page: f.page, fileName: f.fileName ?? null,
     sentence: editSentence(f),
+    ...(f.intent !== undefined && { intent: f.intent }),
   };
 }
 
@@ -237,7 +257,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
 
   const dir = editFeedDir();
   const { path, slug } = resolveFeedFile(dir, args.str('file'));
-  const { frames: allFrames, warnings } = readEditFeed(path);
+  const { frames: allFrames, warnings, intentWarnings } = readEditFeed(path);
   const filtered = filterFrames(allFrames, { since, actor, page });
   const limited = limitFrames(filtered, limit);
   // The PNG leg covers exactly the frames listed below (post --limit), so the count of
@@ -255,6 +275,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     counts: countByActor(filtered),
     changes: limited.map(toOutputFrame),
     ...(warnings > 0 && { warnings }),
+    ...(intentWarnings > 0 && { intentWarnings }),
     ...(pngExport !== undefined && { png: pngExport }),
   };
   if (pngExport?.error !== undefined) {
