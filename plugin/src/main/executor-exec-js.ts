@@ -8,6 +8,7 @@ import { createExecStdlib } from './exec-stdlib';
 import {
   compile, resultWarning, summarize, type ConsoleProxy, type ExecFn,
 } from './exec-js-normalize';
+import { registerSentinel } from './undo-sentinel-registry';
 
 // Re-exported so existing callers/tests of the normalization functions keep importing them
 // from this module — executor-exec-js.ts stays the public face of the EXEC_JS feature, the
@@ -48,7 +49,16 @@ export function figmaUndoBracket(): UndoBracket {
       const page = figma.currentPage;
       // Identify strays by OUR plugin data, never by name: a user frame that happens to be called
       // "[figma-agent] undo sentinel" must not be deleted by a tool sweep.
-      for (const n of page.findChildren((c) => c.getPluginData(SENTINEL_KEY) === '1')) n.remove();
+      // Registered BEFORE remove(): a stray is a leftover from a run whose commit() threw, or
+      // one interrupted by a plugin reload (the registry is per plugin session, so a reload
+      // forgets every id it held) — its DELETE documentchange still arrives, asynchronously,
+      // after this sweep. Registering first means capture recognizes it as the plugin's own
+      // lifecycle instead of an uncounted "Deleted a FRAME node"; it also re-registers a
+      // stray whose id had already fallen out of the FIFO bound.
+      for (const n of page.findChildren((c) => c.getPluginData(SENTINEL_KEY) === '1')) {
+        registerSentinel(n.id);
+        n.remove();
+      }
       figma.commitUndo();
       const f = figma.createFrame();
       f.name = SENTINEL_NAME;
@@ -58,6 +68,11 @@ export function figmaUndoBracket(): UndoBracket {
       f.visible = false;
       page.appendChild(f);
       sentinel = f;
+      // Registered by id right after creation, BEFORE any documentchange for it can be
+      // delivered — document-change-capture.ts drops the sentinel's own CREATE/PROPERTY_
+      // CHANGE/DELETE lifecycle from the feed by checking this registry, so it never reads
+      // as a designer's own edit.
+      registerSentinel(f.id);
     },
     commit() {
       // A script that swept `currentPage` (e.g. deleted everything on it) may have already

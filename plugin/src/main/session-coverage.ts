@@ -67,10 +67,12 @@ export function buildPluginCoverage({ gapfill, capture, perf }: PluginCoverageIn
     // carries those frames under a guessed page name.
     coverageRow('page-fallbacks', capture?.pageFallbacks ?? 0, 'changes'),
     coverageRow('capture-errors', capture?.errorCount ?? 0, 'status.plugin.captureErrors'),
-    // `capture.pluginDataChangesDropped` deliberately gets NO row: those entries are the
-    // plugin's own bookkeeping echo (a property change whose every property is
-    // `pluginData`), not a designer edit this session failed to see — it stays readable
-    // on STATUS as its own counter.
+    // `capture.pluginDataChangesDropped` and `capture.sentinelChangesDropped` deliberately
+    // get NO row: the first is the plugin's own bookkeeping echo (a property change whose
+    // every property is `pluginData`), the second is the undo sentinel's own CREATE/DELETE
+    // lifecycle (undo-sentinel-registry.ts) — the plugin's own invisible node, never a
+    // designer edit this session failed to see. Both stay readable on STATUS as their own
+    // counters instead.
     // Nodes dropped mid-walk because their properties threw: absent from the walk, so
     // absent from what any diff built on it could report.
     coverageRow('property-read-errors', perf?.propertyReadErrors ?? 0, 'status.plugin.perf'),
