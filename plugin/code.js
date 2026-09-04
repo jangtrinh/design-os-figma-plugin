@@ -990,7 +990,7 @@
     let annotations;
     let total;
     if (Array.isArray(list3)) {
-      if (list3.length > INTENT_ANNOTATION_CAP) total = list3.length;
+      if (list3.length > INTENT_ANNOTATION_CAP) total = intent.annotationsTotal ?? list3.length;
       annotations = list3.slice(0, INTENT_ANNOTATION_CAP).map((entry) => {
         const capped = capAnnotation(entry);
         if (capped.cut) truncated = true;
@@ -1509,7 +1509,10 @@
     if (changedProps.includes(ANNOTATIONS_PROP)) {
       try {
         const raw2 = node[ANNOTATIONS_PROP];
-        if (Array.isArray(raw2)) intent.annotations = shapeAnnotations(raw2);
+        if (Array.isArray(raw2)) {
+          intent.annotations = shapeAnnotations(raw2.slice(0, INTENT_ANNOTATION_CAP));
+          if (raw2.length > INTENT_ANNOTATION_CAP) intent.annotationsTotal = raw2.length;
+        }
       } catch (err) {
         note(refusal(ANNOTATIONS_PROP, err));
       }

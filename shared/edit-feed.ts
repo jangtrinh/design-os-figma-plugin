@@ -12,7 +12,7 @@
 // EditInput per node per batch, posts EDIT_FEED over the wire; the broker stamps each
 // EditInput into an EditFrame and appends it to design/changes/<slug>.jsonl.
 
-import { isValidEditIntent, mergeIntent, type EditIntent } from './edit-intent';
+import { capIntent, isValidEditIntent, mergeIntent, type EditIntent } from './edit-intent';
 
 /** Bump when EditFrame's shape changes. Independent of CHANGE_LOG_SCHEMA_VERSION. */
 export const EDIT_FEED_SCHEMA_VERSION = 1;
@@ -168,8 +168,11 @@ export function buildEditFrame(e: EditInput, meta: EditBatchMeta, ts: number): E
     // Same defensive coercion as the fields above: an intent that fails the guard is left
     // OFF the frame rather than written to disk in a shape no reader can trust. The edit
     // itself still lands — the property name in `changedProps` is the fact, the value is
-    // the extra.
-    ...(isValidEditIntent(e.intent) && { intent: e.intent }),
+    // the extra. The caps are re-applied HERE, at the write boundary, so they belong to the
+    // feed rather than to one producer: the plugin already caps at capture, and `capIntent`
+    // is idempotent, so this costs a well-behaved frame nothing while a replay, a relay or
+    // any future producer writing straight to the broker cannot widen them.
+    ...(isValidEditIntent(e.intent) && { intent: capIntent(e.intent) }),
   };
 }
 

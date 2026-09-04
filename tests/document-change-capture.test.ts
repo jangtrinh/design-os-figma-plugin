@@ -735,6 +735,27 @@ describe('designer intent rides along with the property name', () => {
     expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
   });
 
+  // The cap is a bound on WORK as well as on bytes: a node with 500 annotations must not
+  // pay to shape 500 records so that 480 can be thrown away. The list is cut first, and the
+  // real count still travels with it.
+  it('shapes only the annotations it keeps, and still reports the real total', () => {
+    const { capture, log } = harness();
+    let shapedBeyondTheCap = 0;
+    const many = Array.from({ length: INTENT_ANNOTATION_CAP + 5 }, (_, i) => {
+      if (i < INTENT_ANNOTATION_CAP) return { label: `note ${i}` };
+      // Past the cap: reading this entry's label at all means it was shaped anyway.
+      return { get label() { shapedBeyondTheCap += 1; return `note ${i}`; } };
+    });
+
+    capture.onDocumentChange({
+      documentChanges: [change(component({ annotations: many }), 'PROPERTY_CHANGE', ['annotations'])],
+    } as any);
+
+    expect(shapedBeyondTheCap).toBe(0);
+    expect(intentOf(log).annotations).toHaveLength(INTENT_ANNOTATION_CAP);
+    expect(intentOf(log).annotationsTotal).toBe(INTENT_ANNOTATION_CAP + 5);
+  });
+
   it('a deleted node carries no intent — a RemovedNode has nothing left to read', () => {
     const { capture, log } = harness();
     const node = component({ removed: true, description: 'stale' });

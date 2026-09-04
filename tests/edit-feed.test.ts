@@ -403,3 +403,34 @@ describe('coalesceEdits — intent merges field by field, last value wins', () =
     expect(out).not.toHaveProperty('intent');
   });
 });
+
+// The caps are a property of the FEED, not of one producer. The plugin caps at capture, and
+// the frame builder caps again at the boundary — a relay, a replay, or a future producer
+// cannot widen them by writing straight to the broker.
+describe('buildEditFrame — the caps hold at the write boundary', () => {
+  it('caps an oversized intent from a producer that did not', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ label: `a${i}` }));
+    const frame = buildEditFrame(
+      baseInput({ changedProps: ['description', 'annotations'], intent: { description: 'x'.repeat(9_000), annotations: many } }),
+      baseMeta(), 1,
+    );
+    expect(frame.intent!.description).toHaveLength(2_000);
+    expect(frame.intent!.intentTruncated).toBe(true);
+    expect(frame.intent!.annotations).toHaveLength(20);
+    expect(frame.intent!.annotationsTotal).toBe(40);
+  });
+
+  it('leaves an already-capped intent exactly as it was (idempotent at the boundary)', () => {
+    const intent: EditIntent = { description: 'The primary action', annotations: [{ label: 'a11y' }] };
+    expect(buildEditFrame(baseInput({ intent }), baseMeta(), 1).intent).toEqual(intent);
+  });
+
+  it('drops a block whose count contradicts its own list, and keeps the edit', () => {
+    const frame = buildEditFrame(
+      baseInput({ changedProps: ['annotations'], intent: { annotations: [{ label: 'a' }], annotationsTotal: 1 } }),
+      baseMeta(), 1,
+    );
+    expect(frame).not.toHaveProperty('intent');
+    expect(frame.changedProps).toEqual(['annotations']);
+  });
+});

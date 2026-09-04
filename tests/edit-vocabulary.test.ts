@@ -320,3 +320,22 @@ describe('designer intent gets its own verbs', () => {
     }))).toBe('Annotated a FRAME node');
   });
 });
+
+// "Cleared the description" is a claim about the WHOLE description, and a component keeps
+// two forms of it. An empty plain description beside a markdown twin that still says
+// something is not a clearing at all.
+describe('a clearing is only a clearing when nothing is left', () => {
+  it('reads as described when the markdown twin still carries words', () => {
+    expect(editSentence(base({
+      nodeName: 'Button / Primary', nodeType: 'COMPONENT', changedProps: ['description'],
+      intent: { description: '', descriptionMarkdown: '**still here**' },
+    }))).toBe('Described component "Button / Primary"');
+  });
+
+  it('still reads as cleared when both forms are empty', () => {
+    expect(editSentence(base({
+      nodeName: 'Button / Primary', nodeType: 'COMPONENT', changedProps: ['description'],
+      intent: { description: '', descriptionMarkdown: '' },
+    }))).toBe('Cleared the description on "Button / Primary"');
+  });
+});

@@ -99,7 +99,11 @@ export function capIntent(intent: EditIntent): EditIntent {
   let annotations: Record<string, unknown>[] | undefined;
   let total: number | undefined;
   if (Array.isArray(list)) {
-    if (list.length > INTENT_ANNOTATION_CAP) total = list.length;
+    // A total the block ALREADY carries outranks a recount: a producer that cut 100
+    // annotations down to 25 knows something this function cannot re-derive, and recounting
+    // from the shorter list would turn its real total into a wrong one. This is also what
+    // makes the function idempotent — capping an already-capped block changes nothing.
+    if (list.length > INTENT_ANNOTATION_CAP) total = intent.annotationsTotal ?? list.length;
     annotations = list.slice(0, INTENT_ANNOTATION_CAP).map((entry) => {
       const capped = capAnnotation(entry);
       if (capped.cut) truncated = true;
@@ -133,8 +137,16 @@ export function isValidEditIntent(v: unknown): v is EditIntent {
     if (!Array.isArray(r.annotations)) return false;
     if (!r.annotations.every((a) => a !== null && typeof a === 'object' && !Array.isArray(a))) return false;
   }
-  if (r.annotationsTotal !== undefined
-    && (typeof r.annotationsTotal !== 'number' || !Number.isFinite(r.annotationsTotal))) return false;
+  // `annotationsTotal` is not a free-standing number: it is the size of the list it was cut
+  // FROM, so it must be a whole count, it must have a list beside it, and it must be BIGGER
+  // than that list — a block claiming "2 of 0" or "1 of 1" contradicts itself, and a
+  // self-contradicting fact is worse than an absent one. Refused here (stripped on read,
+  // dropped on write); the edit it rode on is kept either way.
+  if (r.annotationsTotal !== undefined) {
+    if (typeof r.annotationsTotal !== 'number' || !Number.isInteger(r.annotationsTotal)) return false;
+    if (!Array.isArray(r.annotations)) return false;
+    if (r.annotationsTotal <= r.annotations.length) return false;
+  }
   if (r.intentTruncated !== undefined && r.intentTruncated !== true) return false;
   if (r.intentReadError !== undefined && typeof r.intentReadError !== 'string') return false;
   return true;

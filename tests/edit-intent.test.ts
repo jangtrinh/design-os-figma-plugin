@@ -162,3 +162,42 @@ describe('mergeIntent — a count never outlives the list it counted', () => {
     expect(merged).toEqual({ annotations: [{ label: 'a' }], annotationsTotal: 31, description: 'words' });
   });
 });
+
+// `annotationsTotal` is not an independent number: it exists ONLY because the list beside it
+// was cut. A block whose count contradicts its own list is not a coarse fact, it is a wrong
+// one — and this guard is the last place that can tell.
+describe('isValidEditIntent — the count must be consistent with the list it cut', () => {
+  it('accepts a real cut', () => {
+    expect(isValidEditIntent({ annotations: [{ label: 'a' }], annotationsTotal: 25 })).toBe(true);
+  });
+
+  it('refuses a total that is not bigger than the list it claims to have cut', () => {
+    expect(isValidEditIntent({ annotations: [{ label: 'a' }, { label: 'b' }], annotationsTotal: 0 })).toBe(false);
+    expect(isValidEditIntent({ annotations: [{ label: 'a' }], annotationsTotal: 1 })).toBe(false);
+  });
+
+  it('refuses a fractional or negative total — a count of annotations is a whole number', () => {
+    expect(isValidEditIntent({ annotations: [{ label: 'a' }], annotationsTotal: -3.5 })).toBe(false);
+    expect(isValidEditIntent({ annotations: [{ label: 'a' }], annotationsTotal: 2.5 })).toBe(false);
+  });
+
+  it('refuses a total with no list at all — there is nothing for it to be the total OF', () => {
+    expect(isValidEditIntent({ annotationsTotal: 25 })).toBe(false);
+  });
+});
+
+describe('capIntent — a producer\'s own total outranks a recount', () => {
+  it('keeps a total the block already carried instead of recounting from a shorter list', () => {
+    const many = Array.from({ length: INTENT_ANNOTATION_CAP + 5 }, (_, i) => ({ label: `a${i}` }));
+    const capped = capIntent({ annotations: many, annotationsTotal: 100 });
+    expect(capped.annotations).toHaveLength(INTENT_ANNOTATION_CAP);
+    expect(capped.annotationsTotal).toBe(100); // never re-derived down to 25
+  });
+
+  it('is idempotent — capping an already-capped block changes nothing', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ label: `a${i}` }));
+    const once = capIntent({ annotations: many, description: 'x'.repeat(INTENT_TEXT_CAP + 3) });
+    expect(capIntent(once)).toEqual(once);
+    expect(once.annotationsTotal).toBe(40);
+  });
+});

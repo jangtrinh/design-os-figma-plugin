@@ -168,7 +168,11 @@ export function editSentence(frame: SceneEditSentenceInput): string {
   // the opposite of what the designer did. Driven by the VALUE the frame carries, never by
   // its absence: a frame whose read refused (`intentReadError`, no `description` key) says
   // only that the description was edited, because that is all anyone knows.
+  // Both forms must be gone: a component keeps a plain description AND a markdown one, so an
+  // empty plain description beside a markdown twin that still says something is not a
+  // clearing at all — it is a description that lives in the other field.
   if (verb === 'described' && frame.intent?.description === ''
+    && (frame.intent.descriptionMarkdown ?? '') === ''
     && frame.nodeName !== null && frame.nodeName !== '') {
     const base = `Cleared the description on "${frame.nodeName}"`;
     return frame.parentName ? `${base} in "${frame.parentName}"` : base;

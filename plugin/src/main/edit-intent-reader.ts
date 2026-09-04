@@ -17,7 +17,9 @@
 // field that answered.
 import { distinctMarkdown, shapeAnnotations } from './context-intent-readers';
 import { messageOf } from './context-node-record';
-import { capIntent, hasIntentProp, type EditIntent } from '../../../shared/edit-intent';
+import {
+  capIntent, hasIntentProp, INTENT_ANNOTATION_CAP, type EditIntent,
+} from '../../../shared/edit-intent';
 
 /** Kept in step with `INTENT_PROPS` by tests in both directions: the vocabulary must have a
  *  verb for each name, and the capture pass must actually read each one. */
@@ -72,7 +74,14 @@ export function readEditIntent(
       // An empty list is a VALUE — the designer removed the annotations. A node type with no
       // annotations FIELD is not the same statement and gets no key at all: it never held
       // any, so "cleared" would be a claim stronger than the evidence.
-      if (Array.isArray(raw)) intent.annotations = shapeAnnotations(raw);
+      if (Array.isArray(raw)) {
+        // Cut BEFORE shaping: the cap bounds the work as well as the bytes, so a node with
+        // 500 annotations does not pay to shape 480 records that are then discarded. The
+        // real count travels with the cut list (`capIntent` keeps a total already present
+        // rather than recounting it from the shortened one).
+        intent.annotations = shapeAnnotations(raw.slice(0, INTENT_ANNOTATION_CAP));
+        if (raw.length > INTENT_ANNOTATION_CAP) intent.annotationsTotal = raw.length;
+      }
     } catch (err) { note(refusal(ANNOTATIONS_PROP, err)); }
   }
 
