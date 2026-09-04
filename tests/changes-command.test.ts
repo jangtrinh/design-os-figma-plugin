@@ -49,7 +49,7 @@ describe('readEditFeed', () => {
 
   it('a missing file reads as empty, not an error', () => {
     const result = readEditFeed(join(dir, 'nope.jsonl'));
-    expect(result).toEqual({ frames: [], warnings: 0 });
+    expect(result).toEqual({ frames: [], warnings: 0, intentWarnings: 0 });
   });
 
   it('parses every well-formed line', () => {
@@ -314,5 +314,94 @@ describe('run — fileName provenance (minor 9b)', () => {
   it('each output entry carries the frame\'s own fileName', async () => {
     const out = await run(parseArgs([])) as { changes: Array<{ fileName: string | null }> };
     expect(out.changes[0]!.fileName).toBe('VSF - PCP');
+  });
+});
+
+// The value a designer typed is only readable at capture time, so the read path's ONE job
+// with it is to hand it over untouched — and to say nothing extra on the frames that carry
+// no intent, which is nearly all of them.
+describe('run — designer intent reaches the agent verbatim', () => {
+  let dir: string;
+  const prevEnv = process.env['FIGMA_AGENT_CHANGES_DIR'];
+  const intent = {
+    description: 'The primary action on a form',
+    descriptionMarkdown: '**The primary action** on a form',
+    annotations: [{ label: 'Announce on focus' }],
+    annotationsTotal: 31,
+    intentTruncated: true as const,
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fa-changes-intent-'));
+    process.env['FIGMA_AGENT_CHANGES_DIR'] = dir;
+    mkdirSync(join(dir, 'changes'), { recursive: true });
+    const lines = [
+      frame({ nodeId: 'described', ts: 100, nodeName: 'Button / Primary', nodeType: 'COMPONENT', parentName: null, changedProps: ['description'], intent }),
+      frame({ nodeId: 'annotated', ts: 200, nodeName: 'Search field', parentName: null, changedProps: ['annotations'], intent: { annotations: [{ label: 'a' }, { label: 'b' }] } }),
+      frame({ nodeId: 'refused', ts: 300, changedProps: ['description'], intent: { intentReadError: 'node is not loaded' } }),
+      frame({ nodeId: 'plain', ts: 400 }),
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n';
+    writeFileSync(join(dir, 'changes', 'vsf-pcp.jsonl'), lines);
+  });
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
+    else process.env['FIGMA_AGENT_CHANGES_DIR'] = prevEnv;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('passes every intent field through untouched and says so in the sentence', async () => {
+    const out = await run(parseArgs([])) as {
+      changes: Array<{ nodeId: string; sentence: string; intent?: Record<string, unknown> }>;
+    };
+    const byId = new Map(out.changes.map((c) => [c.nodeId, c]));
+    expect(byId.get('described')!.intent).toEqual(intent);
+    expect(byId.get('described')!.sentence).toBe('Described component "Button / Primary"');
+    expect(byId.get('annotated')!.sentence).toBe('Annotated "Search field" (2)');
+    expect(byId.get('refused')!.intent).toEqual({ intentReadError: 'node is not loaded' });
+  });
+
+  it('an ordinary frame gains no intent key — a reader that ignores it sees today\'s frame', async () => {
+    const out = await run(parseArgs([])) as { changes: Array<{ nodeId: string }> };
+    expect(out.changes.find((c) => c.nodeId === 'plain')).not.toHaveProperty('intent');
+  });
+});
+
+// One policy on both sides of the feed: a malformed intent costs the intent, never the edit
+// it was attached to. The strip leaves a count behind — a dropped value is still something
+// that was there.
+describe('run — a malformed intent is stripped, and the edit still reaches the agent', () => {
+  let dir: string;
+  const prevEnv = process.env['FIGMA_AGENT_CHANGES_DIR'];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fa-changes-badintent-'));
+    process.env['FIGMA_AGENT_CHANGES_DIR'] = dir;
+    mkdirSync(join(dir, 'changes'), { recursive: true });
+    const lines = [
+      JSON.stringify({
+        ...frame({ nodeId: 'bad', ts: 100, changedProps: ['description'] }),
+        intent: { description: 7 },
+      }),
+      JSON.stringify(frame({ nodeId: 'good', ts: 200 })),
+    ].join('\n') + '\n';
+    writeFileSync(join(dir, 'changes', 'vsf-pcp.jsonl'), lines);
+  });
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
+    else process.env['FIGMA_AGENT_CHANGES_DIR'] = prevEnv;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('lists the edit without its intent and counts what it dropped', async () => {
+    const out = await run(parseArgs([])) as {
+      changes: Array<{ nodeId: string; changedProps: string[] }>;
+      counts: ActorCounts; warnings?: number; intentWarnings?: number;
+    };
+    expect(out.changes.map((c) => c.nodeId)).toEqual(['bad', 'good']);
+    expect(out.changes[0]).not.toHaveProperty('intent');
+    expect(out.changes[0]!.changedProps).toEqual(['description']);
+    expect(out.counts.total).toBe(2);          // the edit is not lost
+    expect(out.warnings).toBeUndefined();      // and it is not counted as a bad LINE
+    expect(out.intentWarnings).toBe(1);        // the value that was dropped leaves a count
   });
 });
