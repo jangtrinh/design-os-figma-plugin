@@ -56,6 +56,11 @@ export interface ReadEditFeedResult {
    *  was listed. Counted separately from `warnings` because nothing was skipped: conflating
    *  "a line was unreadable" with "a value on a readable line was" would misstate both. */
   intentWarnings: number;
+  /** Frames whose `coalescedFrames` said nothing ("stands for 1 frame", a fraction, a
+   *  string) and was STRIPPED. Its own counter rather than a share of `intentWarnings`:
+   *  a dropped quote and a dropped count are different losses, and one number covering
+   *  both would name neither. */
+  coalescedWarnings: number;
 }
 
 /** Reads and parses one feed file, line by line. A missing file (nothing captured yet
@@ -82,12 +87,15 @@ export function readEditFeed(path: string): ReadEditFeedResult {
   try {
     raw = readFileSync(path, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { frames: [], warnings: 0, intentWarnings: 0 };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { frames: [], warnings: 0, intentWarnings: 0, coalescedWarnings: 0 };
+    }
     throw err;
   }
   const frames: EditFrame[] = [];
   let warnings = 0;
   let intentWarnings = 0;
+  let coalescedWarnings = 0;
   for (const line of raw.split('\n')) {
     if (line.trim().length === 0) continue;
     let parsed: unknown;
@@ -106,10 +114,20 @@ export function readEditFeed(path: string): ReadEditFeedResult {
       delete parsed.intent;
       intentWarnings++;
     }
+    // Same policy for the fold count: the frame guard admits it (shared/edit-feed.ts), the
+    // reader drops one that says nothing and counts the drop. A count of 1 or 0 contradicts
+    // the key's own meaning, so passing it on would hand an agent a wrong fact — while
+    // dropping the whole edit over it would cost a real one.
+    if (parsed.coalescedFrames !== undefined
+      && !(typeof parsed.coalescedFrames === 'number'
+        && Number.isInteger(parsed.coalescedFrames) && parsed.coalescedFrames >= 2)) {
+      delete parsed.coalescedFrames;
+      coalescedWarnings++;
+    }
     frames.push(parsed);
   }
   frames.sort((a, b) => a.ts - b.ts);
-  return { frames, warnings, intentWarnings };
+  return { frames, warnings, intentWarnings, coalescedWarnings };
 }
 
 function listFeedSlugs(dir: string): string[] {
@@ -218,6 +236,11 @@ export interface ChangesOutputFrame {
    *  words). Absent on every frame without one, which is nearly all of them: a consumer
    *  that ignores this key sees exactly the output it saw before intent existed. */
   intent?: EditIntent;
+  /** How many capture frames this one stands for — a typed description arrives as one
+   *  frame per keystroke and the plugin folds them (shared/edit-feed.ts's
+   *  `EditInput.coalescedFrames`). Absent on every frame that folded nothing, which is
+   *  nearly all of them. */
+  coalescedFrames?: number;
 }
 
 function toOutputFrame(f: EditFrame): ChangesOutputFrame {
@@ -227,6 +250,7 @@ function toOutputFrame(f: EditFrame): ChangesOutputFrame {
     changedProps: f.changedProps, page: f.page, fileName: f.fileName ?? null,
     sentence: editSentence(f),
     ...(f.intent !== undefined && { intent: f.intent }),
+    ...(f.coalescedFrames !== undefined && { coalescedFrames: f.coalescedFrames }),
   };
 }
 
@@ -257,7 +281,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
 
   const dir = editFeedDir();
   const { path, slug } = resolveFeedFile(dir, args.str('file'));
-  const { frames: allFrames, warnings, intentWarnings } = readEditFeed(path);
+  const { frames: allFrames, warnings, intentWarnings, coalescedWarnings } = readEditFeed(path);
   const filtered = filterFrames(allFrames, { since, actor, page });
   const limited = limitFrames(filtered, limit);
   // The PNG leg covers exactly the frames listed below (post --limit), so the count of
@@ -276,6 +300,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     changes: limited.map(toOutputFrame),
     ...(warnings > 0 && { warnings }),
     ...(intentWarnings > 0 && { intentWarnings }),
+    ...(coalescedWarnings > 0 && { coalescedWarnings }),
     ...(pngExport !== undefined && { png: pngExport }),
   };
   if (pngExport?.error !== undefined) {

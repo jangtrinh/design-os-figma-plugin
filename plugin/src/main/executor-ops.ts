@@ -131,11 +131,11 @@ export function opStatus(
     // reading of its own rather than an absence that looks like health. Caller-supplied —
     // this function never re-derives what gap-fill did.
     ...(gapfill && { gapfill }),
-    // Live capture's own session record (document-change-capture.ts). All three keep the
-    // present-only-when-meaningful contract of the counters above — a session that filtered
-    // nothing, guessed no page and hit no store failure keeps the payload byte-identical to
-    // before these fields existed — because each records something that DID happen and
-    // would otherwise leave no trace at all:
+    // Live capture's own session record (document-change-capture.ts). Every one of these
+    // keeps the present-only-when-meaningful contract of the counters above — a session that
+    // filtered nothing, guessed no page, hit no store failure and folded no keystroke keeps
+    // the payload byte-identical to before these fields existed — because each records
+    // something that DID happen and would otherwise leave no trace at all, in this order:
     //   · how many entries were dropped as the plugin's own bookkeeping echo (a property
     //     change whose every property is `pluginData`): a filtered change is still a change,
     //     and without a count the only way to notice the predicate had started eating real
@@ -146,7 +146,16 @@ export function opStatus(
     //   · how many changed nodes (live or deleted-unseen) had no resolvable page and were
     //     filed under the current one: that page name is a guess about someone else's edit;
     //   · correction-store failures, as first message + count (the gapfill block's shape) —
-    //     the feed is posted regardless, so nothing else would ever report the refusal.
+    //     the feed is posted regardless, so nothing else would ever report the refusal;
+    //   · how many capture frames the intent quiet window folded away this session
+    //     (intent-frame-parking.ts): a description is typed one keystroke at a time and
+    //     each keystroke is its own `documentchange` batch, so 17 of them cost two frames
+    //     instead of seventeen — the 16 that never got a post of their own are duplicates
+    //     of a kept fact, but the FOLD itself is not allowed to be invisible;
+    //   · how many folded follow-ups are held RIGHT NOW. The plugin has no usable close
+    //     hook (see main.ts), so a panel closed inside the 1.5 s window takes the finished
+    //     value with it (the first keystroke was already reported); this is the number that
+    //     says how many, rather than leaving the loss to be inferred from a stale value.
     ...(capture && capture.pluginDataChangesDropped > 0
       && { pluginDataChangesDropped: capture.pluginDataChangesDropped }),
     ...(capture && capture.sentinelChangesDropped > 0
@@ -154,6 +163,9 @@ export function opStatus(
     ...(capture && capture.pageFallbacks > 0 && { pageFallbacks: capture.pageFallbacks }),
     ...(capture && capture.firstError !== null
       && { captureErrors: [capture.firstError], captureErrorCount: capture.errorCount }),
+    ...(capture && capture.intentFramesCoalesced > 0
+      && { intentFramesCoalesced: capture.intentFramesCoalesced }),
+    ...(capture && capture.intentFramesParked > 0 && { intentFramesParked: capture.intentFramesParked }),
     // Where the session's time went (shared/protocol.ts's PerfStatus). Caller-supplied and
     // absent until BOOT HAS COMPLETED: mid-walk totals read like final ones, and "the boot
     // walk took 40 ms" is a claim only the finished walk can make. Once present it stays,

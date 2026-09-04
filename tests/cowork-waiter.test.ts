@@ -5,6 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { createWaiter, onEdits, tick, type CoworkEditBatch } from '../cli/src/transport/cowork-waiter.ts';
 import type { EditInput } from '../shared/edit-feed.ts';
+import { createDocumentChangeCapture } from '../plugin/src/main/document-change-capture.ts';
+import { createEditIdentityCache } from '../plugin/src/main/change-node-identity.ts';
 
 function ownerEdit(nodeId: string): EditInput {
   return {
@@ -114,5 +116,85 @@ describe('tick — fire / expire / keep-waiting', () => {
     onEdits(w, liveBatch([ambiguousEdit('1:1')]), 5_000);
     expect(tick(w, 10_000)).toBe('expire');
     expect(w.ambiguousCount).toBe(1); // still on the record, just not a fired cycle
+  });
+});
+
+// The reason the intent quiet window folds on the LEADING edge rather than the trailing
+// one. `cowork --wait` declares a cycle complete after 3 s of owner silence, and only a
+// POSTED owner frame arms it: if the whole of a typed description were held back, eight
+// seconds of typing would look like eight seconds of silence and the cycle would be
+// declared finished mid-sentence — the exact collision cowork exists to prevent. This
+// drives the real capture pass and feeds what it actually posts into the real waiter.
+describe('a typed description arms the waiter on the FIRST keystroke', () => {
+  const COMPONENT = {
+    id: 'c1', name: 'Button / Primary', type: 'COMPONENT', description: '',
+    parent: { id: 'f1', name: 'Card', type: 'FRAME', parent: { id: 'p1', name: 'Page 1', type: 'PAGE', parent: null } },
+  };
+
+  function typingHarness() {
+    (globalThis as never as { figma: unknown }).figma = {
+      fileKey: 'k', currentPage: { id: 'p1', name: 'Page 1' }, root: { name: 'Test File' },
+    };
+    let now = 1_000;
+    const timers: Array<{ at: number; fn: () => void }> = [];
+    const posted: Array<{ type: string; data: CoworkEditBatch }> = [];
+    const capture = createDocumentChangeCapture<null>({
+      now: () => now,
+      setTimer: (fn, ms) => {
+        const entry = { at: now + ms, fn };
+        timers.push(entry);
+        return () => { const i = timers.indexOf(entry); if (i >= 0) timers.splice(i, 1); };
+      },
+      onBatchStart: () => {},
+      actorState: () => ({ activeCount: 0, lastDrainAt: 0, declared: new Map(), lastAgentAt: new Map() }),
+      identity: createEditIdentityCache(),
+      corrections: { begin: () => null, record: () => {}, flush: () => {} },
+      noteChangedNodes: () => {},
+      post: (m) => { if (m.type === 'EDIT_FEED') posted.push(m as never); },
+      noteComponentChanges: () => {},
+      notePageDirty: () => {},
+      armIdle: () => {},
+    });
+    return {
+      posted,
+      at: () => now,
+      type(words: string): void {
+        COMPONENT.description = words;
+        capture.onDocumentChange({ documentChanges: [{ type: 'PROPERTY_CHANGE', node: COMPONENT, properties: ['description'], origin: 'LOCAL' }] } as never);
+      },
+      advance(ms: number): void {
+        now += ms;
+        for (const t of [...timers].filter((x) => x.at <= now)) {
+          const i = timers.indexOf(t);
+          if (i >= 0) { timers.splice(i, 1); t.fn(); }
+        }
+      },
+    };
+  }
+
+  it('the waiter is armed at the first keystroke, and stays armed through the typing', () => {
+    const h = typingHarness();
+    const w = createWaiter(3_000, 1_000_000);
+
+    h.type('P');
+    const firstKeystrokeAt = h.at();
+    for (const m of h.posted.splice(0)) onEdits(w, m.data, h.at());
+
+    expect(w.armedAt).toBe(firstKeystrokeAt); // NOT 1.5 s later, and not never
+    expect(tick(w, firstKeystrokeAt + 2_999)).toBeNull();
+
+    // Eight more seconds of typing. Nothing else posts until the window closes, so the
+    // waiter must not have been left un-armed by the leading edge.
+    for (const words of ['Pa', 'Pag', 'Page', 'Page ', 'Page c']) {
+      h.advance(300);
+      h.type(words);
+      for (const m of h.posted.splice(0)) onEdits(w, m.data, h.at());
+    }
+    h.advance(1_500);
+    for (const m of h.posted.splice(0)) onEdits(w, m.data, h.at());
+
+    // The folded follow-up re-armed it at the flush, and it carries the finished sentence.
+    expect(w.armedAt).toBe(h.at());
+    expect(w.edits.at(-1)?.intent).toEqual({ description: 'Page c' });
   });
 });

@@ -22,8 +22,16 @@ import {
   registerSentinel, resetSentinelRegistryForTest,
 } from '../plugin/src/main/undo-sentinel-registry.ts';
 import { INTENT_PROPS, INTENT_TEXT_CAP, INTENT_ANNOTATION_CAP } from '../shared/edit-intent.ts';
+import {
+  INTENT_QUIET_WINDOW_MS, MAX_PARKED_INTENT_NODES,
+} from '../plugin/src/main/intent-frame-parking.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+/** The quiet window, written out rather than imported, so these tests state the contract
+ *  ("1.5 s after the last keystroke") instead of restating whatever the module happens to
+ *  say. One drift test below pins the module's own constant to this number. */
+const QUIET_WINDOW_MS = 1_500;
 
 interface FakeNode {
   id: string; name: string; type: string; parent: FakeNode | null; removed?: boolean;
@@ -91,13 +99,43 @@ interface Log {
   idleArmed: number;
 }
 
+/**
+ * A fake clock + one-shot timer table, injected the same way the sandbox's `setTimeout` is
+ * (main.ts). The intent quiet window is the ONLY thing in this pass that arms a timer, so
+ * `armed()` doubles as "this batch held a frame back" — a layout batch must leave it at 0.
+ */
+function fakeTimers() {
+  let now = 1_000;
+  let seq = 0;
+  const pending = new Map<number, { at: number; fn: () => void }>();
+  return {
+    now: () => now,
+    armed: () => pending.size,
+    setTimer(fn: () => void, ms: number): () => void {
+      const id = seq++;
+      pending.set(id, { at: now + ms, fn });
+      return () => { pending.delete(id); };
+    },
+    /** Move the clock and fire everything due, earliest deadline first (ties in arm order). */
+    advance(ms: number): void {
+      now += ms;
+      const due = [...pending.entries()]
+        .filter(([, t]) => t.at <= now)
+        .sort((a, b) => (a[1].at - b[1].at) || (a[0] - b[0]));
+      for (const [id, t] of due) if (pending.delete(id)) t.fn();
+    },
+  };
+}
+
 function harness() {
   const log: Log = {
     posted: [], corrections: [], begins: 0, flushes: 0,
     connector: [], componentChanges: [], dirtyPages: [], idleArmed: 0,
   };
+  const clock = fakeTimers();
   const capture = createDocumentChangeCapture<null>({
-    now: () => 1_000,
+    now: clock.now,
+    setTimer: clock.setTimer,
     onBatchStart: () => {},
     actorState: idleActor,
     identity: createEditIdentityCache(),
@@ -112,7 +150,7 @@ function harness() {
     notePageDirty: (pageId) => log.dirtyPages.push(pageId),
     armIdle: () => { log.idleArmed += 1; },
   });
-  return { capture, log };
+  return { capture, log, clock };
 }
 
 const feed = (log: Log) => log.posted.filter((m) => m.type === 'EDIT_FEED');
@@ -619,13 +657,25 @@ describe('designer intent rides along with the property name', () => {
     id: 'c1', name: 'Button / Primary', type: 'COMPONENT', parent: FRAME, ...over,
   });
 
+  /** One batch, then the quiet window run out. The FIRST intent-only edit for a node is
+   *  posted from the pass exactly as it always was (the window folds on the leading edge —
+   *  see its own describe below), so `feed(log)[0]` is the immediate frame; running the
+   *  clock out afterwards proves these single-keystroke edits are not followed by a
+   *  phantom second frame. */
+  function settled(changes: any[]) {
+    const h = harness();
+    h.capture.onDocumentChange({ documentChanges: changes } as any);
+    h.clock.advance(QUIET_WINDOW_MS);
+    expect(feed(h.log).length, 'a single keystroke must produce exactly one frame').toBeLessThan(2);
+    return h;
+  }
+
   const intentOf = (log: Log) => feed(log)[0]?.data.edits[0]?.intent;
 
   it('a description change carries the new words, and both forms of them', () => {
-    const { capture, log } = harness();
     const node = component({ description: 'The primary action', descriptionMarkdown: '**The primary action**' });
 
-    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['description'])]);
 
     expect(feed(log)[0]?.data.edits[0]).toMatchObject({ nodeId: 'c1', changedProps: ['description'] });
     expect(intentOf(log)).toEqual({
@@ -634,41 +684,32 @@ describe('designer intent rides along with the property name', () => {
   });
 
   it('an annotation change carries the annotations themselves', () => {
-    const { capture, log } = harness();
     const node = component({ annotations: [{ label: 'Announce on focus', categoryId: 'a11y' }] });
 
-    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['annotations'])] } as any);
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['annotations'])]);
 
     expect(intentOf(log)).toEqual({ annotations: [{ label: 'Announce on focus', categoryId: 'a11y' }] });
   });
 
   it('a cleared annotation list is a VALUE, not a missing read', () => {
-    const { capture, log } = harness();
-
-    capture.onDocumentChange({
-      documentChanges: [change(component({ annotations: [] }), 'PROPERTY_CHANGE', ['annotations'])],
-    } as any);
+    const { log } = settled([change(component({ annotations: [] }), 'PROPERTY_CHANGE', ['annotations'])]);
 
     expect(intentOf(log)).toEqual({ annotations: [] });
   });
 
   it('caps a long description and says it was cut', () => {
-    const { capture, log } = harness();
     const node = component({ description: 'x'.repeat(INTENT_TEXT_CAP + 42) });
 
-    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['description'])]);
 
     expect(intentOf(log).description).toHaveLength(INTENT_TEXT_CAP);
     expect(intentOf(log).intentTruncated).toBe(true);
   });
 
   it('caps a long annotation list and keeps the real count', () => {
-    const { capture, log } = harness();
     const many = Array.from({ length: INTENT_ANNOTATION_CAP + 5 }, (_, i) => ({ label: `note ${i}` }));
 
-    capture.onDocumentChange({
-      documentChanges: [change(component({ annotations: many }), 'PROPERTY_CHANGE', ['annotations'])],
-    } as any);
+    const { log } = settled([change(component({ annotations: many }), 'PROPERTY_CHANGE', ['annotations'])]);
 
     expect(intentOf(log).annotations).toHaveLength(INTENT_ANNOTATION_CAP);
     expect(intentOf(log).annotationsTotal).toBe(INTENT_ANNOTATION_CAP + 5);
@@ -678,13 +719,12 @@ describe('designer intent rides along with the property name', () => {
   // page is not loaded, and an invalidated reference throws on everything. The property
   // NAME is still a fact the event carried; the value is not.
   it('a refused read reports the refusal and keeps the property name', () => {
-    const { capture, log } = harness();
     const node = component();
     Object.defineProperty(node, 'description', {
       get() { throw new Error('Cannot read description: node is not loaded'); },
     });
 
-    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['description'])]);
 
     expect(feed(log)[0]?.data.edits[0].changedProps).toEqual(['description']);
     expect(intentOf(log)).toEqual({ intentReadError: 'description: Cannot read description: node is not loaded' });
@@ -692,18 +732,15 @@ describe('designer intent rides along with the property name', () => {
   });
 
   it('a refused annotation read is reported the same way, and never crashes the batch', () => {
-    const { capture, log } = harness();
     const node = component();
     Object.defineProperty(node, 'annotations', {
       get() { throw new Error('Cannot read annotations of a removed node'); },
     });
 
-    capture.onDocumentChange({
-      documentChanges: [
-        change(node, 'PROPERTY_CHANGE', ['annotations']),
-        change(text('t9'), 'PROPERTY_CHANGE', ['x']),
-      ],
-    } as any);
+    const { log } = settled([
+      change(node, 'PROPERTY_CHANGE', ['annotations']),
+      change(text('t9'), 'PROPERTY_CHANGE', ['x']),
+    ]);
 
     const edits = feed(log)[0]?.data.edits;
     expect(edits).toHaveLength(2); // the rest of the batch survives the refusal
@@ -712,18 +749,13 @@ describe('designer intent rides along with the property name', () => {
   });
 
   it('an ordinary edit gains no intent key at all', () => {
-    const { capture, log } = harness();
-
-    capture.onDocumentChange({ documentChanges: [change(text('t1'), 'PROPERTY_CHANGE', ['x'])] } as any);
+    const { log } = settled([change(text('t1'), 'PROPERTY_CHANGE', ['x'])]);
 
     expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
   });
 
   it('a node with the property named but nothing readable on it says nothing', () => {
-    const { capture, log } = harness();
-
-    capture.onDocumentChange({
-      documentChanges: [change(text('t1'), 'PROPERTY_CHANGE', ['description'])] } as any);
+    const { log } = settled([change(text('t1'), 'PROPERTY_CHANGE', ['description'])]);
 
     expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
   });
@@ -732,10 +764,9 @@ describe('designer intent rides along with the property name', () => {
   // would list a property whose value nothing ever went and got.
   it('every prop in the closed trigger list is read by the capture pass', () => {
     for (const prop of INTENT_PROPS) {
-      const { capture, log } = harness();
       const node = component({ description: 'words', annotations: [{ label: 'note' }] });
 
-      capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', [prop])] } as any);
+      const { log } = settled([change(node, 'PROPERTY_CHANGE', [prop])]);
 
       expect(feed(log)[0]?.data.edits[0].intent, `no intent read for "${prop}"`).toBeDefined();
     }
@@ -745,33 +776,29 @@ describe('designer intent rides along with the property name', () => {
   // like a refused read: the first says "the designer deleted these words", the second says
   // "nobody knows". They are different facts and they reach the wire differently.
   it('a cleared description is a VALUE, distinct from an unreadable one', () => {
-    const { capture, log } = harness();
-
-    capture.onDocumentChange({
-      documentChanges: [change(component({ description: '', descriptionMarkdown: '' }), 'PROPERTY_CHANGE', ['description'])],
-    } as any);
+    const { log } = settled([
+      change(component({ description: '', descriptionMarkdown: '' }), 'PROPERTY_CHANGE', ['description']),
+    ]);
 
     expect(intentOf(log)).toEqual({ description: '' });
   });
 
   it('an empty description with markdown that still says something keeps both', () => {
-    const { capture, log } = harness();
     const node = component({ description: '', descriptionMarkdown: '**still here**' });
 
-    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['description'])]);
 
     expect(intentOf(log)).toEqual({ description: '', descriptionMarkdown: '**still here**' });
   });
 
   // One refusing getter must not take a value that WAS read down with it.
   it('a refused markdown read keeps the description that succeeded', () => {
-    const { capture, log } = harness();
     const node = component({ description: 'The primary action' });
     Object.defineProperty(node, 'descriptionMarkdown', {
       get() { throw new Error('not loaded'); },
     });
 
-    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['description'])]);
 
     expect(intentOf(log)).toEqual({
       description: 'The primary action', intentReadError: 'descriptionMarkdown: not loaded',
@@ -779,10 +806,9 @@ describe('designer intent rides along with the property name', () => {
   });
 
   it('caps the prose inside an annotation, not just how many there are', () => {
-    const { capture, log } = harness();
     const node = component({ annotations: [{ label: 'x'.repeat(50_000), labelMarkdown: 'y'.repeat(50_000) }] });
 
-    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['annotations'])] } as any);
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['annotations'])]);
 
     expect(intentOf(log).annotations[0].label).toHaveLength(INTENT_TEXT_CAP);
     expect(intentOf(log).intentTruncated).toBe(true);
@@ -792,10 +818,7 @@ describe('designer intent rides along with the property name', () => {
   // "Cleared the annotations" is a claim about a node that CAN hold them. A TEXT node with
   // no annotations field never held any, so the honest answer is no answer.
   it('a node type with no annotations field gains no annotations key', () => {
-    const { capture, log } = harness();
-
-    capture.onDocumentChange({
-      documentChanges: [change(text('t2'), 'PROPERTY_CHANGE', ['annotations'])] } as any);
+    const { log } = settled([change(text('t2'), 'PROPERTY_CHANGE', ['annotations'])]);
 
     expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
   });
@@ -804,7 +827,6 @@ describe('designer intent rides along with the property name', () => {
   // pay to shape 500 records so that 480 can be thrown away. The list is cut first, and the
   // real count still travels with it.
   it('shapes only the annotations it keeps, and still reports the real total', () => {
-    const { capture, log } = harness();
     let shapedBeyondTheCap = 0;
     const many = Array.from({ length: INTENT_ANNOTATION_CAP + 5 }, (_, i) => {
       if (i < INTENT_ANNOTATION_CAP) return { label: `note ${i}` };
@@ -812,9 +834,7 @@ describe('designer intent rides along with the property name', () => {
       return { get label() { shapedBeyondTheCap += 1; return `note ${i}`; } };
     });
 
-    capture.onDocumentChange({
-      documentChanges: [change(component({ annotations: many }), 'PROPERTY_CHANGE', ['annotations'])],
-    } as any);
+    const { log } = settled([change(component({ annotations: many }), 'PROPERTY_CHANGE', ['annotations'])]);
 
     expect(shapedBeyondTheCap).toBe(0);
     expect(intentOf(log).annotations).toHaveLength(INTENT_ANNOTATION_CAP);
@@ -822,11 +842,444 @@ describe('designer intent rides along with the property name', () => {
   });
 
   it('a deleted node carries no intent — a RemovedNode has nothing left to read', () => {
-    const { capture, log } = harness();
     const node = component({ removed: true, description: 'stale' });
+
+    const { log } = settled([change(node, 'PROPERTY_CHANGE', ['description'])]);
+
+    expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
+  });
+});
+
+// One description edit is ONE fact, and Figma delivers it one keystroke at a time: typing
+// "Page content of IDP Review queue" into a component's description produced 17
+// `documentchange` batches in 5 s on the owner's file, so `coalesceEdits` — which only ever
+// sees ONE batch — could not merge them, and the feed grew 17 near-identical frames.
+//
+// The fold is LEADING-EDGE: the FIRST keystroke for a node is posted immediately, on
+// exactly today's timing (it is what arms the cowork waiter and the idle prompt), and it
+// opens a 1.5 s window; every further keystroke folds into ONE held follow-up carrying the
+// final value and `coalescedFrames: N` counting all N keystrokes, the first included. So a
+// typed description costs two frames — the first keystroke, then the finished sentence —
+// instead of seventeen, and a single-keystroke edit still costs exactly one.
+describe('intent-only frames fold on the leading edge', () => {
+  const component = (over: Partial<FakeNode> = {}): FakeNode => ({
+    id: 'c1', name: 'Button / Primary', type: 'COMPONENT', parent: FRAME, ...over,
+  });
+
+  const editsOf = (log: Log, i = 0) => feed(log)[i]?.data.edits;
+
+  it('17 keystroke batches post TWO frames: the first keystroke at once, then the final value for all 17', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: '' });
+    const typed = 'Page content of IDP Review queue';
+    const valueAt = (i: number) => typed.slice(0, Math.ceil((typed.length * i) / 17));
+
+    for (let i = 1; i <= 17; i++) {
+      node.description = valueAt(i);
+      capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+      clock.advance(250); // ~4 s of typing — every gap shorter than the window
+    }
+
+    // The leading edge went out while the designer was still typing: an agent waiting on
+    // owner activity learns about the edit at keystroke one, not eight seconds later.
+    expect(feed(log)).toHaveLength(1);
+    expect(editsOf(log, 0)[0].intent.description).toBe(valueAt(1));
+    expect(editsOf(log, 0)[0]).not.toHaveProperty('coalescedFrames');
+
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(feed(log)).toHaveLength(2);
+    expect(editsOf(log, 1)).toHaveLength(1);
+    expect(editsOf(log, 1)[0].intent.description).toBe(typed); // the LAST value
+    expect(editsOf(log, 1)[0].coalescedFrames).toBe(17);       // the first keystroke included
+    // 16 capture frames never got a post of their own — counted, not vanished.
+    expect(capture.stats.intentFramesCoalesced).toBe(16);
+    expect(log.idleArmed).toBe(2); // once for the leading frame, once for the follow-up
+  });
+
+  it('a single intent edit posts once, at today\'s timing, and the window closes with nothing to say', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'The primary action' });
 
     capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
 
-    expect(feed(log)[0]?.data.edits[0]).not.toHaveProperty('intent');
+    expect(feed(log)).toHaveLength(1); // not delayed at all
+    expect(editsOf(log)[0]).not.toHaveProperty('coalescedFrames');
+    expect(log.idleArmed).toBe(1);
+    expect(capture.stats.intentFramesParked).toBe(0); // the window is open, but holds nothing
+
+    clock.advance(QUIET_WINDOW_MS * 2);
+
+    expect(feed(log)).toHaveLength(1); // nothing was held, so nothing flushes
+    expect(capture.stats.intentFramesCoalesced).toBe(0);
+  });
+
+  it('a NON-intent edit for a node with a held follow-up flushes it FIRST, then posts its own', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'He' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(200);
+    node.description = 'Held';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(300); // inside the window: the second keystroke is still held
+    expect(feed(log)).toHaveLength(1);
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['x'])] } as any);
+
+    expect(feed(log)).toHaveLength(3);
+    expect(editsOf(log, 1)[0].intent).toEqual({ description: 'Held' }); // the held frame, first
+    expect(editsOf(log, 1)[0].coalescedFrames).toBe(2);
+    expect(editsOf(log, 2)[0].changedProps).toEqual(['x']);             // then the move
+    expect(clock.armed()).toBe(0);
+    expect(capture.stats.intentFramesParked).toBe(0);
+  });
+
+  it('deleting the node flushes its held follow-up FIRST, then reports the delete', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'La' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.description = 'Last words';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(500);
+    expect(feed(log)).toHaveLength(1); // the follow-up is still held when the node dies
+
+    capture.onDocumentChange({
+      documentChanges: [change({ ...node, parent: null, removed: true }, 'DELETE')],
+    } as any);
+
+    expect(feed(log)).toHaveLength(3);
+    expect(editsOf(log, 1)[0].intent).toEqual({ description: 'Last words' });
+    expect(editsOf(log, 2)[0].op).toBe('deleted');
+    expect(clock.armed()).toBe(0);
+  });
+
+  it('two nodes typed alternately each post their own leading frame and their own follow-up', () => {
+    const { capture, log, clock } = harness();
+    const a = component({ id: 'c1', description: '' });
+    const b = component({ id: 'c2', name: 'Card / Base', description: '' });
+
+    for (const [node, words] of [[a, 'Aa'], [b, 'Bb'], [a, 'Aaa'], [b, 'Bbb'], [b, 'Bbbb']] as const) {
+      node.description = words;
+      capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+      clock.advance(100);
+    }
+    expect(feed(log)).toHaveLength(2); // both leading edges, immediately
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(feed(log)).toHaveLength(4);
+    const followUps = new Map(feed(log).slice(2).map((m) => [m.data.edits[0].nodeId, m.data.edits[0]]));
+    expect(followUps.get('c1').intent.description).toBe('Aaa');
+    expect(followUps.get('c1').coalescedFrames).toBe(2);
+    expect(followUps.get('c2').intent.description).toBe('Bbbb');
+    expect(followUps.get('c2').coalescedFrames).toBe(3);
+    expect(capture.stats.intentFramesCoalesced).toBe(3); // 1 folded on c1, 2 on c2
+  });
+
+  it('the 65th open window flushes the OLDEST held follow-up at once — bounded, nothing dropped', () => {
+    const { capture, log, clock } = harness();
+
+    for (let i = 0; i < 64; i++) {
+      const node = component({ id: `n${i}`, description: 'n' });
+      capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+      node.description = `note ${i}`;
+      capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+      clock.advance(1); // distinct arrival times, all well inside the window
+    }
+    expect(feed(log)).toHaveLength(64); // 64 leading edges
+    expect(capture.stats.intentFramesParked).toBe(64);
+
+    capture.onDocumentChange({
+      documentChanges: [change(component({ id: 'n64', description: 'note 64' }), 'PROPERTY_CHANGE', ['description'])],
+    } as any);
+
+    // The 65th window's own leading frame, plus the evicted oldest follow-up — posted
+    // rather than dropped, and the table is back at its bound.
+    expect(feed(log)).toHaveLength(66);
+    const evicted = feed(log).map((m) => m.data.edits[0]).filter((e: any) => e.coalescedFrames !== undefined);
+    expect(evicted).toHaveLength(1);
+    expect(evicted[0].nodeId).toBe('n0');
+    expect(evicted[0].coalescedFrames).toBe(2);
+    expect(capture.stats.intentFramesParked).toBe(63); // n0 gone; n64 holds nothing yet
+  });
+
+  it('a layout-only batch keeps today\'s timing exactly — posted at once, no window opened', () => {
+    const { capture, log, clock } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(text('t1'), 'PROPERTY_CHANGE', ['x']), change(text('t2'), 'PROPERTY_CHANGE', ['y'])],
+    } as any);
+
+    expect(feed(log)).toHaveLength(1);
+    expect(clock.armed()).toBe(0);
+    expect(log.idleArmed).toBe(1);
+    expect(capture.stats.intentFramesParked).toBe(0);
+  });
+
+  it('a mixed batch posts both changes in ONE batch — the leading intent edge is not held', () => {
+    const { capture, log } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [
+        change(component({ description: 'words' }), 'PROPERTY_CHANGE', ['description']),
+        change(text('t1'), 'PROPERTY_CHANGE', ['x']),
+      ],
+    } as any);
+
+    expect(feed(log)).toHaveLength(1);
+    expect(editsOf(log, 0).map((e: any) => e.nodeId)).toEqual(['c1', 't1']);
+  });
+
+  // A property list that names an intent prop AND anything else is not an intent-only edit:
+  // it never opens a window and never folds.
+  it('a change naming an intent prop alongside another prop never opens a window', () => {
+    const { capture, log, clock } = harness();
+
+    capture.onDocumentChange({
+      documentChanges: [change(component({ description: 'words' }), 'PROPERTY_CHANGE', ['description', 'x'])],
+    } as any);
+    capture.onDocumentChange({
+      documentChanges: [change(component({ description: 'words!' }), 'PROPERTY_CHANGE', ['description', 'x'])],
+    } as any);
+
+    expect(feed(log)).toHaveLength(2); // both immediate, neither folded
+    expect(clock.armed()).toBe(0);
+    expect(capture.stats.intentFramesCoalesced).toBe(0);
+  });
+
+  it('a keystroke landing exactly ON the window edge opens a NEW window and posts its own leading frame', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'P' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(QUIET_WINDOW_MS); // the window closes holding nothing
+    expect(feed(log)).toHaveLength(1);
+    node.description = 'Pa';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(feed(log)).toHaveLength(2);
+    expect(editsOf(log, 1)[0].intent.description).toBe('Pa');
+    expect(editsOf(log, 1)[0]).not.toHaveProperty('coalescedFrames'); // a leading edge, not a fold
+  });
+
+  it('a keystroke one millisecond INSIDE the edge re-arms the window and folds', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'P' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(QUIET_WINDOW_MS - 1);
+    node.description = 'Pa';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    clock.advance(QUIET_WINDOW_MS - 1); // the FIRST deadline has passed; the re-armed one has not
+    expect(feed(log)).toHaveLength(1);
+    clock.advance(1);
+
+    expect(feed(log)).toHaveLength(2);
+    expect(editsOf(log, 1)[0].intent.description).toBe('Pa');
+    expect(editsOf(log, 1)[0].coalescedFrames).toBe(2);
+  });
+
+  it('the follow-up unions every property name in the window, the leading keystroke included', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'words', annotations: [{ label: 'note' }] });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(100);
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['annotations'])] } as any);
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(editsOf(log, 1)[0].changedProps).toEqual(['annotations', 'description']);
+    expect(editsOf(log, 1)[0].intent).toEqual({ description: 'words', annotations: [{ label: 'note' }] });
+    expect(editsOf(log, 1)[0].coalescedFrames).toBe(2);
+  });
+
+  // The component-scoped feed (figma.changes.jsonl) is flooded by the same keystrokes, so
+  // its twin rides the SAME slot and goes out with the follow-up.
+  it('the component-scoped DOC_CHANGE follows the same two-frame shape', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: '' });
+
+    for (const words of ['P', 'Pa', 'Page']) {
+      node.description = words;
+      capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+      clock.advance(100);
+    }
+    expect(log.posted.map((m) => m.type)).toEqual(['DOC_CHANGE', 'EDIT_FEED']); // leading edge only
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(log.posted.map((m) => m.type)).toEqual(['DOC_CHANGE', 'EDIT_FEED', 'DOC_CHANGE', 'EDIT_FEED']);
+    const doc = log.posted[2].data;
+    expect(doc.changes).toHaveLength(1);
+    expect(doc.changes[0]).toMatchObject({ nodeId: 'c1', op: 'updated', changedProps: ['description'] });
+    expect(log.componentChanges).toEqual([1, 1]); // paid twice, not three times
+  });
+
+  it('a held follow-up is counted while it is held, and the count drops when it goes out', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'x' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    expect(capture.stats.intentFramesParked).toBe(0); // the leading frame was posted, not held
+    node.description = 'xy';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+
+    // Nothing vanishes silently: a session that ends inside the window reports what it held.
+    expect(capture.stats.intentFramesParked).toBe(1);
+    clock.advance(QUIET_WINDOW_MS);
+    expect(capture.stats.intentFramesParked).toBe(0);
+    expect(feed(log)).toHaveLength(2);
+  });
+
+  // A folded frame is dated at the LAST keystroke, not at the flush: the broker files a
+  // batch under its `capturedAt` (shared/protocol.ts), and a frame dated 1.5 s late sorts
+  // after edits that really happened after it.
+  it('the follow-up is stamped with the LAST keystroke\'s time, on both feeds', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'P' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(400);
+    node.description = 'Pa';
+    const lastKeystrokeAt = clock.now();
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(feed(log)[1].data.capturedAt).toBe(lastKeystrokeAt);
+    expect(log.posted.filter((m) => m.type === 'DOC_CHANGE')[1].data.capturedAt).toBe(lastKeystrokeAt);
+    // The leading frame rides the ordinary batch path, which stamps nothing — the relay's
+    // own timing has always dated those.
+    expect(feed(log)[0].data.capturedAt).toBeUndefined();
+  });
+
+  // Both twins carry the page of the LAST keystroke, re-read from the node at flush: a node
+  // moved between pages mid-window belongs where it ended up.
+  it('the follow-up carries the page the node is on at flush, on both feeds', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'P' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.description = 'Pa';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    // Re-homed under a different page while its follow-up is held.
+    node.parent = { id: 'p2', name: 'Specs', type: 'PAGE', parent: null } as any;
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(editsOf(log, 1)[0].page).toBe('Specs');
+    expect(log.posted.filter((m) => m.type === 'DOC_CHANGE')[1].data.page).toBe('Specs');
+  });
+
+  it('a node with no page left at flush keeps the page of its last keystroke, never a guess', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'P' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.description = 'Pa';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.parent = null; // detached: no page to re-read
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(editsOf(log, 1)[0].page).toBe('Page 1'); // where the last keystroke happened
+    expect(capture.stats.pageFallbacks).toBe(0);    // not a current-page guess either
+  });
+
+  it('a re-read that THROWS at flush keeps the recorded page and counts the refusal', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'P' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.description = 'Pa';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    Object.defineProperty(node, 'parent', {
+      get() { throw new Error('The node with id "c1" does not exist'); },
+    });
+    clock.advance(QUIET_WINDOW_MS);
+
+    expect(feed(log)).toHaveLength(2);                 // the frame still goes out
+    expect(editsOf(log, 1)[0].page).toBe('Page 1');
+    expect(capture.stats.errorCount).toBe(1);
+    expect(capture.stats.firstError).toBe('The node with id "c1" does not exist');
+  });
+
+  // Two changes for the SAME node in ONE batch: the first opens the window and is posted
+  // with the batch, the second folds — so the batch posts once and the follow-up follows.
+  it('a second intent change for the same node in ONE batch folds into the follow-up', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'words' });
+
+    capture.onDocumentChange({
+      documentChanges: [
+        change(node, 'PROPERTY_CHANGE', ['description']),
+        change(node, 'PROPERTY_CHANGE', ['annotations']),
+      ],
+    } as any);
+
+    expect(feed(log)).toHaveLength(1);
+    expect(editsOf(log, 0)[0].changedProps).toEqual(['description']);
+    clock.advance(QUIET_WINDOW_MS);
+    expect(editsOf(log, 1)[0].changedProps).toEqual(['annotations', 'description']);
+    expect(editsOf(log, 1)[0].coalescedFrames).toBe(2);
+  });
+
+  it('a non-intent change for the held node LATER IN THE SAME BATCH still flushes it first', () => {
+    const { capture, log, clock } = harness();
+    const node = component({ description: 'words' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.description = 'more words';
+    capture.onDocumentChange({
+      documentChanges: [
+        change(node, 'PROPERTY_CHANGE', ['description']),
+        change(node, 'PROPERTY_CHANGE', ['x']),
+      ],
+    } as any);
+
+    expect(feed(log)).toHaveLength(3);
+    expect(editsOf(log, 1)[0].intent).toEqual({ description: 'more words' }); // held, flushed first
+    expect(editsOf(log, 2)[0].changedProps).toEqual(['x']);
+    expect(clock.armed()).toBe(0);
+  });
+
+  // A frame that has already gone out cannot go out again. Driven with a canceller that
+  // does NOTHING, so the fired timer really does run after the release — the `slots.get`
+  // guard is the only thing standing between this and a duplicate fact.
+  it('a window whose canceller does nothing still posts nothing a second time', () => {
+    const log: Log = {
+      posted: [], corrections: [], begins: 0, flushes: 0,
+      connector: [], componentChanges: [], dirtyPages: [], idleArmed: 0,
+    };
+    const fired: Array<() => void> = [];
+    const capture = createDocumentChangeCapture<null>({
+      now: () => 1_000,
+      setTimer: (fn) => { fired.push(fn); return () => {}; }, // a canceller that cancels nothing
+      onBatchStart: () => {},
+      actorState: idleActor,
+      identity: createEditIdentityCache(),
+      corrections: { begin: () => null, record: () => {}, flush: () => {} },
+      noteChangedNodes: () => {},
+      post: (message) => log.posted.push(message as { type: string; data: any }),
+      noteComponentChanges: (count) => log.componentChanges.push(count),
+      notePageDirty: () => {},
+      armIdle: () => { log.idleArmed += 1; },
+    });
+    const node = component({ description: 'w' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.description = 'wo';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['x'])] } as any);
+    expect(feed(log)).toHaveLength(3); // leading, released follow-up, the move
+
+    for (const fire of fired) fire(); // every stale timer runs anyway
+
+    expect(feed(log)).toHaveLength(3); // nothing posted twice
+    expect(capture.stats.intentFramesParked).toBe(0);
+  });
+
+  it('the module\'s own constants are the numbers these tests state', () => {
+    expect(INTENT_QUIET_WINDOW_MS).toBe(QUIET_WINDOW_MS);
+    expect(MAX_PARKED_INTENT_NODES).toBe(64);
   });
 });

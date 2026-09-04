@@ -112,7 +112,8 @@ describe('opStatus — the gap-fill block', () => {
 // existed — but a session that did filter says so, because a dropped change still happened.
 describe('opStatus — live-capture counters', () => {
   const captureStats = (over: Partial<DocumentChangeCaptureStats> = {}): DocumentChangeCaptureStats => ({
-    pluginDataChangesDropped: 0, sentinelChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null, ...over,
+    pluginDataChangesDropped: 0, sentinelChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null,
+    intentFramesParked: 0, intentFramesCoalesced: 0, ...over,
   });
 
   it('no argument → every capture key is OMITTED, keeping the payload byte-identical to before they existed', () => {
@@ -148,6 +149,23 @@ describe('opStatus — live-capture counters', () => {
   it('a substituted page surfaces as its own count — a guessed page is never silent', () => {
     installMockFigma();
     expect(opStatus([], 0, undefined, captureStats({ pageFallbacks: 3 })).pageFallbacks).toBe(3);
+  });
+
+  // The quiet window that folds a typed description into ONE frame
+  // (intent-frame-parking.ts) makes two facts that would otherwise leave no trace at all:
+  // how many capture frames it folded away this session, and how many it is holding RIGHT
+  // NOW — the ones a panel closed inside the window would take with it.
+  it('folded frames are counted cumulatively, and the key is absent until something was folded', () => {
+    installMockFigma();
+    expect('intentFramesCoalesced' in opStatus([], 0, undefined, captureStats())).toBe(false);
+    expect(opStatus([], 0, undefined, captureStats({ intentFramesCoalesced: 16 })).intentFramesCoalesced)
+      .toBe(16);
+  });
+
+  it('frames held right now are reported, so a session that ends inside the window says what it held', () => {
+    installMockFigma();
+    expect('intentFramesParked' in opStatus([], 0, undefined, captureStats())).toBe(false);
+    expect(opStatus([], 0, undefined, captureStats({ intentFramesParked: 3 })).intentFramesParked).toBe(3);
   });
 
   it('a correction-store failure surfaces as first message + count, same shape as gapfill errors', () => {
@@ -203,7 +221,8 @@ describe('toGapfillStatus — the coverage a session actually delivered', () => 
 // second sentence, said out loud.
 describe('opStatus — the session coverage statement', () => {
   const captureStats = (over: Partial<DocumentChangeCaptureStats> = {}): DocumentChangeCaptureStats => ({
-    pluginDataChangesDropped: 0, sentinelChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null, ...over,
+    pluginDataChangesDropped: 0, sentinelChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null,
+    intentFramesParked: 0, intentFramesCoalesced: 0, ...over,
   });
   const perf = {
     bootLoadAllPagesMs: 120, pageLoadAsyncMaxMs: 0, bootWalkMs: 900,
