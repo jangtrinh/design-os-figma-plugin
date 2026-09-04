@@ -1632,6 +1632,13 @@
       intentFramesCoalesced: 0
     };
     function postParkedFrame(frame) {
+      try {
+        postParkedFrameOrThrow(frame);
+      } catch (error) {
+        recordCaptureError(error);
+      }
+    }
+    function postParkedFrameOrThrow(frame) {
       const page = frame.resolvePageAtFlush() ?? frame.page;
       if (frame.change !== null) {
         deps.post({

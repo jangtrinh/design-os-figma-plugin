@@ -1859,7 +1859,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "b183556" : "dev"}`;
+  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "a60308f" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;
@@ -2158,7 +2158,9 @@ body {
   var BUFFERED_EVENT_TYPES = /* @__PURE__ */ new Set(["EDIT_FEED", "DOC_CHANGE"]);
   function stampCapturedFrame(msg, capturedAt) {
     const data = typeof msg.data === "object" && msg.data !== null ? msg.data : {};
-    return JSON.stringify({ ...msg, data: { ...data, capturedAt, replayed: true } });
+    const own = data["capturedAt"];
+    const ts = typeof own === "number" && Number.isFinite(own) && own > 0 ? own : capturedAt;
+    return JSON.stringify({ ...msg, data: { ...data, capturedAt: ts, replayed: true } });
   }
   function isBufferableFrame(msg) {
     if (typeof msg !== "object" || msg === null) return false;

@@ -118,8 +118,26 @@ export function createDocumentChangeCapture<TBatch>(
    * default) can see the idle-commit prompt fire mid-sentence. That is the honest cost of
    * not paying for the fold twice, and it is bounded: the follow-up still arrives, and the
    * next prompt counts it.
+   *
+   * The WHOLE body is guarded, unlike the batch path's targeted guards, because this runs
+   * in a bare timer callback rather than inside Figma's `documentchange` dispatch: a throw
+   * from the post, from `figma.fileKey`/`figma.root.name`, or from `armIdle` would escape
+   * into the sandbox's own timer queue with nothing to catch it. A refusal here DOES lose
+   * the held follow-up — the slot is already out of the table and the gauge has already
+   * dropped, and re-parking a frame whose window has passed would only date it wrong — so
+   * the loss is counted instead, in the same `captureErrors` every other refusal in this
+   * pass reports through. The leading frame for that same description is already on the
+   * wire, so what is lost is the final value, never the fact that it was edited.
    */
   function postParkedFrame(frame: ParkedIntentFrame): void {
+    try {
+      postParkedFrameOrThrow(frame);
+    } catch (error) {
+      recordCaptureError(error);
+    }
+  }
+
+  function postParkedFrameOrThrow(frame: ParkedIntentFrame): void {
     // The page of the LAST keystroke, preferring what the node says NOW: a node moved to
     // another page while its follow-up was held belongs where it ended up. A node that is
     // gone, detached, or refuses the read keeps the page recorded at that last keystroke —

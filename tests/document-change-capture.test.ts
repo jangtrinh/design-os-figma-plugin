@@ -1278,6 +1278,56 @@ describe('intent-only frames fold on the leading edge', () => {
     expect(capture.stats.intentFramesParked).toBe(0);
   });
 
+  // The flush runs in a bare timer callback, not inside Figma's `documentchange` dispatch,
+  // and it makes the same host reads the batch path makes (`figma.fileKey`, `figma.root`)
+  // plus a post the relay owns. A refusal there would otherwise escape into the sandbox's
+  // own timer queue: the follow-up would be lost AND the gauge would already read zero,
+  // which is the one silent loss the rest of this module forecloses.
+  it('a refusal while posting the follow-up is COUNTED, and never escapes the timer', () => {
+    const log: Log = {
+      posted: [], corrections: [], begins: 0, flushes: 0,
+      connector: [], componentChanges: [], dirtyPages: [], idleArmed: 0,
+    };
+    let now = 1_000;
+    const timers: Array<{ at: number; fn: () => void }> = [];
+    let refuse = false;
+    const capture = createDocumentChangeCapture<null>({
+      now: () => now,
+      setTimer: (fn, ms) => {
+        const entry = { at: now + ms, fn };
+        timers.push(entry);
+        return () => { const i = timers.indexOf(entry); if (i >= 0) timers.splice(i, 1); };
+      },
+      onBatchStart: () => {},
+      actorState: idleActor,
+      identity: createEditIdentityCache(),
+      corrections: { begin: () => null, record: () => {}, flush: () => {} },
+      noteChangedNodes: () => {},
+      post: (message) => {
+        if (refuse) throw new Error('cannot post to a closed UI');
+        log.posted.push(message as { type: string; data: any });
+      },
+      noteComponentChanges: (count) => log.componentChanges.push(count),
+      notePageDirty: () => {},
+      armIdle: () => { log.idleArmed += 1; },
+    });
+    const node = component({ description: 'w' });
+
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    node.description = 'wo';
+    capture.onDocumentChange({ documentChanges: [change(node, 'PROPERTY_CHANGE', ['description'])] } as any);
+    expect(capture.stats.intentFramesParked).toBe(1);
+
+    refuse = true;
+    now += QUIET_WINDOW_MS;
+    expect(() => { for (const t of timers.splice(0)) t.fn(); }).not.toThrow();
+
+    expect(capture.stats.errorCount).toBe(1);
+    expect(capture.stats.firstError).toBe('cannot post to a closed UI');
+    expect(capture.stats.intentFramesParked).toBe(0); // the slot is gone either way
+    expect(feed(log)).toHaveLength(1);                // only the leading frame ever landed
+  });
+
   it('the module\'s own constants are the numbers these tests state', () => {
     expect(INTENT_QUIET_WINDOW_MS).toBe(QUIET_WINDOW_MS);
     expect(MAX_PARKED_INTENT_NODES).toBe(64);

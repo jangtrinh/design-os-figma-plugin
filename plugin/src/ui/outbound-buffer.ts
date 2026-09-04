@@ -51,12 +51,25 @@ const BUFFERED_EVENT_TYPES = new Set(['EDIT_FEED', 'DOC_CHANGE']);
  * reconnect. `replayed` is the other half: the frames still legitimately carry
  * `source: 'live'` (they were live when captured), so the broker needs a separate,
  * explicit signal that this batch is history and must not wake a live waiter.
+ *
+ * A stamp the PRODUCER already set wins over the enqueue time. That used to be a
+ * distinction without a difference — every bufferable frame was posted in the same tick it
+ * was captured — and stopped being one when the intent quiet window
+ * (plugin/src/main/intent-frame-parking.ts) started posting a folded follow-up up to 1.5 s
+ * after the keystroke it stands for, already carrying that keystroke's time. Restamping it
+ * here would file a description edit AFTER a move that really came later, which is exactly
+ * the ordering the stamp exists to protect. A stamp that cannot be read as a time (absent,
+ * zero, negative, NaN, infinite, not a number) is replaced: the enqueue time is a real
+ * observation, and passing garbage on would only make the broker reject it and fall back to
+ * append time, losing the whole outage.
  */
 export function stampCapturedFrame(
   msg: { type: string; data?: unknown }, capturedAt: number,
 ): string {
   const data = (typeof msg.data === 'object' && msg.data !== null ? msg.data : {}) as Record<string, unknown>;
-  return JSON.stringify({ ...msg, data: { ...data, capturedAt, replayed: true } });
+  const own = data['capturedAt'];
+  const ts = typeof own === 'number' && Number.isFinite(own) && own > 0 ? own : capturedAt;
+  return JSON.stringify({ ...msg, data: { ...data, capturedAt: ts, replayed: true } });
 }
 
 export function isBufferableFrame(msg: unknown): boolean {

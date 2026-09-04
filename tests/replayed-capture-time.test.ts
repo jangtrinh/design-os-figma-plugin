@@ -41,6 +41,35 @@ describe('stampCapturedFrame — the relay records WHEN, at the moment it captur
     const json = stampCapturedFrame({ type: 'EDIT_FEED', data: { source: 'gapfill', edits: [1] } }, NOW);
     expect(JSON.parse(json).data).toMatchObject({ source: 'gapfill', edits: [1] });
   });
+
+  // One producer knows better than the enqueue clock: the intent quiet window
+  // (plugin/src/main/intent-frame-parking.ts) posts a folded follow-up up to 1.5 s AFTER
+  // the keystroke it stands for, already stamped with that keystroke's time. Restamping it
+  // here would file a description edit after the move that really came later — the feed
+  // inversion the stamp exists to prevent, reintroduced by the buffer.
+  it('a frame that already carries its capture time keeps it through the buffer', () => {
+    const typedAt = NOW - 1_500;
+    const json = stampCapturedFrame(
+      { type: 'EDIT_FEED', data: { edits: [], capturedAt: typedAt } }, NOW,
+    );
+    expect(JSON.parse(json).data).toEqual({ edits: [], capturedAt: typedAt, replayed: true });
+  });
+
+  it('the DOC_CHANGE twin of that same follow-up keeps its stamp too', () => {
+    const typedAt = NOW - 900;
+    const json = stampCapturedFrame({ type: 'DOC_CHANGE', data: { changes: [], capturedAt: typedAt } }, NOW);
+    expect(JSON.parse(json).data.capturedAt).toBe(typedAt);
+  });
+
+  // A stamp nobody can read is not a stamp. The enqueue time is a real observation, so it
+  // takes over rather than letting a garbage value ride to the broker (which would only
+  // count it as rejected and fall back to append time anyway, losing the outage).
+  it('a stamp that says nothing is replaced by the enqueue time', () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, '17', null]) {
+      const json = stampCapturedFrame({ type: 'EDIT_FEED', data: { capturedAt: bad } }, NOW);
+      expect(JSON.parse(json).data.capturedAt, `bad stamp ${String(bad)} was kept`).toBe(NOW);
+    }
+  });
 });
 
 describe('readCapturedAt — trust the plugin\'s clock, but only within reach', () => {
