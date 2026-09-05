@@ -71,8 +71,12 @@ Whatever the line had no room for stays readable in its tooltip. Full history li
 
 Pending edits show as a count badge on the sync button, and clicking it runs the sync; the result lands in
 the sentence. A failed or unbound sync keeps the button for the retry, and only a genuine success clears the
-count. Unresolved failures show as a red count next to the line; that count is the button that marks them
-seen, which clears it and the orb's *Needs attention*. Nothing is deleted — the failures stay in the edit
+count. An apply with unreliable completion evidence is reported as outcome unknown: its private temporary
+capture path remains available for inspection, and `ui figma reconcile --dry-run` must verify state before
+retry. If direct-child exit cannot be confirmed, the current broker keeps the sync lane closed. This hold
+does not survive broker restart; independently confirm that the child ended before restarting or retrying.
+Unresolved failures show as a red count next to the line; that count is
+the button that marks them seen, which clears it and the orb's *Needs attention*. Nothing is deleted — the failures stay in the edit
 feed and in `figma-agent errors` — and the next failure re-arms both. Every icon action is a locally
 vendored Lucide SVG with a tooltip, accessible name, keyboard focus, and a 32px target. The orb canvas is
 decorative; its labelled cell announces the semantic status (and carries the build identity in its tooltip),

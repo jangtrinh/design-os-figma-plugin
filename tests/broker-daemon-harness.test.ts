@@ -21,7 +21,7 @@
 // fresh via `vi.resetModules()` + dynamic `import()` AFTER setting env vars, guaranteeing
 // the constants observe this test's own values regardless of import order across the suite.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
@@ -72,6 +72,7 @@ let scratchLogFile: string;
 let sockets: WebSocket[];
 let priorPluginWaitMs: string | undefined;
 let priorAppReadinessMs: string | undefined;
+let priorUiBin: string | undefined;
 
 /** Load `broker-daemon.ts` fresh, AFTER the given env vars are set — required for the
  *  module-load-time `envMs(...)` constants (see file header). */
@@ -313,6 +314,7 @@ async function bindProject(
 beforeEach(() => {
   priorPluginWaitMs = process.env[PLUGIN_WAIT_MS_KEY];
   priorAppReadinessMs = process.env[APP_READINESS_MS_KEY];
+  priorUiBin = process.env['FIGMA_AGENT_UI_BIN'];
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-broker-harness-'));
   advertisePath = join(scratchDir, 'broker.json');
   scratchLogFile = join(scratchDir, 'broker.log');
@@ -335,6 +337,67 @@ afterEach(async () => {
   else process.env[PLUGIN_WAIT_MS_KEY] = priorPluginWaitMs;
   if (priorAppReadinessMs === undefined) delete process.env[APP_READINESS_MS_KEY];
   else process.env[APP_READINESS_MS_KEY] = priorAppReadinessMs;
+  if (priorUiBin === undefined) delete process.env['FIGMA_AGENT_UI_BIN'];
+  else process.env['FIGMA_AGENT_UI_BIN'] = priorUiBin;
+  vi.doUnmock('../cli/src/transport/figma-sync-apply.ts');
+});
+
+describe('daemon harness — reconcile child owns the sync lane until confirmed settlement', () => {
+  it('refuses an overlapping real SYNC_REQUEST and releases the lane after normal child exit', async () => {
+    vi.doUnmock('../cli/src/transport/figma-sync-apply.ts');
+    const kernel = join(scratchDir, 'controlled-reconcile');
+    const stages = join(scratchDir, 'controlled-reconcile-stages');
+    writeFileSync(kernel, `#!${process.execPath}\nconst fs=require('node:fs');const dry=process.argv.includes('--dry-run');fs.appendFileSync(${JSON.stringify(stages)},dry?'dry\\n':'apply\\n');const data=dry?{delta:{added:[],updated:[]},pending:[]}:{apply:{}};console.log(JSON.stringify({ok:true,data}));\n`);
+    chmodSync(kernel, 0o755);
+    process.env['FIGMA_AGENT_UI_BIN'] = kernel;
+    const projectDir = join(scratchDir, 'bound-project');
+    mkdirSync(join(projectDir, 'design'), { recursive: true });
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'sync-bounds-plugin', 'Sync Bounds File');
+    const cli = await connectSocket(port);
+    await bindProject(cli, 'Sync Bounds File', projectDir, 'sync-bounds-bind');
+    const frames = collectFrames(plugin);
+
+    plugin.send(JSON.stringify({ type: 'SYNC_REQUEST', data: {} } satisfies EventMsg));
+    plugin.send(JSON.stringify({ type: 'SYNC_REQUEST', data: {} } satisfies EventMsg));
+    await waitFor(() => frames.frames.filter((frame) => (frame as EventMsg).type === 'SYNC_RESULT').length === 2);
+    const results = frames.frames.filter((frame) => (frame as EventMsg).type === 'SYNC_RESULT') as EventMsg[];
+    expect(results.some((result) => (result.data as { summary?: string }).summary === 'a sync is already running')).toBe(true);
+    expect(results.some((result) => (result.data as { ok?: boolean }).ok === true)).toBe(true);
+
+    const released = nextFrame<EventMsg>(plugin, (frame) => (frame as EventMsg).type === 'SYNC_RESULT');
+    plugin.send(JSON.stringify({ type: 'SYNC_REQUEST', data: {} } satisfies EventMsg));
+    expect((await released).data).toMatchObject({ ok: true });
+    expect(readFileSync(stages, 'utf8')).toBe('dry\napply\ndry\napply\n');
+  });
+
+  it('holds the lane when the reconcile result says the spawned child exit is unconfirmed', async () => {
+    const reconcileMock = vi.fn((
+      _projectDir: string, _fileSlug: string | undefined, _fileName: string | undefined,
+      done: (result: Record<string, unknown>) => void,
+    ) => queueMicrotask(() => done({
+      ok: false, code: 'RECONCILE_CHILD_UNKILLABLE', childExited: false,
+      summary: 'ui reconcile child exit not confirmed after SIGKILL.',
+    })));
+    vi.doMock('../cli/src/transport/figma-sync-apply.ts', () => ({ spawnReconcileApply: reconcileMock }));
+    const projectDir = join(scratchDir, 'bound-held-project');
+    mkdirSync(join(projectDir, 'design'), { recursive: true });
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'sync-held-plugin', 'Sync Held File');
+    const cli = await connectSocket(port);
+    await bindProject(cli, 'Sync Held File', projectDir, 'sync-held-bind');
+
+    const first = nextFrame<EventMsg>(plugin, (frame) => (frame as EventMsg).type === 'SYNC_RESULT');
+    plugin.send(JSON.stringify({ type: 'SYNC_REQUEST', data: {} } satisfies EventMsg));
+    expect((await first).data).toMatchObject({ code: 'RECONCILE_CHILD_UNKILLABLE', childExited: false });
+    const second = nextFrame<EventMsg>(plugin, (frame) => (frame as EventMsg).type === 'SYNC_RESULT');
+    plugin.send(JSON.stringify({ type: 'SYNC_REQUEST', data: {} } satisfies EventMsg));
+    expect((await second).data).toMatchObject({ ok: false, summary: 'a sync is already running' });
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+    expect(readFileSync(scratchLogFile, 'utf8')).toContain('sync lane HELD — reconcile child not confirmed dead');
+  });
 });
 
 describe('daemon harness — mutation admission', () => {

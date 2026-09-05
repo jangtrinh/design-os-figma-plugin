@@ -749,7 +749,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // file's own targets in a change-log the project may share with another file; `fileName`
     // (nullable → undefined) pins the live scan back to the SAME plugin instance.
     spawnReconcileApply(bound, slug, fileName ?? undefined, (r) => {
-      syncInFlight = false;
+      if (r.childExited === false) {
+        log(`sync lane HELD — reconcile child not confirmed dead: ${r.summary}`);
+      } else {
+        syncInFlight = false;
+      }
       log(`SYNC_RESULT ok=${r.ok} — ${r.summary}`);
       sendEvent(ws, 'SYNC_RESULT', { ...r });
     });
