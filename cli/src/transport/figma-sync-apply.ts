@@ -16,7 +16,6 @@
 //
 // Best-effort + debounced: a spawn failure (no `ui` on PATH) is reported back, never
 // thrown; a second click while one apply is in flight is ignored (broker-daemon).
-import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
@@ -29,6 +28,27 @@ import {
 import {
   captureMirror, mergeTargetsPendingFirst, pendingTargetsFromEnvelope, targetsFromDelta,
 } from './figma-mirror-capture-run.ts';
+import {
+  RECONCILE_CHILD_BOUNDS,
+  runBoundedChild,
+  type ChildBounds,
+  type ChildOutcome,
+} from './bounded-child-process.ts';
+
+interface SyncApplyEvidence {
+  phase: 'dry' | 'apply';
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  stdoutBytes: number;
+  stdoutTruncated: boolean;
+  stderrBytes: number;
+  stderrTruncated: boolean;
+  stderrExcerpt?: string;
+  envelopeParsed: boolean;
+  capturePath?: string;
+  captureCleanupError?: string;
+}
 
 /** Outcome the broker sends back to the plugin as SYNC_RESULT.data. */
 export interface SyncApplyResult {
@@ -40,6 +60,9 @@ export interface SyncApplyResult {
   /** The kernel's apply report when it succeeded. */
   applied?: unknown;
   code?: string;
+  /** Present only when a child started but direct-process exit was never confirmed. */
+  childExited?: false;
+  evidence?: SyncApplyEvidence;
 }
 
 /** Resolve the `ui` kernel binary — env override (tests) → PATH lookup by name. */
@@ -51,46 +74,79 @@ function uiBin(): string {
 function runReconcile(
   projectDir: string,
   extra: string[],
-  done: (env: Record<string, unknown> | null, err: string, exit: number) => void,
+  bounds: Readonly<ChildBounds>,
+  done: (env: Record<string, unknown> | null, outcome: ChildOutcome) => void,
 ): void {
-  let settled = false;
-  const settle = (env: Record<string, unknown> | null, err: string, exit: number): void => {
-    if (settled) return;
-    settled = true;
-    done(env, err, exit);
-  };
-  let child;
-  try {
-    child = spawn(uiBin(), ['figma', 'reconcile', '--dir', projectDir, '--json', ...extra], {
-      cwd: projectDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    settle(null, `could not launch ui: ${(err as Error).message}`, -1);
-    return;
-  }
-  let out = '';
-  let err = '';
-  child.stdout?.on('data', (d) => { out += String(d); });
-  child.stderr?.on('data', (d) => { err += String(d); });
-  child.on('error', (e) => settle(null, `ui not runnable: ${e.message} (is the kernel linked?)`, -1));
-  child.on('close', (exit) => {
-    let env: Record<string, unknown> | null = null;
-    try {
-      const parsed = JSON.parse(out.trim());
-      if (parsed && typeof parsed === 'object') env = parsed as Record<string, unknown>;
-    } catch { /* non-JSON stdout — the exit-code path below reports it */ }
-    settle(env, err, exit ?? -1);
-  });
+  runBoundedChild(
+    uiBin(), ['figma', 'reconcile', '--dir', projectDir, '--json', ...extra],
+    { cwd: projectDir, bounds }, (outcome) => {
+      let env: Record<string, unknown> | null = null;
+      try {
+        const parsed = JSON.parse(outcome.stdout.trim());
+        if (parsed && typeof parsed === 'object') env = parsed as Record<string, unknown>;
+      } catch { /* non-JSON stdout — the exit-code path below reports it */ }
+      done(env, outcome);
+    },
+  );
 }
 
-/** Envelope → failure result (shared by both kernel steps). */
-function envelopeFailure(env: Record<string, unknown> | null, err: string, exit: number): SyncApplyResult {
+function evidence(
+  phase: 'dry' | 'apply', outcome: ChildOutcome, env: Record<string, unknown> | null,
+  capturePath?: string, captureCleanupError?: string,
+): SyncApplyEvidence {
+  return {
+    phase, exitCode: outcome.exitCode, signal: outcome.signal, timedOut: outcome.timedOut,
+    stdoutBytes: outcome.stdoutBytes, stdoutTruncated: outcome.stdoutTruncated,
+    stderrBytes: outcome.stderrBytes, stderrTruncated: outcome.stderrTruncated,
+    ...(outcome.stderr ? { stderrExcerpt: outcome.stderr } : {}),
+    envelopeParsed: env !== null, ...(capturePath ? { capturePath } : {}),
+    ...(captureCleanupError ? { captureCleanupError } : {}),
+  };
+}
+
+function failure(
+  phase: 'dry' | 'apply', outcome: ChildOutcome, env: Record<string, unknown> | null,
+  capturePath?: string,
+): SyncApplyResult | null {
+  const meta = evidence(phase, outcome, env, capturePath);
+  const suffix = capturePath ? ` Capture kept for inspection: ${capturePath}.` : '';
+  if (outcome.spawned && !outcome.exited) {
+    return { ok: false, code: 'RECONCILE_CHILD_UNKILLABLE', childExited: false, evidence: meta,
+      summary: `ui reconcile child exit not confirmed after SIGKILL.${suffix}` };
+  }
+  if (!outcome.spawned) {
+    const detail = outcome.launchError ?? 'unknown launch failure';
+    const summary = outcome.launchErrorKind === 'throw'
+      ? `could not launch ui: ${detail}`
+      : `ui not runnable: ${detail} (is the kernel linked?)`;
+    return { ok: false, summary, code: 'RECONCILE_FAILED', evidence: meta };
+  }
+  if (outcome.timedOut) {
+    if (phase === 'dry') return { ok: false, code: 'RECONCILE_DRY_TIMEOUT', evidence: meta, summary: 'reconcile preview timed out; apply was not started' };
+    return { ok: false, code: 'RECONCILE_OUTCOME_UNKNOWN', evidence: meta,
+      summary: `apply outcome unknown after timeout; verify with ui figma reconcile --dry-run before retrying.${suffix}` };
+  }
+  if (outcome.stdoutTruncated) {
+    if (phase === 'dry') return { ok: false, code: 'RECONCILE_DRY_OUTPUT_OVERFLOW', evidence: meta, summary: 'reconcile preview output exceeded the bounded stdout limit; apply was not started' };
+    return { ok: false, code: 'RECONCILE_OUTCOME_UNKNOWN', evidence: meta,
+      summary: `apply outcome unknown because stdout exceeded the bounded limit; verify with ui figma reconcile --dry-run before retrying.${suffix}` };
+  }
   if (env && env['ok'] === false && env['error'] && typeof env['error'] === 'object') {
     const e = env['error'] as { code?: unknown; message?: unknown };
-    return { ok: false, summary: String(e.message ?? 'reconcile failed'), code: String(e.code ?? 'RECONCILE_FAILED') };
+    return { ok: false, summary: `${String(e.message ?? 'reconcile failed')}${suffix}`, code: String(e.code ?? 'RECONCILE_FAILED'), evidence: meta };
   }
-  return { ok: false, summary: err.trim() || `ui exited ${exit}`, code: 'RECONCILE_FAILED' };
+  if (outcome.signal !== null || outcome.exitCode !== 0) {
+    const ended = outcome.signal !== null ? `ui killed by ${outcome.signal}` : `ui exited ${outcome.exitCode}`;
+    if (phase === 'dry') return { ok: false, summary: outcome.stderr.trim() || ended, code: 'RECONCILE_FAILED', evidence: meta };
+    return { ok: false, code: 'RECONCILE_OUTCOME_UNKNOWN', evidence: meta,
+      summary: `apply outcome unknown: ${ended}; verify with ui figma reconcile --dry-run before retrying.${suffix}` };
+  }
+  if (envelopeData(env) === null) {
+    if (phase === 'dry') return { ok: false, summary: outcome.stderr.trim() || 'ui exited 0', code: 'RECONCILE_FAILED', evidence: meta };
+    return { ok: false, code: 'RECONCILE_OUTCOME_UNKNOWN', evidence: meta,
+      summary: `apply outcome unknown: ui exited 0 without a valid success envelope; verify with ui figma reconcile --dry-run before retrying.${suffix}` };
+  }
+  return null;
 }
 
 function envelopeData(env: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -116,34 +172,67 @@ export function spawnReconcileApply(
   fileSlug: string | undefined,
   fileName: string | undefined,
   done: (r: SyncApplyResult) => void,
+  bounds: Readonly<ChildBounds> = RECONCILE_CHILD_BOUNDS,
 ): void {
+  let settled = false;
+  const finish = (result: SyncApplyResult): void => {
+    if (settled) return;
+    settled = true;
+    done(result);
+  };
   const fileSlugArgs = fileSlug !== undefined ? ['--file-slug', fileSlug] : [];
-  runReconcile(projectDir, ['--dry-run', ...fileSlugArgs], (env, err, exit) => {
-    const data = envelopeData(env);
-    if (data === null) {
-      done(envelopeFailure(env, err, exit));
-      return;
-    }
+  runReconcile(projectDir, ['--dry-run', ...fileSlugArgs], bounds, (env, outcome) => {
+    const dryFailure = failure('dry', outcome, env);
+    if (dryFailure) { finish(dryFailure); return; }
+    const data = envelopeData(env)!;
     // Registry-integrity phase 02 (5.3), §4: the kernel's retry queue (`pending`) is
     // captured FIRST, or the same MAX_SCANS names win every run and the queue never
     // drains. Read from the SAME dry-run envelope `targetsFromDelta` already reads.
     const pendingFirst = pendingTargetsFromEnvelope(data);
     const targets = mergeTargetsPendingFirst(pendingFirst, targetsFromDelta(data));
-    void captureMirror(targets, fileName).then((cap) => {
+    void Promise.resolve().then(() => captureMirror(targets, fileName)).then((cap) => {
       const extra = ['--apply', ...fileSlugArgs, ...(cap.file !== undefined ? ['--mirror-file', cap.file] : [])];
-      runReconcile(projectDir, extra, (aEnv, aErr, aExit) => {
-        if (cap.file !== undefined) {
-          try { rmSync(dirname(cap.file), { recursive: true, force: true }); } catch { /* tmp — leave it */ }
-        }
-        const aData = envelopeData(aEnv);
-        if (aData === null) {
-          done(envelopeFailure(aEnv, aErr, aExit));
+      runReconcile(projectDir, extra, bounds, (aEnv, aOutcome) => {
+        const retainedPath = cap.file !== undefined && aOutcome.spawned ? cap.file : undefined;
+        const applyFailure = failure('apply', aOutcome, aEnv, retainedPath);
+        if (applyFailure) {
+          if (cap.file !== undefined && !aOutcome.spawned) {
+            const cleanupError = removeCapture(cap.file);
+            if (cleanupError) {
+              finish({
+                ...applyFailure,
+                summary: `${applyFailure.summary} Capture cleanup failed; kept for inspection: ${cap.file}.`,
+                evidence: evidence('apply', aOutcome, aEnv, cap.file, cleanupError),
+              });
+              return;
+            }
+          }
+          finish(applyFailure);
           return;
         }
-        done(applyResult(aData['apply'], cap.dropped));
+        const aData = envelopeData(aEnv)!;
+        const result = applyResult(aData['apply'], cap.dropped);
+        const cleanupError = cap.file !== undefined ? removeCapture(cap.file) : undefined;
+        finish({
+          ...result,
+          ...(cleanupError ? { summary: `${result.summary} — capture cleanup failed; kept for inspection: ${cap.file}` } : {}),
+          evidence: evidence('apply', aOutcome, aEnv, cleanupError ? cap.file : undefined, cleanupError),
+        });
       });
-    });
+    }).catch((error: unknown) => finish({
+      ok: false, code: 'RECONCILE_CAPTURE_FAILED',
+      summary: `could not prepare mirror capture: ${(error as Error).message}`,
+    }));
   });
+}
+
+function removeCapture(file: string): string | undefined {
+  try {
+    rmSync(dirname(file), { recursive: true, force: true });
+    return undefined;
+  } catch (error) {
+    return (error as Error).message;
+  }
 }
 
 /** Shape the panel-facing result from the kernel's apply report. */
