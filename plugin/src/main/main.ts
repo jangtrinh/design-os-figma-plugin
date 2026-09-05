@@ -8,7 +8,6 @@
 import type { CommandName, ErrorCode, FileContext, WireError } from '../../../shared/protocol';
 import { DEFAULT_IDLE_MS, MIN_IDLE_MS } from '../../../shared/protocol';
 import { fileMatches } from '../../../shared/file-match';
-import type { FigmaExportPayload } from '../../../shared/figma-payload-types';
 import {
   clearLegacyGapfillDocumentData, runGapfillDiff, snapshotPageBounded, writeBaseline,
 } from './edit-gapfill';
@@ -24,14 +23,9 @@ import {
 } from './edit-actor';
 import { createEditIdentityCache } from './change-node-identity';
 import { createDocumentChangeCapture } from './document-change-capture';
-import {
-  createColorStyles, createTextStyles, createEffectStyles,
-  resetImportWarnings, getImportWarnings, withCode,
-} from './executor-styles';
+import { withCode } from './executor-styles';
 import { opCreateVariable, opBindVariable } from './executor-variables';
-import { resetKeyedVariableCache } from './executor-keyed-vars';
-import { resolveTokenVars } from './executor-token-var-resolve';
-import { createFigmaNode } from './executor-frame';
+import { importPayload } from './import-payload-admission';
 import { serializeDesignSystem } from './serialize-node';
 import { auditDs } from './executor-audit';
 import { figmaContextEnv, opGetContext } from './executor-context';
@@ -590,68 +584,6 @@ async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
       // HTML_TO_FIGMA is handled entirely in the UI relay and arrives here as IMPORT_PAYLOAD
       throw withCode(new Error(`unknown command: ${cmd}`), 'E_INVALID_ARGS');
   }
-}
-
-/**
- * IMPORT_PAYLOAD: consume a FigmaExportPayload (ported EaseUI code.ts import
- * path): styles + variables from tokens → node tree → position → select.
- */
-async function importPayload(params: Params): Promise<{ id: string; name: string; warnings: string[] }> {
-  const payload = (params.payload ?? params) as FigmaExportPayload;
-  if (!payload || typeof payload !== 'object' || !payload.rootNode) {
-    throw withCode(new Error('IMPORT_PAYLOAD requires params.payload (FigmaExportPayload with rootNode)'), 'E_INVALID_ARGS');
-  }
-  resetImportWarnings();
-  resetKeyedVariableCache(); // spec-005 P7/P8: one resolve per variable key, per import run
-
-  // 1. Local styles + variables from tokens (variables are de-duped on re-import);
-  //    tokenVars (name → Variable) feeds tokenRefs binding during node build (P3 leg B).
-  //    spec-005 P6: the map now also carries the file's EXISTING local variables, so a
-  //    rebuild from a spec alone (no payload.tokens) reattaches its bindings by name.
-  const tokens = payload.tokens ?? { colors: [], typography: [], spacing: [], radii: [], shadows: [] };
-  const colorStyles = await createColorStyles(tokens.colors ?? []);
-  await createTextStyles(tokens.typography ?? []);
-  await createEffectStyles(tokens.shadows ?? []);
-  const tokenVars = await resolveTokenVars(tokens);
-
-  // 2. Build the node tree (tokenRefs bound inline via tokenVars)
-  const root = await createFigmaNode(payload.rootNode, colorStyles, tokenVars);
-  if (!root) throw new Error('payload rootNode produced no Figma node');
-
-  // 3. Resolve replace target + parent BEFORE positioning
-  let replaceTarget: SceneNode | null = null;
-  if (typeof params.replaceId === 'string' && params.replaceId) {
-    const t = await figma.getNodeByIdAsync(params.replaceId);
-    if (t && t.type !== 'DOCUMENT' && t.type !== 'PAGE') replaceTarget = t as SceneNode;
-  }
-  let parent: BaseNode & ChildrenMixin = figma.currentPage;
-  if (typeof params.parentId === 'string' && params.parentId) {
-    const p = await figma.getNodeByIdAsync(params.parentId);
-    if (p && 'appendChild' in p) parent = p as BaseNode & ChildrenMixin;
-  }
-  parent.appendChild(root);
-
-  // 4. Position: replace target's coords > explicit x/y > viewport center
-  if (replaceTarget) {
-    root.x = replaceTarget.x;
-    root.y = replaceTarget.y;
-    replaceTarget.remove(); // only after the new node is placed successfully
-  } else if (typeof params.x === 'number' && typeof params.y === 'number') {
-    root.x = params.x;
-    root.y = params.y;
-  } else {
-    root.x = Math.round(figma.viewport.center.x - root.width / 2);
-    root.y = Math.round(figma.viewport.center.y - root.height / 2);
-  }
-
-  // 5. Select + bring into view (skip silently if parented to another page)
-  try {
-    figma.currentPage.selection = [root];
-    figma.viewport.scrollAndZoomIntoView([root]);
-  } catch { /* root not on current page */ }
-
-  figma.notify(`Imported "${payload.name}" (${(tokens.colors ?? []).length} colors, ${(tokens.typography ?? []).length} text styles)`);
-  return { id: root.id, name: root.name, warnings: getImportWarnings() };
 }
 
 /** BATCH: sequential {cmd, params}[] through the same dispatch; stopOnError optional. */
