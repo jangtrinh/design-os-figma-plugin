@@ -627,16 +627,28 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   };
   let resourceObserverTeardown: (() => void) | null = null;
   if (options?.resourceObserver) {
-    const teardown = options.resourceObserver(() => collectBrokerResourceSnapshot({
-      pendingChunks: st.pendingChunks,
-      parkedRequestFrames: st.waiting.map((request) => request.rawText),
-      jobTable: st.jobs.resourceSnapshot(),
-      queues: st.queues,
-      pendingRequestReferenceCount: st.pending.size,
-      dispatchedRequestReferenceCount: st.dispatchedTo.size,
-      dispatchReservationReferenceCount: st.dispatchReservations.size,
-    }));
-    if (typeof teardown === 'function') resourceObserverTeardown = teardown;
+    try {
+      const teardown = options.resourceObserver(() => collectBrokerResourceSnapshot({
+        pendingChunks: st.pendingChunks,
+        parkedRequestFrames: st.waiting.map((request) => request.rawText),
+        jobTable: st.jobs.resourceSnapshot(),
+        queues: st.queues,
+        pendingRequestReferenceCount: st.pending.size,
+        dispatchedRequestReferenceCount: st.dispatchedTo.size,
+        dispatchReservationReferenceCount: st.dispatchReservations.size,
+      }));
+      if (typeof teardown === 'function') resourceObserverTeardown = teardown;
+    } catch (error) {
+      // Startup has not installed its ordinary shutdown handlers or published an advertisement.
+      const listeners = wss6 ? [wss, wss6] : [wss];
+      const closed = await Promise.allSettled(listeners.map((server) => new Promise<void>((resolve, reject) => {
+        for (const client of server.clients) client.terminate();
+        server.close((closeError) => closeError ? reject(closeError) : resolve());
+      })));
+      const failures = closed.filter((result) => result.status === 'rejected').length;
+      if (failures > 0) log(`observer startup cleanup failed for ${failures} listener(s); inspect the broker process before retrying`);
+      throw error;
+    }
   }
   // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
   // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
