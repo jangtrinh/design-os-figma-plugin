@@ -18,6 +18,7 @@
 // thrown; a second click while one apply is in flight is ignored (broker-daemon).
 import { rmSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { selectReconcileExecutable, type ReconcileExecutable } from './reconcile-executable.ts';
 import {
   countsFromApplyReport,
   emptyCounts,
@@ -35,7 +36,9 @@ import {
   type ChildOutcome,
 } from './bounded-child-process.ts';
 
-interface SyncApplyEvidence {
+type ReconcileOutcome = ChildOutcome & ReconcileExecutable;
+
+interface SyncApplyEvidence extends ReconcileExecutable {
   phase: 'dry' | 'apply';
   exitCode: number | null;
   signal: NodeJS.Signals | null;
@@ -65,36 +68,33 @@ export interface SyncApplyResult {
   evidence?: SyncApplyEvidence;
 }
 
-/** Resolve the `ui` kernel binary — env override (tests) → PATH lookup by name. */
-function uiBin(): string {
-  return process.env['FIGMA_AGENT_UI_BIN'] || process.env['DESIGN_OS_UI_BIN'] || 'ui';
-}
-
 /** Run `ui figma reconcile …` and hand back the parsed envelope. Never throws. */
 function runReconcile(
   projectDir: string,
   extra: string[],
   bounds: Readonly<ChildBounds>,
-  done: (env: Record<string, unknown> | null, outcome: ChildOutcome) => void,
+  executable: ReconcileExecutable,
+  done: (env: Record<string, unknown> | null, outcome: ReconcileOutcome) => void,
 ): void {
   runBoundedChild(
-    uiBin(), ['figma', 'reconcile', '--dir', projectDir, '--json', ...extra],
+    executable.uiExecutable ?? executable.uiCommand, ['figma', 'reconcile', '--dir', projectDir, '--json', ...extra],
     { cwd: projectDir, bounds }, (outcome) => {
       let env: Record<string, unknown> | null = null;
       try {
         const parsed = JSON.parse(outcome.stdout.trim());
         if (parsed && typeof parsed === 'object') env = parsed as Record<string, unknown>;
       } catch { /* non-JSON stdout — the exit-code path below reports it */ }
-      done(env, outcome);
+      done(env, { ...outcome, ...executable });
     },
   );
 }
 
 function evidence(
-  phase: 'dry' | 'apply', outcome: ChildOutcome, env: Record<string, unknown> | null,
+  phase: 'dry' | 'apply', outcome: ReconcileOutcome, env: Record<string, unknown> | null,
   capturePath?: string, captureCleanupError?: string,
 ): SyncApplyEvidence {
   return {
+    uiCommand: outcome.uiCommand, uiExecutable: outcome.uiExecutable,
     phase, exitCode: outcome.exitCode, signal: outcome.signal, timedOut: outcome.timedOut,
     stdoutBytes: outcome.stdoutBytes, stdoutTruncated: outcome.stdoutTruncated,
     stderrBytes: outcome.stderrBytes, stderrTruncated: outcome.stderrTruncated,
@@ -105,7 +105,7 @@ function evidence(
 }
 
 function failure(
-  phase: 'dry' | 'apply', outcome: ChildOutcome, env: Record<string, unknown> | null,
+  phase: 'dry' | 'apply', outcome: ReconcileOutcome, env: Record<string, unknown> | null,
   capturePath?: string,
 ): SyncApplyResult | null {
   const meta = evidence(phase, outcome, env, capturePath);
@@ -180,8 +180,9 @@ export function spawnReconcileApply(
     settled = true;
     done(result);
   };
+  const executable = selectReconcileExecutable(projectDir);
   const fileSlugArgs = fileSlug !== undefined ? ['--file-slug', fileSlug] : [];
-  runReconcile(projectDir, ['--dry-run', ...fileSlugArgs], bounds, (env, outcome) => {
+  runReconcile(projectDir, ['--dry-run', ...fileSlugArgs], bounds, executable, (env, outcome) => {
     const dryFailure = failure('dry', outcome, env);
     if (dryFailure) { finish(dryFailure); return; }
     const data = envelopeData(env)!;
@@ -192,7 +193,7 @@ export function spawnReconcileApply(
     const targets = mergeTargetsPendingFirst(pendingFirst, targetsFromDelta(data));
     void Promise.resolve().then(() => captureMirror(targets, fileName)).then((cap) => {
       const extra = ['--apply', ...fileSlugArgs, ...(cap.file !== undefined ? ['--mirror-file', cap.file] : [])];
-      runReconcile(projectDir, extra, bounds, (aEnv, aOutcome) => {
+      runReconcile(projectDir, extra, bounds, executable, (aEnv, aOutcome) => {
         const retainedPath = cap.file !== undefined && aOutcome.spawned ? cap.file : undefined;
         const applyFailure = failure('apply', aOutcome, aEnv, retainedPath);
         if (applyFailure) {
@@ -220,7 +221,7 @@ export function spawnReconcileApply(
         });
       });
     }).catch((error: unknown) => finish({
-      ok: false, code: 'RECONCILE_CAPTURE_FAILED',
+      ok: false, code: 'RECONCILE_CAPTURE_FAILED', evidence: evidence('dry', outcome, env),
       summary: `could not prepare mirror capture: ${(error as Error).message}`,
     }));
   });
