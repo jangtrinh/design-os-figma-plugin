@@ -11,10 +11,16 @@ let relay: string;
 beforeAll(async () => {
   const root = fileURLToPath(new URL('..', import.meta.url));
   panel = await readFile(`${root}/plugin/src/ui/panel.html`, 'utf8');
+  const child = await build({
+    entryPoints: [`${root}/plugin/src/ui/render-child-entry.ts`],
+    bundle: true, platform: 'browser', format: 'iife', target: 'es2020',
+    write: false, logLevel: 'silent',
+  });
   const result = await build({
     entryPoints: [`${root}/plugin/src/ui/ui-relay.ts`],
     bundle: true, platform: 'browser', format: 'iife', target: 'es2020',
     write: false, logLevel: 'silent',
+    define: { __HTML_RENDER_CHILD__: JSON.stringify(child.outputFiles[0].text) },
   });
   relay = result.outputFiles[0].text;
   try { browser = await chromium.launch({ headless: true }); }

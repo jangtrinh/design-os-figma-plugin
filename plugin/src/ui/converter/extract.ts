@@ -8,62 +8,7 @@ import { parseCssColor } from './color-utils';
 import { computedElementToNode } from './computed-walk';
 import { captureMotionOntoElements } from './extract-motion';
 import { annotateTokenRefs, extractFigmaTokens } from './tokens';
-
-/**
- * Wait for Tailwind CDN and other runtime scripts to process.
- * Polls until styles are actually applied, with a max timeout.
- */
-export function waitForStylesReady(iframe: HTMLIFrameElement): Promise<void> {
-  return new Promise((resolve) => {
-    const maxWait = 3000; // 3 second max
-    const pollInterval = 100;
-    let elapsed = 0;
-
-    const check = () => {
-      elapsed += pollInterval;
-      const doc = iframe.contentDocument;
-      const win = iframe.contentWindow;
-
-      if (!doc || !win) {
-        if (elapsed < maxWait) setTimeout(check, pollInterval);
-        else resolve();
-        return;
-      }
-
-      // Non-default body background → CSS has applied
-      const body = doc.body;
-      if (body) {
-        const parsed = parseCssColor(win.getComputedStyle(body).backgroundColor);
-        if (parsed && parsed.a > 0 && !(parsed.r === 1 && parsed.g === 1 && parsed.b === 1)) {
-          resolve();
-          return;
-        }
-      }
-
-      // Any runtime-generated stylesheet with substantial rules (Tailwind CDN)
-      let hasRuntimeStyles = false;
-      try {
-        const sheets = doc.styleSheets;
-        for (let i = 0; i < sheets.length; i++) {
-          if (sheets[i].cssRules && sheets[i].cssRules.length > 50) {
-            hasRuntimeStyles = true;
-            break;
-          }
-        }
-      } catch { /* cross-origin sheet — ignore */ }
-
-      if (hasRuntimeStyles) {
-        setTimeout(resolve, 200); // small extra delay for styles to fully apply
-        return;
-      }
-
-      if (elapsed < maxWait) setTimeout(check, pollInterval);
-      else resolve(); // proceed anyway after timeout
-    };
-
-    setTimeout(check, 200); // start checking after a small initial delay
-  });
-}
+export { waitForStylesReady, waitForStylesReadyInDocument } from './style-readiness';
 
 /**
  * Prepare the document for extraction by making ALL visual content visible.
@@ -131,12 +76,7 @@ export function prepareDocForExtraction(doc: Document): void {
  * Extract a Figma node tree from a rendered iframe (styles fully applied).
  * Preps the document, reads body layout/background, walks children.
  */
-export function extractFromIframe(iframe: HTMLIFrameElement, width: number): FigmaExportNode {
-  const doc = iframe.contentDocument;
-  const win = iframe.contentWindow;
-  if (!doc || !win) {
-    return { type: 'FRAME', name: 'Page', width, height: 900 };
-  }
+export function extractFromDocument(doc: Document, win: Window, width: number): FigmaExportNode {
   const body = doc.body;
   if (!body || body.children.length === 0) {
     return { type: 'FRAME', name: 'Page', width, height: 900 };
@@ -193,9 +133,27 @@ export function extractFromIframe(iframe: HTMLIFrameElement, width: number): Fig
   return pageFrame;
 }
 
+export function extractFromIframe(iframe: HTMLIFrameElement, width: number): FigmaExportNode {
+  const doc = iframe.contentDocument;
+  const win = iframe.contentWindow;
+  return doc && win ? extractFromDocument(doc, win, width) : { type: 'FRAME', name: 'Page', width, height: 900 };
+}
+
 /** Extract node tree + tokens from a rendered iframe and assemble the payload. */
 export function buildPayloadFromIframe(iframe: HTMLIFrameElement, name: string, width: number): FigmaExportPayload {
-  const rootNode = extractFromIframe(iframe, width);
+  const doc = iframe.contentDocument;
+  const win = iframe.contentWindow;
+  const rootNode = doc && win
+    ? extractFromDocument(doc, win, width)
+    : { type: 'FRAME' as const, name: 'Page', width, height: 900 };
+  return buildPayloadFromRoot(rootNode, name, width);
+}
+
+export function buildPayloadFromDocument(doc: Document, win: Window, name: string, width: number): FigmaExportPayload {
+  return buildPayloadFromRoot(extractFromDocument(doc, win, width), name, width);
+}
+
+function buildPayloadFromRoot(rootNode: FigmaExportNode, name: string, width: number): FigmaExportPayload {
   const tokens = extractFigmaTokens(rootNode);
   annotateTokenRefs(rootNode, tokens); // P3 leg B: exact-match token bindings
   return {

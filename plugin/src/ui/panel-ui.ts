@@ -8,6 +8,7 @@ import {
   syncSupersededSentence, shouldClearPendingCount, SYNC_STUCK_TIMEOUT_MS, type RailLayer,
 } from './panel-model';
 import { mountThinkingOrb, orbPresentation } from './thinking-orb';
+import { isMessageFromParent } from './parent-message';
 
 declare const __BUILD_ID__: string;
 const el = (id: string): HTMLElement => document.getElementById(id) as HTMLElement;
@@ -125,7 +126,7 @@ window.addEventListener('figma-agent:activity', (event) => { const detail = (eve
 // in the rail sentence for as long as the panel lives — a lost edit does not expire.
 window.addEventListener('figma-agent:dropped', (event) => { const detail = (event as CustomEvent).detail as { frames?: unknown } | undefined; if (typeof detail?.frames !== 'number' || !Number.isFinite(detail.frames)) return; droppedFrames = Math.max(droppedFrames, Math.floor(detail.frames)); render(); });
 window.addEventListener('figma-agent:peers', (event) => { const data = (event as CustomEvent).detail as { count?: unknown; isActiveTarget?: unknown; pinned?: unknown } | undefined; if (typeof data?.count === 'number' && Number.isFinite(data.count)) peersCount = data.count; if (typeof data?.isActiveTarget === 'boolean') peersIsActiveTarget = data.isActiveTarget; peersPinned = data?.pinned === true; render(); });
-window.addEventListener('message', (event: MessageEvent) => { const message = (event.data as { pluginMessage?: { type?: string; data?: Record<string, unknown> } } | null)?.pluginMessage; if (!message) return; if (message.type === 'IDLE_READY' && message.data) { pendingSyncCount = typeof message.data.count === 'number' ? Math.max(1, Math.floor(message.data.count)) : 1; syncFailure = false; syncUnbound = false; syncLine = { text: syncPromptLabel(pendingSyncCount), tone: 'warning' }; render(); return; } if (message.type === 'FILE_INFO' && message.data) { if (typeof message.data.fileName === 'string') sceneFile = message.data.fileName; render(); } });
+window.addEventListener('message', (event: MessageEvent) => { if (!isMessageFromParent(event)) return; const message = (event.data as { pluginMessage?: { type?: string; data?: Record<string, unknown> } } | null)?.pluginMessage; if (!message) return; if (message.type === 'IDLE_READY' && message.data) { pendingSyncCount = typeof message.data.count === 'number' ? Math.max(1, Math.floor(message.data.count)) : 1; syncFailure = false; syncUnbound = false; syncLine = { text: syncPromptLabel(pendingSyncCount), tone: 'warning' }; render(); return; } if (message.type === 'FILE_INFO' && message.data) { if (typeof message.data.fileName === 'string') sceneFile = message.data.fileName; render(); } });
 
 let run: { id: string; at: number } | null = null, stuckTimer: ReturnType<typeof setTimeout> | null = null;
 // The rail button IS the sync now: one click runs it, the sentence carries the outcome, and a
