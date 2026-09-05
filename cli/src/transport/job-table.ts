@@ -13,6 +13,11 @@
 // ever touches a real WebSocket.
 import type WebSocket from 'ws';
 import type { JobInfo, JobRecovery } from '../../../shared/protocol.ts';
+import {
+  countFrameResources,
+  freezeJobTableResourceSnapshot,
+  type JobTableResourceSnapshot,
+} from './broker-resource-snapshot.ts';
 
 export const JOB_TTL_MS = 10 * 60_000;               // finished results stay retrievable this long — BEST EFFORT
 export const JOB_FINISHED_CAP = 200;                 // hard cap on FINISHED records; live jobs are NEVER capped
@@ -422,6 +427,47 @@ export class JobTable {
       .filter((r) => fileSlug === undefined || r.fileSlug === fileSlug)
       .sort((a, b) => b.createdAt - a.createdAt);
     return all.map(toJobInfo);
+  }
+
+  /** Numeric, copy-only retained-frame projection for the optional in-process observer. */
+  resourceSnapshot(): JobTableResourceSnapshot {
+    let liveJobCount = 0;
+    let queuedJobCount = 0;
+    let runningJobCount = 0;
+    let outcomeUnknownJobCount = 0;
+    let finishedJobCount = 0;
+    let retentionHeldJobCount = 0;
+    let requestFrameReferences = 0;
+    let requestUtf8Bytes = 0;
+    let replyFrameReferences = 0;
+    let replyUtf8Bytes = 0;
+    for (const job of this.jobs.values()) {
+      if (job.state === 'queued' || job.state === 'running'
+        || (job.state === 'outcome-unknown' && job.forceReleased !== true)
+        || job.retentionHeld === true) liveJobCount += 1;
+      if (job.state === 'queued') queuedJobCount += 1;
+      else if (job.state === 'running') runningJobCount += 1;
+      else if (job.state === 'outcome-unknown') outcomeUnknownJobCount += 1;
+      else if (isFinishedState(job.state)) finishedJobCount += 1;
+      if (job.retentionHeld === true) retentionHeldJobCount += 1;
+      const request = countFrameResources(job.requestFrames);
+      requestFrameReferences += request.frameReferences;
+      requestUtf8Bytes += request.utf8Bytes;
+      const reply = countFrameResources(job.replyFrames);
+      replyFrameReferences += reply.frameReferences;
+      replyUtf8Bytes += reply.utf8Bytes;
+    }
+    return freezeJobTableResourceSnapshot({
+      jobCount: this.jobs.size,
+      liveJobCount,
+      queuedJobCount,
+      runningJobCount,
+      outcomeUnknownJobCount,
+      finishedJobCount,
+      retentionHeldJobCount,
+      requestFrames: { frameReferences: requestFrameReferences, utf8Bytes: requestUtf8Bytes },
+      replyFrames: { frameReferences: replyFrameReferences, utf8Bytes: replyUtf8Bytes },
+    });
   }
 
   private evict(jobId: string): void {

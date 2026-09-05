@@ -110,7 +110,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
   const marker = readBindMarker(projectDir) ?? { v: 1 as const, bindings: [] };
   const entry = upsertBinding(marker, fileName, fileKey);
   writeBindMarker(projectDir, marker);
-  writeBindCache([...readBindCache().projectDirs, projectDir]);
+  const cacheWrite = writeBindCache([...readBindCache().projectDirs, projectDir]);
 
   return {
     projectDir,
@@ -120,5 +120,9 @@ export async function run(args: CommandArgs): Promise<unknown> {
     migratedCount,
     migratedEditCount,
     marker: bindMarkerPath(projectDir),
+    ...(!cacheWrite.ok ? { warnings: [{
+      code: 'E_BIND_CACHE_WRITE', cause: cacheWrite.error.code,
+      message: 'Binding saved, but restart cache was not updated. Inspect the cache directory and reported filesystem cause before retrying bind.',
+    }] } : {}),
   };
 }

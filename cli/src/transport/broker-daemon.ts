@@ -60,6 +60,10 @@ import {
   completeSkippingStale, emptyQueue, enqueue as enqueueJob, queuePosition, remove as removeFromQueue,
   type QueueState,
 } from './file-queue.ts';
+import {
+  collectBrokerResourceSnapshot,
+  type BrokerResourceObserver,
+} from './broker-resource-snapshot.ts';
 import type { ComponentChange } from '../../../shared/figma-changes.ts';
 import type { EditInput, EditSource } from '../../../shared/edit-feed.ts';
 
@@ -240,6 +244,11 @@ function log(line: string): void {
   try {
     appendFileSync(activeLogFile, `${new Date().toISOString()} [${process.pid}] ${line}\n`);
   } catch { /* logging is best-effort */ }
+}
+
+function persistBindCache(projectDirs: readonly string[]): void {
+  const result = writeBindCache(projectDirs);
+  if (!result.ok) log(`BIND_CACHE write failed (${result.error.code}); restart discovery may require rebinding. Inspect the cache directory and reported filesystem cause.`);
 }
 
 function tryBind(port: number, host: string): Promise<WebSocketServer | null> {
@@ -503,6 +512,8 @@ export interface BrokerDaemonOptions {
   ports?: readonly number[];
   exit?: (code: number) => never;
   logFile?: string;
+  /** Optional in-process diagnostics. No observer means no snapshot work. */
+  resourceObserver?: BrokerResourceObserver;
 }
 
 function defaultPortRange(): number[] {
@@ -555,7 +566,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // cache + each survivor project's own marker, then immediately rewrite the cache with
   // only the dirs that still look like projects — a stale entry is dropped, never trusted.
   const { index: bindIndex, usableDirs } = loadBindIndex();
-  writeBindCache(usableDirs);
+  persistBindCache(usableDirs);
 
   // One-time startup migration (issue #7 / backlog 5.6 ruling: migrate, never silently
   // orphan) — anything staged under the OLD cwd-relative unbound root, from a broker
@@ -614,6 +625,31 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       ),
     }),
   };
+  let resourceObserverTeardown: (() => void) | null = null;
+  if (options?.resourceObserver) {
+    try {
+      const teardown = options.resourceObserver(() => collectBrokerResourceSnapshot({
+        pendingChunks: st.pendingChunks,
+        parkedRequestFrames: st.waiting.map((request) => request.rawText),
+        jobTable: st.jobs.resourceSnapshot(),
+        queues: st.queues,
+        pendingRequestReferenceCount: st.pending.size,
+        dispatchedRequestReferenceCount: st.dispatchedTo.size,
+        dispatchReservationReferenceCount: st.dispatchReservations.size,
+      }));
+      if (typeof teardown === 'function') resourceObserverTeardown = teardown;
+    } catch (error) {
+      // Startup has not installed its ordinary shutdown handlers or published an advertisement.
+      const listeners = wss6 ? [wss, wss6] : [wss];
+      const closed = await Promise.allSettled(listeners.map((server) => new Promise<void>((resolve, reject) => {
+        for (const client of server.clients) client.terminate();
+        server.close((closeError) => closeError ? reject(closeError) : resolve());
+      })));
+      const failures = closed.filter((result) => result.status === 'rejected').length;
+      if (failures > 0) log(`observer startup cleanup failed for ${failures} listener(s); inspect the broker process before retrying`);
+      throw error;
+    }
+  }
   // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
   // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
   // BEFORE writing our own — startup only, not the heartbeat tick, since this lists
@@ -783,6 +819,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
+    const teardown = resourceObserverTeardown;
+    resourceObserverTeardown = null;
+    if (teardown) {
+      try { teardown(); } catch (err) { log(`resource observer teardown failed: ${(err as Error).message}`); }
+    }
     // Drop ownership BEFORE unlinking — a refresh-interval tick racing this shutdown
     // (the `exit` stub in tests throws rather than truly halting the process, so later
     // ticks are reachable) must see `ownsAdvertisement === false` and skip re-writing
@@ -888,7 +929,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     recordBinding(st.bindIndex, identity, { projectDir, source: 'request', at: Date.now() });
     if (!st.knownProjectDirs.has(projectDir)) {
       st.knownProjectDirs.add(projectDir);
-      writeBindCache([...st.knownProjectDirs]);
+      persistBindCache([...st.knownProjectDirs]);
     }
   };
 
@@ -933,7 +974,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (fileKey) recordBinding(st.bindIndex, fileKey, { projectDir, source: 'bind', at });
     if (!st.knownProjectDirs.has(projectDir)) {
       st.knownProjectDirs.add(projectDir);
-      writeBindCache([...st.knownProjectDirs]);
+      persistBindCache([...st.knownProjectDirs]);
     }
     // Fix round (finding 1 — BLOCKER): migrate whatever staged while this file was
     // unbound into the now-bound component log, exactly once — `migrateStagedChanges` is

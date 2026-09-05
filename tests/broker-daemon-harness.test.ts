@@ -321,6 +321,17 @@ beforeEach(() => {
   sockets = [];
 });
 
+it('logs a binding cache failure while continuing to serve the broker', async () => {
+  const cache = join(scratchDir, 'binds.json');
+  const temporary = `${cache}.${process.pid}.tmp`;
+  writeFileSync(temporary, 'COLLISION');
+  const port = await startTestBroker();
+  const { hello } = await connectAndAwaitBrokerHello(port);
+  expect(hello.type).toBe('BROKER_HELLO');
+  expect(readFileSync(scratchLogFile, 'utf8')).toContain('BIND_CACHE write failed (EEXIST)');
+  expect(readFileSync(temporary, 'utf8')).toBe('COLLISION');
+});
+
 afterEach(async () => {
   // The daemon's OWN designed shutdown path: closes wss/wss6 for real. The `exit` stub's
   // throw is caught by `handleMessage`'s own per-connection try/catch (broker-daemon.ts's

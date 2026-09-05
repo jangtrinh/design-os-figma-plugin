@@ -75,6 +75,18 @@ count. An apply with unreliable completion evidence is reported as outcome unkno
 capture path remains available for inspection, and `ui figma reconcile --dry-run` must verify state before
 retry. If direct-child exit cannot be confirmed, the current broker keeps the sync lane closed. This hold
 does not survive broker restart; independently confirm that the child ended before restarting or retrying.
+
+Reconcile evidence records `uiCommand` and `uiExecutable`. On POSIX, the broker selects one absolute
+launch path before preview and reuses it for apply. `uiExecutable: null` means native command lookup
+was unresolved or delegated (including a bare command on Windows); it is never a fabricated identity.
+The path identifies the selected command, not immutable binary contents or its interpreter. Selection
+keeps `FIGMA_AGENT_UI_BIN`, then `DESIGN_OS_UI_BIN`, then `ui` on the broker's inherited PATH. An npm
+context can put the panel-test dependency's older `ui` ahead of the global kernel. Check the recorded
+executable with `--version`; a version printed in another shell may belong to a different command.
+To select a known install, set `FIGMA_AGENT_UI_BIN` to its absolute executable path in the environment
+that starts the broker. An already running broker retains its original environment; follow the child-exit
+checks above before restarting. An override is one executable path or name, never a shell command.
+
 Unresolved failures show as a red count next to the line; that count is
 the button that marks them seen, which clears it and the orb's *Needs attention*. Nothing is deleted — the failures stay in the edit
 feed and in `figma-agent errors` — and the next failure re-arms both. Every icon action is a locally
@@ -124,6 +136,14 @@ to refuse mutations. The implementation is shared in
 This protects these snapshot writes on the local filesystem. Runtime locations are unchanged;
 other logs, existing-state reads and processes running as the same OS user require separate
 controls. File permissions do not authenticate broker clients.
+
+The binding restart cache uses the same exclusive private temporary-file boundary and
+atomic replacement through [`bind-cache.ts`](../cli/src/transport/bind-cache.ts). A failure
+preserves the previous cache; the daemon logs its filesystem cause and `bind` adds an
+`E_BIND_CACHE_WRITE` warning while reporting the durable binding that was actually saved.
+Inspect the cache directory and reported cause before retrying. Cache locations and project
+binding markers are unchanged; existing live files are not migrated by installing this code.
+A destination symlink is replaced as a directory entry without writing its referent.
 
 ## Troubleshooting
 
