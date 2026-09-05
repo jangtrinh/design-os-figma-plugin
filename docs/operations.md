@@ -145,6 +145,15 @@ Inspect the cache directory and reported cause before retrying. Cache locations 
 binding markers are unchanged; existing live files are not migrated by installing this code.
 A destination symlink is replaced as a directory entry without writing its referent.
 
+## Request chunk recovery
+
+CLI request chunks are admitted in strict sequence before retention. A malformed or missing frame
+releases only that connection's affected request; closing the connection releases its partial
+requests immediately. Gap-sweep and close cleanup leave numeric request, frame, and UTF-8-byte
+records in the broker log without payloads or paths. The executable contract lives in
+[`request-chunk-admission.ts`](../cli/src/transport/request-chunk-admission.ts), with daemon coverage
+in [`broker-request-chunk-admission.test.ts`](../tests/broker-request-chunk-admission.test.ts).
+
 ## Troubleshooting
 
 - **Panel says "No broker yet" and never connects** — that's the resting state; it only connects once a CLI

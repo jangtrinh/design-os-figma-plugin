@@ -21,8 +21,9 @@ import {
   cleanupOrphanedAdvertisementTempFiles, isPidAlive, readAdvertisement, selfBuildMtime, writeAdvertisement,
 } from './broker-discovery.ts';
 import {
-  ChunkAssembler, deleteConnectionChunk, envMs, getConnectionChunks, isChunkMsg, isEventMsg, isReplyMsg, isRequestMsg,
-  parseWireMsg, rawToString, sendWireMsg, sweepAbandonedChunks, type ChunkBuffers,
+  ChunkAssembler, deleteConnectionChunk, deleteConnectionChunks, envMs, getConnectionChunks, isChunkMsg, isEventMsg,
+  isReplyMsg, isRequestMsg, parseWireMsg, rawToString, requestChunkCandidateId, sendWireMsg, summarizeChunkCleanups,
+  sweepAbandonedChunks, validateRequestChunkFrame, type ChunkBuffers, type ChunkCleanup,
 } from './protocol-helpers.ts';
 import { PluginRegistry, appReadiness, suspectedZombie, type PluginEntry } from './plugin-registry.ts';
 import { createSessionTallies, type SessionTallies } from './session-tallies.ts';
@@ -1471,7 +1472,17 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
    * invent a synthetic `CHUNKED` pseudo-command: that would misroute a filtered request
    * and put false metadata in `status`.
    */
-  const admitChunk = (from: WebSocket, id: string, rawText: string, last: boolean): void => {
+  const logChunkRefusal = (
+    code: 'E_INVALID_ARGS' | 'E_CHUNK_LOST', reason: string,
+    retained: ChunkCleanup<WebSocket> | null, rejectedRawText?: string,
+  ): void => {
+    log(`request chunk refused: code=${code} reason=${reason} `
+      + `retainedRequests=${retained?.requestCount ?? 0} retainedFrames=${retained?.frameCount ?? 0} `
+      + `retainedUtf8Bytes=${retained?.utf8Bytes ?? 0} rejectedFrames=${rejectedRawText === undefined ? 0 : 1} `
+      + `rejectedUtf8Bytes=${rejectedRawText === undefined ? 0 : Buffer.byteLength(rejectedRawText, 'utf8')}`);
+  };
+
+  const admitChunk = (from: WebSocket, id: string, rawText: string, candidate: WireMsg): void => {
     const existing = st.jobs.byRequestId(id);
     const parked = st.waiting.find((request) => request.id === id);
     if (existing !== undefined || parked !== undefined) {
@@ -1485,12 +1496,22 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       }
       return;
     }
-    const connChunks = getConnectionChunks(st.pendingChunks, from);
-    const entry = connChunks.get(id);
+    const entry = st.pendingChunks.get(from)?.get(id);
     const buffered = entry?.frames ?? [];
+    const validation = validateRequestChunkFrame(candidate, buffered.length);
+    if (!validation.ok) {
+      const retained = deleteConnectionChunk(st.pendingChunks, from, id);
+      const code = validation.kind === 'sequence' ? 'E_CHUNK_LOST' : 'E_INVALID_ARGS';
+      sendReplyErr(from, id, code, validation.message);
+      logChunkRefusal(code, validation.kind, retained, rawText);
+      return;
+    }
     buffered.push(rawText);
-    if (!last) { connChunks.set(id, { frames: buffered, lastFrameAt: Date.now() }); return; }
-    deleteConnectionChunk(st.pendingChunks, from, id);
+    getConnectionChunks(st.pendingChunks, from).set(id, { frames: buffered, lastFrameAt: Date.now() });
+    if (!validation.frame.last) {
+      return;
+    }
+    const retained = deleteConnectionChunk(st.pendingChunks, from, id);
     let assembled: RequestMsg;
     try {
       const assembler = new ChunkAssembler();
@@ -1506,6 +1527,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       if (assembled.id !== id) throw new Error('chunked payload request id does not match its outer chunk id');
     } catch (err) {
       sendReplyErr(from, id, 'E_CHUNK_LOST', `failed to reassemble chunked request: ${(err as Error).message}`);
+      logChunkRefusal('E_CHUNK_LOST', 'reassembly', retained);
       return;
     }
     admitRequest(
@@ -2026,6 +2048,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       st.pending.delete(id);
       st.dispatchedTo.delete(id);
     }
+    const closedChunks = deleteConnectionChunks(st.pendingChunks, ws);
+    if (closedChunks.length > 0) {
+      const released = summarizeChunkCleanups(closedChunks);
+      log(`request chunk close cleanup: requests=${released.requestCount} frames=${released.frameCount} utf8Bytes=${released.utf8Bytes}`);
+    }
     const removedId = st.registry.removeByWs(ws);
     if (removedId !== null) {
       for (const [jobId, reservation] of [...st.dispatchReservations]) {
@@ -2105,7 +2132,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // the transport-only `touch` the raw WS 'pong' handler below uses.
     const isPlugin = st.registry.touchApp(ws);
     if (isPlugin) resumeReadiness(ws, msg);
-    if (isChunkMsg(msg)) {
+    const requestChunkId = isPlugin ? null : requestChunkCandidateId(msg);
+    if (requestChunkId !== null || (isPlugin && isChunkMsg(msg))) {
       // Reply-side chunks (plugin → broker) pass straight to routeFromPlugin, which now
       // accumulates every frame onto the job record itself (concurrency & jobs, backlog
       // 1.1+2.6+4.3) — no reassembly needed here.
@@ -2118,8 +2146,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       // THEN admits the request with its real `cmd`/`readOnly`/`expectedFile`/
       // `projectDir` — never a synthetic pseudo-command that would misroute a filtered
       // request or misclassify its broker-safe-read admission.
-      if (isPlugin) { st.registry.touchActive(ws); routeFromPlugin(msg.id, text, msg.last, ws); }
-      else admitChunk(ws, msg.id, text, msg.last);
+      if (isPlugin && isChunkMsg(msg)) { st.registry.touchActive(ws); routeFromPlugin(msg.id, text, msg.last, ws); }
+      else if (requestChunkId !== null) admitChunk(ws, requestChunkId, text, msg);
     } else if (isReplyMsg(msg)) {
       if (isPlugin) {
         st.registry.touchActive(ws);
@@ -2505,7 +2533,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // were effectively dead code. The 10-minute TTL is a promise to `figma-agent job`'s
     // caller; a sweep that never runs breaks it silently.
     st.jobs.sweep();
-    sweepAbandonedChunks(st.pendingChunks, now, PARK_SWEEP_INTERVAL_MS);
+    const sweptChunks = sweepAbandonedChunks(st.pendingChunks, now, PARK_SWEEP_INTERVAL_MS);
+    if (sweptChunks.length > 0) {
+      const released = summarizeChunkCleanups(sweptChunks);
+      log(`request chunk sweep cleanup: requests=${released.requestCount} frames=${released.frameCount} utf8Bytes=${released.utf8Bytes}`);
+    }
     for (const [jobId, reservation] of [...st.dispatchReservations]) {
       if (reservation.deadline === undefined || now <= reservation.deadline) continue;
       settleDispatchReservation(jobId, reservation.generation, failedReservation(
