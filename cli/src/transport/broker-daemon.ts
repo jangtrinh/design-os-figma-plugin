@@ -1427,22 +1427,16 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
    * and put false metadata in `status`.
    */
   const admitChunk = (from: WebSocket, id: string, rawText: string, last: boolean): void => {
-    // A chunk belonging to an ALREADY-admitted job (running or queued) is a continuation
-    // of a request already fully classified — never re-admitted as a fresh request. The
-    // `existing.from === from` check (stage-4 fix round, minor 6) guards the theoretical
-    // collision or replay: an id received from a DIFFERENT connection must never be
-    // treated as a continuation of this job — it is a fresh, still-unadmitted request on
-    // its own per-connection buffer, where admission can refuse the duplicate safely.
     const existing = st.jobs.byRequestId(id);
-    if (existing !== undefined && existing.from === from) {
-      if (existing.state === 'running') {
-        const entry = st.registry.getByInstanceId(existing.targetInstanceId);
-        if (entry && entry.ws.readyState === WebSocket.OPEN) {
-          try { entry.ws.send(rawText); } catch { /* the running-job error path below catches this on the NEXT frame or the reply timeout */ }
-        }
+    const parked = st.waiting.find((request) => request.id === id);
+    if (existing !== undefined || parked !== undefined) {
+      const owner = existing?.from ?? parked?.from;
+      if (owner === from) {
+        log(`ignored chunk for request id ${id} already owned by ${existing ? `job ${existing.jobId}` : 'parked request'}`);
       } else {
-        // Still queued — the ordered frame set is held and sent verbatim at dequeue.
-        existing.requestFrames.push(rawText);
+        sendReplyErr(from, id, 'E_INVALID_ARGS',
+          `duplicate request id "${id}" is already owned by another request — retry with a fresh client-generated id`);
+        log(`refused duplicate chunk request id ${id}${existing ? ` (job ${existing.jobId})` : ' (parked)'}`);
       }
       return;
     }
@@ -1464,6 +1458,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       }
       if (complete === null || !isRequestMsg(complete)) throw new Error('chunked payload did not reassemble to a RequestMsg');
       assembled = complete;
+      if (assembled.id !== id) throw new Error('chunked payload request id does not match its outer chunk id');
     } catch (err) {
       sendReplyErr(from, id, 'E_CHUNK_LOST', `failed to reassemble chunked request: ${(err as Error).message}`);
       return;

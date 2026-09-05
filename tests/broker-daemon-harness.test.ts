@@ -221,6 +221,12 @@ async function pollJob(ws: WebSocket, jobId: string, reqId: string): Promise<{ j
   return reply.result as { job: JobInfo; resultFrames?: string[]; resultDropped?: boolean; lateReplyCount?: number };
 }
 
+async function expectChunkDuplicateRefused(ws: WebSocket, id: string): Promise<void> {
+  const refusal = nextFrame<ReplyErr>(ws, (frame) => (frame as ReplyErr).id === id);
+  ws.send(JSON.stringify({ id, seq: 0, last: false, chunk: '{' }));
+  expect((await refusal).error.code).toBe('E_INVALID_ARGS');
+}
+
 async function createReservedHead(prefix: string): Promise<{
   port: number;
   plugin: WebSocket;
@@ -353,6 +359,180 @@ describe('daemon harness — mutation admission', () => {
     expect(pluginFrames.frames.find((frame) => (frame as { id?: string }).id === request.id)).toMatchObject({
       targetFileKey: 'Raw/Target-Key',
     });
+  });
+
+  it('does not forward a later same-owner chunk after chunk admission, while preserving the original reply', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-chunk-owner', 'Chunk Owner', 'Raw/Chunk-Owner');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const id = 'c_chunk_owner_running';
+    const request = makeRequestFrame(id, 'SET_TEXT', { nodeId: '1:1', text: 'first' });
+    const serialized = JSON.stringify(request);
+    const cut = Math.floor(serialized.length / 2);
+    const jobState = nextFrame<EventMsg>(cli, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cli.send(JSON.stringify({ id, seq: 0, last: false, chunk: serialized.slice(0, cut) }));
+    cli.send(JSON.stringify({ id, seq: 1, last: true, chunk: serialized.slice(cut) }));
+    await jobState;
+    await waitFor(() => pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === id).length === 1);
+
+    const cliFrames = collectFrames(cli);
+    cli.send(JSON.stringify({ id, seq: 2, last: true, chunk: '{}' }));
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === id)).toHaveLength(1);
+    expect(cliFrames.frames.some((frame) => (frame as ReplyOk | ReplyErr).id === id)).toBe(false);
+
+    const originalReply = nextFrame<ReplyOk>(cli, (frame) => (frame as ReplyOk).id === id);
+    plugin.send(JSON.stringify({ id, ok: true, result: { owner: 'original' } } satisfies ReplyOk));
+    expect((await originalReply).result).toEqual({ owner: 'original' });
+  });
+
+  it('keeps a queued chunked request original-only after a later owner chunk', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-chunk-queued', 'Chunk Queued', 'Raw/Chunk-Queued');
+    const pluginFrames = collectFrames(plugin);
+    const cliA = await connectSocket(port);
+    await sendMutatingJob(cliA, 'c_chunk_queue_head');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_chunk_queue_head'));
+    const cliB = await connectSocket(port);
+    const id = 'c_chunk_queue_tail';
+    const serialized = JSON.stringify(makeRequestFrame(id, 'SET_TEXT', { nodeId: '1:1', text: 'queued' }));
+    const cut = Math.floor(serialized.length / 2);
+    const queued = nextFrame<EventMsg>(cliB, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    cliB.send(JSON.stringify({ id, seq: 0, last: false, chunk: serialized.slice(0, cut) }));
+    cliB.send(JSON.stringify({ id, seq: 1, last: true, chunk: serialized.slice(cut) }));
+    await queued;
+    cliB.send(JSON.stringify({ id, seq: 2, last: true, chunk: '{}' }));
+    plugin.send(JSON.stringify({ id: 'c_chunk_queue_head', ok: true, result: {} } satisfies ReplyOk));
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id));
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === id)).toHaveLength(1);
+  });
+
+  it('rejects an assembled request whose envelope id differs from its outer chunk id', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-chunk-envelope', 'Chunk Envelope', 'Raw/Chunk-Envelope');
+    const pluginFrames = collectFrames(plugin);
+    const cli = await connectSocket(port);
+    const outerId = 'c_chunk_outer';
+    const assembled = JSON.stringify(makeRequestFrame('c_chunk_inner', 'SET_TEXT', { nodeId: '1:1', text: 'x' }));
+    const refusal = nextFrame<ReplyErr>(cli, (frame) => (frame as ReplyErr).id === outerId);
+    cli.send(JSON.stringify({ id: outerId, seq: 0, last: true, chunk: assembled }));
+
+    expect((await refusal).error.code).toBe('E_CHUNK_LOST');
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+    expect(pluginFrames.frames.some((frame) => (frame as { id?: string }).id === outerId || (frame as { id?: string }).id === 'c_chunk_inner')).toBe(false);
+  });
+
+  it('keeps a parked request unchanged when its owner sends another chunk, then dispatches only the original', async () => {
+    const port = await startTestBroker();
+    const cli = await connectSocket(port);
+    const cliFrames = collectFrames(cli);
+    const id = 'c_chunk_parked';
+    const request = makeRequestFrame(
+      id, 'SET_TEXT', { nodeId: '1:1', text: 'parked' },
+      undefined, undefined, undefined, undefined, undefined, undefined, 'Raw/Chunk-Parked',
+    );
+    cli.send(JSON.stringify(request));
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+    cli.send(JSON.stringify({ id, seq: 0, last: true, chunk: '{}' }));
+    await new Promise((resolve) => setTimeout(resolve, HARNESS_SETTLE_MS));
+    expect(cliFrames.frames.some((frame) => (frame as { id?: string }).id === id)).toBe(false);
+
+    const other = await connectSocket(port);
+    const duplicate = nextFrame<ReplyErr>(other, (frame) => (frame as ReplyErr).id === id);
+    other.send(JSON.stringify({ id, seq: 0, last: false, chunk: '{' }));
+    expect((await duplicate).error.code).toBe('E_INVALID_ARGS');
+
+    const plugin = await connectSocket(port);
+    const pluginFrames = collectFrames(plugin);
+    await helloPlugin(plugin, 'p-chunk-parked', 'Chunk Parked', 'Raw/Chunk-Parked');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id));
+    expect(pluginFrames.frames.filter((frame) => (frame as { id?: string }).id === id)).toHaveLength(1);
+    expect(pluginFrames.frames.find((frame) => (frame as { id?: string }).id === id)).toMatchObject({
+      params: { nodeId: '1:1', text: 'parked' }, targetFileKey: 'Raw/Chunk-Parked',
+    });
+  });
+
+  it('refuses a chunked duplicate from a different socket without affecting the original owner', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-chunk-duplicate', 'Chunk Duplicate', 'Raw/Chunk-Duplicate');
+    const pluginFrames = collectFrames(plugin);
+    const first = await connectSocket(port);
+    const second = await connectSocket(port);
+    const id = 'c_chunk_other_socket';
+    const jobState = nextFrame<EventMsg>(first, (frame) => (frame as EventMsg).type === 'JOB_STATE');
+    first.send(JSON.stringify(makeRequestFrame(id, 'SET_TEXT', { nodeId: '1:1', text: 'first' })));
+    await jobState;
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id));
+
+    const duplicate = JSON.stringify(makeRequestFrame(id, 'SET_TEXT', { nodeId: '1:1', text: 'second' }));
+    const refusal = nextFrame<ReplyErr>(second, (frame) => (frame as ReplyErr).id === id);
+    second.send(JSON.stringify({ id, seq: 0, last: true, chunk: duplicate }));
+    expect((await refusal).error).toMatchObject({ code: 'E_INVALID_ARGS', message: expect.stringContaining('duplicate request id') });
+
+    const originalReply = nextFrame<ReplyOk>(first, (frame) => (frame as ReplyOk).id === id);
+    plugin.send(JSON.stringify({ id, ok: true, result: { owner: 'first' } } satisfies ReplyOk));
+    expect((await originalReply).result).toEqual({ owner: 'first' });
+  });
+
+  it('refuses non-final chunks immediately for done, failed, cancelled, and force-released retained jobs', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-chunk-terminal', 'Chunk Terminal', 'Raw/Chunk-Terminal');
+    const pluginFrames = collectFrames(plugin);
+    const owner = await connectSocket(port);
+    const other = await connectSocket(port);
+
+    const doneId = 'c_chunk_done';
+    const doneJob = await sendMutatingJob(owner, doneId);
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === doneId));
+    plugin.send(JSON.stringify({ id: doneId, ok: true, result: {} } satisfies ReplyOk));
+    await waitFor(async () => (await pollJob(owner, doneJob, 'c_chunk_done_poll')).job.state === 'done');
+    await expectChunkDuplicateRefused(other, doneId);
+
+    const failedId = 'c_chunk_failed';
+    const failedJob = await sendMutatingJob(owner, failedId);
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === failedId));
+    plugin.send(JSON.stringify({ id: failedId, ok: false, error: { code: 'E_INVALID_ARGS', message: 'failed' } } satisfies ReplyErr));
+    await waitFor(async () => (await pollJob(owner, failedJob, 'c_chunk_failed_poll')).job.state === 'failed');
+    await expectChunkDuplicateRefused(other, failedId);
+
+    const head = await sendMutatingJob(owner, 'c_chunk_cancel_head');
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === 'c_chunk_cancel_head'));
+    const cancelledId = 'c_chunk_cancelled';
+    const cancelledJob = await sendMutatingJob(owner, cancelledId);
+    owner.send(JSON.stringify(makeRequestFrame('c_chunk_cancel_command', 'JOB', { mode: 'cancel', jobId: cancelledJob })));
+    await nextFrame<ReplyOk>(owner, (frame) => (frame as ReplyOk).id === 'c_chunk_cancel_command');
+    await waitFor(async () => (await pollJob(owner, cancelledJob, 'c_chunk_cancel_poll')).job.state === 'cancelled');
+    await expectChunkDuplicateRefused(other, cancelledId);
+    plugin.send(JSON.stringify({ id: 'c_chunk_cancel_head', ok: true, result: { jobId: head } } satisfies ReplyOk));
+
+    const releasedId = 'c_chunk_force_released';
+    const releasedJob = await sendMutatingJob(owner, releasedId);
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === releasedId));
+    owner.send(JSON.stringify(makeRequestFrame('c_chunk_force_release_command', 'JOB', { mode: 'force-release', jobId: releasedJob, override: true })));
+    await nextFrame<ReplyOk>(owner, (frame) => (frame as ReplyOk).id === 'c_chunk_force_release_command');
+    await waitFor(async () => (await pollJob(owner, releasedJob, 'c_chunk_force_release_poll')).job.state === 'failed');
+    await expectChunkDuplicateRefused(other, releasedId);
+  });
+
+  it('refuses a non-final chunk for an outcome-unknown retained job', async () => {
+    const port = await startTestBroker();
+    const plugin = await connectSocket(port);
+    await helloPlugin(plugin, 'p-chunk-unknown', 'Chunk Unknown', 'Raw/Chunk-Unknown');
+    const pluginFrames = collectFrames(plugin);
+    const owner = await connectSocket(port);
+    const id = 'c_chunk_outcome_unknown';
+    const job = await sendMutatingJob(owner, id);
+    await waitFor(() => pluginFrames.frames.some((frame) => (frame as { id?: string }).id === id));
+    plugin.terminate();
+    await waitFor(async () => (await pollJob(owner, job, 'c_chunk_unknown_poll')).job.state === 'outcome-unknown');
+    const other = await connectSocket(port);
+    await expectChunkDuplicateRefused(other, id);
   });
 
   it('keeps an exact-key request parked when a different raw-key plugin reconnects, then dispatches only to the exact key', async () => {
@@ -1029,6 +1209,17 @@ describe('daemon harness — a watchdog-failed job answered late returns the tim
       const expired = nextFrame<ReplyErr>(cliA, (m) => (m as ReplyErr).id === 'req-watchdog-close-expired');
       cliA.send(JSON.stringify(makeRequestFrame('req-watchdog-close-expired', 'JOB', { mode: 'poll', jobId: jobA })));
       expect((await expired).error.code).toBe('E_JOB_EXPIRED');
+
+      const replacement = await connectSocket(port);
+      await helloPlugin(replacement, 'plugin-watchdog-close-replacement', 'Watchdog Close', 'RawWatchdogClose');
+      const replacementFrames = collectFrames(replacement);
+      const reused = JSON.stringify(makeRequestFrame('req-watchdog-close-a', 'SET_TEXT', { nodeId: '1:1', text: 'fresh' }));
+      const cut = Math.floor(reused.length / 2);
+      const admitted = nextFrame<EventMsg>(cliA, (m) => (m as EventMsg).type === 'JOB_STATE');
+      cliA.send(JSON.stringify({ id: 'req-watchdog-close-a', seq: 0, last: false, chunk: reused.slice(0, cut) }));
+      cliA.send(JSON.stringify({ id: 'req-watchdog-close-a', seq: 1, last: true, chunk: reused.slice(cut) }));
+      await admitted;
+      await waitFor(() => replacementFrames.frames.some((frame) => (frame as { id?: string }).id === 'req-watchdog-close-a'));
     } finally {
       dateNow.mockRestore();
     }
