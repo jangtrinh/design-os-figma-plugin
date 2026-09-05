@@ -377,10 +377,10 @@ async function handleRequest(req: RequestMsg): Promise<void> {
           requestId: req.id,
           cmd: 'IMPORT_GRADIENT',
           expectedFile: req.expectedFile,
-          // Array.from, not the Uint8Array: postMessage does not preserve a typed
-          // array's type, and main reconstructs from a plain numeric collection.
+          // Figma explicitly supports Uint8Array in UI messages. Main retains bounded
+          // array/object compatibility for panels built before this direct transport.
           params: {
-            bytes: Array.from(bytes),
+            bytes,
             nodeId: p.nodeId, config: p.config, slug: p.slug ?? null, renderer: p.renderer,
           },
         },

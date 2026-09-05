@@ -10,11 +10,16 @@
 // which renderer revision. Storing the query string means a later command can re-bake the
 // same field at a new size instead of asking the user to remember what they chose.
 
+import {
+  gradientBytesFromUnknown,
+  validateGradientPngHeader,
+} from '../../../shared/gradient-image-admission';
+
 /** Namespace key for the stored config. Read by any later re-bake. */
 export const GRADIENT_DATA_KEY = 'shaderGradientConfig';
 
 export interface ImportGradientParams {
-  /** PNG bytes from the UI render host. Arrives as a plain object across postMessage. */
+  /** PNG bytes from the UI render host. Older senders may use an array or numeric object. */
   bytes?: unknown;
   /** Target node id, or absent to use the current selection. */
   nodeId?: string;
@@ -34,18 +39,11 @@ export interface ImportGradientResult {
 }
 
 /**
- * postMessage does not preserve Uint8Array — a typed array crosses the boundary as a
- * plain object with numeric keys. Reconstructing it is mandatory; handing that object to
- * figma.createImage throws a type error far from its cause.
+ * Figma supports Uint8Array messages. Arrays and numeric-keyed objects remain accepted
+ * for older panels, but every representation is bounded and validated before allocation.
  */
 export function toBytes(raw: unknown): Uint8Array {
-  if (raw instanceof Uint8Array) return raw;
-  if (Array.isArray(raw)) return new Uint8Array(raw as number[]);
-  if (raw !== null && typeof raw === 'object') {
-    const values = Object.values(raw as Record<string, unknown>).filter((v): v is number => typeof v === 'number');
-    if (values.length > 0) return new Uint8Array(values);
-  }
-  throw new Error('IMPORT_GRADIENT: params.bytes did not carry image data');
+  return gradientBytesFromUnknown(raw);
 }
 
 /**
@@ -57,7 +55,7 @@ export function toBytes(raw: unknown): Uint8Array {
  */
 export async function importGradient(params: ImportGradientParams): Promise<ImportGradientResult> {
   const bytes = toBytes(params.bytes);
-  if (bytes.length === 0) throw new Error('IMPORT_GRADIENT: refusing to bake an empty image');
+  validateGradientPngHeader(bytes);
 
   let target: SceneNode | null = null;
   if (typeof params.nodeId === 'string' && params.nodeId !== '') {

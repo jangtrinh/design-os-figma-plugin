@@ -7344,20 +7344,92 @@
     return { sourceId: source.id, targetId: target.id, traits, applied, skipped };
   }
 
+  // shared/gradient-image-admission.ts
+  var MAX_GRADIENT_IMAGE_SIDE = 4096;
+  var MAX_GRADIENT_PNG_BYTES = 68 * 1024 * 1024;
+  var MAX_GRADIENT_PNG_BASE64_CHARS = 4 * Math.ceil(MAX_GRADIENT_PNG_BYTES / 3);
+  var PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+  var PNG_HEADER_BYTES = 33;
+  var GradientImageAdmissionError = class extends Error {
+    constructor(message) {
+      super(message);
+      __publicField(this, "code", "E_INVALID_ARGS");
+      this.name = "GradientImageAdmissionError";
+    }
+  };
+  function assertGradientPngByteLength(length) {
+    if (!Number.isSafeInteger(length) || length < PNG_HEADER_BYTES || length > MAX_GRADIENT_PNG_BYTES) {
+      throw new GradientImageAdmissionError(`gradient PNG must be ${PNG_HEADER_BYTES}-${MAX_GRADIENT_PNG_BYTES} bytes`);
+    }
+  }
+  function readUint32(bytes, offset) {
+    return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, false);
+  }
+  function validateGradientPngHeader(bytes, expected) {
+    assertGradientPngByteLength(bytes.length);
+    for (let index = 0; index < PNG_SIGNATURE.length; index++) {
+      if (bytes[index] !== PNG_SIGNATURE[index]) {
+        throw new GradientImageAdmissionError("gradient image is missing the PNG signature");
+      }
+    }
+    if (readUint32(bytes, 8) !== 13 || bytes[12] !== 73 || bytes[13] !== 72 || bytes[14] !== 68 || bytes[15] !== 82) {
+      throw new GradientImageAdmissionError("gradient image is missing a canonical IHDR chunk");
+    }
+    const width = readUint32(bytes, 16);
+    const height = readUint32(bytes, 20);
+    if (width < 1 || height < 1 || width > MAX_GRADIENT_IMAGE_SIDE || height > MAX_GRADIENT_IMAGE_SIDE) {
+      throw new GradientImageAdmissionError("gradient PNG dimensions are outside the supported bound");
+    }
+    if (expected && (width !== expected.width || height !== expected.height)) {
+      throw new GradientImageAdmissionError(
+        `gradient PNG dimensions ${width}x${height} do not match requested ${expected.width}x${expected.height}`
+      );
+    }
+    return { width, height };
+  }
+  function validateByte(value, index) {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+      throw new GradientImageAdmissionError(`gradient image byte ${index} is not an integer from 0 to 255`);
+    }
+  }
+  function gradientBytesFromUnknown(raw2) {
+    if (raw2 instanceof Uint8Array) {
+      assertGradientPngByteLength(raw2.length);
+      return raw2;
+    }
+    if (Array.isArray(raw2)) {
+      assertGradientPngByteLength(raw2.length);
+      const keys = Object.keys(raw2);
+      if (keys.length !== raw2.length) throw new GradientImageAdmissionError("gradient image array must be dense and carry no extra keys");
+      for (let index = 0; index < raw2.length; index++) {
+        if (keys[index] !== String(index)) throw new GradientImageAdmissionError("gradient image array keys must be contiguous");
+        validateByte(raw2[index], index);
+      }
+      return new Uint8Array(raw2);
+    }
+    if (raw2 !== null && typeof raw2 === "object") {
+      const keys = Reflect.ownKeys(raw2);
+      assertGradientPngByteLength(keys.length);
+      const source = raw2;
+      for (let index = 0; index < keys.length; index++) {
+        if (keys[index] !== String(index)) throw new GradientImageAdmissionError("gradient image object keys must be contiguous canonical integers");
+        validateByte(source[String(index)], index);
+      }
+      const bytes = new Uint8Array(keys.length);
+      for (let index = 0; index < keys.length; index++) bytes[index] = source[String(index)];
+      return bytes;
+    }
+    throw new GradientImageAdmissionError("gradient image bytes must be a Uint8Array, dense array, or numeric-keyed object");
+  }
+
   // plugin/src/main/executor-gradient.ts
   var GRADIENT_DATA_KEY = "shaderGradientConfig";
   function toBytes(raw2) {
-    if (raw2 instanceof Uint8Array) return raw2;
-    if (Array.isArray(raw2)) return new Uint8Array(raw2);
-    if (raw2 !== null && typeof raw2 === "object") {
-      const values = Object.values(raw2).filter((v) => typeof v === "number");
-      if (values.length > 0) return new Uint8Array(values);
-    }
-    throw new Error("IMPORT_GRADIENT: params.bytes did not carry image data");
+    return gradientBytesFromUnknown(raw2);
   }
   async function importGradient(params) {
     const bytes = toBytes(params.bytes);
-    if (bytes.length === 0) throw new Error("IMPORT_GRADIENT: refusing to bake an empty image");
+    validateGradientPngHeader(bytes);
     let target = null;
     if (typeof params.nodeId === "string" && params.nodeId !== "") {
       const node = await figma.getNodeByIdAsync(params.nodeId);
