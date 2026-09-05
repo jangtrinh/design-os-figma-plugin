@@ -8,69 +8,50 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 
 import { importGradient, toBytes, GRADIENT_DATA_KEY } from '../plugin/src/main/executor-gradient';
-
-interface FakeNode {
-  id: string;
-  name: string;
-  type: string;
-  fills?: unknown;
-  pluginData: Record<string, string>;
-  setPluginData(k: string, v: string): void;
-}
-
-function makeNode(over: Partial<FakeNode> = {}): FakeNode {
-  const node: FakeNode = {
-    id: over.id ?? '1:2',
-    name: over.name ?? 'Hero',
-    type: over.type ?? 'RECTANGLE',
-    fills: 'fills' in over ? over.fills : [],
-    pluginData: {},
-    setPluginData(k, v) { this.pluginData[k] = v; },
-  };
-  if (!('fills' in over)) node.fills = [];
-  else if (over.fills === undefined) delete (node as Partial<FakeNode>).fills;
-  return node;
-}
+import { PNG_DATA_URL } from './gradient-png-fixture';
+import { makeNode, type FakeNode } from './gradient-node-fixture';
 
 let nodes: Record<string, FakeNode>;
 let selection: FakeNode[];
 let createdBytes: Uint8Array[];
+let getNodeByIdAsync: ReturnType<typeof vi.fn>;
+
+const PNG = Uint8Array.from(Buffer.from(PNG_DATA_URL.split(',')[1]!, 'base64'));
 
 beforeEach(() => {
   nodes = {};
   selection = [];
   createdBytes = [];
+  getNodeByIdAsync = vi.fn(async (id: string) => nodes[id] ?? null);
   (globalThis as Record<string, unknown>).figma = {
-    getNodeByIdAsync: vi.fn(async (id: string) => nodes[id] ?? null),
+    getNodeByIdAsync,
     currentPage: { get selection() { return selection; } },
     createImage: (bytes: Uint8Array) => {
-      // Figma throws on empty/invalid image data rather than returning a null hash.
-      if (!bytes || bytes.length === 0) throw new Error('Image data is empty');
+      // Model the native decoder refusal instead of accepting every non-empty array.
+      if (!Buffer.from(bytes).equals(Buffer.from(PNG))) throw new Error('Image data is invalid');
       createdBytes.push(bytes);
       return { hash: `hash_${bytes.length}` };
     },
   };
 });
 
-const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
-
-describe('toBytes — the postMessage typed-array problem', () => {
+describe('toBytes — supported Figma message representations', () => {
   it('passes a real Uint8Array through', () => {
     expect(toBytes(PNG)).toEqual(PNG);
   });
 
   it('reconstructs from a plain array', () => {
-    expect(toBytes([1, 2, 3])).toEqual(new Uint8Array([1, 2, 3]));
+    expect(toBytes(Array.from(PNG))).toEqual(PNG);
   });
 
-  it('reconstructs from the numeric-keyed object postMessage actually delivers', () => {
-    // This is the real wire shape — a Uint8Array does not survive postMessage as one.
-    expect(toBytes({ '0': 9, '1': 8 })).toEqual(new Uint8Array([9, 8]));
+  it('retains compatibility with a contiguous numeric-keyed object', () => {
+    const object = Object.fromEntries(Array.from(PNG, (byte, index) => [String(index), byte]));
+    expect(toBytes(object)).toEqual(PNG);
   });
 
   it('throws on data that carries no image bytes', () => {
-    expect(() => toBytes(undefined)).toThrow(/did not carry image data/);
-    expect(() => toBytes('nope')).toThrow(/did not carry image data/);
+    expect(() => toBytes(undefined)).toThrow(/must be a Uint8Array/);
+    expect(() => toBytes('nope')).toThrow(/must be a Uint8Array/);
   });
 });
 
@@ -119,10 +100,26 @@ describe('importGradient — target resolution', () => {
 });
 
 describe('importGradient — the bake itself', () => {
-  it('refuses empty image data before calling createImage', async () => {
+  it('refuses empty image data before resolving a target or calling createImage', async () => {
     nodes['1:2'] = makeNode();
-    await expect(importGradient({ bytes: [], nodeId: '1:2' })).rejects.toThrow(/empty image/);
+    await expect(importGradient({ bytes: [], nodeId: '1:2' })).rejects.toMatchObject({
+      code: 'E_INVALID_ARGS', message: expect.stringMatching(/33-/),
+    });
+    expect(getNodeByIdAsync).not.toHaveBeenCalled();
     expect(createdBytes).toHaveLength(0);
+  });
+
+  it.each([
+    ['sparse array', (() => { const value = Array.from(PNG); delete value[4]; return value; })()],
+    ['out-of-range byte', Array.from(PNG, (byte, index) => index === 4 ? 256 : byte)],
+    ['non-canonical object', { ...Object.fromEntries(Array.from(PNG, (byte, index) => [String(index), byte])), extra: 0 }],
+    ['non-PNG bytes', new Uint8Array(PNG.length)],
+  ])('refuses %s before any scene or image API call', async (_label, bytes) => {
+    nodes['1:2'] = makeNode();
+    await expect(importGradient({ bytes, nodeId: '1:2' })).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
+    expect(getNodeByIdAsync).not.toHaveBeenCalled();
+    expect(createdBytes).toHaveLength(0);
+    expect(nodes['1:2']!.fills).toEqual([]);
   });
 
   it('replaces every existing paint rather than layering over it', async () => {
@@ -174,6 +171,15 @@ describe('importGradient — the bake itself', () => {
     await expect(
       importGradient({ bytes: Array.from(PNG), nodeId: '1:2', config: 'a=1' }),
     ).rejects.toThrow('Image data is invalid');
+    expect(nodes['1:2']!.pluginData[GRADIENT_DATA_KEY]).toBeUndefined();
+  });
+
+  it('leaves final decodability to Figma after bounded PNG header admission', async () => {
+    nodes['1:2'] = makeNode({ fills: [{ type: 'SOLID' }] });
+    const headerOnly = PNG.slice(0, 33);
+    await expect(importGradient({ bytes: headerOnly, nodeId: '1:2', config: 'a=1' }))
+      .rejects.toThrow('Image data is invalid');
+    expect(nodes['1:2']!.fills).toEqual([{ type: 'SOLID' }]);
     expect(nodes['1:2']!.pluginData[GRADIENT_DATA_KEY]).toBeUndefined();
   });
 });
