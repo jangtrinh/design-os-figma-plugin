@@ -93,6 +93,21 @@ the requested file and listing the ones actually connected. Mutating commands wa
 to skip) for a plugin whose name matches `--file` exactly before dispatching, so a command issued right
 after the broker went idle does not fail with `E_FILE_KEY_UNAVAILABLE`.
 
+## Payload import admission
+
+Direct `IMPORT_PAYLOAD` requests and HTML converter results are validated in the UI relay;
+the main importer validates again before creating styles, variables, or nodes. Invalid
+fields, active cycles, unrecognized properties, and inputs above the admission budgets
+return `E_INVALID_ARGS`. Direct and `{ payload, x, y, parentId, replaceId }` envelopes remain
+supported. Omitted or legacy `null` token groups become empty arrays before import consumers
+receive them; valid repeated object references are allowed.
+
+The current node, depth, string, image, token, and aggregate budgets are defined in
+[`IMPORT_PAYLOAD_LIMITS`](../shared/figma-payload-validation-context.ts). Image strings have
+separate headroom for the existing 8 MiB image producer's base64 output. These admission
+budgets bound validation and forwarding; they do not isolate arbitrary renderer JavaScript
+or establish a whole-process memory limit.
+
 ## Troubleshooting
 
 - **Panel says "No broker yet" and never connects** — that's the resting state; it only connects once a CLI

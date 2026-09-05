@@ -39,6 +39,7 @@ import {
 import { structuralDiff } from '../cli/src/util/structural-diff.ts';
 import { getImportWarnings, resetImportWarnings } from '../plugin/src/main/executor-styles.ts';
 import type { FigmaExportNode } from '../shared/figma-payload-types.ts';
+import { validateImportPayload } from '../shared/figma-payload-validation.ts';
 import type { ScannedNode } from '../plugin/src/main/scan-node.ts';
 
 // Install the mock BEFORE any builder call (executors read `figma` at call time).
@@ -81,6 +82,16 @@ async function build(spec: FigmaExportNode, vars?: Vars, tokenNames = namesOf(va
  */
 async function roundTrips(spec0: FigmaExportNode, vars?: Vars): Promise<[ScannedNode, ScannedNode]> {
   const spec1 = await build(spec0, vars);
+  validateImportPayload({
+    payload: {
+      version: 1,
+      name: spec1.name,
+      width: spec1.width ?? 0,
+      height: spec1.height ?? 0,
+      tokens: { colors: [], typography: [], spacing: [], radii: [], shadows: [] },
+      rootNode: spec1,
+    },
+  });
   const spec2 = await build(spec1, vars);
   return [spec1, spec2];
 }
@@ -119,6 +130,12 @@ describe('fixed point — auto-layout FRAME with text children', () => {
 
   it('reaches a fixed point (spec1 === spec2)', async () => {
     const [spec1, spec2] = await roundTrips(card);
+    expectFixedPoint(spec1, spec2);
+  });
+
+  it('preserves source-supported negative overlap spacing through scan and admission', async () => {
+    const [spec1, spec2] = await roundTrips({ ...card, itemSpacing: -8 });
+    expect(spec1.itemSpacing).toBe(-8);
     expectFixedPoint(spec1, spec2);
   });
 

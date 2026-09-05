@@ -26,6 +26,8 @@ import {
 import { createPreOpenBuffer, handshakeBatch, isBufferableFrame, stampCapturedFrame } from './outbound-buffer';
 import { flushHandshake, refuseAdoption } from './socket-adoption';
 import { renderHtmlToPayload } from './render-host';
+import { forwardValidatedDirectImport, forwardValidatedHtmlImport } from '../../../shared/figma-payload-validation-relay';
+import { PayloadValidationError } from '../../../shared/figma-payload-validation';
 import { renderGradientToPng, GradientRenderError } from './gradient-host';
 import { summarizeError, summarizeResult } from './activity-summary';
 import { createHeartbeatDriver } from './heartbeat-driver';
@@ -276,7 +278,7 @@ function handleChunk(c: ChunkMsg): void {
   handleWireData(buf.join(''));
 }
 
-// ─── Request routing: HTML_TO_FIGMA converts here, rest passes to main ──
+// ─── Request routing: HTML converts, direct payload imports admit, rest passes ──
 interface HtmlToFigmaParams {
   html?: string; width?: number; name?: string;
   x?: number; y?: number; parentId?: string; replaceId?: string;
@@ -305,14 +307,12 @@ async function handleRequest(req: RequestMsg): Promise<void> {
       setStatusText('connected', 'ok');
       // The HTML render above still runs before main can refuse a wrong-file HTML_TO_FIGMA —
       // wasted work only; the iframe cannot touch the scene, and main's guard still fires here.
-      parent.postMessage({
-        pluginMessage: {
-          requestId: req.id,
-          cmd: 'IMPORT_PAYLOAD',
-          expectedFile: req.expectedFile,
-          params: { payload, x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId },
-        },
-      }, '*');
+      forwardValidatedHtmlImport({
+        requestId: req.id,
+        expectedFile: req.expectedFile,
+        payload,
+        placement: { x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId },
+      }, (message) => parent.postMessage(message, '*'));
     } else if (req.cmd === 'SHADER_GRADIENT_PROBE') {
       // Read-only capability probe. Renders a deliberately tiny field and reports the
       // outcome; it never posts IMPORT_GRADIENT, so no node and no fill is ever touched.
@@ -384,6 +384,13 @@ async function handleRequest(req: RequestMsg): Promise<void> {
           },
         },
       }, '*');
+    } else if (req.cmd === 'IMPORT_PAYLOAD') {
+      forwardValidatedDirectImport({
+        requestId: req.id,
+        expectedFile: req.expectedFile,
+        params: req.params,
+        readOnly: req.readOnly,
+      }, (message) => parent.postMessage(message, '*'));
     } else {
       // Everything else is a main-thread op — forward unchanged. `readOnly` is carried
       // through here (never forwarded before this — main.ts never saw it regardless of
@@ -400,6 +407,11 @@ async function handleRequest(req: RequestMsg): Promise<void> {
   } catch (err) {
     setStatusText('connected', 'ok');
     const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof PayloadValidationError) {
+      sendErr(req.id, err.code, message);
+      emitActivity(req.id, false, { code: err.code, message });
+      return;
+    }
     // A gradient render failure carries its OWN reason (no WebGL, CDN unreachable,
     // empty capture). Collapsing it into a bare E_PLUGIN_ERROR would leave the user
     // with a command that "just failed" and no way to tell which of those it was.

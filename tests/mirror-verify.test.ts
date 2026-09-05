@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { parseArgs } from '../cli/src/arg-parse.ts';
 import { COMMAND_TIMEOUTS } from '../shared/protocol.ts';
 import { execute, normalizeForDiff } from '../cli/src/commands/mirror-verify.ts';
+import { validateImportPayload } from '../shared/figma-payload-validation.ts';
 
 interface Call { cmd: string; params: unknown; opts?: { timeoutMs?: number } }
 
@@ -39,7 +40,10 @@ function fakePlugin(specs: unknown[], calls: Call[], warnings: string[] = []) {
   const queue = [...specs];
   return async (cmd: string, params: unknown, opts?: { timeoutMs?: number }) => {
     calls.push({ cmd, params, opts });
-    if (cmd === 'IMPORT_PAYLOAD') return { id: '99:1', name: 'Card', warnings };
+    if (cmd === 'IMPORT_PAYLOAD') {
+      validateImportPayload(params);
+      return { id: '99:1', name: 'Card', warnings };
+    }
     const code = String((params as { code: string }).code);
     if (code.includes('.remove()')) return execJsReply({ removed: true });
     return execJsReply(queue.shift());

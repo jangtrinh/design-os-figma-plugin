@@ -1,5 +1,9 @@
 "use strict";
 (() => {
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
   // shared/protocol.ts
   var DEFAULT_IDLE_MS = 3e5;
   var MIN_IDLE_MS = 1e3;
@@ -2260,77 +2264,663 @@
     return { id: node.id, field, variable: variable.name };
   }
 
-  // plugin/src/main/executor-keyed-vars.ts
-  var resolvedByKey = /* @__PURE__ */ new Map();
-  var localByKey = null;
-  function resetKeyedVariableCache() {
-    resolvedByKey.clear();
-    localByKey = null;
-  }
-  async function readLocalVariablesByKey() {
-    if (localByKey) return localByKey;
-    const map = /* @__PURE__ */ new Map();
-    try {
-      for (const v of await figma.variables.getLocalVariablesAsync()) {
-        if (typeof v.key === "string" && v.key) map.set(v.key, v);
-      }
-    } catch {
+  // shared/figma-payload-validation-context.ts
+  var IMPORT_PAYLOAD_LIMITS = {
+    aggregateBytes: 64 * 1024 * 1024,
+    totalEntries: 5e6,
+    nodes: 1e5,
+    depth: 256,
+    textChars: 1024 * 1024,
+    imageChars: 16 * 1024 * 1024,
+    svgChars: 16 * 1024 * 1024,
+    arrayEntries: 1e5,
+    recordEntries: 1e4,
+    recordKeyChars: 16384,
+    tokenGroup: 1e4,
+    motionSteps: 1e4
+  };
+  var PayloadValidationError = class extends Error {
+    constructor(message) {
+      super(`IMPORT_PAYLOAD rejected: ${message}`);
+      __publicField(this, "code", "E_INVALID_ARGS");
+      this.name = "PayloadValidationError";
     }
-    localByKey = map;
-    return map;
+  };
+  function jsonStringBytes(value) {
+    let bytes = 2;
+    for (let i = 0; i < value.length; i++) {
+      const unit = value.charCodeAt(i);
+      if (unit === 34 || unit === 92) bytes += 2;
+      else if (unit === 8 || unit === 9 || unit === 10 || unit === 12 || unit === 13) bytes += 2;
+      else if (unit < 32) bytes += 6;
+      else if (unit < 128) bytes += 1;
+      else if (unit < 2048) bytes += 2;
+      else if (unit >= 55296 && unit <= 56319 && i + 1 < value.length && (value.charCodeAt(i + 1) & 64512) === 56320) {
+        bytes += 4;
+        i += 1;
+      } else if (unit >= 55296 && unit <= 57343) bytes += 6;
+      else bytes += 3;
+    }
+    return bytes;
   }
-  async function resolveKeyedVariable(key) {
-    const cached = resolvedByKey.get(key);
-    if (cached !== void 0) return cached;
-    let variable = (await readLocalVariablesByKey()).get(key) ?? null;
-    if (!variable) {
-      try {
-        variable = await figma.variables.importVariableByKeyAsync(key);
-      } catch (err) {
-        pushImportWarning(`variable resolve failed for key ${key}: not local, and import failed: ${String(err)}`);
+  var ValidationContext = class {
+    constructor(overrides = {}) {
+      __publicField(this, "limits");
+      __publicField(this, "aggregateBytes", 0);
+      __publicField(this, "totalEntries", 0);
+      __publicField(this, "nodeCount", 0);
+      __publicField(this, "active", /* @__PURE__ */ new WeakSet());
+      this.limits = { ...IMPORT_PAYLOAD_LIMITS, ...overrides };
+    }
+    fail(path, message) {
+      throw new PayloadValidationError(`${path} ${message}`);
+    }
+    addBytes(bytes, path) {
+      this.aggregateBytes += bytes;
+      if (this.aggregateBytes > this.limits.aggregateBytes) {
+        this.fail(path, `exceeds aggregate budget ${this.limits.aggregateBytes} bytes`);
       }
     }
-    resolvedByKey.set(key, variable);
-    return variable;
-  }
-  async function applyKeyedBindings(node, bindings) {
-    for (const [field, ref] of Object.entries(bindings)) {
-      if (!ref || typeof ref.key !== "string" || !ref.key) continue;
-      const variable = await resolveKeyedVariable(ref.key);
-      if (!variable) {
-        pushImportWarning(`keyed bind ${field}\u2192${ref.name ?? ref.key} skipped on "${node.name}": key not resolvable \u2014 literal value kept`);
-        continue;
+    addEntry(path) {
+      this.totalEntries += 1;
+      if (this.totalEntries > this.limits.totalEntries) {
+        this.fail(path, `exceeds aggregate entry budget ${this.limits.totalEntries}`);
       }
+    }
+    object(value, path, allowed, visit, maxKeys = allowed?.size ?? this.limits.recordEntries) {
+      if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+        this.fail(path, "must be a plain object");
+      }
+      if (this.active.has(value)) this.fail(path, "must not contain an active cycle");
+      this.active.add(value);
+      this.addBytes(2, path);
       try {
-        bindVariableToField(node, field, variable);
-      } catch (err) {
-        pushImportWarning(`keyed bind ${field}\u2192${ref.name ?? ref.key} failed on "${node.name}": ${String(err)}`);
+        let count = 0;
+        for (const key in value) {
+          if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+          count += 1;
+          if (count > maxKeys) this.fail(path, `must have at most ${maxKeys} fields`);
+          if (key.length > this.limits.recordKeyChars) {
+            this.fail(`${path} key`, `must be at most ${this.limits.recordKeyChars} characters`);
+          }
+          this.addEntry(`${path}.${key}`);
+          this.addBytes(jsonStringBytes(key) + 2, `${path}.${key}`);
+          if (allowed && !allowed.has(key)) this.fail(`${path}.${key}`, "is not a supported field");
+        }
+        return visit(value);
+      } finally {
+        this.active.delete(value);
       }
+    }
+    array(value, path, max, visit, min = 0) {
+      if (!Array.isArray(value) || value.length < min || value.length > max) {
+        this.fail(path, `must be an array with ${min}..${max} entries`);
+      }
+      for (const key in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        const index = Number(key);
+        if (key.length > this.limits.recordKeyChars || !Number.isInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
+          this.fail(path, "must not contain enumerable non-index fields");
+        }
+      }
+      if (this.active.has(value)) this.fail(path, "must not contain an active cycle");
+      this.active.add(value);
+      this.addBytes(2, path);
+      try {
+        for (let i = 0; i < value.length; i++) {
+          this.addEntry(`${path}[${i}]`);
+          this.addBytes(1, `${path}[${i}]`);
+          visit(value[i], i);
+        }
+      } finally {
+        this.active.delete(value);
+      }
+    }
+    string(value, path, max = this.limits.textChars) {
+      if (typeof value !== "string" || value.length > max) {
+        this.fail(path, `must be a string no longer than ${max} characters`);
+      }
+      this.addBytes(jsonStringBytes(value), path);
+      return value;
+    }
+    number(value, path, min = -Infinity, max = Infinity) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+        this.fail(path, `must be a finite number between ${min} and ${max}`);
+      }
+      this.addBytes(24, path);
+      return value;
+    }
+    integer(value, path, min = 0) {
+      const parsed = this.number(value, path, min);
+      if (!Number.isInteger(parsed)) this.fail(path, "must be an integer");
+      return parsed;
+    }
+    boolean(value, path) {
+      if (typeof value !== "boolean") this.fail(path, "must be boolean");
+      this.addBytes(5, path);
+      return value;
+    }
+    enumValue(value, path, values) {
+      const parsed = this.string(value, path, 128);
+      if (!values.includes(parsed)) this.fail(path, `must be one of ${values.join(", ")}`);
+      return parsed;
+    }
+    node(path, depth) {
+      if (depth > this.limits.depth) this.fail(path, `exceeds maximum depth ${this.limits.depth}`);
+      this.nodeCount += 1;
+      if (this.nodeCount > this.limits.nodes) this.fail(path, `exceeds maximum node count ${this.limits.nodes}`);
+    }
+  };
+
+  // shared/figma-payload-validation-values.ts
+  var COLOR_FIELDS = /* @__PURE__ */ new Set(["r", "g", "b", "a"]);
+  var FILL_FIELDS = /* @__PURE__ */ new Set(["type", "color", "gradientStops", "gradientTransform"]);
+  var EFFECT_FIELDS = /* @__PURE__ */ new Set(["type", "offset", "radius", "spread", "color"]);
+  var OFFSET_FIELDS = /* @__PURE__ */ new Set(["x", "y"]);
+  var KEYED_BINDING_FIELDS = /* @__PURE__ */ new Set(["key", "name"]);
+  var TEXT_SEGMENT_FIELDS = /* @__PURE__ */ new Set([
+    "characters",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "fontStyle",
+    "lineHeight",
+    "letterSpacing",
+    "textColor",
+    "textDecoration",
+    "textCase"
+  ]);
+  var MOTION_FIELDS = /* @__PURE__ */ new Set(["steps", "durationSec", "easing"]);
+  var MOTION_STEP_FIELDS = /* @__PURE__ */ new Set(["offset", "style"]);
+  var MOTION_STYLE_FIELDS = /* @__PURE__ */ new Set(["opacity", "transform"]);
+  function required(item, key, path, context) {
+    if (!Object.prototype.hasOwnProperty.call(item, key)) context.fail(`${path}.${key}`, "is required");
+    return item[key];
+  }
+  function validateColor(value, path, context) {
+    context.object(value, path, COLOR_FIELDS, (item) => {
+      for (const key of COLOR_FIELDS) context.number(required(item, key, path, context), `${path}.${key}`, 0, 1);
+    });
+  }
+  function validateFill(value, path, context) {
+    context.object(value, path, FILL_FIELDS, (item) => {
+      const type = context.enumValue(required(item, "type", path, context), `${path}.type`, [
+        "SOLID",
+        "GRADIENT_LINEAR",
+        "GRADIENT_RADIAL",
+        "GRADIENT_ANGULAR"
+      ]);
+      if (type === "SOLID") {
+        validateColor(required(item, "color", path, context), `${path}.color`, context);
+        if (item.gradientStops !== void 0 || item.gradientTransform !== void 0) {
+          context.fail(path, "SOLID fills must not contain gradient fields");
+        }
+        return;
+      }
+      if (item.color !== void 0) context.fail(`${path}.color`, "is only supported for SOLID fills");
+      context.array(required(item, "gradientStops", path, context), `${path}.gradientStops`, context.limits.arrayEntries, (stop, i) => {
+        const stopPath = `${path}.gradientStops[${i}]`;
+        context.object(stop, stopPath, /* @__PURE__ */ new Set(["color", "position"]), (entry) => {
+          validateColor(required(entry, "color", stopPath, context), `${stopPath}.color`, context);
+          context.number(required(entry, "position", stopPath, context), `${stopPath}.position`, 0, 1);
+        });
+      }, 2);
+      context.array(required(item, "gradientTransform", path, context), `${path}.gradientTransform`, 2, (row, i) => {
+        context.array(row, `${path}.gradientTransform[${i}]`, 3, (entry, j) => {
+          context.number(entry, `${path}.gradientTransform[${i}][${j}]`);
+        }, 3);
+      }, 2);
+    });
+  }
+  function validateEffect(value, path, context) {
+    context.object(value, path, EFFECT_FIELDS, (item) => {
+      context.enumValue(required(item, "type", path, context), `${path}.type`, [
+        "DROP_SHADOW",
+        "INNER_SHADOW",
+        "LAYER_BLUR",
+        "BACKGROUND_BLUR"
+      ]);
+      context.number(required(item, "radius", path, context), `${path}.radius`, 0);
+      if (item.spread !== void 0) context.number(item.spread, `${path}.spread`);
+      if (item.color !== void 0) validateColor(item.color, `${path}.color`, context);
+      if (item.offset !== void 0) context.object(item.offset, `${path}.offset`, OFFSET_FIELDS, (offset) => {
+        context.number(required(offset, "x", `${path}.offset`, context), `${path}.offset.x`);
+        context.number(required(offset, "y", `${path}.offset`, context), `${path}.offset.y`);
+      });
+    });
+  }
+  function validateRecord(value, path, context, visit) {
+    context.object(value, path, null, (item) => {
+      for (const key in item) {
+        if (Object.prototype.hasOwnProperty.call(item, key)) visit(item[key], `${path}.${key}`);
+      }
+    });
+  }
+  function validateKeyedBindings(value, path, context) {
+    validateRecord(value, path, context, (entry, entryPath) => {
+      context.object(entry, entryPath, KEYED_BINDING_FIELDS, (binding) => {
+        context.string(required(binding, "key", entryPath, context), `${entryPath}.key`);
+        if (binding.name !== void 0) context.string(binding.name, `${entryPath}.name`);
+      });
+    });
+  }
+  function validateStringRecord(value, path, context) {
+    validateRecord(value, path, context, (entry, entryPath) => context.string(entry, entryPath));
+  }
+  function validatePrimitiveRecord(value, path, context) {
+    validateRecord(value, path, context, (entry, entryPath) => {
+      if (typeof entry === "number") context.number(entry, entryPath);
+      else context.string(entry, entryPath);
+    });
+  }
+  function validateComponentProperties(value, path, context) {
+    validateRecord(value, path, context, (entry, entryPath) => {
+      if (typeof entry === "boolean") context.boolean(entry, entryPath);
+      else context.string(entry, entryPath);
+    });
+  }
+  function validateTextSegments(value, path, context) {
+    context.array(value, path, context.limits.arrayEntries, (entry, i) => {
+      const entryPath = `${path}[${i}]`;
+      context.object(entry, entryPath, TEXT_SEGMENT_FIELDS, (segment) => {
+        context.string(required(segment, "characters", entryPath, context), `${entryPath}.characters`);
+        if (segment.fontFamily !== void 0) context.string(segment.fontFamily, `${entryPath}.fontFamily`);
+        for (const key of ["fontSize", "fontWeight", "lineHeight"]) if (segment[key] !== void 0) {
+          context.number(segment[key], `${entryPath}.${key}`, 0);
+        }
+        if (segment.letterSpacing !== void 0) context.number(segment.letterSpacing, `${entryPath}.letterSpacing`);
+        if (segment.fontStyle !== void 0) context.enumValue(segment.fontStyle, `${entryPath}.fontStyle`, ["normal", "italic"]);
+        if (segment.textDecoration !== void 0) context.enumValue(segment.textDecoration, `${entryPath}.textDecoration`, ["UNDERLINE", "STRIKETHROUGH"]);
+        if (segment.textCase !== void 0) context.enumValue(segment.textCase, `${entryPath}.textCase`, ["UPPER", "LOWER", "TITLE"]);
+        if (segment.textColor !== void 0) validateColor(segment.textColor, `${entryPath}.textColor`, context);
+      });
+    });
+  }
+  function validateMotion(value, path, context) {
+    context.object(value, path, MOTION_FIELDS, (motion) => {
+      context.number(required(motion, "durationSec", path, context), `${path}.durationSec`, 0);
+      if (motion.easing !== void 0) context.string(motion.easing, `${path}.easing`);
+      context.array(required(motion, "steps", path, context), `${path}.steps`, context.limits.motionSteps, (entry, i) => {
+        const entryPath = `${path}.steps[${i}]`;
+        context.object(entry, entryPath, MOTION_STEP_FIELDS, (step) => {
+          context.number(required(step, "offset", entryPath, context), `${entryPath}.offset`, 0, 1);
+          context.object(required(step, "style", entryPath, context), `${entryPath}.style`, MOTION_STYLE_FIELDS, (style) => {
+            for (const key of MOTION_STYLE_FIELDS) if (style[key] !== void 0) context.string(style[key], `${entryPath}.style.${key}`);
+          });
+        });
+      });
+    });
+  }
+
+  // shared/figma-payload-validation-node-details.ts
+  var TOKEN_REF_FIELDS = /* @__PURE__ */ new Set(["fill", "stroke", "textColor", "radius", "gap", "padding"]);
+  var INNER_OVERRIDE_FIELDS = /* @__PURE__ */ new Set([
+    "childKey",
+    "fields",
+    "componentKey",
+    "componentId",
+    "componentProperties",
+    "visual",
+    "figmaScanFillSize"
+  ]);
+  var INNER_VISUAL_FIELDS = /* @__PURE__ */ new Set([
+    "fills",
+    "strokes",
+    "effects",
+    "effectStyleId",
+    "visible",
+    "opacity",
+    "keyedBindings"
+  ]);
+  var FILL_SIZE_FIELDS = /* @__PURE__ */ new Set(["width", "height"]);
+  function required2(item, key, path, context) {
+    if (!Object.prototype.hasOwnProperty.call(item, key)) context.fail(`${path}.${key}`, "is required");
+    return item[key];
+  }
+  function validateTokenRefs(value, path, context) {
+    context.object(value, path, TOKEN_REF_FIELDS, (refs) => {
+      for (const key of TOKEN_REF_FIELDS) if (refs[key] !== void 0) context.string(refs[key], `${path}.${key}`);
+    });
+  }
+  function validateInnerVisual(value, path, context) {
+    context.object(value, path, INNER_VISUAL_FIELDS, (visual) => {
+      for (const key of ["fills", "strokes"]) if (visual[key] !== void 0) {
+        context.array(visual[key], `${path}.${key}`, context.limits.arrayEntries, (entry, i) => {
+          validateFill(entry, `${path}.${key}[${i}]`, context);
+        });
+      }
+      if (visual.effects !== void 0) context.array(
+        visual.effects,
+        `${path}.effects`,
+        context.limits.arrayEntries,
+        (entry, i) => validateEffect(entry, `${path}.effects[${i}]`, context)
+      );
+      if (visual.effectStyleId !== void 0) context.string(visual.effectStyleId, `${path}.effectStyleId`);
+      if (visual.visible !== void 0) context.boolean(visual.visible, `${path}.visible`);
+      if (visual.opacity !== void 0) context.number(visual.opacity, `${path}.opacity`, 0, 1);
+      if (visual.keyedBindings !== void 0) validateKeyedBindings(visual.keyedBindings, `${path}.keyedBindings`, context);
+    });
+  }
+  function validateInnerOverrides(value, path, context) {
+    context.array(value, path, context.limits.arrayEntries, (entry, i) => {
+      const entryPath = `${path}[${i}]`;
+      context.object(entry, entryPath, INNER_OVERRIDE_FIELDS, (override) => {
+        context.string(required2(override, "childKey", entryPath, context), `${entryPath}.childKey`);
+        validatePrimitiveRecord(required2(override, "fields", entryPath, context), `${entryPath}.fields`, context);
+        for (const key of ["componentKey", "componentId"]) if (override[key] !== void 0) {
+          context.string(override[key], `${entryPath}.${key}`);
+        }
+        if (override.componentProperties !== void 0) {
+          validateComponentProperties(override.componentProperties, `${entryPath}.componentProperties`, context);
+        }
+        if (override.visual !== void 0) validateInnerVisual(override.visual, `${entryPath}.visual`, context);
+        if (override.figmaScanFillSize !== void 0) {
+          context.object(override.figmaScanFillSize, `${entryPath}.figmaScanFillSize`, FILL_SIZE_FIELDS, (size) => {
+            for (const key of FILL_SIZE_FIELDS) if (size[key] !== void 0) {
+              context.number(size[key], `${entryPath}.figmaScanFillSize.${key}`, 0);
+            }
+          });
+        }
+      });
+    });
+  }
+  function validateScanMetadata(item, path, context) {
+    if (item.figmaScanBindings !== void 0) validateStringRecord(item.figmaScanBindings, `${path}.figmaScanBindings`, context);
+    if (item.figmaScanSourceType !== void 0) context.string(item.figmaScanSourceType, `${path}.figmaScanSourceType`);
+    for (const key of ["figmaScanUnreproducibleInner", "figmaScanInnerOverrides", "figmaScanUnbindable"]) {
+      if (item[key] !== void 0) context.array(item[key], `${path}.${key}`, context.limits.arrayEntries, (entry, i) => {
+        context.string(entry, `${path}.${key}[${i}]`);
+      });
     }
   }
 
-  // plugin/src/main/executor-token-var-resolve.ts
-  function tokensAreEmpty(tokens) {
-    return !(tokens.colors?.length || tokens.spacing?.length || tokens.radii?.length);
+  // shared/figma-payload-validation-node.ts
+  var NODE_FIELDS = /* @__PURE__ */ new Set([
+    "type",
+    "name",
+    "width",
+    "height",
+    "layoutMode",
+    "itemSpacing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "primaryAxisSizingMode",
+    "counterAxisSizingMode",
+    "primaryAxisAlignItems",
+    "counterAxisAlignItems",
+    "layoutWrap",
+    "counterAxisSpacing",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical",
+    "layoutGrow",
+    "maxWidth",
+    "minWidth",
+    "maxHeight",
+    "minHeight",
+    "gridColumnCount",
+    "gridRowCount",
+    "gridRowGap",
+    "gridColumnGap",
+    "fills",
+    "cornerRadius",
+    "cornerRadii",
+    "effects",
+    "opacity",
+    "backgroundImageUrl",
+    "backgroundSize",
+    "backgroundPosition",
+    "strokes",
+    "strokeWeight",
+    "strokeWeights",
+    "strokeAlign",
+    "characters",
+    "fontFamily",
+    "fontStack",
+    "fontSize",
+    "fontWeight",
+    "fontStyle",
+    "lineHeight",
+    "letterSpacing",
+    "wordSpacing",
+    "textAlignHorizontal",
+    "textAutoResize",
+    "textColor",
+    "textDecoration",
+    "textCase",
+    "textTruncation",
+    "blendMode",
+    "rotation",
+    "counterAxisAlignContent",
+    "imageUrl",
+    "svgContent",
+    "motion",
+    "clipsContent",
+    "absolutePosition",
+    "x",
+    "y",
+    "textSegments",
+    "keyedBindings",
+    "tokenRefs",
+    "componentKey",
+    "componentId",
+    "componentName",
+    "componentProperties",
+    "innerOverrides",
+    "figmaScanUnreproducibleInner",
+    "figmaScanBindings",
+    "figmaScanSourceType",
+    "figmaScanInnerOverrides",
+    "figmaScanUnbindable",
+    "children"
+  ]);
+  var ENUM_FIELDS = {
+    layoutMode: ["HORIZONTAL", "VERTICAL", "GRID", "NONE"],
+    primaryAxisSizingMode: ["AUTO", "FIXED"],
+    counterAxisSizingMode: ["AUTO", "FIXED"],
+    primaryAxisAlignItems: ["MIN", "CENTER", "MAX", "SPACE_BETWEEN"],
+    counterAxisAlignItems: ["MIN", "CENTER", "MAX", "BASELINE"],
+    layoutWrap: ["WRAP", "NO_WRAP"],
+    layoutSizingHorizontal: ["FILL", "FIXED", "HUG"],
+    layoutSizingVertical: ["FILL", "FIXED", "HUG"],
+    strokeAlign: ["INSIDE", "OUTSIDE", "CENTER"],
+    fontStyle: ["normal", "italic"],
+    textAlignHorizontal: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"],
+    textAutoResize: ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"],
+    textDecoration: ["UNDERLINE", "STRIKETHROUGH"],
+    textCase: ["UPPER", "LOWER", "TITLE"],
+    textTruncation: ["ENDING"],
+    counterAxisAlignContent: ["AUTO", "SPACE_BETWEEN"]
+  };
+  var NONNEGATIVE_FIELDS = [
+    "width",
+    "height",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "counterAxisSpacing",
+    "layoutGrow",
+    "maxWidth",
+    "minWidth",
+    "maxHeight",
+    "minHeight",
+    "gridRowGap",
+    "gridColumnGap",
+    "cornerRadius",
+    "strokeWeight",
+    "fontSize",
+    "fontWeight",
+    "lineHeight"
+  ];
+  var FREE_NUMBER_FIELDS = ["itemSpacing", "letterSpacing", "wordSpacing", "rotation", "x", "y"];
+  var ORDINARY_STRING_FIELDS = [
+    "backgroundSize",
+    "backgroundPosition",
+    "characters",
+    "fontFamily",
+    "fontStack",
+    "blendMode",
+    "componentKey",
+    "componentId",
+    "componentName"
+  ];
+  var BOOLEAN_FIELDS = ["clipsContent", "absolutePosition"];
+  var FOUR_CORNER_FIELDS = /* @__PURE__ */ new Set(["tl", "tr", "br", "bl"]);
+  var FOUR_STROKE_FIELDS = /* @__PURE__ */ new Set(["top", "right", "bottom", "left"]);
+  function required3(item, key, path, context) {
+    if (!Object.prototype.hasOwnProperty.call(item, key)) context.fail(`${path}.${key}`, "is required");
+    return item[key];
   }
-  async function readLocalVariableMap() {
-    const byName = /* @__PURE__ */ new Map();
-    try {
-      for (const v of await figma.variables.getLocalVariablesAsync()) {
-        if (!byName.has(v.name)) byName.set(v.name, v);
+  function validateNumberRecord(value, path, fields, context) {
+    context.object(value, path, fields, (record) => {
+      for (const key of fields) context.number(required3(record, key, path, context), `${path}.${key}`, 0);
+    });
+  }
+  function validateNodeFields(item, path, context) {
+    context.enumValue(required3(item, "type", path, context), `${path}.type`, ["FRAME", "TEXT", "RECTANGLE", "IMAGE", "GROUP", "INSTANCE"]);
+    context.string(required3(item, "name", path, context), `${path}.name`);
+    for (const [field, values] of Object.entries(ENUM_FIELDS)) if (item[field] !== void 0) {
+      context.enumValue(item[field], `${path}.${field}`, values);
+    }
+    for (const field of NONNEGATIVE_FIELDS) if (item[field] !== void 0) context.number(item[field], `${path}.${field}`, 0);
+    for (const field of FREE_NUMBER_FIELDS) if (item[field] !== void 0) context.number(item[field], `${path}.${field}`);
+    for (const field of ["gridColumnCount", "gridRowCount"]) if (item[field] !== void 0) {
+      context.integer(item[field], `${path}.${field}`);
+    }
+    if (item.opacity !== void 0) context.number(item.opacity, `${path}.opacity`, 0, 1);
+    for (const field of ORDINARY_STRING_FIELDS) if (item[field] !== void 0) context.string(item[field], `${path}.${field}`);
+    for (const field of BOOLEAN_FIELDS) if (item[field] !== void 0) context.boolean(item[field], `${path}.${field}`);
+    if (item.imageUrl !== void 0) context.string(item.imageUrl, `${path}.imageUrl`, context.limits.imageChars);
+    if (item.backgroundImageUrl !== void 0) context.string(item.backgroundImageUrl, `${path}.backgroundImageUrl`, context.limits.imageChars);
+    if (item.svgContent !== void 0) context.string(item.svgContent, `${path}.svgContent`, context.limits.svgChars);
+  }
+  function validateNode(value, path, context, depth = 0) {
+    context.node(path, depth);
+    context.object(value, path, NODE_FIELDS, (item) => {
+      validateNodeFields(item, path, context);
+      for (const key of ["fills", "strokes"]) if (item[key] !== void 0) {
+        context.array(item[key], `${path}.${key}`, context.limits.arrayEntries, (entry, i) => validateFill(entry, `${path}.${key}[${i}]`, context));
       }
-    } catch (err) {
-      pushImportWarning(`local variable lookup failed \u2014 tokenRefs left unbound: ${String(err)}`);
-    }
-    return byName;
+      if (item.effects !== void 0) context.array(item.effects, `${path}.effects`, context.limits.arrayEntries, (entry, i) => {
+        validateEffect(entry, `${path}.effects[${i}]`, context);
+      });
+      if (item.cornerRadii !== void 0) validateNumberRecord(item.cornerRadii, `${path}.cornerRadii`, FOUR_CORNER_FIELDS, context);
+      if (item.strokeWeights !== void 0) validateNumberRecord(item.strokeWeights, `${path}.strokeWeights`, FOUR_STROKE_FIELDS, context);
+      if (item.textColor !== void 0) validateColor(item.textColor, `${path}.textColor`, context);
+      if (item.textSegments !== void 0) validateTextSegments(item.textSegments, `${path}.textSegments`, context);
+      if (item.motion !== void 0) validateMotion(item.motion, `${path}.motion`, context);
+      if (item.keyedBindings !== void 0) validateKeyedBindings(item.keyedBindings, `${path}.keyedBindings`, context);
+      if (item.tokenRefs !== void 0) validateTokenRefs(item.tokenRefs, `${path}.tokenRefs`, context);
+      if (item.componentProperties !== void 0) validateComponentProperties(item.componentProperties, `${path}.componentProperties`, context);
+      if (item.innerOverrides !== void 0) validateInnerOverrides(item.innerOverrides, `${path}.innerOverrides`, context);
+      validateScanMetadata(item, path, context);
+      if (item.children !== void 0) context.array(item.children, `${path}.children`, context.limits.arrayEntries, (child, i) => {
+        validateNode(child, `${path}.children[${i}]`, context, depth + 1);
+      });
+    });
   }
-  async function resolveTokenVars(tokens) {
-    const resolved = await readLocalVariableMap();
-    if (tokensAreEmpty(tokens)) return resolved;
-    for (const [name, variable] of await createVariablesFromTokens(tokens)) {
-      resolved.set(name, variable);
+
+  // shared/figma-payload-validation-tokens.ts
+  var TOKEN_FIELDS = /* @__PURE__ */ new Set(["colors", "typography", "spacing", "radii", "shadows"]);
+  var COLOR_TOKEN_FIELDS = /* @__PURE__ */ new Set(["name", "hex", "color"]);
+  var TYPE_TOKEN_FIELDS = /* @__PURE__ */ new Set(["name", "family", "size", "weight", "lineHeight", "letterSpacing"]);
+  var VALUE_TOKEN_FIELDS = /* @__PURE__ */ new Set(["name", "value"]);
+  var SHADOW_TOKEN_FIELDS = /* @__PURE__ */ new Set(["name", "css", "effect"]);
+  function required4(item, key, path, context) {
+    if (!Object.prototype.hasOwnProperty.call(item, key)) context.fail(`${path}.${key}`, "is required");
+    return item[key];
+  }
+  function validateTokens(value, path, context) {
+    return context.object(value, path, TOKEN_FIELDS, (tokens) => {
+      const groups = {
+        colors: tokens.colors ?? [],
+        typography: tokens.typography ?? [],
+        spacing: tokens.spacing ?? [],
+        radii: tokens.radii ?? [],
+        shadows: tokens.shadows ?? []
+      };
+      context.array(groups.colors, `${path}.colors`, context.limits.tokenGroup, (entry, i) => {
+        const entryPath = `${path}.colors[${i}]`;
+        context.object(entry, entryPath, COLOR_TOKEN_FIELDS, (token) => {
+          context.string(required4(token, "name", entryPath, context), `${entryPath}.name`);
+          context.string(required4(token, "hex", entryPath, context), `${entryPath}.hex`);
+          validateColor(required4(token, "color", entryPath, context), `${entryPath}.color`, context);
+        });
+      });
+      context.array(groups.typography, `${path}.typography`, context.limits.tokenGroup, (entry, i) => {
+        const entryPath = `${path}.typography[${i}]`;
+        context.object(entry, entryPath, TYPE_TOKEN_FIELDS, (token) => {
+          context.string(required4(token, "name", entryPath, context), `${entryPath}.name`);
+          context.string(required4(token, "family", entryPath, context), `${entryPath}.family`);
+          context.number(required4(token, "size", entryPath, context), `${entryPath}.size`, 0);
+          context.number(required4(token, "weight", entryPath, context), `${entryPath}.weight`, 0);
+          if (token.lineHeight !== void 0) context.number(token.lineHeight, `${entryPath}.lineHeight`, 0);
+          if (token.letterSpacing !== void 0) context.number(token.letterSpacing, `${entryPath}.letterSpacing`);
+        });
+      });
+      for (const key of ["spacing", "radii"]) context.array(
+        groups[key],
+        `${path}.${key}`,
+        context.limits.tokenGroup,
+        (entry, i) => {
+          const entryPath = `${path}.${key}[${i}]`;
+          context.object(entry, entryPath, VALUE_TOKEN_FIELDS, (token) => {
+            context.string(required4(token, "name", entryPath, context), `${entryPath}.name`);
+            context.number(required4(token, "value", entryPath, context), `${entryPath}.value`);
+          });
+        }
+      );
+      context.array(groups.shadows, `${path}.shadows`, context.limits.tokenGroup, (entry, i) => {
+        const entryPath = `${path}.shadows[${i}]`;
+        context.object(entry, entryPath, SHADOW_TOKEN_FIELDS, (token) => {
+          context.string(required4(token, "name", entryPath, context), `${entryPath}.name`);
+          context.string(required4(token, "css", entryPath, context), `${entryPath}.css`);
+          validateEffect(required4(token, "effect", entryPath, context), `${entryPath}.effect`, context);
+        });
+      });
+      return groups;
+    });
+  }
+
+  // shared/figma-payload-validation.ts
+  var PAYLOAD_FIELDS = /* @__PURE__ */ new Set(["version", "name", "width", "height", "tokens", "rootNode"]);
+  var PLACEMENT_FIELDS = /* @__PURE__ */ new Set(["x", "y", "parentId", "replaceId"]);
+  var WRAPPED_FIELDS = /* @__PURE__ */ new Set(["payload", ...PLACEMENT_FIELDS]);
+  var DIRECT_FIELDS = /* @__PURE__ */ new Set([...PAYLOAD_FIELDS, ...PLACEMENT_FIELDS]);
+  function required5(item, key, path, context) {
+    if (!Object.prototype.hasOwnProperty.call(item, key)) context.fail(`${path}.${key}`, "is required");
+    return item[key];
+  }
+  function validatePayloadFields(payload, path, context) {
+    const version = context.number(required5(payload, "version", path, context), `${path}.version`);
+    if (version !== 1) context.fail(`${path}.version`, "must be 1");
+    const name = context.string(required5(payload, "name", path, context), `${path}.name`);
+    const width = context.number(required5(payload, "width", path, context), `${path}.width`, 0);
+    const height = context.number(required5(payload, "height", path, context), `${path}.height`, 0);
+    const tokens = validateTokens(payload.tokens ?? {}, `${path}.tokens`, context);
+    const rootNode = required5(payload, "rootNode", path, context);
+    validateNode(rootNode, `${path}.rootNode`, context);
+    return { version: 1, name, width, height, tokens, rootNode };
+  }
+  function validatePlacement(source, context) {
+    const placement = {};
+    for (const key of ["x", "y"]) if (source[key] !== void 0) {
+      placement[key] = context.number(source[key], `params.${key}`);
     }
-    return resolved;
+    for (const key of ["parentId", "replaceId"]) if (source[key] !== void 0) {
+      placement[key] = context.string(source[key], `params.${key}`);
+    }
+    return placement;
+  }
+  function validateImportPayload(params, limitOverrides = {}) {
+    const context = new ValidationContext(limitOverrides);
+    const looksWrapped = !!params && typeof params === "object" && !Array.isArray(params) && Object.prototype.hasOwnProperty.call(params, "payload");
+    return context.object(params, "params", looksWrapped ? WRAPPED_FIELDS : DIRECT_FIELDS, (envelope) => {
+      const payload = looksWrapped ? context.object(required5(envelope, "payload", "params", context), "payload", PAYLOAD_FIELDS, (value) => validatePayloadFields(value, "payload", context)) : validatePayloadFields(envelope, "payload", context);
+      return { payload, placement: validatePlacement(envelope, context) };
+    });
   }
 
   // plugin/src/main/executor-text.ts
@@ -2599,7 +3189,7 @@
   }
 
   // plugin/src/main/instance-inner-override-keys.ts
-  var INNER_OVERRIDE_FIELDS = [
+  var INNER_OVERRIDE_FIELDS2 = [
     "name",
     "width",
     "height",
@@ -2608,7 +3198,7 @@
     "primaryAxisSizingMode",
     "counterAxisSizingMode"
   ];
-  var FIELD_SET = new Set(INNER_OVERRIDE_FIELDS);
+  var FIELD_SET = new Set(INNER_OVERRIDE_FIELDS2);
   function innerChildPrefix(instanceId) {
     return instanceId.startsWith("I") ? `${instanceId};` : `I${instanceId};`;
   }
@@ -2708,6 +3298,55 @@
       }
     }
     return any && changesVariant;
+  }
+
+  // plugin/src/main/executor-keyed-vars.ts
+  var resolvedByKey = /* @__PURE__ */ new Map();
+  var localByKey = null;
+  function resetKeyedVariableCache() {
+    resolvedByKey.clear();
+    localByKey = null;
+  }
+  async function readLocalVariablesByKey() {
+    if (localByKey) return localByKey;
+    const map = /* @__PURE__ */ new Map();
+    try {
+      for (const v of await figma.variables.getLocalVariablesAsync()) {
+        if (typeof v.key === "string" && v.key) map.set(v.key, v);
+      }
+    } catch {
+    }
+    localByKey = map;
+    return map;
+  }
+  async function resolveKeyedVariable(key) {
+    const cached = resolvedByKey.get(key);
+    if (cached !== void 0) return cached;
+    let variable = (await readLocalVariablesByKey()).get(key) ?? null;
+    if (!variable) {
+      try {
+        variable = await figma.variables.importVariableByKeyAsync(key);
+      } catch (err) {
+        pushImportWarning(`variable resolve failed for key ${key}: not local, and import failed: ${String(err)}`);
+      }
+    }
+    resolvedByKey.set(key, variable);
+    return variable;
+  }
+  async function applyKeyedBindings(node, bindings) {
+    for (const [field, ref] of Object.entries(bindings)) {
+      if (!ref || typeof ref.key !== "string" || !ref.key) continue;
+      const variable = await resolveKeyedVariable(ref.key);
+      if (!variable) {
+        pushImportWarning(`keyed bind ${field}\u2192${ref.name ?? ref.key} skipped on "${node.name}": key not resolvable \u2014 literal value kept`);
+        continue;
+      }
+      try {
+        bindVariableToField(node, field, variable);
+      } catch (err) {
+        pushImportWarning(`keyed bind ${field}\u2192${ref.name ?? ref.key} failed on "${node.name}": ${String(err)}`);
+      }
+    }
   }
 
   // plugin/src/main/scan-node-paint.ts
@@ -3365,6 +4004,73 @@
     }
     reassertAxisSizing(frame, exportNode);
     return frame;
+  }
+
+  // plugin/src/main/executor-token-var-resolve.ts
+  function tokensAreEmpty(tokens) {
+    return !(tokens.colors?.length || tokens.spacing?.length || tokens.radii?.length);
+  }
+  async function readLocalVariableMap() {
+    const byName = /* @__PURE__ */ new Map();
+    try {
+      for (const v of await figma.variables.getLocalVariablesAsync()) {
+        if (!byName.has(v.name)) byName.set(v.name, v);
+      }
+    } catch (err) {
+      pushImportWarning(`local variable lookup failed \u2014 tokenRefs left unbound: ${String(err)}`);
+    }
+    return byName;
+  }
+  async function resolveTokenVars(tokens) {
+    const resolved = await readLocalVariableMap();
+    if (tokensAreEmpty(tokens)) return resolved;
+    for (const [name, variable] of await createVariablesFromTokens(tokens)) {
+      resolved.set(name, variable);
+    }
+    return resolved;
+  }
+
+  // plugin/src/main/import-payload-admission.ts
+  async function importPayload(params) {
+    const { payload, placement } = validateImportPayload(params);
+    resetImportWarnings();
+    resetKeyedVariableCache();
+    const tokens = payload.tokens;
+    const colorStyles = await createColorStyles(tokens.colors);
+    await createTextStyles(tokens.typography);
+    await createEffectStyles(tokens.shadows);
+    const tokenVars = await resolveTokenVars(tokens);
+    const root = await createFigmaNode(payload.rootNode, colorStyles, tokenVars);
+    if (!root) throw new Error("payload rootNode produced no Figma node");
+    let replaceTarget = null;
+    if (placement.replaceId) {
+      const target = await figma.getNodeByIdAsync(placement.replaceId);
+      if (target && target.type !== "DOCUMENT" && target.type !== "PAGE") replaceTarget = target;
+    }
+    let parent = figma.currentPage;
+    if (placement.parentId) {
+      const target = await figma.getNodeByIdAsync(placement.parentId);
+      if (target && "appendChild" in target) parent = target;
+    }
+    parent.appendChild(root);
+    if (replaceTarget) {
+      root.x = replaceTarget.x;
+      root.y = replaceTarget.y;
+      replaceTarget.remove();
+    } else if (placement.x !== void 0 && placement.y !== void 0) {
+      root.x = placement.x;
+      root.y = placement.y;
+    } else {
+      root.x = Math.round(figma.viewport.center.x - root.width / 2);
+      root.y = Math.round(figma.viewport.center.y - root.height / 2);
+    }
+    try {
+      figma.currentPage.selection = [root];
+      figma.viewport.scrollAndZoomIntoView([root]);
+    } catch {
+    }
+    figma.notify(`Imported "${payload.name}" (${tokens.colors.length} colors, ${tokens.typography.length} text styles)`);
+    return { id: root.id, name: root.name, warnings: getImportWarnings() };
   }
 
   // shared/audit-types.ts
@@ -4726,20 +5432,20 @@
     dev: "switch to Dev Mode and re-run"
   };
   function editorRefusal(opts) {
-    const { capability, required, found } = opts;
-    if (found !== null && required.includes(found)) return null;
+    const { capability, required: required6, found } = opts;
+    if (found !== null && required6.includes(found)) return null;
     const foundLabel = found === null ? "the host did not report an editor type" : EDITOR_LABEL[found];
-    const requiredLabels = required.filter((r) => r !== null).map((r) => EDITOR_LABEL[r]);
+    const requiredLabels = required6.filter((r) => r !== null).map((r) => EDITOR_LABEL[r]);
     const requiredList = requiredLabels.length === 1 ? requiredLabels[0] : `one of: ${requiredLabels.join(", ")}`;
-    const firstRequired = required.find((r) => r !== null);
+    const firstRequired = required6.find((r) => r !== null);
     const nextAction = firstRequired ? NEXT_ACTION[firstRequired] : "reopen the file the capability needs";
     return `${capability} needs ${requiredList}, but ${foundLabel} is open \u2014 ${nextAction}.`;
   }
 
   // plugin/src/main/exec-stdlib-editor.ts
-  function requireEditor(capability, required) {
+  function requireEditor(capability, required6) {
     const found = figma.editorType ?? null;
-    const message = editorRefusal({ capability, required, found });
+    const message = editorRefusal({ capability, required: required6, found });
     if (message !== null) throw withCode(new Error(message), "E_INVALID_ARGS");
   }
   function requireDesignFile(capability) {
@@ -7896,50 +8602,6 @@
       default:
         throw withCode(new Error(`unknown command: ${cmd}`), "E_INVALID_ARGS");
     }
-  }
-  async function importPayload(params) {
-    const payload = params.payload ?? params;
-    if (!payload || typeof payload !== "object" || !payload.rootNode) {
-      throw withCode(new Error("IMPORT_PAYLOAD requires params.payload (FigmaExportPayload with rootNode)"), "E_INVALID_ARGS");
-    }
-    resetImportWarnings();
-    resetKeyedVariableCache();
-    const tokens = payload.tokens ?? { colors: [], typography: [], spacing: [], radii: [], shadows: [] };
-    const colorStyles = await createColorStyles(tokens.colors ?? []);
-    await createTextStyles(tokens.typography ?? []);
-    await createEffectStyles(tokens.shadows ?? []);
-    const tokenVars = await resolveTokenVars(tokens);
-    const root = await createFigmaNode(payload.rootNode, colorStyles, tokenVars);
-    if (!root) throw new Error("payload rootNode produced no Figma node");
-    let replaceTarget = null;
-    if (typeof params.replaceId === "string" && params.replaceId) {
-      const t = await figma.getNodeByIdAsync(params.replaceId);
-      if (t && t.type !== "DOCUMENT" && t.type !== "PAGE") replaceTarget = t;
-    }
-    let parent = figma.currentPage;
-    if (typeof params.parentId === "string" && params.parentId) {
-      const p = await figma.getNodeByIdAsync(params.parentId);
-      if (p && "appendChild" in p) parent = p;
-    }
-    parent.appendChild(root);
-    if (replaceTarget) {
-      root.x = replaceTarget.x;
-      root.y = replaceTarget.y;
-      replaceTarget.remove();
-    } else if (typeof params.x === "number" && typeof params.y === "number") {
-      root.x = params.x;
-      root.y = params.y;
-    } else {
-      root.x = Math.round(figma.viewport.center.x - root.width / 2);
-      root.y = Math.round(figma.viewport.center.y - root.height / 2);
-    }
-    try {
-      figma.currentPage.selection = [root];
-      figma.viewport.scrollAndZoomIntoView([root]);
-    } catch {
-    }
-    figma.notify(`Imported "${payload.name}" (${(tokens.colors ?? []).length} colors, ${(tokens.typography ?? []).length} text styles)`);
-    return { id: root.id, name: root.name, warnings: getImportWarnings() };
   }
   async function runBatch(params) {
     const ops = Array.isArray(params) ? params : params.ops;
