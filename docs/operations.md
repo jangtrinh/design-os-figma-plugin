@@ -137,6 +137,14 @@ This protects these snapshot writes on the local filesystem. Runtime locations a
 other logs, existing-state reads and processes running as the same OS user require separate
 controls. File permissions do not authenticate broker clients.
 
+The binding restart cache uses the same exclusive private temporary-file boundary and
+atomic replacement through [`bind-cache.ts`](../cli/src/transport/bind-cache.ts). A failure
+preserves the previous cache; the daemon logs its filesystem cause and `bind` adds an
+`E_BIND_CACHE_WRITE` warning while reporting the durable binding that was actually saved.
+Inspect the cache directory and reported cause before retrying. Cache locations and project
+binding markers are unchanged; existing live files are not migrated by installing this code.
+A destination symlink is replaced as a directory entry without writing its referent.
+
 ## Troubleshooting
 
 - **Panel says "No broker yet" and never connects** — that's the resting state; it only connects once a CLI

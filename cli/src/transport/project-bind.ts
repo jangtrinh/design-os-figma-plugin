@@ -13,6 +13,8 @@
 //     bind would silently stop working until the next CLI request re-teaches it.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { readBindCache } from './bind-cache.ts';
+export { bindCacheFile, readBindCache, writeBindCache, type BindCache, type BindCacheWriteResult } from './bind-cache.ts';
 
 export type BindSource = 'bind' | 'request';
 
@@ -155,39 +157,6 @@ export function readBindMarker(projectDir: string): BindMarkerFile | null {
 export function writeBindMarker(projectDir: string, marker: BindMarkerFile): void {
   mkdirSync(join(projectDir, 'design'), { recursive: true });
   writeFileSync(bindMarkerPath(projectDir), `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
-}
-
-// ── Restart-survival cache: `/tmp/figma-agent-binds.json` ───────────────────────────
-export interface BindCache {
-  v: 1;
-  projectDirs: string[];
-}
-
-/** Overridable for tests (mirrors FIGMA_AGENT_CHANGES_DIR's precedent); defaults beside
- *  the broker advertisement (BROKER_FILE). */
-export function bindCacheFile(): string {
-  return process.env['FIGMA_AGENT_BINDS_FILE'] || '/tmp/figma-agent-binds.json';
-}
-
-export function readBindCache(): BindCache {
-  const path = bindCacheFile();
-  if (!existsSync(path)) return { v: 1, projectDirs: [] };
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    const dirs = parsed && typeof parsed === 'object' ? (parsed as BindCache).projectDirs : undefined;
-    if (Array.isArray(dirs)) return { v: 1, projectDirs: dirs.filter((d): d is string => typeof d === 'string') };
-    return { v: 1, projectDirs: [] };
-  } catch {
-    return { v: 1, projectDirs: [] }; // a corrupt cache never crashes the broker — start empty
-  }
-}
-
-/** Best-effort write: a failed cache write only costs a slower re-learn after the next
- *  broker restart, never a broken bind (the durable marker is unaffected). */
-export function writeBindCache(projectDirs: readonly string[]): void {
-  try {
-    writeFileSync(bindCacheFile(), JSON.stringify({ v: 1, projectDirs: [...new Set(projectDirs)] }), 'utf8');
-  } catch { /* best-effort */ }
 }
 
 /**
