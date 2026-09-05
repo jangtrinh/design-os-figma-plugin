@@ -8,7 +8,7 @@
 // down a perfectly healthy broker.
 //
 // This test is white-box on purpose: it asserts the fs call SEQUENCE
-// (writeFileSync on a temp path, THEN renameSync onto the real path), which is the
+// (exclusive open of a temp path, descriptor write, THEN rename onto the target), which is the
 // only way to observe atomicity without a real concurrent-reader race. Against
 // pre-fix code (a bare `writeFileSync(path, …)`), `renameSync` is never called and
 // `writeFileSync` targets `path` directly — this test fails there.
@@ -25,6 +25,8 @@ import { join } from 'node:path';
 import type { BrokerAdvertisement } from '../shared/protocol.ts';
 
 const fsSpies = vi.hoisted(() => ({
+  sequence: [] as string[],
+  openSync: vi.fn(),
   writeFileSync: vi.fn(),
   renameSync: vi.fn(),
 }));
@@ -33,11 +35,24 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    openSync: (...args: Parameters<typeof actual.openSync>) => {
+      const fd = actual.openSync(...args);
+      fsSpies.sequence.push('open');
+      fsSpies.openSync(...args, fd);
+      return fd;
+    },
     writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+      fsSpies.sequence.push('write');
       fsSpies.writeFileSync(...args);
       return actual.writeFileSync(...args);
     },
+    closeSync: (...args: Parameters<typeof actual.closeSync>) => {
+      const result = actual.closeSync(...args);
+      fsSpies.sequence.push('close');
+      return result;
+    },
     renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      fsSpies.sequence.push('rename');
       fsSpies.renameSync(...args);
       return actual.renameSync(...args);
     },
@@ -56,6 +71,8 @@ let advertisePath: string;
 beforeEach(() => {
   scratchDir = mkdtempSync(join(tmpdir(), 'fa-advertise-atomic-'));
   advertisePath = join(scratchDir, 'broker.json');
+  fsSpies.openSync.mockClear();
+  fsSpies.sequence.length = 0;
   fsSpies.writeFileSync.mockClear();
   fsSpies.renameSync.mockClear();
 });
@@ -69,7 +86,12 @@ describe('writeAdvertisement — atomic temp-file + rename', () => {
     writeAdvertisement(9410, Date.now(), advertisePath);
 
     expect(fsSpies.writeFileSync).toHaveBeenCalledTimes(1);
-    const [writtenPath] = fsSpies.writeFileSync.mock.calls[0]!;
+    const [writtenFd] = fsSpies.writeFileSync.mock.calls[0]!;
+    expect(fsSpies.openSync).toHaveBeenCalledTimes(1);
+    const [writtenPath, flag, mode, openedFd] = fsSpies.openSync.mock.calls[0]!;
+    expect(flag).toBe('wx');
+    expect(mode).toBe(0o600);
+    expect(writtenFd).toBe(openedFd);
     expect(writtenPath).not.toBe(advertisePath); // never a direct truncating write onto the real file
     expect(String(writtenPath)).toMatch(new RegExp(`^${advertisePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\\d+\\.tmp$`));
 
@@ -77,6 +99,7 @@ describe('writeAdvertisement — atomic temp-file + rename', () => {
     const [fromPath, toPath] = fsSpies.renameSync.mock.calls[0]!;
     expect(fromPath).toBe(writtenPath); // renames the SAME temp file it just wrote
     expect(toPath).toBe(advertisePath);
+    expect(fsSpies.sequence).toEqual(['open', 'write', 'close', 'rename']);
 
     // The temp file must be gone (renamed away) — only the real target remains.
     expect(existsSync(String(writtenPath))).toBe(false);

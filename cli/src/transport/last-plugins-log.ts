@@ -11,8 +11,9 @@
 // `toAwaitingReconnectStatus`'s own doc). A JSON snapshot, not an append-only log (unlike
 // contention-log.ts/error-log.ts): only the LATEST live set matters here, never history —
 // same "near-copy, deliberately separate" contract as those two, not a shared util.
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { writePrivateFileExclusive } from './private-file-write.ts';
 
 export const LAST_PLUGINS_FILENAME = 'last-plugins.json';
 
@@ -85,7 +86,7 @@ export function readLastPlugins(path: string): LastPluginRecord[] {
 export function writeLastPluginsAtomic(path: string, records: readonly LastPluginRecord[]): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmpPath = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify(records));
+  writePrivateFileExclusive(tmpPath, JSON.stringify(records));
   try {
     renameSync(tmpPath, path);
   } catch (err) {
