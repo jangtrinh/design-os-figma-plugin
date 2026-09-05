@@ -60,6 +60,10 @@ import {
   completeSkippingStale, emptyQueue, enqueue as enqueueJob, queuePosition, remove as removeFromQueue,
   type QueueState,
 } from './file-queue.ts';
+import {
+  collectBrokerResourceSnapshot,
+  type BrokerResourceObserver,
+} from './broker-resource-snapshot.ts';
 import type { ComponentChange } from '../../../shared/figma-changes.ts';
 import type { EditInput, EditSource } from '../../../shared/edit-feed.ts';
 
@@ -503,6 +507,8 @@ export interface BrokerDaemonOptions {
   ports?: readonly number[];
   exit?: (code: number) => never;
   logFile?: string;
+  /** Optional in-process diagnostics. No observer means no snapshot work. */
+  resourceObserver?: BrokerResourceObserver;
 }
 
 function defaultPortRange(): number[] {
@@ -614,6 +620,19 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       ),
     }),
   };
+  let resourceObserverTeardown: (() => void) | null = null;
+  if (options?.resourceObserver) {
+    const teardown = options.resourceObserver(() => collectBrokerResourceSnapshot({
+      pendingChunks: st.pendingChunks,
+      parkedRequestFrames: st.waiting.map((request) => request.rawText),
+      jobTable: st.jobs.resourceSnapshot(),
+      queues: st.queues,
+      pendingRequestReferenceCount: st.pending.size,
+      dispatchedRequestReferenceCount: st.dispatchedTo.size,
+      dispatchReservationReferenceCount: st.dispatchReservations.size,
+    }));
+    if (typeof teardown === 'function') resourceObserverTeardown = teardown;
+  }
   // Sweep leftover `${advertisePath}.<pid>.tmp` files from a prior instance's hard
   // kill (SIGKILL between the temp write and the rename never runs its own cleanup)
   // BEFORE writing our own — startup only, not the heartbeat tick, since this lists
@@ -783,6 +802,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
+    const teardown = resourceObserverTeardown;
+    resourceObserverTeardown = null;
+    if (teardown) {
+      try { teardown(); } catch (err) { log(`resource observer teardown failed: ${(err as Error).message}`); }
+    }
     // Drop ownership BEFORE unlinking — a refresh-interval tick racing this shutdown
     // (the `exit` stub in tests throws rather than truly halting the process, so later
     // ticks are reachable) must see `ownsAdvertisement === false` and skip re-writing
