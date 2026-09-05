@@ -1849,6 +1849,11 @@ body {
     };
   }
 
+  // plugin/src/ui/parent-message.ts
+  function isMessageFromParent(event) {
+    return event.source === window.parent;
+  }
+
   // plugin/src/ui/panel-ui.ts
   var el = (id) => document.getElementById(id);
   var btn = (id) => el(id);
@@ -1863,7 +1868,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "8029b07" : "dev"}`;
+  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "d94eccf" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;
@@ -1992,6 +1997,7 @@ body {
     render();
   });
   window.addEventListener("message", (event) => {
+    if (!isMessageFromParent(event)) return;
     const message = event.data?.pluginMessage;
     if (!message) return;
     if (message.type === "IDLE_READY" && message.data) {
@@ -2271,1405 +2277,6 @@ body {
     for (let i = from; i < batch.captures.length; i++) buffer.enqueue(batch.captures[i]);
     onFlushed();
     return { sent, reBuffered: batch.captures.length - from };
-  }
-
-  // plugin/src/ui/converter/color-utils.ts
-  var NAMED_COLORS = {
-    white: "#ffffff",
-    black: "#000000",
-    red: "#ff0000",
-    green: "#008000",
-    blue: "#0000ff",
-    yellow: "#ffff00",
-    orange: "#ffa500",
-    purple: "#800080",
-    gray: "#808080",
-    grey: "#808080",
-    transparent: "transparent"
-  };
-  function parseCssColor(color) {
-    if (!color || color === "transparent" || color === "initial" || color === "inherit") return null;
-    const c = color.trim().toLowerCase();
-    if (NAMED_COLORS[c] && c !== "transparent") {
-      return parseCssColor(NAMED_COLORS[c]);
-    }
-    const hexMatch = c.match(/^#([a-f0-9]{3,8})$/);
-    if (hexMatch) {
-      let hex = hexMatch[1];
-      if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-      if (hex.length === 4) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
-      const r = parseInt(hex.substring(0, 2), 16) / 255;
-      const g = parseInt(hex.substring(2, 4), 16) / 255;
-      const b = parseInt(hex.substring(4, 6), 16) / 255;
-      const a = hex.length === 8 ? parseInt(hex.substring(6, 8), 16) / 255 : 1;
-      return { r, g, b, a };
-    }
-    const rgbMatch = c.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/);
-    if (rgbMatch) {
-      return {
-        r: parseFloat(rgbMatch[1]) / 255,
-        g: parseFloat(rgbMatch[2]) / 255,
-        b: parseFloat(rgbMatch[3]) / 255,
-        a: rgbMatch[4] !== void 0 ? parseFloat(rgbMatch[4]) : 1
-      };
-    }
-    return null;
-  }
-  function rgbaToHex(c) {
-    const r = Math.round(c.r * 255);
-    const g = Math.round(c.g * 255);
-    const b = Math.round(c.b * 255);
-    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
-  }
-
-  // plugin/src/ui/converter/parse-css.ts
-  function parseCssGradient(cssGradient) {
-    try {
-      const isRadial = cssGradient.includes("radial-gradient");
-      const isConic = cssGradient.includes("conic-gradient");
-      const inner = cssGradient.substring(
-        cssGradient.indexOf("(") + 1,
-        cssGradient.lastIndexOf(")")
-      );
-      const parts = inner.split(/,(?![^(]*\))/);
-      if (parts.length < 2) return null;
-      if (isRadial) {
-        let colorStartIndex2 = 0;
-        const first2 = parts[0].trim().toLowerCase();
-        if (first2.includes("circle") || first2.includes("ellipse") || first2.includes("at ") || first2.includes("closest") || first2.includes("farthest")) {
-          colorStartIndex2 = 1;
-        }
-        const colorParts2 = parts.slice(colorStartIndex2).map((s) => s.trim());
-        if (colorParts2.length < 2) return null;
-        const gradientStops2 = colorParts2.map((stop, index) => {
-          const color = parseCssColor(stop) || { r: 0, g: 0, b: 0, a: 1 };
-          return { color, position: index / (colorParts2.length - 1) };
-        });
-        return {
-          type: "GRADIENT_RADIAL",
-          gradientStops: gradientStops2,
-          gradientTransform: [[0.5, 0, 0.25], [0, 0.5, 0.25]]
-          // centered radial
-        };
-      }
-      if (isConic) {
-        let colorStartIndex2 = 0;
-        const first2 = parts[0].trim().toLowerCase();
-        if (first2.includes("from") || first2.includes("at ")) {
-          colorStartIndex2 = 1;
-        }
-        const colorParts2 = parts.slice(colorStartIndex2).map((s) => s.trim());
-        if (colorParts2.length < 2) return null;
-        const gradientStops2 = colorParts2.map((stop, index) => {
-          const color = parseCssColor(stop) || { r: 0, g: 0, b: 0, a: 1 };
-          return { color, position: index / (colorParts2.length - 1) };
-        });
-        return {
-          type: "GRADIENT_ANGULAR",
-          gradientStops: gradientStops2,
-          gradientTransform: [[0.5, 0, 0.25], [0, 0.5, 0.25]]
-          // centered angular
-        };
-      }
-      const first = parts[0].trim();
-      let angleDeg = 180;
-      let colorStartIndex = 0;
-      const directionMap = {
-        "to top": 0,
-        "to right": 90,
-        "to bottom": 180,
-        "to left": 270,
-        "to top right": 45,
-        "to bottom right": 135,
-        "to bottom left": 225,
-        "to top left": 315
-      };
-      if (directionMap[first] !== void 0) {
-        angleDeg = directionMap[first];
-        colorStartIndex = 1;
-      } else if (first.endsWith("deg")) {
-        angleDeg = parseFloat(first);
-        colorStartIndex = 1;
-      }
-      const colorParts = parts.slice(colorStartIndex).map((s) => s.trim());
-      if (colorParts.length < 2) return null;
-      const gradientStops = colorParts.map((stop, index) => {
-        const color = parseCssColor(stop) || { r: 0, g: 0, b: 0, a: 1 };
-        return { color, position: index / (colorParts.length - 1) };
-      });
-      const radians = (angleDeg - 90) * Math.PI / 180;
-      const cos = Math.cos(radians);
-      const sin = Math.sin(radians);
-      const gradientTransform = [
-        [cos, sin, 0.5 - cos * 0.5 - sin * 0.5],
-        [-sin, cos, 0.5 + sin * 0.5 - cos * 0.5]
-      ];
-      return { type: "GRADIENT_LINEAR", gradientStops, gradientTransform };
-    } catch {
-      return null;
-    }
-  }
-  function parseBoxShadow(shadow) {
-    if (!shadow || shadow === "none") return null;
-    const isInset = shadow.trim().startsWith("inset");
-    const cleanedShadow = shadow.replace(/^inset\s+/, "").trim();
-    const match = cleanedShadow.match(
-      /([-\d.]+)(?:px)?\s+([-\d.]+)(?:px)?\s+([-\d.]+)(?:px)?(?:\s+([-\d.]+)(?:px)?)?\s+(.*)/
-    );
-    if (!match) return null;
-    const color = parseCssColor(match[5].trim());
-    if (!color) return null;
-    return {
-      type: isInset ? "INNER_SHADOW" : "DROP_SHADOW",
-      offset: { x: parseFloat(match[1]), y: parseFloat(match[2]) },
-      radius: parseFloat(match[3]),
-      spread: match[4] ? parseFloat(match[4]) : 0,
-      color
-    };
-  }
-
-  // plugin/src/ui/converter/build-text.ts
-  function mapTextAlign(cssAlign) {
-    if (cssAlign === "center") return "CENTER";
-    if (cssAlign === "right") return "RIGHT";
-    if (cssAlign === "justify") return "JUSTIFIED";
-    return "LEFT";
-  }
-  function buildTextNode(el2, cs, win) {
-    const tag = el2.tagName;
-    const isHeading = /^H[1-6]$/.test(tag);
-    const fontSize = parseFloat(cs.fontSize) || 16;
-    const fontWeight = parseInt(cs.fontWeight) || 400;
-    const fontFamily = cs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter";
-    const lineHeight = cs.lineHeight !== "normal" ? parseFloat(cs.lineHeight) : void 0;
-    let normalizedLineHeight = lineHeight;
-    if (lineHeight && lineHeight < 5) {
-      normalizedLineHeight = Math.round(fontSize * lineHeight * 10) / 10;
-    }
-    const letterSpacing = cs.letterSpacing !== "normal" ? parseFloat(cs.letterSpacing) : void 0;
-    const textColor = parseCssColor(cs.color);
-    const textAlignHorizontal = mapTextAlign(cs.textAlign);
-    const rect = el2.getBoundingClientRect();
-    const segments = [];
-    let fullText = "";
-    if (el2.children.length > 0) {
-      for (const child of Array.from(el2.childNodes)) {
-        if (child.nodeType === 3) {
-          const text = (child.textContent || "").replace(/\s+/g, " ");
-          if (text.trim()) {
-            segments.push({
-              characters: text,
-              fontFamily,
-              fontSize,
-              fontWeight,
-              lineHeight,
-              letterSpacing,
-              textColor: textColor || void 0
-            });
-            fullText += text;
-          } else if (text === " ") {
-            fullText += " ";
-          }
-        } else if (child.nodeType === 1) {
-          const childEl = child;
-          const childCs = win.getComputedStyle(childEl);
-          const childText = (childEl.innerText || childEl.textContent || "").replace(/\s+/g, " ");
-          if (childText.trim()) {
-            const seg = {
-              characters: childText,
-              fontFamily: childCs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || fontFamily,
-              fontSize: parseFloat(childCs.fontSize) || fontSize,
-              fontWeight: parseInt(childCs.fontWeight) || fontWeight,
-              fontStyle: childCs.fontStyle === "italic" ? "italic" : void 0,
-              lineHeight: childCs.lineHeight !== "normal" ? parseFloat(childCs.lineHeight) : lineHeight,
-              letterSpacing: childCs.letterSpacing !== "normal" ? parseFloat(childCs.letterSpacing) : letterSpacing,
-              textColor: parseCssColor(childCs.color) || textColor || void 0
-            };
-            const dec = childCs.textDecorationLine;
-            if (dec === "underline") seg.textDecoration = "UNDERLINE";
-            else if (dec === "line-through") seg.textDecoration = "STRIKETHROUGH";
-            const tt2 = childCs.textTransform;
-            if (tt2 === "uppercase") seg.textCase = "UPPER";
-            else if (tt2 === "lowercase") seg.textCase = "LOWER";
-            else if (tt2 === "capitalize") seg.textCase = "TITLE";
-            segments.push(seg);
-            fullText += childText;
-          }
-        }
-      }
-    }
-    if (segments.length === 0) {
-      fullText = (el2.innerText || el2.textContent || "").trim();
-    }
-    const trimmedText = fullText.trim() || (el2.innerText || el2.textContent || "").trim();
-    const lineHeightPx = normalizedLineHeight || Math.round(fontSize * 1.4);
-    const renderedSingleLine = rect.height > 0 && rect.height < lineHeightPx * 1.5;
-    const noWrap = cs.whiteSpace === "nowrap" || cs.whiteSpace === "pre";
-    const shortContent = trimmedText.length <= 40;
-    const node = {
-      type: "TEXT",
-      name: isHeading ? `Heading ${tag[1]}` : tag === "P" ? "Paragraph" : tag === "BUTTON" ? "Button" : "Text",
-      characters: fullText.trim(),
-      fontSize,
-      fontWeight,
-      fontFamily,
-      fontStack: cs.fontFamily,
-      // full stack → registry match falls back inside the stack
-      fontStyle: cs.fontStyle === "italic" ? "italic" : void 0,
-      lineHeight: normalizedLineHeight,
-      letterSpacing,
-      wordSpacing: cs.wordSpacing !== "normal" ? parseFloat(cs.wordSpacing) : void 0,
-      textColor: textColor || void 0,
-      textAlignHorizontal,
-      textAutoResize: renderedSingleLine || noWrap || shortContent ? "WIDTH_AND_HEIGHT" : "HEIGHT",
-      width: Math.round(rect.width) || void 0,
-      height: Math.round(rect.height) || void 0
-    };
-    const clampRaw = cs.webkitLineClamp;
-    const hasLineClamp = !!clampRaw && clampRaw !== "none" && parseInt(clampRaw, 10) > 0;
-    const hasEllipsis = cs.textOverflow === "ellipsis" && cs.whiteSpace === "nowrap";
-    if (hasEllipsis || hasLineClamp) {
-      node.textTruncation = "ENDING";
-    }
-    if (segments.length > 1) node.textSegments = segments;
-    const decoration = cs.textDecorationLine;
-    if (decoration === "underline") node.textDecoration = "UNDERLINE";
-    else if (decoration === "line-through") node.textDecoration = "STRIKETHROUGH";
-    const textTransform = cs.textTransform;
-    if (textTransform === "uppercase") node.textCase = "UPPER";
-    else if (textTransform === "lowercase") node.textCase = "LOWER";
-    else if (textTransform === "capitalize") node.textCase = "TITLE";
-    const textShadow = cs.textShadow;
-    if (textShadow && textShadow !== "none") {
-      const tsEffect = parseBoxShadow(textShadow);
-      if (tsEffect) node.effects = [tsEffect];
-    }
-    return node;
-  }
-  function extractPseudoElement(el2, win, pseudo) {
-    try {
-      const pcs = win.getComputedStyle(el2, pseudo);
-      const content = pcs.content;
-      if (!content || content === "none" || content === "normal") return null;
-      if (pcs.display === "none" || pcs.visibility === "hidden") return null;
-      if (pcs.opacity === "0") return null;
-      const width = parseFloat(pcs.width) || 0;
-      const height = parseFloat(pcs.height) || 0;
-      const bgColor = parseCssColor(pcs.backgroundColor);
-      const borderColor = parseCssColor(pcs.borderTopColor);
-      const textColor = parseCssColor(pcs.color);
-      const textContent = content.replace(/^["']|["']$/g, "");
-      const hasText = textContent && textContent !== "" && textContent !== '""' && textContent !== "''";
-      if (hasText && textContent.length < 200) {
-        return {
-          type: "TEXT",
-          name: pseudo === "::before" ? "Before" : "After",
-          characters: textContent,
-          fontSize: parseFloat(pcs.fontSize) || 12,
-          fontWeight: parseInt(pcs.fontWeight) || 400,
-          fontFamily: pcs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter",
-          fontStack: pcs.fontFamily,
-          textColor: textColor || void 0,
-          width: width > 0 ? Math.round(width) : void 0,
-          height: height > 0 ? Math.round(height) : void 0
-        };
-      }
-      const hasBg = bgColor && bgColor.a > 0;
-      const hasBorder = borderColor && borderColor.a > 0;
-      const hasSize = width > 0 || height > 0;
-      if ((hasBg || hasBorder) && hasSize) {
-        const node = {
-          type: "RECTANGLE",
-          name: pseudo === "::before" ? "Decoration-Before" : "Decoration-After",
-          width: Math.round(width) || 1,
-          height: Math.round(height) || 1
-        };
-        if (hasBg) node.fills = [{ type: "SOLID", color: bgColor }];
-        if (hasBorder) {
-          node.strokes = [{ type: "SOLID", color: borderColor }];
-          node.strokeWeight = Math.round(parseFloat(pcs.borderTopWidth) || 1);
-        }
-        const borderRadius = parseFloat(pcs.borderRadius) || 0;
-        if (borderRadius > 0) node.cornerRadius = Math.round(borderRadius);
-        const opacity = parseFloat(pcs.opacity);
-        if (opacity < 1) node.opacity = opacity;
-        return node;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-  function buildDirectTextNode(el2, win, directText) {
-    const textCs = win.getComputedStyle(el2);
-    const textColor = parseCssColor(textCs.color);
-    const textNode = {
-      type: "TEXT",
-      name: "Text",
-      characters: directText,
-      fontSize: parseFloat(textCs.fontSize) || 16,
-      fontWeight: parseInt(textCs.fontWeight) || 400,
-      fontFamily: textCs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter",
-      fontStack: textCs.fontFamily,
-      lineHeight: textCs.lineHeight !== "normal" ? parseFloat(textCs.lineHeight) : void 0,
-      letterSpacing: textCs.letterSpacing !== "normal" ? parseFloat(textCs.letterSpacing) : void 0,
-      textColor: textColor || void 0,
-      textAlignHorizontal: mapTextAlign(textCs.textAlign),
-      textAutoResize: "WIDTH_AND_HEIGHT"
-    };
-    const tt2 = textCs.textTransform;
-    if (tt2 === "uppercase") textNode.textCase = "UPPER";
-    else if (tt2 === "lowercase") textNode.textCase = "LOWER";
-    else if (tt2 === "capitalize") textNode.textCase = "TITLE";
-    const td = textCs.textDecorationLine;
-    if (td === "underline") textNode.textDecoration = "UNDERLINE";
-    else if (td === "line-through") textNode.textDecoration = "STRIKETHROUGH";
-    return textNode;
-  }
-
-  // plugin/src/ui/converter/build-frame-children.ts
-  function hasExplicitDimension(el2, prop, win) {
-    const inlineVal = el2.style[prop];
-    if (inlineVal && inlineVal !== "auto" && inlineVal !== "") return true;
-    const cs = win.getComputedStyle(el2);
-    if (cs[prop] === "auto") return false;
-    if (cs.flexBasis && cs.flexBasis !== "auto" && cs.flexBasis !== "0px") return true;
-    if (el2.getAttribute("style")?.includes(prop)) return true;
-    if (el2.getAttribute(prop)) return true;
-    const display = cs.display;
-    if (prop === "width" && (display === "block" || display === "flex" || display === "grid")) return false;
-    const parentEl = el2.parentElement;
-    if (parentEl) {
-      const parentDisplay = win.getComputedStyle(parentEl).display;
-      if (parentDisplay.includes("flex") || parentDisplay === "grid") {
-        if (prop === "width" && (parseFloat(cs.flexGrow) || 0) === 0 && cs.flexBasis === "auto") return false;
-      }
-    }
-    return false;
-  }
-  function collectOrderedEntries(el2) {
-    const entries = [];
-    if (el2.children.length === 0 && (el2.innerText || "").trim()) {
-      entries.push({ kind: "text", text: el2.innerText.trim() });
-      return entries;
-    }
-    let textRun = "";
-    for (const child of Array.from(el2.childNodes)) {
-      if (child.nodeType === 3) {
-        textRun += child.textContent || "";
-      } else if (child.nodeType === 1) {
-        if (textRun.trim()) entries.push({ kind: "text", text: textRun.trim() });
-        textRun = "";
-        entries.push({ kind: "el", el: child });
-      }
-    }
-    if (textRun.trim()) entries.push({ kind: "text", text: textRun.trim() });
-    if (el2.shadowRoot) {
-      for (const shadowChild of Array.from(el2.shadowRoot.children)) {
-        if (shadowChild.nodeType === 1 && shadowChild.tagName !== "STYLE") {
-          entries.push({ kind: "el", el: shadowChild });
-        }
-      }
-    }
-    return entries;
-  }
-  function buildChildNodes(el2, cs, parentNode, win, depth) {
-    const children = [];
-    const beforeNode = extractPseudoElement(el2, win, "::before");
-    if (beforeNode) children.push(beforeNode);
-    const display = cs.display;
-    const sizingDir = parentNode.layoutMode === "GRID" ? "HORIZONTAL" : parentNode.layoutMode;
-    const parentAlignItems = cs.alignItems || "stretch";
-    const entries = collectOrderedEntries(el2);
-    const hasTextRuns = entries.some((e) => e.kind === "text");
-    const hasElementEntries = entries.some((e) => e.kind === "el");
-    if (hasTextRuns && hasElementEntries) {
-      const fontPx = parseFloat(cs.fontSize) || 16;
-      parentNode.layoutMode = "HORIZONTAL";
-      parentNode.counterAxisAlignItems = "BASELINE";
-      if (parentNode.itemSpacing === void 0 || parentNode.itemSpacing === 0) {
-        parentNode.itemSpacing = Math.round(fontPx * 0.28);
-      }
-      parentNode.layoutSizingHorizontal = "HUG";
-      parentNode.layoutSizingVertical = "HUG";
-      parentNode.primaryAxisSizingMode = "AUTO";
-      parentNode.counterAxisSizingMode = "AUTO";
-    }
-    if (!hasTextRuns && entries.length > 1 && (display === "flex" || display === "inline-flex")) {
-      entries.sort((a, b) => {
-        const orderOf = (e) => e.kind === "el" ? parseInt(win.getComputedStyle(e.el).order) || 0 : 0;
-        return orderOf(a) - orderOf(b);
-      });
-    }
-    for (const entry of entries) {
-      if (entry.kind === "text") {
-        children.push(buildDirectTextNode(el2, win, entry.text));
-        continue;
-      }
-      const childEl = entry.el;
-      const childNode = computedElementToNode(childEl, win, depth + 1);
-      if (!childNode) continue;
-      const childCs = win.getComputedStyle(childEl);
-      const flexGrow = parseFloat(childCs.flexGrow) || 0;
-      const childDisplay = childCs.display;
-      const alignSelf = childCs.alignSelf;
-      const effectiveAlign = alignSelf && alignSelf !== "auto" ? alignSelf : parentAlignItems;
-      const hasExplicitW = hasExplicitDimension(childEl, "width", win);
-      const hasExplicitH = hasExplicitDimension(childEl, "height", win);
-      if (flexGrow > 0) childNode.layoutGrow = flexGrow;
-      if (childNode.absolutePosition) {
-        children.push(childNode);
-        continue;
-      }
-      const flexShrink = parseFloat(childCs.flexShrink) || 0;
-      const basisPx = childCs.flexBasis && childCs.flexBasis.endsWith("px") ? parseFloat(childCs.flexBasis) : 0;
-      const fixedBasis = flexGrow === 0 && flexShrink === 0 && basisPx > 0;
-      if (sizingDir === "VERTICAL") {
-        if (childNode.layoutSizingVertical === void 0) {
-          if (flexGrow > 0) childNode.layoutSizingVertical = "FILL";
-          else if (fixedBasis) {
-            childNode.layoutSizingVertical = "FIXED";
-            childNode.height = Math.round(basisPx);
-          } else if (hasExplicitH) childNode.layoutSizingVertical = "FIXED";
-          else childNode.layoutSizingVertical = "HUG";
-        }
-        if (childNode.layoutSizingHorizontal === void 0) {
-          if (hasExplicitW) childNode.layoutSizingHorizontal = "FIXED";
-          else if (effectiveAlign === "stretch" || childDisplay === "block" || childDisplay === "flex" || childDisplay === "grid") {
-            childNode.layoutSizingHorizontal = "FILL";
-          } else childNode.layoutSizingHorizontal = "HUG";
-        }
-      } else if (sizingDir === "HORIZONTAL") {
-        if (childNode.layoutSizingHorizontal === void 0) {
-          if (flexGrow > 0) childNode.layoutSizingHorizontal = "FILL";
-          else if (fixedBasis) {
-            childNode.layoutSizingHorizontal = "FIXED";
-            childNode.width = Math.round(basisPx);
-          } else if (hasExplicitW) childNode.layoutSizingHorizontal = "FIXED";
-          else childNode.layoutSizingHorizontal = "HUG";
-        }
-        if (childNode.layoutSizingVertical === void 0) {
-          if (hasExplicitH) childNode.layoutSizingVertical = "FIXED";
-          else if (effectiveAlign === "stretch") childNode.layoutSizingVertical = "FILL";
-          else childNode.layoutSizingVertical = "HUG";
-        }
-      }
-      if (parentNode.layoutMode === "GRID" && childNode.type !== "TEXT" && !hasExplicitW) {
-        childNode.layoutSizingHorizontal = "FILL";
-      }
-      if (childNode.type === "TEXT") {
-        childNode.layoutSizingHorizontal = childNode.textAutoResize === "WIDTH_AND_HEIGHT" ? "HUG" : "FIXED";
-        childNode.layoutSizingVertical = "HUG";
-      }
-      if (childNode.type === "FRAME" && !hasExplicitW) {
-        const tileRect = childEl.getBoundingClientRect();
-        const tw = Math.round(tileRect.width);
-        const th = Math.round(tileRect.height);
-        const hasTextInside = (childNode.children ?? []).some((c) => c.type === "TEXT");
-        if (tw > 0 && tw === th && tw <= 80 && !hasTextInside) {
-          childNode.layoutSizingHorizontal = "FIXED";
-          childNode.layoutSizingVertical = "FIXED";
-          childNode.width = tw;
-          childNode.height = th;
-        }
-      }
-      children.push(childNode);
-    }
-    const afterNode = extractPseudoElement(el2, win, "::after");
-    if (afterNode) children.push(afterNode);
-    return children;
-  }
-
-  // plugin/src/ui/converter/build-frame.ts
-  function countGridTracks(template) {
-    if (!template || template === "none") return 0;
-    const tokens = [];
-    let depth = 0;
-    let cur = "";
-    for (const ch of template) {
-      if (ch === "(" || ch === "[") depth++;
-      else if (ch === ")" || ch === "]") depth--;
-      if (/\s/.test(ch) && depth === 0) {
-        if (cur) tokens.push(cur);
-        cur = "";
-      } else cur += ch;
-    }
-    if (cur) tokens.push(cur);
-    let count = 0;
-    for (const tok of tokens) {
-      if (tok.startsWith("[")) continue;
-      if (/^repeat\(\s*(auto-fill|auto-fit)/.test(tok)) return 0;
-      const rep = tok.match(/^repeat\((\d+)\s*,/);
-      if (rep) {
-        const inner = tok.slice(tok.indexOf(",") + 1, tok.lastIndexOf(")")).trim();
-        count += parseInt(rep[1], 10) * (countGridTracks(inner) || 1);
-      } else {
-        count += 1;
-      }
-    }
-    return count;
-  }
-  function deriveComputedNodeName(el2) {
-    const ariaLabel = el2.getAttribute("aria-label");
-    if (ariaLabel) return ariaLabel;
-    const id = el2.getAttribute("id");
-    if (id) return id;
-    const tagNames = {
-      NAV: "Navigation",
-      HEADER: "Header",
-      FOOTER: "Footer",
-      MAIN: "Main",
-      ASIDE: "Sidebar",
-      SECTION: "Section",
-      ARTICLE: "Article",
-      FORM: "Form",
-      UL: "List",
-      OL: "List",
-      LI: "List Item",
-      TABLE: "Table",
-      BUTTON: "Button"
-    };
-    if (tagNames[el2.tagName]) return tagNames[el2.tagName];
-    const classes = (el2.getAttribute("class") || "").split(/\s+/).filter(Boolean);
-    const meaningfulClass = classes.find((c) => !c.startsWith("flex") && !c.startsWith("grid") && !c.startsWith("p-") && !c.startsWith("m-") && !c.startsWith("w-") && !c.startsWith("h-") && !c.startsWith("bg-") && !c.startsWith("text-") && !c.startsWith("rounded") && !c.startsWith("border") && !c.startsWith("shadow") && !c.startsWith("gap") && !c.startsWith("items-") && !c.startsWith("justify-") && !c.startsWith("space-") && !c.startsWith("overflow") && !c.startsWith("relative") && !c.startsWith("absolute") && !c.startsWith("min-") && !c.startsWith("max-") && c !== "inline-flex");
-    if (meaningfulClass) return meaningfulClass;
-    return "Frame";
-  }
-  function buildFrameNode(el2, cs, win, depth) {
-    const node = { type: "FRAME", name: deriveComputedNodeName(el2) };
-    const display = cs.display;
-    const flexDir = cs.flexDirection;
-    if (display.includes("flex") || display === "inline-flex") {
-      node.layoutMode = flexDir === "column" || flexDir === "column-reverse" ? "VERTICAL" : "HORIZONTAL";
-      node.primaryAxisSizingMode = "AUTO";
-      node.counterAxisSizingMode = "FIXED";
-      if ((cs.flexWrap === "wrap" || cs.flexWrap === "wrap-reverse") && node.layoutMode === "HORIZONTAL") {
-        node.layoutWrap = "WRAP";
-      }
-      const alignItems = cs.alignItems;
-      if (alignItems === "center") node.counterAxisAlignItems = "CENTER";
-      else if (alignItems === "flex-end" || alignItems === "end") node.counterAxisAlignItems = "MAX";
-      else if (alignItems === "baseline") node.counterAxisAlignItems = "BASELINE";
-      else node.counterAxisAlignItems = "MIN";
-      const justifyContent = cs.justifyContent;
-      if (justifyContent === "center") node.primaryAxisAlignItems = "CENTER";
-      else if (justifyContent === "flex-end" || justifyContent === "end") node.primaryAxisAlignItems = "MAX";
-      else if (justifyContent === "space-between") node.primaryAxisAlignItems = "SPACE_BETWEEN";
-      else node.primaryAxisAlignItems = "MIN";
-    } else if (display === "grid" || display === "inline-grid") {
-      node.primaryAxisSizingMode = "AUTO";
-      node.counterAxisSizingMode = "FIXED";
-      const colCount = countGridTracks(cs.gridTemplateColumns);
-      if (colCount > 0) {
-        node.layoutMode = "GRID";
-        node.gridColumnCount = colCount;
-        const rowCount = countGridTracks(cs.gridTemplateRows);
-        if (rowCount > 0) node.gridRowCount = rowCount;
-        const gRowGap = Math.round(parseFloat(cs.rowGap) || 0);
-        const gColGap = Math.round(parseFloat(cs.columnGap) || parseFloat(cs.gap) || 0);
-        if (gRowGap > 0) node.gridRowGap = gRowGap;
-        if (gColGap > 0) node.gridColumnGap = gColGap;
-      } else {
-        node.layoutMode = "HORIZONTAL";
-      }
-      node.layoutWrap = "WRAP";
-    } else if (display === "inline" || display === "inline-block") {
-      node.layoutMode = "HORIZONTAL";
-      node.primaryAxisSizingMode = "AUTO";
-      node.counterAxisSizingMode = "AUTO";
-    } else {
-      node.layoutMode = "VERTICAL";
-      node.primaryAxisSizingMode = "AUTO";
-      node.counterAxisSizingMode = "FIXED";
-    }
-    const gap = parseFloat(cs.gap) || parseFloat(cs.rowGap) || parseFloat(cs.columnGap) || 0;
-    if (gap > 0) node.itemSpacing = Math.round(gap);
-    if (node.layoutWrap === "WRAP") {
-      const rowGap = parseFloat(cs.rowGap) || 0;
-      const colGap = parseFloat(cs.columnGap) || parseFloat(cs.gap) || 0;
-      if (colGap > 0) node.itemSpacing = Math.round(colGap);
-      if (rowGap > 0 && rowGap !== colGap) node.counterAxisSpacing = Math.round(rowGap);
-    }
-    if (!node.itemSpacing || node.itemSpacing === 0) {
-      const childEls = Array.from(el2.children).filter((c) => c.nodeType === 1);
-      if (childEls.length >= 2) {
-        const isVertical = node.layoutMode === "VERTICAL";
-        const margins = [];
-        for (let i = 0; i < Math.min(childEls.length, 5); i++) {
-          const childCs = win.getComputedStyle(childEls[i]);
-          if (isVertical) {
-            margins.push(Math.max(parseFloat(childCs.marginBottom) || 0, parseFloat(childCs.marginTop) || 0));
-          } else {
-            margins.push(Math.max(parseFloat(childCs.marginRight) || 0, parseFloat(childCs.marginLeft) || 0));
-          }
-        }
-        const freq = {};
-        for (const m of margins) {
-          if (m > 0) {
-            const rounded = Math.round(m);
-            freq[rounded] = (freq[rounded] || 0) + 1;
-          }
-        }
-        let bestMargin = 0;
-        let bestCount = 0;
-        for (const [val, count] of Object.entries(freq)) {
-          if (count > bestCount || count === bestCount && Number(val) > bestMargin) {
-            bestMargin = Number(val);
-            bestCount = count;
-          }
-        }
-        if (bestMargin > 0) node.itemSpacing = bestMargin;
-      }
-    }
-    const pt2 = parseFloat(cs.paddingTop) || 0;
-    const pr = parseFloat(cs.paddingRight) || 0;
-    const pb = parseFloat(cs.paddingBottom) || 0;
-    const pl = parseFloat(cs.paddingLeft) || 0;
-    if (pt2 > 0) node.paddingTop = Math.round(pt2);
-    if (pr > 0) node.paddingRight = Math.round(pr);
-    if (pb > 0) node.paddingBottom = Math.round(pb);
-    if (pl > 0) node.paddingLeft = Math.round(pl);
-    const overflow = cs.overflow || cs.overflowX || cs.overflowY;
-    if (overflow === "hidden" || overflow === "clip" || overflow === "scroll" || overflow === "auto") {
-      node.clipsContent = true;
-    }
-    const rect = el2.getBoundingClientRect();
-    const width = rect.width || el2.offsetWidth;
-    const height = rect.height || el2.offsetHeight;
-    if (width > 0) node.width = Math.round(width);
-    if (height > 0) node.height = Math.round(height);
-    if (cs.position === "absolute" || cs.position === "fixed") {
-      node.absolutePosition = true;
-      const parentRect = el2.parentElement?.getBoundingClientRect();
-      if (parentRect) {
-        node.x = Math.round(rect.left - parentRect.left);
-        node.y = Math.round(rect.top - parentRect.top);
-      } else {
-        node.x = el2.offsetLeft;
-        node.y = el2.offsetTop;
-      }
-    }
-    if (cs.marginLeft === "auto" && cs.marginRight === "auto") {
-      node.layoutSizingHorizontal = "FIXED";
-    }
-    const bgImage = cs.backgroundImage;
-    if (bgImage && bgImage !== "none" && bgImage.includes("gradient")) {
-      const gradientFill = parseCssGradient(bgImage);
-      if (gradientFill) {
-        const bgColor = parseCssColor(cs.backgroundColor);
-        node.fills = bgColor && bgColor.a > 0 ? [{ type: "SOLID", color: bgColor }, gradientFill] : [gradientFill];
-      }
-    } else if (bgImage && bgImage !== "none") {
-      const urlMatch = bgImage.match(/url\(['"]?(.*?)['"]?\)/);
-      if (urlMatch && urlMatch[1]) {
-        node.backgroundImageUrl = urlMatch[1];
-        if (cs.backgroundSize && cs.backgroundSize !== "auto") node.backgroundSize = cs.backgroundSize;
-        if (cs.backgroundPosition && cs.backgroundPosition !== "0% 0%") node.backgroundPosition = cs.backgroundPosition;
-      }
-      const bgColor = parseCssColor(cs.backgroundColor);
-      if (bgColor && bgColor.a > 0) node.fills = [{ type: "SOLID", color: bgColor }];
-    } else {
-      const bgColor = parseCssColor(cs.backgroundColor);
-      if (bgColor && bgColor.a > 0) node.fills = [{ type: "SOLID", color: bgColor }];
-    }
-    const tl = parseFloat(cs.borderTopLeftRadius) || 0;
-    const tr = parseFloat(cs.borderTopRightRadius) || 0;
-    const br = parseFloat(cs.borderBottomRightRadius) || 0;
-    const bl = parseFloat(cs.borderBottomLeftRadius) || 0;
-    if (tl > 0 || tr > 0 || br > 0 || bl > 0) {
-      if (tl === tr && tr === br && br === bl) {
-        if (tl < 9999) node.cornerRadius = Math.round(tl);
-      } else {
-        node.cornerRadii = { tl: Math.round(tl), tr: Math.round(tr), br: Math.round(br), bl: Math.round(bl) };
-      }
-    }
-    const bTopW = parseFloat(cs.borderTopWidth) || 0;
-    const bRightW = parseFloat(cs.borderRightWidth) || 0;
-    const bBottomW = parseFloat(cs.borderBottomWidth) || 0;
-    const bLeftW = parseFloat(cs.borderLeftWidth) || 0;
-    const maxBorderW = Math.max(bTopW, bRightW, bBottomW, bLeftW);
-    if (maxBorderW > 0) {
-      let dominantColor = null;
-      if (bTopW === maxBorderW) dominantColor = parseCssColor(cs.borderTopColor);
-      else if (bRightW === maxBorderW) dominantColor = parseCssColor(cs.borderRightColor);
-      else if (bBottomW === maxBorderW) dominantColor = parseCssColor(cs.borderBottomColor);
-      else if (bLeftW === maxBorderW) dominantColor = parseCssColor(cs.borderLeftColor);
-      if (!dominantColor) dominantColor = parseCssColor(cs.borderTopColor);
-      if (dominantColor && dominantColor.a > 0) {
-        node.strokes = [{ type: "SOLID", color: dominantColor }];
-        node.strokeWeight = Math.round(maxBorderW);
-        node.strokeAlign = "INSIDE";
-      }
-    }
-    const maxW = parseFloat(cs.maxWidth) || 0;
-    const minW = parseFloat(cs.minWidth) || 0;
-    const maxH = parseFloat(cs.maxHeight) || 0;
-    const minH = parseFloat(cs.minHeight) || 0;
-    if (maxW > 0 && maxW < 1e4) node.maxWidth = Math.round(maxW);
-    if (minW > 0) node.minWidth = Math.round(minW);
-    if (maxH > 0 && maxH < 1e4) node.maxHeight = Math.round(maxH);
-    if (minH > 0) node.minHeight = Math.round(minH);
-    const boxShadow = cs.boxShadow;
-    if (boxShadow && boxShadow !== "none") {
-      const shadowParts = boxShadow.split(/,(?![^(]*\))/);
-      const effects = [];
-      for (const part of shadowParts) {
-        const effect = parseBoxShadow(part.trim());
-        if (effect) effects.push(effect);
-      }
-      if (effects.length > 0) node.effects = effects;
-      if (effects.some((e) => e.type === "INNER_SHADOW" && (e.spread || 0) > 0)) node.clipsContent = true;
-    }
-    const opacity = parseFloat(cs.opacity);
-    if (opacity < 1 && opacity > 0.01) node.opacity = opacity;
-    const extCs = cs;
-    const backdropFilter = extCs.backdropFilter || extCs.webkitBackdropFilter || "";
-    if (backdropFilter && backdropFilter !== "none") {
-      const blurMatch = backdropFilter.match(/blur\(([\d.]+)px\)/);
-      if (blurMatch) {
-        node.effects = [...node.effects || [], { type: "BACKGROUND_BLUR", radius: parseFloat(blurMatch[1]) }];
-      }
-    }
-    const filter = cs.filter;
-    if (filter && filter !== "none") {
-      const effects = node.effects || [];
-      const blurMatch = filter.match(/blur\(([\d.]+)px\)/);
-      if (blurMatch) effects.push({ type: "LAYER_BLUR", radius: parseFloat(blurMatch[1]) });
-      const dsMatch = filter.match(/drop-shadow\(([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px\s+(.*?)\)/);
-      if (dsMatch) {
-        const dsColor = parseCssColor(dsMatch[4].trim());
-        if (dsColor) {
-          effects.push({
-            type: "DROP_SHADOW",
-            offset: { x: parseFloat(dsMatch[1]), y: parseFloat(dsMatch[2]) },
-            radius: parseFloat(dsMatch[3]),
-            spread: 0,
-            color: dsColor
-          });
-        }
-      }
-      if (effects.length > 0) node.effects = effects;
-    }
-    const blendMode = cs.mixBlendMode;
-    if (blendMode && blendMode !== "normal") {
-      const blendMap = {
-        "multiply": "MULTIPLY",
-        "screen": "SCREEN",
-        "overlay": "OVERLAY",
-        "darken": "DARKEN",
-        "lighten": "LIGHTEN",
-        "color-dodge": "COLOR_DODGE",
-        "color-burn": "COLOR_BURN",
-        "hard-light": "HARD_LIGHT",
-        "soft-light": "SOFT_LIGHT",
-        "difference": "DIFFERENCE",
-        "exclusion": "EXCLUSION",
-        "hue": "HUE",
-        "saturation": "SATURATION",
-        "color": "COLOR",
-        "luminosity": "LUMINOSITY"
-      };
-      node.blendMode = blendMap[blendMode] || void 0;
-    }
-    const transform = cs.transform;
-    if (transform && transform !== "none") {
-      const matrixMatch = transform.match(/matrix\(([-\d.]+),\s*([-\d.]+)/);
-      if (matrixMatch) {
-        const degrees = Math.atan2(parseFloat(matrixMatch[2]), parseFloat(matrixMatch[1])) * (180 / Math.PI);
-        if (Math.abs(degrees) > 0.1) node.rotation = -degrees;
-      }
-      const rotateMatch = transform.match(/rotate\(([-\d.]+)deg\)/);
-      if (rotateMatch) node.rotation = -parseFloat(rotateMatch[1]);
-    }
-    if (cs.alignContent === "space-between") node.counterAxisAlignContent = "SPACE_BETWEEN";
-    const outlineWidth = parseFloat(cs.outlineWidth) || 0;
-    if (outlineWidth > 0 && cs.outlineStyle !== "none") {
-      const outlineColor = parseCssColor(cs.outlineColor);
-      if (outlineColor && outlineColor.a > 0) {
-        node.effects = [...node.effects || [], {
-          type: "DROP_SHADOW",
-          offset: { x: 0, y: 0 },
-          radius: 0,
-          spread: outlineWidth,
-          color: outlineColor
-        }];
-      }
-    }
-    const children = buildChildNodes(el2, cs, node, win, depth);
-    const textOnlyChildren = children.length > 0 && children.every((c) => c.type === "TEXT");
-    if (textOnlyChildren) {
-      const flexLike = display.includes("flex");
-      const pillShape = (node.cornerRadius !== void 0 || node.cornerRadii !== void 0) && ((node.paddingLeft || 0) > 0 || (node.paddingRight || 0) > 0);
-      if (flexLike || pillShape || el2.tagName === "BUTTON") {
-        const squareTile = node.width !== void 0 && node.width > 0 && node.width === node.height;
-        if (squareTile) {
-          node.layoutSizingHorizontal = "FIXED";
-          node.layoutSizingVertical = "FIXED";
-        } else if (!hasExplicitDimension(el2, "width", win)) {
-          node.layoutSizingHorizontal = "HUG";
-          node.layoutSizingVertical = "HUG";
-          node.primaryAxisSizingMode = "AUTO";
-          node.counterAxisSizingMode = "AUTO";
-        }
-      }
-    }
-    if (children.length > 0) node.children = children;
-    return node;
-  }
-
-  // plugin/src/ui/converter/computed-walk.ts
-  var RENDERED_SKIP_TAGS = /* @__PURE__ */ new Set(["SCRIPT", "STYLE", "LINK", "META", "HEAD", "NOSCRIPT", "BR"]);
-  function prepareSvgContent(svg, computedColor) {
-    let result = svg;
-    result = result.replace(/stroke-width="2"/g, 'stroke-width="1.5"');
-    result = result.replace(/stroke-width='2'/g, "stroke-width='1.5'");
-    if (computedColor) {
-      const hex = rgbaToHex(computedColor);
-      result = result.replace(/currentColor/g, hex);
-      result = result.replace(/currentcolor/gi, hex);
-    }
-    return result;
-  }
-  function computedElementToNode(el2, win, depth) {
-    if (RENDERED_SKIP_TAGS.has(el2.tagName)) return null;
-    if (depth > 20) return null;
-    const cs = win.getComputedStyle(el2);
-    const tag = el2.tagName;
-    if (cs.display === "none") return null;
-    if (cs.visibility === "hidden") return null;
-    if (tag === "IMG") {
-      const img = el2;
-      return {
-        type: "IMAGE",
-        name: img.getAttribute("alt") || "Image",
-        imageUrl: img.currentSrc || img.getAttribute("src") || "",
-        width: el2.offsetWidth || 200,
-        height: el2.offsetHeight || 200
-      };
-    }
-    if (tag === "HR") {
-      const hrColor = parseCssColor(cs.borderTopColor) || parseCssColor(cs.backgroundColor);
-      return {
-        type: "RECTANGLE",
-        name: "Divider",
-        width: el2.offsetWidth || 200,
-        height: Math.max(parseFloat(cs.borderTopWidth) || 1, el2.offsetHeight || 1),
-        fills: hrColor && hrColor.a > 0 ? [{ type: "SOLID", color: hrColor }] : [{ type: "SOLID", color: { r: 0.8, g: 0.8, b: 0.8, a: 1 } }]
-      };
-    }
-    if (tag === "VIDEO") {
-      const videoEl = el2;
-      return {
-        type: "IMAGE",
-        name: "Video",
-        imageUrl: videoEl.poster || videoEl.getAttribute("poster") || "",
-        width: el2.offsetWidth || 320,
-        height: el2.offsetHeight || 180
-      };
-    }
-    if (tag === "svg" || tag === "SVG") {
-      const rawSvg = el2.outerHTML;
-      const w = el2.clientWidth || parseInt(el2.getAttribute("width") || "24") || 24;
-      const h = el2.clientHeight || parseInt(el2.getAttribute("height") || "24") || 24;
-      const computedColor = parseCssColor(cs.color);
-      return {
-        type: "IMAGE",
-        name: el2.closest("[data-lucide]")?.getAttribute("data-lucide") || "Icon",
-        svgContent: prepareSvgContent(rawSvg, computedColor),
-        width: w,
-        height: h,
-        fills: computedColor ? [{ type: "SOLID", color: computedColor }] : void 0
-      };
-    }
-    if (tag === "I" && el2.hasAttribute("data-lucide")) {
-      const svg = el2.querySelector("svg");
-      const iconColor = parseCssColor(cs.color);
-      if (svg) {
-        return {
-          type: "IMAGE",
-          name: el2.getAttribute("data-lucide") || "Icon",
-          svgContent: prepareSvgContent(svg.outerHTML, iconColor),
-          width: svg.clientWidth || parseInt(svg.getAttribute("width") || "24") || 24,
-          height: svg.clientHeight || parseInt(svg.getAttribute("height") || "24") || 24,
-          fills: iconColor ? [{ type: "SOLID", color: iconColor }] : void 0
-        };
-      }
-      return {
-        type: "RECTANGLE",
-        name: el2.getAttribute("data-lucide") || "Icon",
-        width: parseInt(cs.width) || 16,
-        height: parseInt(cs.height) || 16,
-        fills: iconColor ? [{ type: "SOLID", color: iconColor }] : [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4, a: 1 } }]
-      };
-    }
-    if (tag === "I" && el2.children.length === 0) {
-      const iconColor = parseCssColor(cs.color);
-      return {
-        type: "RECTANGLE",
-        name: "Icon",
-        width: parseInt(cs.width) || 16,
-        height: parseInt(cs.height) || 16,
-        fills: iconColor ? [{ type: "SOLID", color: iconColor }] : [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4, a: 1 } }]
-      };
-    }
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") {
-      const bgColor = parseCssColor(cs.backgroundColor);
-      const borderColor = parseCssColor(cs.borderTopColor);
-      const inputEl = el2;
-      const placeholder = inputEl.placeholder || inputEl.value || "";
-      const node = {
-        type: "FRAME",
-        name: placeholder || (tag === "INPUT" ? "Input" : tag === "SELECT" ? "Select" : "Textarea"),
-        width: el2.offsetWidth || 200,
-        height: el2.offsetHeight || 36,
-        layoutMode: "HORIZONTAL",
-        primaryAxisSizingMode: "AUTO",
-        counterAxisSizingMode: "FIXED",
-        counterAxisAlignItems: "CENTER",
-        paddingLeft: Math.round(parseFloat(cs.paddingLeft) || 0),
-        paddingRight: Math.round(parseFloat(cs.paddingRight) || 0)
-      };
-      if (bgColor && bgColor.a > 0) node.fills = [{ type: "SOLID", color: bgColor }];
-      if (borderColor && borderColor.a > 0) {
-        node.strokes = [{ type: "SOLID", color: borderColor }];
-        node.strokeWeight = Math.round(parseFloat(cs.borderTopWidth) || 1);
-        node.strokeAlign = "INSIDE";
-      }
-      const cornerR = parseFloat(cs.borderRadius) || 0;
-      if (cornerR > 0) node.cornerRadius = Math.round(cornerR);
-      if (placeholder) {
-        const textColor = parseCssColor(cs.color);
-        const isPlaceholder = !inputEl.value;
-        node.children = [{
-          type: "TEXT",
-          name: "Placeholder",
-          characters: placeholder.toUpperCase(),
-          fontSize: parseFloat(cs.fontSize) || 14,
-          fontWeight: parseInt(cs.fontWeight) || 400,
-          fontFamily: cs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter",
-          textColor: textColor || void 0,
-          textAutoResize: "WIDTH_AND_HEIGHT",
-          opacity: isPlaceholder ? 0.4 : 1
-        }];
-      }
-      return attachMotion(el2, node);
-    }
-    if (isRenderedTextNode(el2, win)) {
-      const textNode = buildTextNode(el2, cs, win);
-      if (cs.position === "absolute" || cs.position === "fixed") {
-        textNode.absolutePosition = true;
-        const rect = el2.getBoundingClientRect();
-        const parentRect = el2.parentElement?.getBoundingClientRect();
-        if (parentRect) {
-          textNode.x = Math.round(rect.left - parentRect.left);
-          textNode.y = Math.round(rect.top - parentRect.top);
-        } else {
-          textNode.x = el2.offsetLeft;
-          textNode.y = el2.offsetTop;
-        }
-      }
-      return attachMotion(el2, textNode);
-    }
-    return attachMotion(el2, buildFrameNode(el2, cs, win, depth));
-  }
-  function attachMotion(el2, node) {
-    const raw = el2.getAttribute("data-fa-motion");
-    if (raw) {
-      try {
-        node.motion = JSON.parse(raw);
-      } catch {
-      }
-    }
-    return node;
-  }
-  function isRenderedTextNode(el2, win) {
-    const tag = el2.tagName;
-    const hasContainerStyling = () => {
-      const cs = win.getComputedStyle(el2);
-      const bgColor = parseCssColor(cs.backgroundColor);
-      const hasBg = !!(bgColor && bgColor.a > 0);
-      const hasBorder = (parseFloat(cs.borderTopWidth) || 0) > 0 && parseCssColor(cs.borderTopColor)?.a !== void 0 && (parseCssColor(cs.borderTopColor)?.a || 0) > 0;
-      const hasPadding = (parseFloat(cs.paddingTop) || 0) > 8 || (parseFloat(cs.paddingLeft) || 0) > 8;
-      return hasBg || hasBorder || hasPadding;
-    };
-    if (el2.children.length === 0 && (el2.textContent || "").trim()) {
-      return !hasContainerStyling();
-    }
-    if (/^H[1-6]$/.test(tag) || tag === "P" || tag === "SPAN" || tag === "LABEL" || tag === "A" || tag === "BUTTON") {
-      if (hasContainerStyling()) return false;
-      if (el2.children.length === 0) return true;
-      for (const child of Array.from(el2.children)) {
-        if (!["SPAN", "STRONG", "B", "EM", "I", "U", "A", "SMALL", "MARK", "CODE", "LABEL", "BR", "SVG", "IMG"].includes(child.tagName)) {
-          return false;
-        }
-        if (inlineChildBreaksMerge(child, el2, win)) return false;
-      }
-      return true;
-    }
-    return false;
-  }
-  function inlineChildBreaksMerge(childEl, parentEl, win) {
-    const ccs = win.getComputedStyle(childEl);
-    const bg = parseCssColor(ccs.backgroundColor);
-    if (bg && bg.a > 0) {
-      const parentBg = parseCssColor(win.getComputedStyle(parentEl).backgroundColor);
-      if (!parentBg || parentBg.a === 0 || rgbaToHex(bg) !== rgbaToHex(parentBg)) return true;
-    }
-    if ((parseFloat(ccs.borderTopLeftRadius) || 0) > 0 || (parseFloat(ccs.borderBottomRightRadius) || 0) > 0) return true;
-    if ((parseFloat(ccs.borderTopWidth) || 0) > 0 && (parseCssColor(ccs.borderTopColor)?.a || 0) > 0) return true;
-    if ((ccs.display === "inline-flex" || ccs.display === "inline-block") && ((parseFloat(ccs.paddingLeft) || 0) > 0 || (parseFloat(ccs.paddingTop) || 0) > 0)) return true;
-    return false;
-  }
-
-  // plugin/src/ui/converter/extract-motion.ts
-  function parseKeyframeOffset(keyText) {
-    const first = (keyText || "").split(",")[0].trim().toLowerCase();
-    let n;
-    if (first === "from") n = 0;
-    else if (first === "to") n = 1;
-    else n = parseFloat(first) / 100;
-    if (!Number.isFinite(n)) n = 0;
-    return Math.max(0, Math.min(1, n));
-  }
-  function parseAnimDurationSec(s) {
-    const first = (s || "").split(",")[0].trim().toLowerCase();
-    if (!first) return 0;
-    const v = parseFloat(first);
-    if (!Number.isFinite(v)) return 0;
-    return first.endsWith("ms") ? v / 1e3 : v;
-  }
-  function buildMotionSpec(steps, durationSec, easing) {
-    const clean = (steps || []).filter((s) => s && s.style && (s.style.opacity !== void 0 || s.style.transform !== void 0)).slice().sort((a, b) => a.offset - b.offset);
-    if (clean.length < 2 || !(durationSec > 0)) return void 0;
-    const spec = { steps: clean, durationSec };
-    if (easing && easing !== "none") spec.easing = easing.split(",")[0].trim();
-    return spec;
-  }
-  function resolveKeyframeSteps(name, sheets) {
-    const CSS_KEYFRAMES_RULE = 7;
-    for (let i = 0; i < sheets.length; i++) {
-      let rules;
-      try {
-        rules = sheets[i].cssRules;
-      } catch {
-        continue;
-      }
-      if (!rules) continue;
-      for (let j = 0; j < rules.length; j++) {
-        const r = rules[j];
-        const isKeyframes = r.type === CSS_KEYFRAMES_RULE || r.name !== void 0 && r.cssRules !== void 0;
-        if (!isKeyframes || r.name !== name || !r.cssRules) continue;
-        const steps = [];
-        for (let k = 0; k < r.cssRules.length; k++) {
-          const kf = r.cssRules[k];
-          steps.push({
-            offset: parseKeyframeOffset(kf.keyText),
-            style: { opacity: kf.style.opacity || void 0, transform: kf.style.transform || void 0 }
-          });
-        }
-        return steps;
-      }
-    }
-    return [];
-  }
-  function captureMotionOntoElements(doc, win) {
-    let count = 0;
-    const els = doc.querySelectorAll("*");
-    for (let i = 0; i < els.length; i++) {
-      const el2 = els[i];
-      try {
-        const cs = win.getComputedStyle(el2);
-        const name = cs.animationName;
-        if (!name || name === "none") continue;
-        const firstName = name.split(",")[0].trim();
-        const steps = resolveKeyframeSteps(firstName, doc.styleSheets);
-        const motion = buildMotionSpec(steps, parseAnimDurationSec(cs.animationDuration), cs.animationTimingFunction);
-        if (motion) {
-          el2.setAttribute("data-fa-motion", JSON.stringify(motion));
-          count++;
-        }
-      } catch {
-      }
-    }
-    return count;
-  }
-
-  // plugin/src/ui/converter/tokens.ts
-  function extractFigmaTokens(rootNode) {
-    const colorSet = /* @__PURE__ */ new Map();
-    const fontSet = /* @__PURE__ */ new Map();
-    const spacingSet = /* @__PURE__ */ new Set();
-    const radiiSet = /* @__PURE__ */ new Set();
-    function walk(node) {
-      if (node.fills) {
-        for (const fill of node.fills) {
-          if (fill.color) colorSet.set(rgbaToHex(fill.color), fill.color);
-        }
-      }
-      if (node.textColor) {
-        colorSet.set(rgbaToHex(node.textColor), node.textColor);
-      }
-      if (node.strokes) {
-        for (const stroke of node.strokes) {
-          if (stroke.color) colorSet.set(rgbaToHex(stroke.color), stroke.color);
-        }
-      }
-      if (node.type === "TEXT" && node.fontSize) {
-        const key = `${node.fontFamily || "Inter"}-${node.fontSize}-${node.fontWeight || 400}`;
-        fontSet.set(key, {
-          family: node.fontFamily || "Inter",
-          size: node.fontSize,
-          weight: node.fontWeight || 400,
-          lineHeight: node.lineHeight
-        });
-      }
-      if (node.itemSpacing && node.itemSpacing > 0) spacingSet.add(node.itemSpacing);
-      if (node.paddingTop && node.paddingTop > 0) spacingSet.add(node.paddingTop);
-      if (node.paddingRight && node.paddingRight > 0) spacingSet.add(node.paddingRight);
-      if (node.paddingBottom && node.paddingBottom > 0) spacingSet.add(node.paddingBottom);
-      if (node.paddingLeft && node.paddingLeft > 0) spacingSet.add(node.paddingLeft);
-      if (node.cornerRadius && node.cornerRadius > 0 && node.cornerRadius < 9999) {
-        radiiSet.add(node.cornerRadius);
-      }
-      if (node.children) {
-        for (const child of node.children) walk(child);
-      }
-    }
-    walk(rootNode);
-    const colors = Array.from(colorSet.entries()).map(([hex, color]) => ({ name: `color/${hex.replace("#", "")}`, hex, color })).sort((a, b) => a.hex.localeCompare(b.hex));
-    const typography = Array.from(fontSet.entries()).map(([, val]) => ({
-      name: `type/${val.family.toLowerCase()}-${val.size}-${val.weight}`,
-      ...val
-    })).sort((a, b) => a.size - b.size);
-    const spacing = Array.from(spacingSet).sort((a, b) => a - b).map((v) => ({ name: `spacing/${v}`, value: v }));
-    const radii = Array.from(radiiSet).sort((a, b) => a - b).map((v) => ({ name: `radius/${v}`, value: v }));
-    return { colors, typography, spacing, radii, shadows: [] };
-  }
-  function annotateTokenRefs(rootNode, tokens) {
-    const colorByHex = new Map(tokens.colors.map((t) => [t.hex, t.name]));
-    const spacingByValue = new Map(tokens.spacing.map((t) => [t.value, t.name]));
-    const radiusByValue = new Map(tokens.radii.map((t) => [t.value, t.name]));
-    function walk(node) {
-      const refs = {};
-      const fillColor = node.fills?.find((f) => f.type === "SOLID" && f.color)?.color;
-      if (fillColor) {
-        const name = colorByHex.get(rgbaToHex(fillColor));
-        if (name) refs.fill = name;
-      }
-      if (node.textColor) {
-        const name = colorByHex.get(rgbaToHex(node.textColor));
-        if (name) refs.textColor = name;
-      }
-      const strokeColor = node.strokes?.find((s) => s.color)?.color;
-      if (strokeColor) {
-        const name = colorByHex.get(rgbaToHex(strokeColor));
-        if (name) refs.stroke = name;
-      }
-      if (node.cornerRadius && node.cornerRadius > 0) {
-        const name = radiusByValue.get(node.cornerRadius);
-        if (name) refs.radius = name;
-      }
-      if (node.itemSpacing && node.itemSpacing > 0) {
-        const name = spacingByValue.get(node.itemSpacing);
-        if (name) refs.gap = name;
-      }
-      const pt2 = node.paddingTop;
-      if (pt2 && pt2 > 0 && pt2 === node.paddingRight && pt2 === node.paddingBottom && pt2 === node.paddingLeft) {
-        const name = spacingByValue.get(pt2);
-        if (name) refs.padding = name;
-      }
-      if (Object.keys(refs).length > 0) node.tokenRefs = refs;
-      for (const child of node.children ?? []) walk(child);
-    }
-    walk(rootNode);
-  }
-
-  // plugin/src/ui/converter/extract.ts
-  function waitForStylesReady(iframe) {
-    return new Promise((resolve) => {
-      const maxWait = 3e3;
-      const pollInterval = 100;
-      let elapsed = 0;
-      const check = () => {
-        elapsed += pollInterval;
-        const doc = iframe.contentDocument;
-        const win = iframe.contentWindow;
-        if (!doc || !win) {
-          if (elapsed < maxWait) setTimeout(check, pollInterval);
-          else resolve();
-          return;
-        }
-        const body = doc.body;
-        if (body) {
-          const parsed = parseCssColor(win.getComputedStyle(body).backgroundColor);
-          if (parsed && parsed.a > 0 && !(parsed.r === 1 && parsed.g === 1 && parsed.b === 1)) {
-            resolve();
-            return;
-          }
-        }
-        let hasRuntimeStyles = false;
-        try {
-          const sheets = doc.styleSheets;
-          for (let i = 0; i < sheets.length; i++) {
-            if (sheets[i].cssRules && sheets[i].cssRules.length > 50) {
-              hasRuntimeStyles = true;
-              break;
-            }
-          }
-        } catch {
-        }
-        if (hasRuntimeStyles) {
-          setTimeout(resolve, 200);
-          return;
-        }
-        if (elapsed < maxWait) setTimeout(check, pollInterval);
-        else resolve();
-      };
-      setTimeout(check, 200);
-    });
-  }
-  function prepareDocForExtraction(doc) {
-    const win = doc.defaultView;
-    if (!win) return;
-    try {
-      captureMotionOntoElements(doc, win);
-    } catch {
-    }
-    const killMotion = doc.createElement("style");
-    killMotion.textContent = `
-    *, *::before, *::after {
-      transition: none !important;
-      transition-duration: 0s !important;
-      transition-delay: 0s !important;
-      animation: none !important;
-      animation-duration: 0s !important;
-      animation-delay: 0s !important;
-    }
-  `;
-    doc.head.appendChild(killMotion);
-    void doc.body.offsetHeight;
-    doc.body.classList.remove("h-screen", "min-h-screen", "max-h-screen");
-    doc.body.style.height = "auto";
-    doc.body.style.maxHeight = "none";
-    doc.body.style.overflow = "visible";
-    doc.body.style.overflowX = "visible";
-    doc.body.style.overflowY = "visible";
-    const revealSelectors = [".reveal", ".reveal-left", ".reveal-right", ".reveal-scale", ".reveal-hero", ".reveal-stagger"];
-    for (const selector of revealSelectors) {
-      doc.querySelectorAll(selector).forEach((el2) => el2.classList.add("active"));
-    }
-    void doc.body.offsetHeight;
-    doc.querySelectorAll("*").forEach((el2) => {
-      const htmlEl = el2;
-      if (!htmlEl.style) return;
-      const cs = win.getComputedStyle(htmlEl);
-      if (cs.opacity === "0") htmlEl.style.opacity = "1";
-      if (cs.overflow === "hidden" || cs.overflow === "auto" || cs.overflow === "scroll") htmlEl.style.overflow = "visible";
-      if (cs.overflowX === "hidden" || cs.overflowX === "auto" || cs.overflowX === "scroll") htmlEl.style.overflowX = "visible";
-      if (cs.overflowY === "hidden" || cs.overflowY === "auto" || cs.overflowY === "scroll") htmlEl.style.overflowY = "visible";
-      if (cs.maxHeight !== "none" && parseFloat(cs.maxHeight) < 1e4) htmlEl.style.maxHeight = "none";
-      htmlEl.classList.remove("h-screen", "max-h-screen");
-    });
-  }
-  function extractFromIframe(iframe, width) {
-    const doc = iframe.contentDocument;
-    const win = iframe.contentWindow;
-    if (!doc || !win) {
-      return { type: "FRAME", name: "Page", width, height: 900 };
-    }
-    const body = doc.body;
-    if (!body || body.children.length === 0) {
-      return { type: "FRAME", name: "Page", width, height: 900 };
-    }
-    prepareDocForExtraction(doc);
-    const bodyStyle = win.getComputedStyle(body);
-    const htmlStyle = win.getComputedStyle(doc.documentElement);
-    let pageBgColor = parseCssColor(bodyStyle.backgroundColor) || parseCssColor(htmlStyle.backgroundColor) || { r: 1, g: 1, b: 1, a: 1 };
-    if (pageBgColor.a === 0) pageBgColor = { r: 1, g: 1, b: 1, a: 1 };
-    let bodyLayoutMode = "VERTICAL";
-    if (bodyStyle.display.includes("flex")) {
-      const dir = bodyStyle.flexDirection;
-      bodyLayoutMode = dir === "row" || dir === "row-reverse" ? "HORIZONTAL" : "VERTICAL";
-    }
-    const pageFrame = {
-      type: "FRAME",
-      name: "Page",
-      width,
-      height: Math.round(body.scrollHeight) || 900,
-      layoutMode: bodyLayoutMode,
-      primaryAxisSizingMode: "AUTO",
-      counterAxisSizingMode: "FIXED",
-      fills: [{ type: "SOLID", color: pageBgColor }],
-      children: []
-    };
-    const bodyGap = parseFloat(bodyStyle.gap) || 0;
-    if (bodyGap > 0) pageFrame.itemSpacing = Math.round(bodyGap);
-    const bpt = parseFloat(bodyStyle.paddingTop) || 0;
-    const bpr = parseFloat(bodyStyle.paddingRight) || 0;
-    const bpb = parseFloat(bodyStyle.paddingBottom) || 0;
-    const bpl = parseFloat(bodyStyle.paddingLeft) || 0;
-    if (bpt > 0) pageFrame.paddingTop = Math.round(bpt);
-    if (bpr > 0) pageFrame.paddingRight = Math.round(bpr);
-    if (bpb > 0) pageFrame.paddingBottom = Math.round(bpb);
-    if (bpl > 0) pageFrame.paddingLeft = Math.round(bpl);
-    for (const child of Array.from(body.children)) {
-      if (child.nodeType === 1) {
-        const node = computedElementToNode(child, win, 0);
-        if (node) pageFrame.children.push(node);
-      }
-    }
-    return pageFrame;
-  }
-  function buildPayloadFromIframe(iframe, name, width) {
-    const rootNode = extractFromIframe(iframe, width);
-    const tokens = extractFigmaTokens(rootNode);
-    annotateTokenRefs(rootNode, tokens);
-    return {
-      version: 1,
-      name,
-      width: rootNode.width || width,
-      height: rootNode.height || 900,
-      tokens,
-      rootNode
-    };
-  }
-
-  // plugin/src/ui/render-host.ts
-  var IFRAME_LOAD_TIMEOUT_MS = 1e4;
-  var DEFAULT_RENDER_HEIGHT_PX = 4e3;
-  function waitForIframeLoad(iframe, html) {
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, IFRAME_LOAD_TIMEOUT_MS);
-      iframe.addEventListener("load", () => {
-        clearTimeout(timer);
-        resolve();
-      }, { once: true });
-      iframe.srcdoc = html;
-    });
-  }
-  async function renderHtmlToPayload(html, width, name) {
-    if (!html || typeof html !== "string") {
-      throw new Error("renderHtmlToPayload: html must be a non-empty string");
-    }
-    const iframe = document.createElement("iframe");
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.style.position = "absolute";
-    iframe.style.left = "-100000px";
-    iframe.style.top = "0";
-    iframe.style.width = `${width}px`;
-    iframe.style.height = `${DEFAULT_RENDER_HEIGHT_PX}px`;
-    iframe.style.border = "0";
-    document.body.appendChild(iframe);
-    try {
-      await waitForIframeLoad(iframe, html);
-      await waitForStylesReady(iframe);
-      if (!iframe.contentDocument || !iframe.contentWindow) {
-        throw new Error("render iframe has no document \u2014 srcdoc blocked by sandbox?");
-      }
-      return buildPayloadFromIframe(iframe, name, width);
-    } finally {
-      iframe.remove();
-    }
   }
 
   // shared/figma-payload-validation-context.ts
@@ -4331,6 +2938,109 @@ body {
     });
   }
 
+  // plugin/src/ui/render-child-protocol.ts
+  var HTML_RENDER_CHANNEL = "design-os-html-render-v1";
+  var HTML_RENDER_VERSION = 1;
+  var MAX_CHILD_ERROR_LENGTH = 512;
+
+  // plugin/src/ui/render-host.ts
+  var IFRAME_LOAD_TIMEOUT_MS = 1e4;
+  var RENDER_TIMEOUT_MS = 15e3;
+  var DEFAULT_RENDER_HEIGHT_PX = 4e3;
+  var randomId = () => typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `render_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  function escapedChildSource() {
+    if (false) throw new Error("HTML renderer child bundle is unavailable");
+    return '"use strict";\n(() => {\n  // plugin/src/ui/converter/color-utils.ts\n  var NAMED_COLORS = {\n    white: "#ffffff",\n    black: "#000000",\n    red: "#ff0000",\n    green: "#008000",\n    blue: "#0000ff",\n    yellow: "#ffff00",\n    orange: "#ffa500",\n    purple: "#800080",\n    gray: "#808080",\n    grey: "#808080",\n    transparent: "transparent"\n  };\n  function parseCssColor(color) {\n    if (!color || color === "transparent" || color === "initial" || color === "inherit") return null;\n    const c = color.trim().toLowerCase();\n    if (NAMED_COLORS[c] && c !== "transparent") {\n      return parseCssColor(NAMED_COLORS[c]);\n    }\n    const hexMatch = c.match(/^#([a-f0-9]{3,8})$/);\n    if (hexMatch) {\n      let hex = hexMatch[1];\n      if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];\n      if (hex.length === 4) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];\n      const r = parseInt(hex.substring(0, 2), 16) / 255;\n      const g = parseInt(hex.substring(2, 4), 16) / 255;\n      const b = parseInt(hex.substring(4, 6), 16) / 255;\n      const a = hex.length === 8 ? parseInt(hex.substring(6, 8), 16) / 255 : 1;\n      return { r, g, b, a };\n    }\n    const rgbMatch = c.match(/rgba?\\(\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*,\\s*([\\d.]+)(?:\\s*,\\s*([\\d.]+))?\\s*\\)/);\n    if (rgbMatch) {\n      return {\n        r: parseFloat(rgbMatch[1]) / 255,\n        g: parseFloat(rgbMatch[2]) / 255,\n        b: parseFloat(rgbMatch[3]) / 255,\n        a: rgbMatch[4] !== void 0 ? parseFloat(rgbMatch[4]) : 1\n      };\n    }\n    return null;\n  }\n  function rgbaToHex(c) {\n    const r = Math.round(c.r * 255);\n    const g = Math.round(c.g * 255);\n    const b = Math.round(c.b * 255);\n    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;\n  }\n\n  // plugin/src/ui/converter/parse-css.ts\n  function parseCssGradient(cssGradient) {\n    try {\n      const isRadial = cssGradient.includes("radial-gradient");\n      const isConic = cssGradient.includes("conic-gradient");\n      const inner = cssGradient.substring(\n        cssGradient.indexOf("(") + 1,\n        cssGradient.lastIndexOf(")")\n      );\n      const parts = inner.split(/,(?![^(]*\\))/);\n      if (parts.length < 2) return null;\n      if (isRadial) {\n        let colorStartIndex2 = 0;\n        const first2 = parts[0].trim().toLowerCase();\n        if (first2.includes("circle") || first2.includes("ellipse") || first2.includes("at ") || first2.includes("closest") || first2.includes("farthest")) {\n          colorStartIndex2 = 1;\n        }\n        const colorParts2 = parts.slice(colorStartIndex2).map((s) => s.trim());\n        if (colorParts2.length < 2) return null;\n        const gradientStops2 = colorParts2.map((stop, index) => {\n          const color = parseCssColor(stop) || { r: 0, g: 0, b: 0, a: 1 };\n          return { color, position: index / (colorParts2.length - 1) };\n        });\n        return {\n          type: "GRADIENT_RADIAL",\n          gradientStops: gradientStops2,\n          gradientTransform: [[0.5, 0, 0.25], [0, 0.5, 0.25]]\n          // centered radial\n        };\n      }\n      if (isConic) {\n        let colorStartIndex2 = 0;\n        const first2 = parts[0].trim().toLowerCase();\n        if (first2.includes("from") || first2.includes("at ")) {\n          colorStartIndex2 = 1;\n        }\n        const colorParts2 = parts.slice(colorStartIndex2).map((s) => s.trim());\n        if (colorParts2.length < 2) return null;\n        const gradientStops2 = colorParts2.map((stop, index) => {\n          const color = parseCssColor(stop) || { r: 0, g: 0, b: 0, a: 1 };\n          return { color, position: index / (colorParts2.length - 1) };\n        });\n        return {\n          type: "GRADIENT_ANGULAR",\n          gradientStops: gradientStops2,\n          gradientTransform: [[0.5, 0, 0.25], [0, 0.5, 0.25]]\n          // centered angular\n        };\n      }\n      const first = parts[0].trim();\n      let angleDeg = 180;\n      let colorStartIndex = 0;\n      const directionMap = {\n        "to top": 0,\n        "to right": 90,\n        "to bottom": 180,\n        "to left": 270,\n        "to top right": 45,\n        "to bottom right": 135,\n        "to bottom left": 225,\n        "to top left": 315\n      };\n      if (directionMap[first] !== void 0) {\n        angleDeg = directionMap[first];\n        colorStartIndex = 1;\n      } else if (first.endsWith("deg")) {\n        angleDeg = parseFloat(first);\n        colorStartIndex = 1;\n      }\n      const colorParts = parts.slice(colorStartIndex).map((s) => s.trim());\n      if (colorParts.length < 2) return null;\n      const gradientStops = colorParts.map((stop, index) => {\n        const color = parseCssColor(stop) || { r: 0, g: 0, b: 0, a: 1 };\n        return { color, position: index / (colorParts.length - 1) };\n      });\n      const radians = (angleDeg - 90) * Math.PI / 180;\n      const cos = Math.cos(radians);\n      const sin = Math.sin(radians);\n      const gradientTransform = [\n        [cos, sin, 0.5 - cos * 0.5 - sin * 0.5],\n        [-sin, cos, 0.5 + sin * 0.5 - cos * 0.5]\n      ];\n      return { type: "GRADIENT_LINEAR", gradientStops, gradientTransform };\n    } catch {\n      return null;\n    }\n  }\n  function parseBoxShadow(shadow) {\n    if (!shadow || shadow === "none") return null;\n    const isInset = shadow.trim().startsWith("inset");\n    const cleanedShadow = shadow.replace(/^inset\\s+/, "").trim();\n    const match = cleanedShadow.match(\n      /([-\\d.]+)(?:px)?\\s+([-\\d.]+)(?:px)?\\s+([-\\d.]+)(?:px)?(?:\\s+([-\\d.]+)(?:px)?)?\\s+(.*)/\n    );\n    if (!match) return null;\n    const color = parseCssColor(match[5].trim());\n    if (!color) return null;\n    return {\n      type: isInset ? "INNER_SHADOW" : "DROP_SHADOW",\n      offset: { x: parseFloat(match[1]), y: parseFloat(match[2]) },\n      radius: parseFloat(match[3]),\n      spread: match[4] ? parseFloat(match[4]) : 0,\n      color\n    };\n  }\n\n  // plugin/src/ui/converter/build-text.ts\n  function mapTextAlign(cssAlign) {\n    if (cssAlign === "center") return "CENTER";\n    if (cssAlign === "right") return "RIGHT";\n    if (cssAlign === "justify") return "JUSTIFIED";\n    return "LEFT";\n  }\n  function buildTextNode(el, cs, win) {\n    const tag = el.tagName;\n    const isHeading = /^H[1-6]$/.test(tag);\n    const fontSize = parseFloat(cs.fontSize) || 16;\n    const fontWeight = parseInt(cs.fontWeight) || 400;\n    const fontFamily = cs.fontFamily.split(",")[0].replace(/[\'"]/g, "").trim() || "Inter";\n    const lineHeight = cs.lineHeight !== "normal" ? parseFloat(cs.lineHeight) : void 0;\n    let normalizedLineHeight = lineHeight;\n    if (lineHeight && lineHeight < 5) {\n      normalizedLineHeight = Math.round(fontSize * lineHeight * 10) / 10;\n    }\n    const letterSpacing = cs.letterSpacing !== "normal" ? parseFloat(cs.letterSpacing) : void 0;\n    const textColor = parseCssColor(cs.color);\n    const textAlignHorizontal = mapTextAlign(cs.textAlign);\n    const rect = el.getBoundingClientRect();\n    const segments = [];\n    let fullText = "";\n    if (el.children.length > 0) {\n      for (const child of Array.from(el.childNodes)) {\n        if (child.nodeType === 3) {\n          const text = (child.textContent || "").replace(/\\s+/g, " ");\n          if (text.trim()) {\n            segments.push({\n              characters: text,\n              fontFamily,\n              fontSize,\n              fontWeight,\n              lineHeight,\n              letterSpacing,\n              textColor: textColor || void 0\n            });\n            fullText += text;\n          } else if (text === " ") {\n            fullText += " ";\n          }\n        } else if (child.nodeType === 1) {\n          const childEl = child;\n          const childCs = win.getComputedStyle(childEl);\n          const childText = (childEl.innerText || childEl.textContent || "").replace(/\\s+/g, " ");\n          if (childText.trim()) {\n            const seg = {\n              characters: childText,\n              fontFamily: childCs.fontFamily.split(",")[0].replace(/[\'"]/g, "").trim() || fontFamily,\n              fontSize: parseFloat(childCs.fontSize) || fontSize,\n              fontWeight: parseInt(childCs.fontWeight) || fontWeight,\n              fontStyle: childCs.fontStyle === "italic" ? "italic" : void 0,\n              lineHeight: childCs.lineHeight !== "normal" ? parseFloat(childCs.lineHeight) : lineHeight,\n              letterSpacing: childCs.letterSpacing !== "normal" ? parseFloat(childCs.letterSpacing) : letterSpacing,\n              textColor: parseCssColor(childCs.color) || textColor || void 0\n            };\n            const dec = childCs.textDecorationLine;\n            if (dec === "underline") seg.textDecoration = "UNDERLINE";\n            else if (dec === "line-through") seg.textDecoration = "STRIKETHROUGH";\n            const tt = childCs.textTransform;\n            if (tt === "uppercase") seg.textCase = "UPPER";\n            else if (tt === "lowercase") seg.textCase = "LOWER";\n            else if (tt === "capitalize") seg.textCase = "TITLE";\n            segments.push(seg);\n            fullText += childText;\n          }\n        }\n      }\n    }\n    if (segments.length === 0) {\n      fullText = (el.innerText || el.textContent || "").trim();\n    }\n    const trimmedText = fullText.trim() || (el.innerText || el.textContent || "").trim();\n    const lineHeightPx = normalizedLineHeight || Math.round(fontSize * 1.4);\n    const renderedSingleLine = rect.height > 0 && rect.height < lineHeightPx * 1.5;\n    const noWrap = cs.whiteSpace === "nowrap" || cs.whiteSpace === "pre";\n    const shortContent = trimmedText.length <= 40;\n    const node = {\n      type: "TEXT",\n      name: isHeading ? `Heading ${tag[1]}` : tag === "P" ? "Paragraph" : tag === "BUTTON" ? "Button" : "Text",\n      characters: fullText.trim(),\n      fontSize,\n      fontWeight,\n      fontFamily,\n      fontStack: cs.fontFamily,\n      // full stack \u2192 registry match falls back inside the stack\n      fontStyle: cs.fontStyle === "italic" ? "italic" : void 0,\n      lineHeight: normalizedLineHeight,\n      letterSpacing,\n      wordSpacing: cs.wordSpacing !== "normal" ? parseFloat(cs.wordSpacing) : void 0,\n      textColor: textColor || void 0,\n      textAlignHorizontal,\n      textAutoResize: renderedSingleLine || noWrap || shortContent ? "WIDTH_AND_HEIGHT" : "HEIGHT",\n      width: Math.round(rect.width) || void 0,\n      height: Math.round(rect.height) || void 0\n    };\n    const clampRaw = cs.webkitLineClamp;\n    const hasLineClamp = !!clampRaw && clampRaw !== "none" && parseInt(clampRaw, 10) > 0;\n    const hasEllipsis = cs.textOverflow === "ellipsis" && cs.whiteSpace === "nowrap";\n    if (hasEllipsis || hasLineClamp) {\n      node.textTruncation = "ENDING";\n    }\n    if (segments.length > 1) node.textSegments = segments;\n    const decoration = cs.textDecorationLine;\n    if (decoration === "underline") node.textDecoration = "UNDERLINE";\n    else if (decoration === "line-through") node.textDecoration = "STRIKETHROUGH";\n    const textTransform = cs.textTransform;\n    if (textTransform === "uppercase") node.textCase = "UPPER";\n    else if (textTransform === "lowercase") node.textCase = "LOWER";\n    else if (textTransform === "capitalize") node.textCase = "TITLE";\n    const textShadow = cs.textShadow;\n    if (textShadow && textShadow !== "none") {\n      const tsEffect = parseBoxShadow(textShadow);\n      if (tsEffect) node.effects = [tsEffect];\n    }\n    return node;\n  }\n  function extractPseudoElement(el, win, pseudo) {\n    try {\n      const pcs = win.getComputedStyle(el, pseudo);\n      const content = pcs.content;\n      if (!content || content === "none" || content === "normal") return null;\n      if (pcs.display === "none" || pcs.visibility === "hidden") return null;\n      if (pcs.opacity === "0") return null;\n      const width = parseFloat(pcs.width) || 0;\n      const height = parseFloat(pcs.height) || 0;\n      const bgColor = parseCssColor(pcs.backgroundColor);\n      const borderColor = parseCssColor(pcs.borderTopColor);\n      const textColor = parseCssColor(pcs.color);\n      const textContent = content.replace(/^["\']|["\']$/g, "");\n      const hasText = textContent && textContent !== "" && textContent !== \'""\' && textContent !== "\'\'";\n      if (hasText && textContent.length < 200) {\n        return {\n          type: "TEXT",\n          name: pseudo === "::before" ? "Before" : "After",\n          characters: textContent,\n          fontSize: parseFloat(pcs.fontSize) || 12,\n          fontWeight: parseInt(pcs.fontWeight) || 400,\n          fontFamily: pcs.fontFamily.split(",")[0].replace(/[\'"]/g, "").trim() || "Inter",\n          fontStack: pcs.fontFamily,\n          textColor: textColor || void 0,\n          width: width > 0 ? Math.round(width) : void 0,\n          height: height > 0 ? Math.round(height) : void 0\n        };\n      }\n      const hasBg = bgColor && bgColor.a > 0;\n      const hasBorder = borderColor && borderColor.a > 0;\n      const hasSize = width > 0 || height > 0;\n      if ((hasBg || hasBorder) && hasSize) {\n        const node = {\n          type: "RECTANGLE",\n          name: pseudo === "::before" ? "Decoration-Before" : "Decoration-After",\n          width: Math.round(width) || 1,\n          height: Math.round(height) || 1\n        };\n        if (hasBg) node.fills = [{ type: "SOLID", color: bgColor }];\n        if (hasBorder) {\n          node.strokes = [{ type: "SOLID", color: borderColor }];\n          node.strokeWeight = Math.round(parseFloat(pcs.borderTopWidth) || 1);\n        }\n        const borderRadius = parseFloat(pcs.borderRadius) || 0;\n        if (borderRadius > 0) node.cornerRadius = Math.round(borderRadius);\n        const opacity = parseFloat(pcs.opacity);\n        if (opacity < 1) node.opacity = opacity;\n        return node;\n      }\n      return null;\n    } catch {\n      return null;\n    }\n  }\n  function buildDirectTextNode(el, win, directText) {\n    const textCs = win.getComputedStyle(el);\n    const textColor = parseCssColor(textCs.color);\n    const textNode = {\n      type: "TEXT",\n      name: "Text",\n      characters: directText,\n      fontSize: parseFloat(textCs.fontSize) || 16,\n      fontWeight: parseInt(textCs.fontWeight) || 400,\n      fontFamily: textCs.fontFamily.split(",")[0].replace(/[\'"]/g, "").trim() || "Inter",\n      fontStack: textCs.fontFamily,\n      lineHeight: textCs.lineHeight !== "normal" ? parseFloat(textCs.lineHeight) : void 0,\n      letterSpacing: textCs.letterSpacing !== "normal" ? parseFloat(textCs.letterSpacing) : void 0,\n      textColor: textColor || void 0,\n      textAlignHorizontal: mapTextAlign(textCs.textAlign),\n      textAutoResize: "WIDTH_AND_HEIGHT"\n    };\n    const tt = textCs.textTransform;\n    if (tt === "uppercase") textNode.textCase = "UPPER";\n    else if (tt === "lowercase") textNode.textCase = "LOWER";\n    else if (tt === "capitalize") textNode.textCase = "TITLE";\n    const td = textCs.textDecorationLine;\n    if (td === "underline") textNode.textDecoration = "UNDERLINE";\n    else if (td === "line-through") textNode.textDecoration = "STRIKETHROUGH";\n    return textNode;\n  }\n\n  // plugin/src/ui/converter/build-frame-children.ts\n  function hasExplicitDimension(el, prop, win) {\n    const inlineVal = el.style[prop];\n    if (inlineVal && inlineVal !== "auto" && inlineVal !== "") return true;\n    const cs = win.getComputedStyle(el);\n    if (cs[prop] === "auto") return false;\n    if (cs.flexBasis && cs.flexBasis !== "auto" && cs.flexBasis !== "0px") return true;\n    if (el.getAttribute("style")?.includes(prop)) return true;\n    if (el.getAttribute(prop)) return true;\n    const display = cs.display;\n    if (prop === "width" && (display === "block" || display === "flex" || display === "grid")) return false;\n    const parentEl = el.parentElement;\n    if (parentEl) {\n      const parentDisplay = win.getComputedStyle(parentEl).display;\n      if (parentDisplay.includes("flex") || parentDisplay === "grid") {\n        if (prop === "width" && (parseFloat(cs.flexGrow) || 0) === 0 && cs.flexBasis === "auto") return false;\n      }\n    }\n    return false;\n  }\n  function collectOrderedEntries(el) {\n    const entries = [];\n    if (el.children.length === 0 && (el.innerText || "").trim()) {\n      entries.push({ kind: "text", text: el.innerText.trim() });\n      return entries;\n    }\n    let textRun = "";\n    for (const child of Array.from(el.childNodes)) {\n      if (child.nodeType === 3) {\n        textRun += child.textContent || "";\n      } else if (child.nodeType === 1) {\n        if (textRun.trim()) entries.push({ kind: "text", text: textRun.trim() });\n        textRun = "";\n        entries.push({ kind: "el", el: child });\n      }\n    }\n    if (textRun.trim()) entries.push({ kind: "text", text: textRun.trim() });\n    if (el.shadowRoot) {\n      for (const shadowChild of Array.from(el.shadowRoot.children)) {\n        if (shadowChild.nodeType === 1 && shadowChild.tagName !== "STYLE") {\n          entries.push({ kind: "el", el: shadowChild });\n        }\n      }\n    }\n    return entries;\n  }\n  function buildChildNodes(el, cs, parentNode, win, depth) {\n    const children = [];\n    const beforeNode = extractPseudoElement(el, win, "::before");\n    if (beforeNode) children.push(beforeNode);\n    const display = cs.display;\n    const sizingDir = parentNode.layoutMode === "GRID" ? "HORIZONTAL" : parentNode.layoutMode;\n    const parentAlignItems = cs.alignItems || "stretch";\n    const entries = collectOrderedEntries(el);\n    const hasTextRuns = entries.some((e) => e.kind === "text");\n    const hasElementEntries = entries.some((e) => e.kind === "el");\n    if (hasTextRuns && hasElementEntries) {\n      const fontPx = parseFloat(cs.fontSize) || 16;\n      parentNode.layoutMode = "HORIZONTAL";\n      parentNode.counterAxisAlignItems = "BASELINE";\n      if (parentNode.itemSpacing === void 0 || parentNode.itemSpacing === 0) {\n        parentNode.itemSpacing = Math.round(fontPx * 0.28);\n      }\n      parentNode.layoutSizingHorizontal = "HUG";\n      parentNode.layoutSizingVertical = "HUG";\n      parentNode.primaryAxisSizingMode = "AUTO";\n      parentNode.counterAxisSizingMode = "AUTO";\n    }\n    if (!hasTextRuns && entries.length > 1 && (display === "flex" || display === "inline-flex")) {\n      entries.sort((a, b) => {\n        const orderOf = (e) => e.kind === "el" ? parseInt(win.getComputedStyle(e.el).order) || 0 : 0;\n        return orderOf(a) - orderOf(b);\n      });\n    }\n    for (const entry of entries) {\n      if (entry.kind === "text") {\n        children.push(buildDirectTextNode(el, win, entry.text));\n        continue;\n      }\n      const childEl = entry.el;\n      const childNode = computedElementToNode(childEl, win, depth + 1);\n      if (!childNode) continue;\n      const childCs = win.getComputedStyle(childEl);\n      const flexGrow = parseFloat(childCs.flexGrow) || 0;\n      const childDisplay = childCs.display;\n      const alignSelf = childCs.alignSelf;\n      const effectiveAlign = alignSelf && alignSelf !== "auto" ? alignSelf : parentAlignItems;\n      const hasExplicitW = hasExplicitDimension(childEl, "width", win);\n      const hasExplicitH = hasExplicitDimension(childEl, "height", win);\n      if (flexGrow > 0) childNode.layoutGrow = flexGrow;\n      if (childNode.absolutePosition) {\n        children.push(childNode);\n        continue;\n      }\n      const flexShrink = parseFloat(childCs.flexShrink) || 0;\n      const basisPx = childCs.flexBasis && childCs.flexBasis.endsWith("px") ? parseFloat(childCs.flexBasis) : 0;\n      const fixedBasis = flexGrow === 0 && flexShrink === 0 && basisPx > 0;\n      if (sizingDir === "VERTICAL") {\n        if (childNode.layoutSizingVertical === void 0) {\n          if (flexGrow > 0) childNode.layoutSizingVertical = "FILL";\n          else if (fixedBasis) {\n            childNode.layoutSizingVertical = "FIXED";\n            childNode.height = Math.round(basisPx);\n          } else if (hasExplicitH) childNode.layoutSizingVertical = "FIXED";\n          else childNode.layoutSizingVertical = "HUG";\n        }\n        if (childNode.layoutSizingHorizontal === void 0) {\n          if (hasExplicitW) childNode.layoutSizingHorizontal = "FIXED";\n          else if (effectiveAlign === "stretch" || childDisplay === "block" || childDisplay === "flex" || childDisplay === "grid") {\n            childNode.layoutSizingHorizontal = "FILL";\n          } else childNode.layoutSizingHorizontal = "HUG";\n        }\n      } else if (sizingDir === "HORIZONTAL") {\n        if (childNode.layoutSizingHorizontal === void 0) {\n          if (flexGrow > 0) childNode.layoutSizingHorizontal = "FILL";\n          else if (fixedBasis) {\n            childNode.layoutSizingHorizontal = "FIXED";\n            childNode.width = Math.round(basisPx);\n          } else if (hasExplicitW) childNode.layoutSizingHorizontal = "FIXED";\n          else childNode.layoutSizingHorizontal = "HUG";\n        }\n        if (childNode.layoutSizingVertical === void 0) {\n          if (hasExplicitH) childNode.layoutSizingVertical = "FIXED";\n          else if (effectiveAlign === "stretch") childNode.layoutSizingVertical = "FILL";\n          else childNode.layoutSizingVertical = "HUG";\n        }\n      }\n      if (parentNode.layoutMode === "GRID" && childNode.type !== "TEXT" && !hasExplicitW) {\n        childNode.layoutSizingHorizontal = "FILL";\n      }\n      if (childNode.type === "TEXT") {\n        childNode.layoutSizingHorizontal = childNode.textAutoResize === "WIDTH_AND_HEIGHT" ? "HUG" : "FIXED";\n        childNode.layoutSizingVertical = "HUG";\n      }\n      if (childNode.type === "FRAME" && !hasExplicitW) {\n        const tileRect = childEl.getBoundingClientRect();\n        const tw = Math.round(tileRect.width);\n        const th = Math.round(tileRect.height);\n        const hasTextInside = (childNode.children ?? []).some((c) => c.type === "TEXT");\n        if (tw > 0 && tw === th && tw <= 80 && !hasTextInside) {\n          childNode.layoutSizingHorizontal = "FIXED";\n          childNode.layoutSizingVertical = "FIXED";\n          childNode.width = tw;\n          childNode.height = th;\n        }\n      }\n      children.push(childNode);\n    }\n    const afterNode = extractPseudoElement(el, win, "::after");\n    if (afterNode) children.push(afterNode);\n    return children;\n  }\n\n  // plugin/src/ui/converter/build-frame.ts\n  function countGridTracks(template) {\n    if (!template || template === "none") return 0;\n    const tokens = [];\n    let depth = 0;\n    let cur = "";\n    for (const ch of template) {\n      if (ch === "(" || ch === "[") depth++;\n      else if (ch === ")" || ch === "]") depth--;\n      if (/\\s/.test(ch) && depth === 0) {\n        if (cur) tokens.push(cur);\n        cur = "";\n      } else cur += ch;\n    }\n    if (cur) tokens.push(cur);\n    let count = 0;\n    for (const tok of tokens) {\n      if (tok.startsWith("[")) continue;\n      if (/^repeat\\(\\s*(auto-fill|auto-fit)/.test(tok)) return 0;\n      const rep = tok.match(/^repeat\\((\\d+)\\s*,/);\n      if (rep) {\n        const inner = tok.slice(tok.indexOf(",") + 1, tok.lastIndexOf(")")).trim();\n        count += parseInt(rep[1], 10) * (countGridTracks(inner) || 1);\n      } else {\n        count += 1;\n      }\n    }\n    return count;\n  }\n  function deriveComputedNodeName(el) {\n    const ariaLabel = el.getAttribute("aria-label");\n    if (ariaLabel) return ariaLabel;\n    const id = el.getAttribute("id");\n    if (id) return id;\n    const tagNames = {\n      NAV: "Navigation",\n      HEADER: "Header",\n      FOOTER: "Footer",\n      MAIN: "Main",\n      ASIDE: "Sidebar",\n      SECTION: "Section",\n      ARTICLE: "Article",\n      FORM: "Form",\n      UL: "List",\n      OL: "List",\n      LI: "List Item",\n      TABLE: "Table",\n      BUTTON: "Button"\n    };\n    if (tagNames[el.tagName]) return tagNames[el.tagName];\n    const classes = (el.getAttribute("class") || "").split(/\\s+/).filter(Boolean);\n    const meaningfulClass = classes.find((c) => !c.startsWith("flex") && !c.startsWith("grid") && !c.startsWith("p-") && !c.startsWith("m-") && !c.startsWith("w-") && !c.startsWith("h-") && !c.startsWith("bg-") && !c.startsWith("text-") && !c.startsWith("rounded") && !c.startsWith("border") && !c.startsWith("shadow") && !c.startsWith("gap") && !c.startsWith("items-") && !c.startsWith("justify-") && !c.startsWith("space-") && !c.startsWith("overflow") && !c.startsWith("relative") && !c.startsWith("absolute") && !c.startsWith("min-") && !c.startsWith("max-") && c !== "inline-flex");\n    if (meaningfulClass) return meaningfulClass;\n    return "Frame";\n  }\n  function buildFrameNode(el, cs, win, depth) {\n    const node = { type: "FRAME", name: deriveComputedNodeName(el) };\n    const display = cs.display;\n    const flexDir = cs.flexDirection;\n    if (display.includes("flex") || display === "inline-flex") {\n      node.layoutMode = flexDir === "column" || flexDir === "column-reverse" ? "VERTICAL" : "HORIZONTAL";\n      node.primaryAxisSizingMode = "AUTO";\n      node.counterAxisSizingMode = "FIXED";\n      if ((cs.flexWrap === "wrap" || cs.flexWrap === "wrap-reverse") && node.layoutMode === "HORIZONTAL") {\n        node.layoutWrap = "WRAP";\n      }\n      const alignItems = cs.alignItems;\n      if (alignItems === "center") node.counterAxisAlignItems = "CENTER";\n      else if (alignItems === "flex-end" || alignItems === "end") node.counterAxisAlignItems = "MAX";\n      else if (alignItems === "baseline") node.counterAxisAlignItems = "BASELINE";\n      else node.counterAxisAlignItems = "MIN";\n      const justifyContent = cs.justifyContent;\n      if (justifyContent === "center") node.primaryAxisAlignItems = "CENTER";\n      else if (justifyContent === "flex-end" || justifyContent === "end") node.primaryAxisAlignItems = "MAX";\n      else if (justifyContent === "space-between") node.primaryAxisAlignItems = "SPACE_BETWEEN";\n      else node.primaryAxisAlignItems = "MIN";\n    } else if (display === "grid" || display === "inline-grid") {\n      node.primaryAxisSizingMode = "AUTO";\n      node.counterAxisSizingMode = "FIXED";\n      const colCount = countGridTracks(cs.gridTemplateColumns);\n      if (colCount > 0) {\n        node.layoutMode = "GRID";\n        node.gridColumnCount = colCount;\n        const rowCount = countGridTracks(cs.gridTemplateRows);\n        if (rowCount > 0) node.gridRowCount = rowCount;\n        const gRowGap = Math.round(parseFloat(cs.rowGap) || 0);\n        const gColGap = Math.round(parseFloat(cs.columnGap) || parseFloat(cs.gap) || 0);\n        if (gRowGap > 0) node.gridRowGap = gRowGap;\n        if (gColGap > 0) node.gridColumnGap = gColGap;\n      } else {\n        node.layoutMode = "HORIZONTAL";\n      }\n      node.layoutWrap = "WRAP";\n    } else if (display === "inline" || display === "inline-block") {\n      node.layoutMode = "HORIZONTAL";\n      node.primaryAxisSizingMode = "AUTO";\n      node.counterAxisSizingMode = "AUTO";\n    } else {\n      node.layoutMode = "VERTICAL";\n      node.primaryAxisSizingMode = "AUTO";\n      node.counterAxisSizingMode = "FIXED";\n    }\n    const gap = parseFloat(cs.gap) || parseFloat(cs.rowGap) || parseFloat(cs.columnGap) || 0;\n    if (gap > 0) node.itemSpacing = Math.round(gap);\n    if (node.layoutWrap === "WRAP") {\n      const rowGap = parseFloat(cs.rowGap) || 0;\n      const colGap = parseFloat(cs.columnGap) || parseFloat(cs.gap) || 0;\n      if (colGap > 0) node.itemSpacing = Math.round(colGap);\n      if (rowGap > 0 && rowGap !== colGap) node.counterAxisSpacing = Math.round(rowGap);\n    }\n    if (!node.itemSpacing || node.itemSpacing === 0) {\n      const childEls = Array.from(el.children).filter((c) => c.nodeType === 1);\n      if (childEls.length >= 2) {\n        const isVertical = node.layoutMode === "VERTICAL";\n        const margins = [];\n        for (let i = 0; i < Math.min(childEls.length, 5); i++) {\n          const childCs = win.getComputedStyle(childEls[i]);\n          if (isVertical) {\n            margins.push(Math.max(parseFloat(childCs.marginBottom) || 0, parseFloat(childCs.marginTop) || 0));\n          } else {\n            margins.push(Math.max(parseFloat(childCs.marginRight) || 0, parseFloat(childCs.marginLeft) || 0));\n          }\n        }\n        const freq = {};\n        for (const m of margins) {\n          if (m > 0) {\n            const rounded = Math.round(m);\n            freq[rounded] = (freq[rounded] || 0) + 1;\n          }\n        }\n        let bestMargin = 0;\n        let bestCount = 0;\n        for (const [val, count] of Object.entries(freq)) {\n          if (count > bestCount || count === bestCount && Number(val) > bestMargin) {\n            bestMargin = Number(val);\n            bestCount = count;\n          }\n        }\n        if (bestMargin > 0) node.itemSpacing = bestMargin;\n      }\n    }\n    const pt = parseFloat(cs.paddingTop) || 0;\n    const pr = parseFloat(cs.paddingRight) || 0;\n    const pb = parseFloat(cs.paddingBottom) || 0;\n    const pl = parseFloat(cs.paddingLeft) || 0;\n    if (pt > 0) node.paddingTop = Math.round(pt);\n    if (pr > 0) node.paddingRight = Math.round(pr);\n    if (pb > 0) node.paddingBottom = Math.round(pb);\n    if (pl > 0) node.paddingLeft = Math.round(pl);\n    const overflow = cs.overflow || cs.overflowX || cs.overflowY;\n    if (overflow === "hidden" || overflow === "clip" || overflow === "scroll" || overflow === "auto") {\n      node.clipsContent = true;\n    }\n    const rect = el.getBoundingClientRect();\n    const width = rect.width || el.offsetWidth;\n    const height = rect.height || el.offsetHeight;\n    if (width > 0) node.width = Math.round(width);\n    if (height > 0) node.height = Math.round(height);\n    if (cs.position === "absolute" || cs.position === "fixed") {\n      node.absolutePosition = true;\n      const parentRect = el.parentElement?.getBoundingClientRect();\n      if (parentRect) {\n        node.x = Math.round(rect.left - parentRect.left);\n        node.y = Math.round(rect.top - parentRect.top);\n      } else {\n        node.x = el.offsetLeft;\n        node.y = el.offsetTop;\n      }\n    }\n    if (cs.marginLeft === "auto" && cs.marginRight === "auto") {\n      node.layoutSizingHorizontal = "FIXED";\n    }\n    const bgImage = cs.backgroundImage;\n    if (bgImage && bgImage !== "none" && bgImage.includes("gradient")) {\n      const gradientFill = parseCssGradient(bgImage);\n      if (gradientFill) {\n        const bgColor = parseCssColor(cs.backgroundColor);\n        node.fills = bgColor && bgColor.a > 0 ? [{ type: "SOLID", color: bgColor }, gradientFill] : [gradientFill];\n      }\n    } else if (bgImage && bgImage !== "none") {\n      const urlMatch = bgImage.match(/url\\([\'"]?(.*?)[\'"]?\\)/);\n      if (urlMatch && urlMatch[1]) {\n        node.backgroundImageUrl = urlMatch[1];\n        if (cs.backgroundSize && cs.backgroundSize !== "auto") node.backgroundSize = cs.backgroundSize;\n        if (cs.backgroundPosition && cs.backgroundPosition !== "0% 0%") node.backgroundPosition = cs.backgroundPosition;\n      }\n      const bgColor = parseCssColor(cs.backgroundColor);\n      if (bgColor && bgColor.a > 0) node.fills = [{ type: "SOLID", color: bgColor }];\n    } else {\n      const bgColor = parseCssColor(cs.backgroundColor);\n      if (bgColor && bgColor.a > 0) node.fills = [{ type: "SOLID", color: bgColor }];\n    }\n    const tl = parseFloat(cs.borderTopLeftRadius) || 0;\n    const tr = parseFloat(cs.borderTopRightRadius) || 0;\n    const br = parseFloat(cs.borderBottomRightRadius) || 0;\n    const bl = parseFloat(cs.borderBottomLeftRadius) || 0;\n    if (tl > 0 || tr > 0 || br > 0 || bl > 0) {\n      if (tl === tr && tr === br && br === bl) {\n        if (tl < 9999) node.cornerRadius = Math.round(tl);\n      } else {\n        node.cornerRadii = { tl: Math.round(tl), tr: Math.round(tr), br: Math.round(br), bl: Math.round(bl) };\n      }\n    }\n    const bTopW = parseFloat(cs.borderTopWidth) || 0;\n    const bRightW = parseFloat(cs.borderRightWidth) || 0;\n    const bBottomW = parseFloat(cs.borderBottomWidth) || 0;\n    const bLeftW = parseFloat(cs.borderLeftWidth) || 0;\n    const maxBorderW = Math.max(bTopW, bRightW, bBottomW, bLeftW);\n    if (maxBorderW > 0) {\n      let dominantColor = null;\n      if (bTopW === maxBorderW) dominantColor = parseCssColor(cs.borderTopColor);\n      else if (bRightW === maxBorderW) dominantColor = parseCssColor(cs.borderRightColor);\n      else if (bBottomW === maxBorderW) dominantColor = parseCssColor(cs.borderBottomColor);\n      else if (bLeftW === maxBorderW) dominantColor = parseCssColor(cs.borderLeftColor);\n      if (!dominantColor) dominantColor = parseCssColor(cs.borderTopColor);\n      if (dominantColor && dominantColor.a > 0) {\n        node.strokes = [{ type: "SOLID", color: dominantColor }];\n        node.strokeWeight = Math.round(maxBorderW);\n        node.strokeAlign = "INSIDE";\n      }\n    }\n    const maxW = parseFloat(cs.maxWidth) || 0;\n    const minW = parseFloat(cs.minWidth) || 0;\n    const maxH = parseFloat(cs.maxHeight) || 0;\n    const minH = parseFloat(cs.minHeight) || 0;\n    if (maxW > 0 && maxW < 1e4) node.maxWidth = Math.round(maxW);\n    if (minW > 0) node.minWidth = Math.round(minW);\n    if (maxH > 0 && maxH < 1e4) node.maxHeight = Math.round(maxH);\n    if (minH > 0) node.minHeight = Math.round(minH);\n    const boxShadow = cs.boxShadow;\n    if (boxShadow && boxShadow !== "none") {\n      const shadowParts = boxShadow.split(/,(?![^(]*\\))/);\n      const effects = [];\n      for (const part of shadowParts) {\n        const effect = parseBoxShadow(part.trim());\n        if (effect) effects.push(effect);\n      }\n      if (effects.length > 0) node.effects = effects;\n      if (effects.some((e) => e.type === "INNER_SHADOW" && (e.spread || 0) > 0)) node.clipsContent = true;\n    }\n    const opacity = parseFloat(cs.opacity);\n    if (opacity < 1 && opacity > 0.01) node.opacity = opacity;\n    const extCs = cs;\n    const backdropFilter = extCs.backdropFilter || extCs.webkitBackdropFilter || "";\n    if (backdropFilter && backdropFilter !== "none") {\n      const blurMatch = backdropFilter.match(/blur\\(([\\d.]+)px\\)/);\n      if (blurMatch) {\n        node.effects = [...node.effects || [], { type: "BACKGROUND_BLUR", radius: parseFloat(blurMatch[1]) }];\n      }\n    }\n    const filter = cs.filter;\n    if (filter && filter !== "none") {\n      const effects = node.effects || [];\n      const blurMatch = filter.match(/blur\\(([\\d.]+)px\\)/);\n      if (blurMatch) effects.push({ type: "LAYER_BLUR", radius: parseFloat(blurMatch[1]) });\n      const dsMatch = filter.match(/drop-shadow\\(([-\\d.]+)px\\s+([-\\d.]+)px\\s+([-\\d.]+)px\\s+(.*?)\\)/);\n      if (dsMatch) {\n        const dsColor = parseCssColor(dsMatch[4].trim());\n        if (dsColor) {\n          effects.push({\n            type: "DROP_SHADOW",\n            offset: { x: parseFloat(dsMatch[1]), y: parseFloat(dsMatch[2]) },\n            radius: parseFloat(dsMatch[3]),\n            spread: 0,\n            color: dsColor\n          });\n        }\n      }\n      if (effects.length > 0) node.effects = effects;\n    }\n    const blendMode = cs.mixBlendMode;\n    if (blendMode && blendMode !== "normal") {\n      const blendMap = {\n        "multiply": "MULTIPLY",\n        "screen": "SCREEN",\n        "overlay": "OVERLAY",\n        "darken": "DARKEN",\n        "lighten": "LIGHTEN",\n        "color-dodge": "COLOR_DODGE",\n        "color-burn": "COLOR_BURN",\n        "hard-light": "HARD_LIGHT",\n        "soft-light": "SOFT_LIGHT",\n        "difference": "DIFFERENCE",\n        "exclusion": "EXCLUSION",\n        "hue": "HUE",\n        "saturation": "SATURATION",\n        "color": "COLOR",\n        "luminosity": "LUMINOSITY"\n      };\n      node.blendMode = blendMap[blendMode] || void 0;\n    }\n    const transform = cs.transform;\n    if (transform && transform !== "none") {\n      const matrixMatch = transform.match(/matrix\\(([-\\d.]+),\\s*([-\\d.]+)/);\n      if (matrixMatch) {\n        const degrees = Math.atan2(parseFloat(matrixMatch[2]), parseFloat(matrixMatch[1])) * (180 / Math.PI);\n        if (Math.abs(degrees) > 0.1) node.rotation = -degrees;\n      }\n      const rotateMatch = transform.match(/rotate\\(([-\\d.]+)deg\\)/);\n      if (rotateMatch) node.rotation = -parseFloat(rotateMatch[1]);\n    }\n    if (cs.alignContent === "space-between") node.counterAxisAlignContent = "SPACE_BETWEEN";\n    const outlineWidth = parseFloat(cs.outlineWidth) || 0;\n    if (outlineWidth > 0 && cs.outlineStyle !== "none") {\n      const outlineColor = parseCssColor(cs.outlineColor);\n      if (outlineColor && outlineColor.a > 0) {\n        node.effects = [...node.effects || [], {\n          type: "DROP_SHADOW",\n          offset: { x: 0, y: 0 },\n          radius: 0,\n          spread: outlineWidth,\n          color: outlineColor\n        }];\n      }\n    }\n    const children = buildChildNodes(el, cs, node, win, depth);\n    const textOnlyChildren = children.length > 0 && children.every((c) => c.type === "TEXT");\n    if (textOnlyChildren) {\n      const flexLike = display.includes("flex");\n      const pillShape = (node.cornerRadius !== void 0 || node.cornerRadii !== void 0) && ((node.paddingLeft || 0) > 0 || (node.paddingRight || 0) > 0);\n      if (flexLike || pillShape || el.tagName === "BUTTON") {\n        const squareTile = node.width !== void 0 && node.width > 0 && node.width === node.height;\n        if (squareTile) {\n          node.layoutSizingHorizontal = "FIXED";\n          node.layoutSizingVertical = "FIXED";\n        } else if (!hasExplicitDimension(el, "width", win)) {\n          node.layoutSizingHorizontal = "HUG";\n          node.layoutSizingVertical = "HUG";\n          node.primaryAxisSizingMode = "AUTO";\n          node.counterAxisSizingMode = "AUTO";\n        }\n      }\n    }\n    if (children.length > 0) node.children = children;\n    return node;\n  }\n\n  // plugin/src/ui/converter/computed-walk.ts\n  var RENDERED_SKIP_TAGS = /* @__PURE__ */ new Set(["SCRIPT", "STYLE", "LINK", "META", "HEAD", "NOSCRIPT", "BR"]);\n  function prepareSvgContent(svg, computedColor) {\n    let result = svg;\n    result = result.replace(/stroke-width="2"/g, \'stroke-width="1.5"\');\n    result = result.replace(/stroke-width=\'2\'/g, "stroke-width=\'1.5\'");\n    if (computedColor) {\n      const hex = rgbaToHex(computedColor);\n      result = result.replace(/currentColor/g, hex);\n      result = result.replace(/currentcolor/gi, hex);\n    }\n    return result;\n  }\n  function computedElementToNode(el, win, depth) {\n    if (RENDERED_SKIP_TAGS.has(el.tagName)) return null;\n    if (depth > 20) return null;\n    const cs = win.getComputedStyle(el);\n    const tag = el.tagName;\n    if (cs.display === "none") return null;\n    if (cs.visibility === "hidden") return null;\n    if (tag === "IMG") {\n      const img = el;\n      return {\n        type: "IMAGE",\n        name: img.getAttribute("alt") || "Image",\n        imageUrl: img.currentSrc || img.getAttribute("src") || "",\n        width: el.offsetWidth || 200,\n        height: el.offsetHeight || 200\n      };\n    }\n    if (tag === "HR") {\n      const hrColor = parseCssColor(cs.borderTopColor) || parseCssColor(cs.backgroundColor);\n      return {\n        type: "RECTANGLE",\n        name: "Divider",\n        width: el.offsetWidth || 200,\n        height: Math.max(parseFloat(cs.borderTopWidth) || 1, el.offsetHeight || 1),\n        fills: hrColor && hrColor.a > 0 ? [{ type: "SOLID", color: hrColor }] : [{ type: "SOLID", color: { r: 0.8, g: 0.8, b: 0.8, a: 1 } }]\n      };\n    }\n    if (tag === "VIDEO") {\n      const videoEl = el;\n      return {\n        type: "IMAGE",\n        name: "Video",\n        imageUrl: videoEl.poster || videoEl.getAttribute("poster") || "",\n        width: el.offsetWidth || 320,\n        height: el.offsetHeight || 180\n      };\n    }\n    if (tag === "svg" || tag === "SVG") {\n      const rawSvg = el.outerHTML;\n      const w = el.clientWidth || parseInt(el.getAttribute("width") || "24") || 24;\n      const h = el.clientHeight || parseInt(el.getAttribute("height") || "24") || 24;\n      const computedColor = parseCssColor(cs.color);\n      return {\n        type: "IMAGE",\n        name: el.closest("[data-lucide]")?.getAttribute("data-lucide") || "Icon",\n        svgContent: prepareSvgContent(rawSvg, computedColor),\n        width: w,\n        height: h,\n        fills: computedColor ? [{ type: "SOLID", color: computedColor }] : void 0\n      };\n    }\n    if (tag === "I" && el.hasAttribute("data-lucide")) {\n      const svg = el.querySelector("svg");\n      const iconColor = parseCssColor(cs.color);\n      if (svg) {\n        return {\n          type: "IMAGE",\n          name: el.getAttribute("data-lucide") || "Icon",\n          svgContent: prepareSvgContent(svg.outerHTML, iconColor),\n          width: svg.clientWidth || parseInt(svg.getAttribute("width") || "24") || 24,\n          height: svg.clientHeight || parseInt(svg.getAttribute("height") || "24") || 24,\n          fills: iconColor ? [{ type: "SOLID", color: iconColor }] : void 0\n        };\n      }\n      return {\n        type: "RECTANGLE",\n        name: el.getAttribute("data-lucide") || "Icon",\n        width: parseInt(cs.width) || 16,\n        height: parseInt(cs.height) || 16,\n        fills: iconColor ? [{ type: "SOLID", color: iconColor }] : [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4, a: 1 } }]\n      };\n    }\n    if (tag === "I" && el.children.length === 0) {\n      const iconColor = parseCssColor(cs.color);\n      return {\n        type: "RECTANGLE",\n        name: "Icon",\n        width: parseInt(cs.width) || 16,\n        height: parseInt(cs.height) || 16,\n        fills: iconColor ? [{ type: "SOLID", color: iconColor }] : [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4, a: 1 } }]\n      };\n    }\n    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") {\n      const bgColor = parseCssColor(cs.backgroundColor);\n      const borderColor = parseCssColor(cs.borderTopColor);\n      const inputEl = el;\n      const placeholder = inputEl.placeholder || inputEl.value || "";\n      const node = {\n        type: "FRAME",\n        name: placeholder || (tag === "INPUT" ? "Input" : tag === "SELECT" ? "Select" : "Textarea"),\n        width: el.offsetWidth || 200,\n        height: el.offsetHeight || 36,\n        layoutMode: "HORIZONTAL",\n        primaryAxisSizingMode: "AUTO",\n        counterAxisSizingMode: "FIXED",\n        counterAxisAlignItems: "CENTER",\n        paddingLeft: Math.round(parseFloat(cs.paddingLeft) || 0),\n        paddingRight: Math.round(parseFloat(cs.paddingRight) || 0)\n      };\n      if (bgColor && bgColor.a > 0) node.fills = [{ type: "SOLID", color: bgColor }];\n      if (borderColor && borderColor.a > 0) {\n        node.strokes = [{ type: "SOLID", color: borderColor }];\n        node.strokeWeight = Math.round(parseFloat(cs.borderTopWidth) || 1);\n        node.strokeAlign = "INSIDE";\n      }\n      const cornerR = parseFloat(cs.borderRadius) || 0;\n      if (cornerR > 0) node.cornerRadius = Math.round(cornerR);\n      if (placeholder) {\n        const textColor = parseCssColor(cs.color);\n        const isPlaceholder = !inputEl.value;\n        node.children = [{\n          type: "TEXT",\n          name: "Placeholder",\n          characters: placeholder.toUpperCase(),\n          fontSize: parseFloat(cs.fontSize) || 14,\n          fontWeight: parseInt(cs.fontWeight) || 400,\n          fontFamily: cs.fontFamily.split(",")[0].replace(/[\'"]/g, "").trim() || "Inter",\n          textColor: textColor || void 0,\n          textAutoResize: "WIDTH_AND_HEIGHT",\n          opacity: isPlaceholder ? 0.4 : 1\n        }];\n      }\n      return attachMotion(el, node);\n    }\n    if (isRenderedTextNode(el, win)) {\n      const textNode = buildTextNode(el, cs, win);\n      if (cs.position === "absolute" || cs.position === "fixed") {\n        textNode.absolutePosition = true;\n        const rect = el.getBoundingClientRect();\n        const parentRect = el.parentElement?.getBoundingClientRect();\n        if (parentRect) {\n          textNode.x = Math.round(rect.left - parentRect.left);\n          textNode.y = Math.round(rect.top - parentRect.top);\n        } else {\n          textNode.x = el.offsetLeft;\n          textNode.y = el.offsetTop;\n        }\n      }\n      return attachMotion(el, textNode);\n    }\n    return attachMotion(el, buildFrameNode(el, cs, win, depth));\n  }\n  function attachMotion(el, node) {\n    const raw = el.getAttribute("data-fa-motion");\n    if (raw) {\n      try {\n        node.motion = JSON.parse(raw);\n      } catch {\n      }\n    }\n    return node;\n  }\n  function isRenderedTextNode(el, win) {\n    const tag = el.tagName;\n    const hasContainerStyling = () => {\n      const cs = win.getComputedStyle(el);\n      const bgColor = parseCssColor(cs.backgroundColor);\n      const hasBg = !!(bgColor && bgColor.a > 0);\n      const hasBorder = (parseFloat(cs.borderTopWidth) || 0) > 0 && parseCssColor(cs.borderTopColor)?.a !== void 0 && (parseCssColor(cs.borderTopColor)?.a || 0) > 0;\n      const hasPadding = (parseFloat(cs.paddingTop) || 0) > 8 || (parseFloat(cs.paddingLeft) || 0) > 8;\n      return hasBg || hasBorder || hasPadding;\n    };\n    if (el.children.length === 0 && (el.textContent || "").trim()) {\n      return !hasContainerStyling();\n    }\n    if (/^H[1-6]$/.test(tag) || tag === "P" || tag === "SPAN" || tag === "LABEL" || tag === "A" || tag === "BUTTON") {\n      if (hasContainerStyling()) return false;\n      if (el.children.length === 0) return true;\n      for (const child of Array.from(el.children)) {\n        if (!["SPAN", "STRONG", "B", "EM", "I", "U", "A", "SMALL", "MARK", "CODE", "LABEL", "BR", "SVG", "IMG"].includes(child.tagName)) {\n          return false;\n        }\n        if (inlineChildBreaksMerge(child, el, win)) return false;\n      }\n      return true;\n    }\n    return false;\n  }\n  function inlineChildBreaksMerge(childEl, parentEl, win) {\n    const ccs = win.getComputedStyle(childEl);\n    const bg = parseCssColor(ccs.backgroundColor);\n    if (bg && bg.a > 0) {\n      const parentBg = parseCssColor(win.getComputedStyle(parentEl).backgroundColor);\n      if (!parentBg || parentBg.a === 0 || rgbaToHex(bg) !== rgbaToHex(parentBg)) return true;\n    }\n    if ((parseFloat(ccs.borderTopLeftRadius) || 0) > 0 || (parseFloat(ccs.borderBottomRightRadius) || 0) > 0) return true;\n    if ((parseFloat(ccs.borderTopWidth) || 0) > 0 && (parseCssColor(ccs.borderTopColor)?.a || 0) > 0) return true;\n    if ((ccs.display === "inline-flex" || ccs.display === "inline-block") && ((parseFloat(ccs.paddingLeft) || 0) > 0 || (parseFloat(ccs.paddingTop) || 0) > 0)) return true;\n    return false;\n  }\n\n  // plugin/src/ui/converter/extract-motion.ts\n  function parseKeyframeOffset(keyText) {\n    const first = (keyText || "").split(",")[0].trim().toLowerCase();\n    let n;\n    if (first === "from") n = 0;\n    else if (first === "to") n = 1;\n    else n = parseFloat(first) / 100;\n    if (!Number.isFinite(n)) n = 0;\n    return Math.max(0, Math.min(1, n));\n  }\n  function parseAnimDurationSec(s) {\n    const first = (s || "").split(",")[0].trim().toLowerCase();\n    if (!first) return 0;\n    const v = parseFloat(first);\n    if (!Number.isFinite(v)) return 0;\n    return first.endsWith("ms") ? v / 1e3 : v;\n  }\n  function buildMotionSpec(steps, durationSec, easing) {\n    const clean = (steps || []).filter((s) => s && s.style && (s.style.opacity !== void 0 || s.style.transform !== void 0)).slice().sort((a, b) => a.offset - b.offset);\n    if (clean.length < 2 || !(durationSec > 0)) return void 0;\n    const spec = { steps: clean, durationSec };\n    if (easing && easing !== "none") spec.easing = easing.split(",")[0].trim();\n    return spec;\n  }\n  function resolveKeyframeSteps(name, sheets) {\n    const CSS_KEYFRAMES_RULE = 7;\n    for (let i = 0; i < sheets.length; i++) {\n      let rules;\n      try {\n        rules = sheets[i].cssRules;\n      } catch {\n        continue;\n      }\n      if (!rules) continue;\n      for (let j = 0; j < rules.length; j++) {\n        const r = rules[j];\n        const isKeyframes = r.type === CSS_KEYFRAMES_RULE || r.name !== void 0 && r.cssRules !== void 0;\n        if (!isKeyframes || r.name !== name || !r.cssRules) continue;\n        const steps = [];\n        for (let k = 0; k < r.cssRules.length; k++) {\n          const kf = r.cssRules[k];\n          steps.push({\n            offset: parseKeyframeOffset(kf.keyText),\n            style: { opacity: kf.style.opacity || void 0, transform: kf.style.transform || void 0 }\n          });\n        }\n        return steps;\n      }\n    }\n    return [];\n  }\n  function captureMotionOntoElements(doc, win) {\n    let count = 0;\n    const els = doc.querySelectorAll("*");\n    for (let i = 0; i < els.length; i++) {\n      const el = els[i];\n      try {\n        const cs = win.getComputedStyle(el);\n        const name = cs.animationName;\n        if (!name || name === "none") continue;\n        const firstName = name.split(",")[0].trim();\n        const steps = resolveKeyframeSteps(firstName, doc.styleSheets);\n        const motion = buildMotionSpec(steps, parseAnimDurationSec(cs.animationDuration), cs.animationTimingFunction);\n        if (motion) {\n          el.setAttribute("data-fa-motion", JSON.stringify(motion));\n          count++;\n        }\n      } catch {\n      }\n    }\n    return count;\n  }\n\n  // plugin/src/ui/converter/tokens.ts\n  function extractFigmaTokens(rootNode) {\n    const colorSet = /* @__PURE__ */ new Map();\n    const fontSet = /* @__PURE__ */ new Map();\n    const spacingSet = /* @__PURE__ */ new Set();\n    const radiiSet = /* @__PURE__ */ new Set();\n    function walk(node) {\n      if (node.fills) {\n        for (const fill of node.fills) {\n          if (fill.color) colorSet.set(rgbaToHex(fill.color), fill.color);\n        }\n      }\n      if (node.textColor) {\n        colorSet.set(rgbaToHex(node.textColor), node.textColor);\n      }\n      if (node.strokes) {\n        for (const stroke of node.strokes) {\n          if (stroke.color) colorSet.set(rgbaToHex(stroke.color), stroke.color);\n        }\n      }\n      if (node.type === "TEXT" && node.fontSize) {\n        const key = `${node.fontFamily || "Inter"}-${node.fontSize}-${node.fontWeight || 400}`;\n        fontSet.set(key, {\n          family: node.fontFamily || "Inter",\n          size: node.fontSize,\n          weight: node.fontWeight || 400,\n          lineHeight: node.lineHeight\n        });\n      }\n      if (node.itemSpacing && node.itemSpacing > 0) spacingSet.add(node.itemSpacing);\n      if (node.paddingTop && node.paddingTop > 0) spacingSet.add(node.paddingTop);\n      if (node.paddingRight && node.paddingRight > 0) spacingSet.add(node.paddingRight);\n      if (node.paddingBottom && node.paddingBottom > 0) spacingSet.add(node.paddingBottom);\n      if (node.paddingLeft && node.paddingLeft > 0) spacingSet.add(node.paddingLeft);\n      if (node.cornerRadius && node.cornerRadius > 0 && node.cornerRadius < 9999) {\n        radiiSet.add(node.cornerRadius);\n      }\n      if (node.children) {\n        for (const child of node.children) walk(child);\n      }\n    }\n    walk(rootNode);\n    const colors = Array.from(colorSet.entries()).map(([hex, color]) => ({ name: `color/${hex.replace("#", "")}`, hex, color })).sort((a, b) => a.hex.localeCompare(b.hex));\n    const typography = Array.from(fontSet.entries()).map(([, val]) => ({\n      name: `type/${val.family.toLowerCase()}-${val.size}-${val.weight}`,\n      ...val\n    })).sort((a, b) => a.size - b.size);\n    const spacing = Array.from(spacingSet).sort((a, b) => a - b).map((v) => ({ name: `spacing/${v}`, value: v }));\n    const radii = Array.from(radiiSet).sort((a, b) => a - b).map((v) => ({ name: `radius/${v}`, value: v }));\n    return { colors, typography, spacing, radii, shadows: [] };\n  }\n  function annotateTokenRefs(rootNode, tokens) {\n    const colorByHex = new Map(tokens.colors.map((t) => [t.hex, t.name]));\n    const spacingByValue = new Map(tokens.spacing.map((t) => [t.value, t.name]));\n    const radiusByValue = new Map(tokens.radii.map((t) => [t.value, t.name]));\n    function walk(node) {\n      const refs = {};\n      const fillColor = node.fills?.find((f) => f.type === "SOLID" && f.color)?.color;\n      if (fillColor) {\n        const name = colorByHex.get(rgbaToHex(fillColor));\n        if (name) refs.fill = name;\n      }\n      if (node.textColor) {\n        const name = colorByHex.get(rgbaToHex(node.textColor));\n        if (name) refs.textColor = name;\n      }\n      const strokeColor = node.strokes?.find((s) => s.color)?.color;\n      if (strokeColor) {\n        const name = colorByHex.get(rgbaToHex(strokeColor));\n        if (name) refs.stroke = name;\n      }\n      if (node.cornerRadius && node.cornerRadius > 0) {\n        const name = radiusByValue.get(node.cornerRadius);\n        if (name) refs.radius = name;\n      }\n      if (node.itemSpacing && node.itemSpacing > 0) {\n        const name = spacingByValue.get(node.itemSpacing);\n        if (name) refs.gap = name;\n      }\n      const pt = node.paddingTop;\n      if (pt && pt > 0 && pt === node.paddingRight && pt === node.paddingBottom && pt === node.paddingLeft) {\n        const name = spacingByValue.get(pt);\n        if (name) refs.padding = name;\n      }\n      if (Object.keys(refs).length > 0) node.tokenRefs = refs;\n      for (const child of node.children ?? []) walk(child);\n    }\n    walk(rootNode);\n  }\n\n  // plugin/src/ui/converter/style-readiness.ts\n  function waitForStylesReadyInDocument(doc, win) {\n    return new Promise((resolve) => {\n      const maxWait = 3e3;\n      const pollInterval = 100;\n      let elapsed = 0;\n      const check = () => {\n        elapsed += pollInterval;\n        const body = doc.body;\n        if (body) {\n          const parsed = parseCssColor(win.getComputedStyle(body).backgroundColor);\n          if (parsed && parsed.a > 0 && !(parsed.r === 1 && parsed.g === 1 && parsed.b === 1)) {\n            resolve();\n            return;\n          }\n        }\n        let hasRuntimeStyles = false;\n        try {\n          for (let i = 0; i < doc.styleSheets.length; i++) {\n            if (doc.styleSheets[i].cssRules && doc.styleSheets[i].cssRules.length > 50) {\n              hasRuntimeStyles = true;\n              break;\n            }\n          }\n        } catch {\n        }\n        if (hasRuntimeStyles) {\n          setTimeout(resolve, 200);\n          return;\n        }\n        if (elapsed < maxWait) setTimeout(check, pollInterval);\n        else resolve();\n      };\n      setTimeout(check, 200);\n    });\n  }\n\n  // plugin/src/ui/converter/extract.ts\n  function prepareDocForExtraction(doc) {\n    const win = doc.defaultView;\n    if (!win) return;\n    try {\n      captureMotionOntoElements(doc, win);\n    } catch {\n    }\n    const killMotion = doc.createElement("style");\n    killMotion.textContent = `\n    *, *::before, *::after {\n      transition: none !important;\n      transition-duration: 0s !important;\n      transition-delay: 0s !important;\n      animation: none !important;\n      animation-duration: 0s !important;\n      animation-delay: 0s !important;\n    }\n  `;\n    doc.head.appendChild(killMotion);\n    void doc.body.offsetHeight;\n    doc.body.classList.remove("h-screen", "min-h-screen", "max-h-screen");\n    doc.body.style.height = "auto";\n    doc.body.style.maxHeight = "none";\n    doc.body.style.overflow = "visible";\n    doc.body.style.overflowX = "visible";\n    doc.body.style.overflowY = "visible";\n    const revealSelectors = [".reveal", ".reveal-left", ".reveal-right", ".reveal-scale", ".reveal-hero", ".reveal-stagger"];\n    for (const selector of revealSelectors) {\n      doc.querySelectorAll(selector).forEach((el) => el.classList.add("active"));\n    }\n    void doc.body.offsetHeight;\n    doc.querySelectorAll("*").forEach((el) => {\n      const htmlEl = el;\n      if (!htmlEl.style) return;\n      const cs = win.getComputedStyle(htmlEl);\n      if (cs.opacity === "0") htmlEl.style.opacity = "1";\n      if (cs.overflow === "hidden" || cs.overflow === "auto" || cs.overflow === "scroll") htmlEl.style.overflow = "visible";\n      if (cs.overflowX === "hidden" || cs.overflowX === "auto" || cs.overflowX === "scroll") htmlEl.style.overflowX = "visible";\n      if (cs.overflowY === "hidden" || cs.overflowY === "auto" || cs.overflowY === "scroll") htmlEl.style.overflowY = "visible";\n      if (cs.maxHeight !== "none" && parseFloat(cs.maxHeight) < 1e4) htmlEl.style.maxHeight = "none";\n      htmlEl.classList.remove("h-screen", "max-h-screen");\n    });\n  }\n  function extractFromDocument(doc, win, width) {\n    const body = doc.body;\n    if (!body || body.children.length === 0) {\n      return { type: "FRAME", name: "Page", width, height: 900 };\n    }\n    prepareDocForExtraction(doc);\n    const bodyStyle = win.getComputedStyle(body);\n    const htmlStyle = win.getComputedStyle(doc.documentElement);\n    let pageBgColor = parseCssColor(bodyStyle.backgroundColor) || parseCssColor(htmlStyle.backgroundColor) || { r: 1, g: 1, b: 1, a: 1 };\n    if (pageBgColor.a === 0) pageBgColor = { r: 1, g: 1, b: 1, a: 1 };\n    let bodyLayoutMode = "VERTICAL";\n    if (bodyStyle.display.includes("flex")) {\n      const dir = bodyStyle.flexDirection;\n      bodyLayoutMode = dir === "row" || dir === "row-reverse" ? "HORIZONTAL" : "VERTICAL";\n    }\n    const pageFrame = {\n      type: "FRAME",\n      name: "Page",\n      width,\n      height: Math.round(body.scrollHeight) || 900,\n      layoutMode: bodyLayoutMode,\n      primaryAxisSizingMode: "AUTO",\n      counterAxisSizingMode: "FIXED",\n      fills: [{ type: "SOLID", color: pageBgColor }],\n      children: []\n    };\n    const bodyGap = parseFloat(bodyStyle.gap) || 0;\n    if (bodyGap > 0) pageFrame.itemSpacing = Math.round(bodyGap);\n    const bpt = parseFloat(bodyStyle.paddingTop) || 0;\n    const bpr = parseFloat(bodyStyle.paddingRight) || 0;\n    const bpb = parseFloat(bodyStyle.paddingBottom) || 0;\n    const bpl = parseFloat(bodyStyle.paddingLeft) || 0;\n    if (bpt > 0) pageFrame.paddingTop = Math.round(bpt);\n    if (bpr > 0) pageFrame.paddingRight = Math.round(bpr);\n    if (bpb > 0) pageFrame.paddingBottom = Math.round(bpb);\n    if (bpl > 0) pageFrame.paddingLeft = Math.round(bpl);\n    for (const child of Array.from(body.children)) {\n      if (child.nodeType === 1) {\n        const node = computedElementToNode(child, win, 0);\n        if (node) pageFrame.children.push(node);\n      }\n    }\n    return pageFrame;\n  }\n  function buildPayloadFromDocument(doc, win, name, width) {\n    return buildPayloadFromRoot(extractFromDocument(doc, win, width), name, width);\n  }\n  function buildPayloadFromRoot(rootNode, name, width) {\n    const tokens = extractFigmaTokens(rootNode);\n    annotateTokenRefs(rootNode, tokens);\n    return {\n      version: 1,\n      name,\n      width: rootNode.width || width,\n      height: rootNode.height || 900,\n      tokens,\n      rootNode\n    };\n  }\n\n  // plugin/src/ui/render-child-protocol.ts\n  var HTML_RENDER_CHANNEL = "design-os-html-render-v1";\n  var HTML_RENDER_VERSION = 1;\n  var MAX_CHILD_ERROR_LENGTH = 512;\n  function isRenderRequest(value) {\n    const v = value;\n    return !!v && v.channel === HTML_RENDER_CHANNEL && v.version === HTML_RENDER_VERSION && v.type === "render" && typeof v.renderId === "string" && typeof v.width === "number" && Number.isFinite(v.width) && typeof v.name === "string";\n  }\n  function childError(error) {\n    const text = error instanceof Error ? error.message : String(error);\n    return text.slice(0, MAX_CHILD_ERROR_LENGTH);\n  }\n\n  // plugin/src/ui/render-child-entry.ts\n  window.addEventListener("message", async (event) => {\n    if (event.source !== window.parent) return;\n    const request = event.data;\n    if (!isRenderRequest(request)) return;\n    try {\n      await waitForStylesReadyInDocument(document, window);\n      const payload = buildPayloadFromDocument(document, window, request.name, request.width);\n      window.parent.postMessage({ channel: HTML_RENDER_CHANNEL, version: HTML_RENDER_VERSION, renderId: request.renderId, type: "result", payload }, "*");\n    } catch (error) {\n      window.parent.postMessage({ channel: HTML_RENDER_CHANNEL, version: HTML_RENDER_VERSION, renderId: request.renderId, type: "error", error: childError(error) }, "*");\n    }\n  });\n})();\n'.replace(/<\/script/gi, "<\\/script");
+  }
+  async function renderHtmlToPayload(html, width, name) {
+    if (!html || typeof html !== "string") throw new Error("renderHtmlToPayload: html must be a non-empty string");
+    const childSource = escapedChildSource();
+    const iframe = document.createElement("iframe");
+    const renderId = randomId();
+    iframe.setAttribute("sandbox", "allow-scripts");
+    iframe.setAttribute("aria-hidden", "true");
+    Object.assign(iframe.style, { position: "fixed", left: "0", top: "0", opacity: "0", pointerEvents: "none", width: `${width}px`, height: `${DEFAULT_RENDER_HEIGHT_PX}px`, border: "0" });
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let requested = false;
+      let loadAttached = false;
+      let messageAttached = false;
+      let loadTimer = null;
+      let renderTimer = null;
+      const clearLoad = () => {
+        if (loadTimer !== null) {
+          clearTimeout(loadTimer);
+          loadTimer = null;
+        }
+        if (loadAttached) {
+          iframe.removeEventListener("load", onLoad);
+          loadAttached = false;
+        }
+      };
+      const finish = (value, error) => {
+        if (settled) return;
+        settled = true;
+        clearLoad();
+        if (renderTimer !== null) {
+          clearTimeout(renderTimer);
+          renderTimer = null;
+        }
+        if (messageAttached) {
+          window.removeEventListener("message", receive);
+          messageAttached = false;
+        }
+        iframe.remove();
+        if (error) {
+          error.message = error.message.slice(0, MAX_CHILD_ERROR_LENGTH);
+          reject(error);
+        } else resolve(value);
+      };
+      const receive = (event) => {
+        if (event.source !== iframe.contentWindow || event.origin !== "null") return;
+        const reply = event.data;
+        if (!reply || reply.channel !== HTML_RENDER_CHANNEL || reply.version !== HTML_RENDER_VERSION || reply.renderId !== renderId) return;
+        if (reply.type === "result") {
+          try {
+            finish(validateImportPayload({ payload: reply.payload }).payload);
+          } catch (error) {
+            finish(void 0, error instanceof Error ? error : new Error("HTML renderer returned invalid payload"));
+          }
+        } else if (reply.type === "error") {
+          finish(void 0, new Error(typeof reply.error === "string" ? reply.error.slice(0, MAX_CHILD_ERROR_LENGTH) : "HTML renderer failed"));
+        }
+      };
+      const onLoad = () => {
+        if (settled || requested) return;
+        requested = true;
+        clearLoad();
+        try {
+          if (!iframe.contentWindow) throw new Error("HTML renderer window is unavailable");
+          iframe.contentWindow.postMessage({ channel: HTML_RENDER_CHANNEL, version: HTML_RENDER_VERSION, renderId, type: "render", width, name }, "*");
+        } catch (error) {
+          finish(void 0, error instanceof Error ? error : new Error("HTML renderer request failed"));
+        }
+      };
+      try {
+        renderTimer = setTimeout(() => {
+          renderTimer = null;
+          finish(void 0, new Error("HTML renderer timed out"));
+        }, RENDER_TIMEOUT_MS);
+        window.addEventListener("message", receive);
+        messageAttached = true;
+        document.body.appendChild(iframe);
+        loadTimer = setTimeout(() => {
+          loadTimer = null;
+          onLoad();
+        }, IFRAME_LOAD_TIMEOUT_MS);
+        iframe.addEventListener("load", onLoad);
+        loadAttached = true;
+        iframe.srcdoc = `${html}<script>${childSource}<\/script>`;
+      } catch (error) {
+        finish(void 0, error instanceof Error ? error : new Error("HTML renderer setup failed"));
+      }
+    });
+  }
+
   // shared/figma-payload-validation-relay.ts
   function forwardValidatedDirectImport(request, forward) {
     const admission = validateImportPayload(request.params);
@@ -4362,7 +3072,7 @@ body {
   var REACT_VERSION = "18.3.1";
   var DEPS = `react@${REACT_VERSION},react-dom@${REACT_VERSION},three@0.169.0,@react-three/fiber@8.17.10`;
   var IFRAME_LOAD_TIMEOUT_MS2 = 15e3;
-  var RENDER_TIMEOUT_MS = 45e3;
+  var RENDER_TIMEOUT_MS2 = 45e3;
   var SETTLE_FRAMES = 8;
   var GradientRenderError = class extends Error {
     constructor(code, message) {
@@ -4480,8 +3190,8 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     try {
       const dataUrl = await new Promise((resolve, reject) => {
         timer = setTimeout(
-          () => reject(new GradientRenderError("E_TIMEOUT", `gradient render exceeded ${RENDER_TIMEOUT_MS}ms`)),
-          RENDER_TIMEOUT_MS
+          () => reject(new GradientRenderError("E_TIMEOUT", `gradient render exceeded ${RENDER_TIMEOUT_MS2}ms`)),
+          RENDER_TIMEOUT_MS2
         );
         onMessage = (e) => {
           const d = e.data;
@@ -4978,6 +3688,7 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     }
   }
   window.addEventListener("message", (ev) => {
+    if (!isMessageFromParent(ev)) return;
     const pm = ev.data?.pluginMessage;
     if (!pm) return;
     if (pm.type === "FILE_INFO") {

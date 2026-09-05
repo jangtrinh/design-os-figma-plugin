@@ -107,6 +107,10 @@ changed while you were away, and counts anything it had to drop.
 - **Figma Free.** Public Plugin API in Figma Desktop. No OAuth, no access token, no paid seat.
 - **Local.** Broker on `127.0.0.1`, no model call in the CLI or broker. The one exception: the
   `html-to-figma` and shader iframes load pinned CDN assets, declared in `plugin/manifest.json`.
+  HTML extraction runs inside an opaque iframe with `sandbox="allow-scripts"`. Repository JavaScript
+  can update its own DOM and styles; it cannot access the panel document. The panel accepts a result
+  only from the active child with the matching protocol and request identity, then validates the payload
+  before import. This browser boundary does not provide a separate CPU or process budget.
 - **MIT licensed**, and 2,168 tests behind four CI gates.
 
 ## Start in 60 seconds

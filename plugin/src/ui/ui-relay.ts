@@ -26,6 +26,7 @@ import {
 import { createPreOpenBuffer, handshakeBatch, isBufferableFrame, stampCapturedFrame } from './outbound-buffer';
 import { flushHandshake, refuseAdoption } from './socket-adoption';
 import { renderHtmlToPayload } from './render-host';
+import { isMessageFromParent } from './parent-message';
 import { forwardValidatedDirectImport, forwardValidatedHtmlImport } from '../../../shared/figma-payload-validation-relay';
 import { PayloadValidationError } from '../../../shared/figma-payload-validation';
 import { renderGradientToPng, GradientRenderError } from './gradient-host';
@@ -423,6 +424,7 @@ async function handleRequest(req: RequestMsg): Promise<void> {
 
 // ─── Replies + events from plugin main thread ───────────────────────
 window.addEventListener('message', (ev: MessageEvent) => {
+  if (!isMessageFromParent(ev)) return;
   const pm = (ev.data as { pluginMessage?: Record<string, unknown> } | null)?.pluginMessage;
   if (!pm) return;
 
