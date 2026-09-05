@@ -108,6 +108,19 @@ separate headroom for the existing 8 MiB image producer's base64 output. These a
 budgets bound validation and forwarding; they do not isolate arbitrary renderer JavaScript
 or establish a whole-process memory limit.
 
+## Runtime snapshot writes
+
+Advertisement, last-plugin and mutation-gate snapshots acquire temporary files exclusively,
+write them with owner-only permissions (`0600`), and rename only after closing the write.
+An existing temporary path is refused without following a symlink or deleting the collision;
+a failed replacement keeps the prior complete snapshot. Mutation-gate write failures continue
+to refuse mutations. The implementation is shared in
+[`private-file-write.ts`](../cli/src/transport/private-file-write.ts).
+
+This protects these snapshot writes on the local filesystem. Runtime locations are unchanged;
+other logs, existing-state reads and processes running as the same OS user require separate
+controls. File permissions do not authenticate broker clients.
+
 ## Troubleshooting
 
 - **Panel says "No broker yet" and never connects** — that's the resting state; it only connects once a CLI

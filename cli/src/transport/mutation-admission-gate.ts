@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ErrorCode, MutationGateRow, MutationGateState, MutationGateStoreHealth } from '../../../shared/protocol.ts';
 import { durableFileKey } from './file-identity.ts';
+import { writePrivateFileExclusive } from './private-file-write.ts';
 
 export const MUTATION_GATE_FILENAME = 'mutation-gates.json';
 const SCHEMA_VERSION = 1;
@@ -70,7 +71,7 @@ export class MutationAdmissionGate {
 
   constructor(readonly path: string, options: MutationAdmissionGateOptions = {}) {
     this.now = options.now ?? Date.now;
-    this.writeFile = options.writeFile ?? ((path, data) => writeFileSync(path, data, 'utf8'));
+    this.writeFile = options.writeFile ?? writePrivateFileExclusive;
     this.rename = options.rename ?? renameSync;
   }
 
@@ -129,12 +130,16 @@ export class MutationAdmissionGate {
     const next: PersistedSnapshot = { schemaVersion: SCHEMA_VERSION, sequence, gates,
       latestTransition: { fileKey: rawKey, from: previous.state, to: state, at: this.now(), revision: sequence } };
     const tmpPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
+    let written = false;
     try {
       mkdirSync(dirname(this.path), { recursive: true });
       this.writeFile(tmpPath, JSON.stringify(next));
+      written = true;
       this.rename(tmpPath, this.path);
     } catch (err) {
-      try { unlinkSync(tmpPath); } catch { /* evidence remains in the prior atomic target */ }
+      if (written) {
+        try { unlinkSync(tmpPath); } catch { /* evidence remains in the prior atomic target */ }
+      }
       return this.unavailable((err as Error).message, rawKey, previous.lastTransitionRevision) as MutationGateTransition;
     }
     return { ok: true, fileKey: rawKey, state, previousState: previous.state, lastTransitionRevision: sequence, sequence, health: this.health('healthy') };

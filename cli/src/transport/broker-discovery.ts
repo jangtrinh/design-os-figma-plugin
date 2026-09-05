@@ -4,7 +4,7 @@
 // polling until advertised.
 import { spawn } from 'node:child_process';
 import { dirname, basename, join } from 'node:path';
-import { readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import {
@@ -17,6 +17,7 @@ import {
 } from '../../../shared/protocol.ts';
 import { CliError, envMs } from './protocol-helpers.ts';
 import { safeCleanup } from '../../../shared/safe-cleanup.ts';
+import { writePrivateFileExclusive } from './private-file-write.ts';
 
 // Mirrors broker-daemon.ts's own `HEARTBEAT_MS` override (same env var, same
 // fallback) — see envMs's doc for why this must be the ONE shared reader, not a
@@ -102,8 +103,8 @@ export function isAdvertisementLive(ad: BrokerAdvertisement): boolean {
  */
 function writeFileAtomic(path: string, contents: string): void {
   const tmpPath = `${path}.${process.pid}.tmp`;
+  writePrivateFileExclusive(tmpPath, contents);
   try {
-    writeFileSync(tmpPath, contents);
     renameSync(tmpPath, path);
   } catch (err) {
     // Best-effort temp-file removal on failure (issue #24: routed through the
