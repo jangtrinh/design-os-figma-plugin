@@ -32,6 +32,35 @@ function collectImageUrls(html: string): string[] {
   return [...urls];
 }
 
+class ImageTooLargeError extends Error {
+  constructor(readonly observedBytes: number) {
+    super(`observed at least ${observedBytes} bytes, exceeding ${MAX_IMAGE_BYTES}`);
+  }
+}
+
+async function readImageResponse(response: Response): Promise<Buffer> {
+  const reader = response.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+
+  const chunks: Buffer[] = [];
+  let observedBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    observedBytes += value.byteLength;
+    if (observedBytes > MAX_IMAGE_BYTES) {
+      try {
+        await reader.cancel();
+      } catch {
+        // The oversized response is already being rejected.
+      }
+      throw new ImageTooLargeError(observedBytes);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, observedBytes);
+}
+
 async function fetchAsDataUri(url: string, warnings: string[]): Promise<string | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -39,11 +68,7 @@ async function fetchAsDataUri(url: string, warnings: string[]): Promise<string |
       warnings.push(`inline-images: ${url} → HTTP ${res.status}, left as URL`);
       return null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > MAX_IMAGE_BYTES) {
-      warnings.push(`inline-images: ${url} → ${buf.length} bytes exceeds ${MAX_IMAGE_BYTES}, left as URL`);
-      return null;
-    }
+    const buf = await readImageResponse(res);
     return `data:${guessMime(url, res.headers.get('content-type'))};base64,${buf.toString('base64')}`;
   } catch (err) {
     warnings.push(`inline-images: ${url} → ${err instanceof Error ? err.message : String(err)}, left as URL`);
