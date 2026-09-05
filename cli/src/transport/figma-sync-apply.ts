@@ -53,6 +53,12 @@ function runReconcile(
   extra: string[],
   done: (env: Record<string, unknown> | null, err: string, exit: number) => void,
 ): void {
+  let settled = false;
+  const settle = (env: Record<string, unknown> | null, err: string, exit: number): void => {
+    if (settled) return;
+    settled = true;
+    done(env, err, exit);
+  };
   let child;
   try {
     child = spawn(uiBin(), ['figma', 'reconcile', '--dir', projectDir, '--json', ...extra], {
@@ -60,21 +66,21 @@ function runReconcile(
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (err) {
-    done(null, `could not launch ui: ${(err as Error).message}`, -1);
+    settle(null, `could not launch ui: ${(err as Error).message}`, -1);
     return;
   }
   let out = '';
   let err = '';
   child.stdout?.on('data', (d) => { out += String(d); });
   child.stderr?.on('data', (d) => { err += String(d); });
-  child.on('error', (e) => done(null, `ui not runnable: ${e.message} (is the kernel linked?)`, -1));
+  child.on('error', (e) => settle(null, `ui not runnable: ${e.message} (is the kernel linked?)`, -1));
   child.on('close', (exit) => {
     let env: Record<string, unknown> | null = null;
     try {
       const parsed = JSON.parse(out.trim());
       if (parsed && typeof parsed === 'object') env = parsed as Record<string, unknown>;
     } catch { /* non-JSON stdout — the exit-code path below reports it */ }
-    done(env, err, exit ?? -1);
+    settle(env, err, exit ?? -1);
   });
 }
 
