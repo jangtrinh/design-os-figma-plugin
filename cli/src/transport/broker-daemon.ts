@@ -246,6 +246,11 @@ function log(line: string): void {
   } catch { /* logging is best-effort */ }
 }
 
+function persistBindCache(projectDirs: readonly string[]): void {
+  const result = writeBindCache(projectDirs);
+  if (!result.ok) log(`BIND_CACHE write failed (${result.error.code}); restart discovery may require rebinding. Inspect the cache directory and reported filesystem cause.`);
+}
+
 function tryBind(port: number, host: string): Promise<WebSocketServer | null> {
   return new Promise((resolve) => {
     const wss = new WebSocketServer({ host, port });
@@ -561,7 +566,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // cache + each survivor project's own marker, then immediately rewrite the cache with
   // only the dirs that still look like projects — a stale entry is dropped, never trusted.
   const { index: bindIndex, usableDirs } = loadBindIndex();
-  writeBindCache(usableDirs);
+  persistBindCache(usableDirs);
 
   // One-time startup migration (issue #7 / backlog 5.6 ruling: migrate, never silently
   // orphan) — anything staged under the OLD cwd-relative unbound root, from a broker
@@ -912,7 +917,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     recordBinding(st.bindIndex, identity, { projectDir, source: 'request', at: Date.now() });
     if (!st.knownProjectDirs.has(projectDir)) {
       st.knownProjectDirs.add(projectDir);
-      writeBindCache([...st.knownProjectDirs]);
+      persistBindCache([...st.knownProjectDirs]);
     }
   };
 
@@ -957,7 +962,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     if (fileKey) recordBinding(st.bindIndex, fileKey, { projectDir, source: 'bind', at });
     if (!st.knownProjectDirs.has(projectDir)) {
       st.knownProjectDirs.add(projectDir);
-      writeBindCache([...st.knownProjectDirs]);
+      persistBindCache([...st.knownProjectDirs]);
     }
     // Fix round (finding 1 — BLOCKER): migrate whatever staged while this file was
     // unbound into the now-bound component log, exactly once — `migrateStagedChanges` is
