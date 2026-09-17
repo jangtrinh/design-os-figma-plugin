@@ -14,7 +14,7 @@ in daily use since September 2026). Adapt the names; keep the invariants.
 | Plane | Lives in | Synced by | Never copied into |
 |---|---|---|---|
 | Design (frames, components, variables) | Figma cloud | Figma, in real time, through each machine's own plugin instance | Git |
-| Context (specs, plans, scripts, pins, verify reports, agent config) | One private Git repo, branch `main` | A background `commit → rebase → push` loop on every machine | Figma |
+| Context (specs, plans, scripts, pins, verify reports, agent config) | One private Git repo, branch `main` | A background `commit, rebase, push` loop on every machine | Figma |
 
 Figma never travels through Git. Two machines edit the same file through the Plugin API and Figma
 reconciles them live; Git carries only *what was decided*, *what script ran*, *what the canvas looked
