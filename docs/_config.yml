@@ -1,0 +1,17 @@
+# GitHub Pages site for design-os-figma-plugin, built from this docs/ folder.
+# jekyll-seo-tag emits <title>, <meta name="description">, Open Graph and JSON-LD;
+# jekyll-sitemap emits sitemap.xml for Google Search Console.
+title: design-os-figma-plugin
+description: Free Figma plugin + CLI so Claude Code, Codex or any shell agent can read and edit the Figma file you have open. Local WebSocket, one undo step per mutation, no seat.
+url: https://jangtrinh.github.io
+baseurl: /design-os-figma-plugin
+lang: en
+theme: jekyll-theme-minimal
+logo: images/agent-rail-single-row.gif
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: false
