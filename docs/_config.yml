@@ -1,4 +1,6 @@
 # GitHub Pages site for design-os-figma-plugin, built from this docs/ folder.
+# _layouts/default.html wraps every Markdown page in the landing's design language;
+# index.html is a hand-built page (layout: null) sharing assets/site.css.
 # jekyll-seo-tag emits <title>, <meta name="description">, Open Graph and JSON-LD;
 # jekyll-sitemap emits sitemap.xml for Google Search Console.
 title: design-os-figma-plugin
@@ -6,8 +8,20 @@ description: Free Figma plugin + CLI so Claude Code, Codex or any shell agent ca
 url: https://jangtrinh.github.io
 baseurl: /design-os-figma-plugin
 lang: en
-theme: jekyll-theme-minimal
+repository: jangtrinh/design-os-figma-plugin
+repository_url: https://github.com/jangtrinh/design-os-figma-plugin
+wordmark: JANG<span>®</span>
+eyebrow: design:os
 logo: images/adaptive-agent-rail.gif
+nav:
+  - { title: Deep dive, url: /deep-dive.html }
+  - { title: Operations, url: /operations.html }
+  - { title: Multi-machine, url: /multi-machine-setup.html }
+  - { title: Checklist, url: /live-canvas-checklist.html }
+footer:
+  - { title: GitHub, url: https://github.com/jangtrinh/design-os-figma-plugin }
+  - { title: "DESIGN:OS", url: https://github.com/jangtrinh/design-os }
+  - { title: MIT, url: https://github.com/jangtrinh/design-os-figma-plugin/blob/main/LICENSE }
 plugins:
   - jekyll-seo-tag
   - jekyll-sitemap
@@ -15,3 +29,8 @@ plugins:
 relative_links:
   enabled: true
   collections: false
+defaults:
+  - scope: { path: "" }
+    values: { layout: default }
+  - scope: { path: "googleae78e602a0d5d5db.html" }
+    values: { sitemap: false }
