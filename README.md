@@ -2,6 +2,17 @@
 
 Let your AI agent inspect and edit Figma while you keep designing.
 
+[![CI](https://img.shields.io/github/actions/workflow/status/jangtrinh/design-os-figma-plugin/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/jangtrinh/design-os-figma-plugin/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/jangtrinh/design-os-figma-plugin?style=for-the-badge)](https://github.com/jangtrinh/design-os-figma-plugin/releases)
+[![License: MIT](https://img.shields.io/github/license/jangtrinh/design-os-figma-plugin?style=for-the-badge)](https://github.com/jangtrinh/design-os-figma-plugin/blob/main/LICENSE)
+![Figma](https://img.shields.io/badge/figma-%23F24E1E.svg?style=for-the-badge&logo=figma&logoColor=white)
+![Node.js](https://img.shields.io/badge/node.js-6DA55F?style=for-the-badge&logo=node.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/typescript-%23007ACC.svg?style=for-the-badge&logo=typescript&logoColor=white)
+![Figma Free: Public Plugin API](https://img.shields.io/badge/Figma_Free-Public_Plugin_API-202020?style=for-the-badge)
+![localhost: ports 9410–9419](https://img.shields.io/badge/localhost-ports_9410--9419-202020?style=for-the-badge)
+![model: none in the bridge](https://img.shields.io/badge/model-none_in_the_bridge-202020?style=for-the-badge)
+![Claude Code · Codex · Cursor](https://img.shields.io/badge/Claude_Code-Codex_·_Cursor-202020?style=for-the-badge&logo=anthropic&logoColor=white)
+
 A free Figma plugin and a `figma-agent` CLI for Claude Code, Codex, Cursor, or any agent that can run a shell command. It uses the Public Plugin API on Figma Free: no paid seat, no access token, no cloud service.
 
 This project is a local bridge: a CLI talks to a local broker, which routes requests to the imported Figma plugin. The CLI and broker do not run a model; choose and pay for your own agent or provider separately.

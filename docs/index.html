@@ -120,6 +120,9 @@ strong{font-weight:var(--fw-semibold)}
 .ds-heading[data-level="3"]::after{content:"";flex:1;height:1px;background:var(--c-preview-border)}
 .eyebrow{margin-bottom:var(--s-8)}
 .lede{font-size:var(--t-18);color:var(--c-gray-1100);max-width:56ch;margin-bottom:var(--s-12)}
+/* shields.io badges (markdown-badges set), owner-requested: same row as the README carries. */
+.badges{display:flex;flex-wrap:wrap;gap:var(--s-2);margin:0 0 var(--s-12);max-width:none}
+.badges img{display:block;height:28px}
 .hero-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-6) var(--s-8)}
 .text-link{display:inline-flex;align-items:center;gap:var(--s-2);color:var(--c-gray-1100);font-size:var(--t-14);font-weight:var(--fw-medium);transition:color var(--dur-fast) var(--ease-out)}
 
@@ -221,6 +224,16 @@ ol.steps .ds-code{margin-top:var(--s-3)}
       <p class="ds-heading eyebrow" data-level="3">design:os · Figma plugin + CLI</p>
       <h1 id="title" class="ds-heading" data-level="1">Let your AI agent inspect and edit Figma while you keep designing.</h1>
       <p class="lede">A free Figma plugin and a <code>figma-agent</code> CLI for Claude Code, Codex, Cursor, or any agent that can run a shell command. Public Plugin API on Figma Free: no paid seat, no access token, no cloud service.</p>
+      <p class="badges"><a href="https://github.com/jangtrinh/design-os-figma-plugin/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/jangtrinh/design-os-figma-plugin/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI"  height="28" onerror="this.onerror=null;this.hidden=true"></a>
+        <a href="https://github.com/jangtrinh/design-os-figma-plugin/releases"><img src="https://img.shields.io/github/v/release/jangtrinh/design-os-figma-plugin?style=for-the-badge" alt="Latest release"  height="28" onerror="this.onerror=null;this.hidden=true"></a>
+        <a href="https://github.com/jangtrinh/design-os-figma-plugin/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jangtrinh/design-os-figma-plugin?style=for-the-badge" alt="License: MIT"  height="28" onerror="this.onerror=null;this.hidden=true"></a>
+        <img src="https://img.shields.io/badge/figma-%23F24E1E.svg?style=for-the-badge&logo=figma&logoColor=white" alt="Figma"  height="28" onerror="this.onerror=null;this.hidden=true">
+        <img src="https://img.shields.io/badge/node.js-6DA55F?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js"  height="28" onerror="this.onerror=null;this.hidden=true">
+        <img src="https://img.shields.io/badge/typescript-%23007ACC.svg?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript"  height="28" onerror="this.onerror=null;this.hidden=true">
+        <img src="https://img.shields.io/badge/Figma_Free-Public_Plugin_API-202020?style=for-the-badge" alt="Figma Free: Public Plugin API"  height="28" onerror="this.onerror=null;this.hidden=true">
+        <img src="https://img.shields.io/badge/localhost-ports_9410--9419-202020?style=for-the-badge" alt="localhost: ports 9410–9419"  height="28" onerror="this.onerror=null;this.hidden=true">
+        <img src="https://img.shields.io/badge/model-none_in_the_bridge-202020?style=for-the-badge" alt="model: none in the bridge"  height="28" onerror="this.onerror=null;this.hidden=true">
+        <img src="https://img.shields.io/badge/Claude_Code-Codex_·_Cursor-202020?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude Code · Codex · Cursor"  height="28" onerror="this.onerror=null;this.hidden=true"></p>
       <div class="hero-actions">
         <a class="ds-btn-pill" data-tone="solid" href="#install"><svg class="ph" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,128a8,8,0,0,1-3,6.25l-40,32a8,8,0,1,1-10-12.5L107.19,128,75,102.25a8,8,0,1,1,10-12.5l40,32A8,8,0,0,1,128,128Zm48,24H136a8,8,0,0,0,0,16h40a8,8,0,0,0,0-16Zm56-96V200a16,16,0,0,1-16,16H40a16,16,0,0,1-16-16V56A16,16,0,0,1,40,40H216A16,16,0,0,1,232,56ZM216,200V56H40V200H216Z"/></svg>Install once</a>
         <a class="text-link" href="https://github.com/jangtrinh/design-os-figma-plugin#readme">Read the README on GitHub <svg class="ph" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M200,64V168a8,8,0,0,1-16,0V83.31L69.66,197.66a8,8,0,0,1-11.32-11.32L172.69,72H88a8,8,0,0,1,0-16H192A8,8,0,0,1,200,64Z"/></svg></a>
