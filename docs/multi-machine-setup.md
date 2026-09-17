@@ -6,7 +6,7 @@ It is distilled from a production case study (two Macs, several agents, one 400k
 in daily use since September 2026). Adapt the names; keep the invariants.
 
 <p align="center">
-  <img src="images/multi-machine-architecture.png" width="680" alt="Two Macs, each with Figma Desktop plus the design:os plugin and its own agents, both editing the same Figma cloud files live and both syncing one private GitHub repo every five minutes">
+  <img src="images/multi-machine-architecture.png" width="680" onerror="this.onerror=null;this.hidden=true" alt="Two Macs, each with Figma Desktop plus the design:os plugin and its own agents, both editing the same Figma cloud files live and both syncing one private GitHub repo every five minutes">
 </p>
 
 ## The two planes of truth
