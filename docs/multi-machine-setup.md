@@ -84,7 +84,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then log "skip: another sync running"; exit 0; f
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 cd "$REPO" || { log "error: repo missing at $REPO"; exit 1; }
 
-# another tool is mid-operation → wait for the next tick
+# another tool is mid-operation: wait for the next tick
 for f in index.lock rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD; do
   [ -e ".git/$f" ] && { log "skip: git busy (.git/$f)"; exit 0; }
 done
