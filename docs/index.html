@@ -126,8 +126,9 @@ strong{font-weight:var(--fw-semibold)}
 .case-plate-caption cite{display:block;color:var(--c-gray-1000);font-size:var(--t-13);font-style:normal}
 .branch-page-media{margin-block:var(--s-24);margin-inline:0}
 @media(min-width:960px){.branch-page-media{--bp-w:min(var(--w-breakout),calc(100vw - var(--s-12) * 2));margin-inline:calc(50% - var(--bp-w) / 2) 0;width:var(--bp-w)}}
-.panel-stage{padding:var(--s-8);min-height:0}
-.panel-stage img{width:100%;height:auto}
+/* A capture IS the surface: full width inside the stage, no inset (owner ruling 2026-08-23). */
+.panel-stage{padding:0;min-height:0;overflow:hidden}
+.panel-stage img{display:block;width:100%;height:auto}
 
 .case-repo-stats{display:flex;flex-direction:column;gap:var(--s-16);padding:var(--s-16)}
 .case-repo-stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s-16);margin:0}
@@ -204,11 +205,11 @@ ul.plain li{margin-bottom:var(--s-2)}
 
       <figure class="ds-card branch-page-media" style="margin-bottom:0">
         <div class="ds-card-stage panel-stage">
-          <img src="images/agent-rail-single-row.gif" width="1120" height="88" alt="The figma-agent panel, one row: the orb, the current activity, a pending-sync badge, then the sync result" loading="eager">
+          <img src="images/adaptive-agent-rail.gif" width="600" height="164" alt="The figma-agent rail inside Figma: the orb, the current state, and a chevron to expand" loading="eager">
         </div>
         <figcaption class="case-plate-caption">
-          <p>The panel inside Figma Desktop. One row, hugging its content: idle, an import, three changes ready, sync, done.</p>
-          <cite>Recording of the shipping build; the same panel the README shows.</cite>
+          <p>The panel inside Figma Desktop: one adaptive rail that shows the orb and the current state, and expands only when there is something to review.</p>
+          <cite>Recording of the shipping build.</cite>
         </figcaption>
       </figure>
     </section>

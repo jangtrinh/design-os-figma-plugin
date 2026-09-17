@@ -7,7 +7,7 @@ url: https://jangtrinh.github.io
 baseurl: /design-os-figma-plugin
 lang: en
 theme: jekyll-theme-minimal
-logo: images/agent-rail-single-row.gif
+logo: images/adaptive-agent-rail.gif
 plugins:
   - jekyll-seo-tag
   - jekyll-sitemap
