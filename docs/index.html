@@ -1,0 +1,329 @@
+---
+layout: null
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>design-os-figma-plugin — Figma plugin + CLI for AI agents (Claude Code, Codex, any shell agent)</title>
+<meta name="description" content="Free Figma plugin + CLI so Claude Code, Codex or any shell agent can read and edit the Figma file you have open. Local WebSocket, one undo step per mutation, no seat.">
+<link rel="canonical" href="https://jangtrinh.github.io/design-os-figma-plugin/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="design-os-figma-plugin — Figma plugin + CLI for AI agents">
+<meta property="og:description" content="Free Figma plugin + CLI so Claude Code, Codex or any shell agent can read and edit the Figma file you have open. Local WebSocket, one undo step per mutation, no seat.">
+<meta property="og:url" content="https://jangtrinh.github.io/design-os-figma-plugin/">
+<meta property="og:image" content="https://jangtrinh.github.io/design-os-figma-plugin/images/multi-machine-architecture.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareSourceCode",
+      "name": "design-os-figma-plugin",
+      "description": "Free Figma plugin + CLI so Claude Code, Codex or any shell agent can read and edit the Figma file you have open. Local WebSocket, one undo step per mutation, no seat.",
+      "url": "https://jangtrinh.github.io/design-os-figma-plugin/",
+      "codeRepository": "https://github.com/jangtrinh/design-os-figma-plugin",
+      "programmingLanguage": "TypeScript",
+      "runtimePlatform": "Node.js 22",
+      "license": "https://opensource.org/licenses/MIT",
+      "author": { "@type": "Person", "name": "Jang Trịnh", "url": "https://github.com/jangtrinh" },
+      "keywords": "figma plugin, figma cli, ai agent, claude code, codex, cursor, figma mcp alternative, design tokens"
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        { "@type": "Question", "name": "Is it on Figma Community?", "acceptedAnswer": { "@type": "Answer", "text": "No. It is a development plugin imported from its own repository through Plugins, Development, Import plugin from manifest." } },
+        { "@type": "Question", "name": "Does it run or pay for a model?", "acceptedAnswer": { "@type": "Answer", "text": "No. The CLI and broker do not run a model; you choose and pay for your own agent or provider separately." } },
+        { "@type": "Question", "name": "Which agents can use it?", "acceptedAnswer": { "@type": "Answer", "text": "Any shell-capable agent, through the generated command reference. For Claude Code, install-skill writes the skill to ~/.claude/skills." } },
+        { "@type": "Question", "name": "Does it need a paid Figma seat?", "acceptedAnswer": { "@type": "Answer", "text": "No. It uses the Public Plugin API in Figma Desktop. It needs edit access to the file for writes, and an imported plugin running in Figma Desktop." } },
+        { "@type": "Question", "name": "Can the agent undo its own work?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, for typed mutations: each one seals its own undo step, so ⌘Z rolls back one change, not a whole session." } },
+        { "@type": "Question", "name": "Does it replace Figma's official MCP server?", "acceptedAnswer": { "@type": "Answer", "text": "No. They coexist. The official MCP is the better tool for Code Connect, cross-library search, design-to-code and working with Figma Desktop closed. This bridge writes to the open file on Figma Free." } }
+      ]
+    }
+  ]
+}
+</script>
+<style>
+/* Design language carried from jang-personal-site (generation 11): zero-chroma greys, one accent,
+   Inter body at 1.625 line-height, JetBrains Mono for annotation, 760px measure, no keyframes. */
+:root{
+  --c-accent:#00a5ef;--c-accent-fg:#202020;--c-accent-text:#0069a4;--c-sky-600:#0084cc;
+  --c-canvas:#ffffff;--c-gray-100:#fcfcfc;--c-gray-200:#f6f6f6;--c-gray-300:#f0f0f0;--c-gray-400:#e8e8e8;
+  --c-gray-500:#e0e0e0;--c-gray-600:#d9d9d9;--c-gray-900:#8d8d8d;--c-gray-1000:#7b7b7b;--c-gray-1100:#646464;--c-gray-1200:#202020;
+  --c-preview-bg:#ffffff;--c-preview-border:#e8e8e8;
+  --t-13:13px;--t-14:14px;--t-16:16px;--t-18:18px;--t-20:20px;--t-24:24px;--t-36:36px;--t-60:60px;
+  --s-2:4px;--s-3:6px;--s-4:8px;--s-5:10px;--s-6:12px;--s-8:16px;--s-10:20px;--s-12:24px;--s-16:32px;--s-24:48px;--s-32:64px;--s-40:80px;--s-48:96px;--s-64:128px;
+  --r-3:8px;--r-4:12px;--r-5:16px;--r-pill:9999px;--ctl-28:28px;--ctl-32:32px;--ctl-48:48px;--tap-min:44px;
+  --fw-body:400;--fw-book:450;--fw-medium:500;--fw-display:550;--fw-semibold:600;
+  --lh-text:1.625;--lh-ui:1.5;--lh-display:1;--track-display:-1.5px;--track-heading:-0.01em;--track-tight:-0.02em;--track-flat:0;--track-wordmark:-0.08em;
+  --w-container:760px;--w-breakout:880px;--dur-fast:150ms;--dur-base:200ms;--ease-out:cubic-bezier(0,0,.2,1);
+  --stack-sans:"Inter",sans-serif;--stack-mono:"JetBrains Mono",monospace;
+  --shadow-ink-4:color-mix(in srgb,var(--c-gray-1200) 4%,transparent);--shadow-ink-6:color-mix(in srgb,var(--c-gray-1200) 6%,transparent);--shadow-ink-8:color-mix(in srgb,var(--c-gray-1200) 8%,transparent);
+  --shadow-custom:0 0 0 1px var(--shadow-ink-6),0 1px 2px -1px var(--shadow-ink-6),0 2px 4px 0 var(--shadow-ink-4);
+  --shadow-custom-hover:0 0 0 1px var(--shadow-ink-8),0 1px 2px -1px var(--shadow-ink-8),0 2px 4px 0 var(--shadow-ink-6);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--c-gray-100);color:var(--c-gray-1200);font-family:var(--stack-sans);font-size:var(--t-16);line-height:var(--lh-text);font-weight:var(--fw-body);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+::selection{background:var(--c-accent);color:var(--c-accent-fg)}
+:focus-visible{outline:2px solid var(--c-sky-600);outline-offset:2px}
+p{margin:0 0 var(--s-8)}
+p a,li a,dd a{color:var(--c-accent-text);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--c-accent-text) 35%,transparent);text-underline-offset:3px}
+p a:hover,li a:hover,dd a:hover{text-decoration-color:var(--c-accent-text)}
+code{font-family:var(--stack-mono);font-size:.92em;background:var(--c-gray-300);padding:1px var(--s-2);border-radius:4px}
+strong{font-weight:var(--fw-semibold)}
+
+.ds-skip-link{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ds-skip-link:focus{position:fixed;top:var(--s-8);left:var(--s-8);z-index:100;width:auto;height:auto;padding:var(--s-4) var(--s-8);overflow:visible;clip-path:none;border-radius:var(--r-pill);background:var(--c-preview-bg);box-shadow:var(--shadow-custom);font-size:var(--t-14);font-weight:var(--fw-medium)}
+
+.ds-shell{--ds-gutter:var(--s-10);display:flex;flex-direction:column;min-height:100dvh}
+.ds-shell-nav,.ds-shell-main,.ds-shell-footer-inner{width:100%;max-width:var(--w-container);margin-inline:auto;padding-inline:var(--ds-gutter)}
+.ds-shell-nav{display:flex;align-items:center;justify-content:space-between;min-height:var(--ctl-48);flex-wrap:wrap;gap:var(--s-3) var(--s-8);padding-block:var(--s-3)}
+.wordmark{position:relative;font-size:var(--t-16);font-weight:var(--fw-semibold);letter-spacing:var(--track-wordmark)}
+.wordmark span{font:var(--fw-body) var(--t-13) var(--stack-mono);vertical-align:top;margin-left:var(--s-2);letter-spacing:0}
+.home-nav-links{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-2)}
+.ds-tab{position:relative;display:inline-flex;align-items:center;height:var(--ctl-32);padding-inline:var(--s-8);border:0;border-radius:var(--r-pill);background:transparent;color:var(--c-gray-1100);font-size:var(--t-14);font-weight:var(--fw-medium);transition:color var(--dur-base) var(--ease-out),background-color var(--dur-base) var(--ease-out)}
+.ds-tab::after{content:"";position:absolute;inset:calc((var(--tap-min) - var(--ctl-32)) / -2)}
+.ds-tab:hover{color:var(--c-gray-1200)}
+.ds-tab[aria-current="page"]{background:var(--c-gray-300);color:var(--c-gray-1200)}
+
+.ds-shell-main{flex:1;padding-block:var(--s-24)}
+.ds-shell-main>section{margin-top:var(--s-48);scroll-margin-top:var(--s-40)}
+.ds-shell-main>section:first-child{margin-top:var(--s-16)}
+@media(min-width:640px){.ds-shell{--ds-gutter:var(--s-12)}.ds-shell-main{padding-block:var(--s-48)}.ds-shell-main>section{margin-top:var(--s-64)}}
+
+.ds-heading{display:flex;align-items:center;gap:var(--s-6);margin:0 0 var(--s-10);font-weight:var(--fw-display);text-wrap:balance}
+.ds-heading[data-level="1"]{font-size:clamp(var(--t-36),6.5vw,var(--t-60));font-weight:var(--fw-medium);line-height:var(--lh-display);letter-spacing:var(--track-display)}
+.ds-heading[data-level="2"]{font-size:var(--t-24);letter-spacing:var(--track-heading)}
+.ds-heading[data-level="3"]{margin-bottom:var(--s-6);color:var(--c-gray-900);font-family:var(--stack-mono);font-size:var(--t-13);font-weight:var(--fw-body);letter-spacing:var(--track-flat);text-transform:uppercase}
+.ds-heading[data-level="3"]::after{content:"";flex:1;height:1px;background:var(--c-preview-border)}
+.lede{font-size:var(--t-18);color:var(--c-gray-1100);max-width:60ch}
+.case-meta{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-4);margin:var(--s-8) 0 var(--s-16)}
+
+.ds-chip{display:inline-flex;align-items:center;gap:var(--s-2);height:var(--ctl-28);padding-inline:var(--s-5);width:fit-content;border-radius:var(--r-pill);background:var(--c-preview-bg);color:var(--c-gray-1100);box-shadow:var(--shadow-custom);font-size:var(--t-14);font-weight:var(--fw-book);user-select:none;white-space:nowrap}
+.ds-chip[data-variant="mono"]{font-family:var(--stack-mono);font-size:var(--t-13)}
+.ds-chip[data-variant="numeric"]{font-variant-numeric:tabular-nums}
+.ds-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--c-accent)}
+.ds-btn-pill{display:inline-flex;align-items:center;justify-content:center;gap:var(--s-2);height:var(--ctl-32);padding-inline:var(--s-8);border:0;border-radius:var(--r-pill);background:var(--c-preview-bg);color:var(--c-gray-1200);box-shadow:var(--shadow-custom);font-size:var(--t-14);font-weight:var(--fw-medium);cursor:pointer;transition:box-shadow var(--dur-base) var(--ease-out),background-color var(--dur-base) var(--ease-out)}
+.ds-btn-pill:hover{background:var(--c-gray-100);box-shadow:var(--shadow-custom-hover)}
+.ds-btn-pill[data-tone="solid"]{background:var(--c-gray-1200);color:var(--c-canvas);box-shadow:none}
+.ds-btn-pill[data-tone="solid"]:hover{background:var(--c-gray-1100)}
+.hero-actions{display:flex;flex-wrap:wrap;gap:var(--s-4);margin-top:var(--s-12)}
+
+.ds-card{display:flex;flex-direction:column;padding:var(--s-2);border:1px solid var(--c-preview-border);border-radius:var(--r-5);background:var(--c-gray-100)}
+.ds-card-stage{display:grid;place-items:center;min-height:var(--s-64);padding:var(--s-24);border:1px solid var(--c-preview-border);border-radius:var(--r-4);background:var(--c-gray-200);position:relative}
+.case-plate-chip{position:absolute;top:var(--s-8);left:var(--s-8);z-index:1}
+.case-plate-evidence-stage{padding:0;overflow:hidden}
+.case-plate-evidence-stage img{display:block;width:100%;height:auto}
+.case-plate-caption{padding:var(--s-8) var(--s-10) var(--s-6)}
+.case-plate-caption p{margin:0 0 var(--s-2);color:var(--c-gray-1100);font-size:var(--t-14)}
+.case-plate-caption cite{display:block;color:var(--c-gray-1000);font-size:var(--t-13);font-style:normal}
+.branch-page-media{margin-block:var(--s-24);margin-inline:0}
+@media(min-width:960px){.branch-page-media{--bp-w:min(var(--w-breakout),calc(100vw - var(--s-12) * 2));margin-inline:calc(50% - var(--bp-w) / 2) 0;width:var(--bp-w)}}
+.panel-stage{padding:var(--s-8);min-height:0}
+.panel-stage img{width:100%;height:auto}
+
+.case-repo-stats{display:flex;flex-direction:column;gap:var(--s-16);padding:var(--s-16)}
+.case-repo-stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s-16);margin:0}
+@media(max-width:560px){.case-repo-stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.case-repo-stat{display:flex;flex-direction:column;gap:var(--s-3)}
+.case-repo-stat dt{color:var(--c-gray-1100);font-size:var(--t-13)}
+.case-repo-stat dd{margin:0;overflow-wrap:anywhere;color:var(--c-gray-1200);font-size:var(--t-20);font-weight:var(--fw-display);font-variant-numeric:tabular-nums;letter-spacing:var(--track-tight);line-height:var(--lh-ui)}
+.case-repo-stat dd small{display:block;color:var(--c-gray-1100);font-size:var(--t-13);font-weight:var(--fw-body);letter-spacing:0}
+
+.register{display:grid;grid-template-columns:1fr;gap:0;border-top:1px solid var(--c-gray-300)}
+.register-row{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--s-2) var(--s-16);padding-block:var(--s-8);align-content:start}
+@media(min-width:640px){.register-row{grid-template-columns:200px minmax(0,1fr)}}
+.register-row h3{margin:0;font-size:var(--t-16);font-weight:var(--fw-semibold);line-height:var(--lh-text)}
+.register-row p{margin:0;color:var(--c-gray-1100)}
+.register-row p a{color:var(--c-gray-1100)}
+
+.ds-code{margin:0 0 var(--s-8);padding:var(--s-6);border-radius:var(--r-3);background:var(--c-gray-200);color:var(--c-gray-1200);font-family:var(--stack-mono);font-size:var(--t-13);line-height:var(--lh-ui);tab-size:4;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin}
+.ds-code code{font:inherit;white-space:pre;background:none;padding:0}
+ol.steps{margin:0;padding-left:var(--s-10)}
+ol.steps li{margin-bottom:var(--s-8)}
+ol.steps li::marker{font-family:var(--stack-mono);color:var(--c-gray-900);font-size:var(--t-13)}
+ul.plain{margin:0 0 var(--s-8);padding-left:var(--s-10)}
+ul.plain li{margin-bottom:var(--s-2)}
+
+.ds-icon-row{display:flex;align-items:center;gap:var(--s-8);padding-block:var(--s-6);border-top:1px solid var(--c-gray-300);color:var(--c-gray-1200)}
+.ds-icon-row-label{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:var(--t-16);font-weight:var(--fw-medium)}
+.ds-icon-row-meta{color:var(--c-gray-1000);font-family:var(--stack-mono);font-size:var(--t-13)}
+.ds-icon-row-chevron{color:var(--c-gray-900);transition:color var(--dur-fast) var(--ease-out)}
+.ds-icon-row:hover .ds-icon-row-chevron{color:var(--c-gray-1200)}
+.link-list{border-bottom:1px solid var(--c-gray-300)}
+
+.faq details{border-top:1px solid var(--c-gray-300);padding-block:var(--s-6)}
+.faq details:last-child{border-bottom:1px solid var(--c-gray-300)}
+.faq summary{cursor:pointer;font-weight:var(--fw-medium);list-style:none;display:flex;justify-content:space-between;gap:var(--s-8)}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";font-family:var(--stack-mono);color:var(--c-gray-900)}
+.faq details[open] summary::after{content:"−"}
+.faq details p{margin:var(--s-4) 0 0;color:var(--c-gray-1100)}
+
+.ds-shell-footer{padding-top:var(--s-24);border-top:1px solid var(--c-gray-300)}
+.ds-shell-footer-inner{display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;gap:var(--s-12);padding-bottom:var(--s-24);color:var(--c-gray-1100);font-size:var(--t-14)}
+.ds-shell-footer-nav{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-2)}
+</style>
+</head>
+<body>
+<a class="ds-skip-link" href="#main">Skip to content</a>
+<div class="ds-shell">
+  <nav class="ds-shell-nav" aria-label="Primary">
+    <a class="wordmark" href="https://jang-personal-site.vercel.app/">JANG<span>®</span></a>
+    <div class="home-nav-links">
+      <a class="ds-tab" href="#why">Why</a>
+      <a class="ds-tab" href="#install">Install</a>
+      <a class="ds-tab" href="#loop">Loop</a>
+      <a class="ds-tab" href="#faq">FAQ</a>
+      <a class="ds-tab" href="https://github.com/jangtrinh/design-os-figma-plugin">GitHub</a>
+    </div>
+  </nav>
+
+  <main id="main" class="ds-shell-main">
+    <section class="branch-page-hero" aria-labelledby="title">
+      <h1 id="title" class="ds-heading" data-level="1">design-os-figma-plugin</h1>
+      <p class="lede">Let your AI agent inspect and edit Figma while you keep designing. A free Figma plugin and a <code>figma-agent</code> CLI for Claude Code, Codex, Cursor, or any agent that can run a shell command.</p>
+      <div class="case-meta" aria-label="Facts">
+        <span class="ds-chip" data-variant="mono"><span class="dot" aria-hidden="true"></span>Figma Free · Public Plugin API</span>
+        <span class="ds-chip" data-variant="mono">127.0.0.1 · ports 9410–9419</span>
+        <span class="ds-chip" data-variant="mono">MIT</span>
+        <span class="ds-chip" data-variant="mono">no model in the bridge</span>
+      </div>
+      <div class="hero-actions">
+        <a class="ds-btn-pill" data-tone="solid" href="#install">Install once</a>
+        <a class="ds-btn-pill" href="https://github.com/jangtrinh/design-os-figma-plugin#readme">Read the README</a>
+        <a class="ds-btn-pill" href="https://github.com/jangtrinh/design-os-figma-plugin/releases">Releases</a>
+      </div>
+
+      <figure class="ds-card branch-page-media" style="margin-bottom:0">
+        <div class="ds-card-stage panel-stage">
+          <img src="images/agent-rail-single-row.gif" width="1120" height="88" alt="The figma-agent panel, one row: the orb, the current activity, a pending-sync badge, then the sync result" loading="eager">
+        </div>
+        <figcaption class="case-plate-caption">
+          <p>The panel inside Figma Desktop. One row, hugging its content: idle, an import, three changes ready, sync, done.</p>
+          <cite>Recording of the shipping build; the same panel the README shows.</cite>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section aria-labelledby="facts-h">
+      <h2 id="facts-h" class="ds-heading" data-level="3">What it is</h2>
+      <div class="ds-card case-repo-stats">
+        <dl class="case-repo-stats-grid">
+          <div class="case-repo-stat"><dt>Repository</dt><dd><a href="https://github.com/jangtrinh/design-os-figma-plugin">github.com/jangtrinh/<wbr>design-os-figma-plugin</a></dd></div>
+          <div class="case-repo-stat"><dt>Requires</dt><dd>Node.js 22<small>Figma Desktop with edit access</small></dd></div>
+          <div class="case-repo-stat"><dt>Editors</dt><dd>Figma, FigJam, Slides</dd></div>
+          <div class="case-repo-stat"><dt>Transport</dt><dd>Local WebSocket<small>127.0.0.1, ports 9410–9419</small></dd></div>
+          <div class="case-repo-stat"><dt>Runs a model</dt><dd>No<small>bring your own agent</small></dd></div>
+          <div class="case-repo-stat"><dt>License</dt><dd>MIT</dd></div>
+        </dl>
+      </div>
+      <p>A CLI talks to a local broker, which routes requests to the plugin imported in Figma Desktop. The CLI and broker never call a model: you choose and pay for your own agent or provider separately. The bridge is for a trusted personal environment, not an organization control plane.</p>
+    </section>
+
+    <section id="why" aria-labelledby="why-h">
+      <h2 id="why-h" class="ds-heading" data-level="2">Why this bridge, compared with the alternatives</h2>
+      <p>What this project does that Figma's official MCP server and the community talk-to-Figma bridges do not, or do differently.</p>
+      <div class="register">
+        <div class="register-row"><h3>Write on Figma Free</h3><p>Public Plugin API only: no Full seat, no OAuth token, no usage-based beta. Figma documents write-to-canvas through its MCP server as needing a Full seat and as something that "will eventually be a usage-based paid feature" (Figma docs, September 2026).</p></div>
+        <div class="register-row"><h3>One undo step per mutation</h3><p>⌘Z removes one agent change, not twenty minutes of automated work.</p></div>
+        <div class="register-row"><h3>Mutations are jobs</h3><p>Every write is a job in a per-file FIFO queue with an id. A timeout hands you a job id to poll instead of a blind retry, and an outcome-unknown job blocks its queue and refuses replay until you inspect the canvas.</p></div>
+        <div class="register-row"><h3>Your own edits come back</h3><p>Every change you make while the agent works is captured live and offered as one reviewable sync. Edits made while the panel was closed are diffed on the next open, and anything dropped is counted, never hidden.</p></div>
+        <div class="register-row"><h3>Lint before dispatch</h3><p>A synchronous dynamic-page getter is refused before it can half-apply.</p></div>
+        <div class="register-row"><h3>A per-file kill switch</h3><p><code>mutation-gate pause --file-key</code> seals one file against agent writes while reads and your own editing continue. Keyed on the raw Figma <code>fileKey</code>, never on a filename.</p></div>
+        <div class="register-row"><h3>Measured on a real file</h3><p>21 pages, 418k nodes. Worst synchronous stall at open: 44 ms on a cold open. Idle re-index: 0.75 s in slices instead of one blocking tick. Edits made while closed reported on 21 of 21 pages. <a href="deep-dive.html#5-fast-on-a-file-large-enough-to-hurt">The numbers and how they were taken</a>.</p></div>
+      </div>
+      <p style="margin-top:var(--s-12)"><strong>Where the official MCP is the better tool, and that is not a close call:</strong> Code Connect, cross-library search, rendered framework code, design-to-code, and working with Figma Desktop closed. It also has an org layer this project does not: SSO, roles, per-user audit. Use both. Read through <a href="https://developers.figma.com/docs/figma-mcp-server/">Figma's official MCP server</a>, write through this plugin. <a href="deep-dive.html#with-this-plugin-or-figmas-official-mcp-alone">Row-by-row comparison</a>.</p>
+    </section>
+
+    <section id="install" aria-labelledby="install-h">
+      <h2 id="install-h" class="ds-heading" data-level="2">Install once</h2>
+      <p>Node.js 22 is CI-tested. Clone the repository, then run the commands from the repository root.</p>
+<pre class="ds-code"><code>git clone https://github.com/jangtrinh/design-os-figma-plugin.git
+cd design-os-figma-plugin
+npm ci
+npm run build</code></pre>
+      <p>In Figma Desktop, choose <strong>Plugins → Development → Import plugin from manifest…</strong>, then select <code>plugin/manifest.json</code>. For the first run, open the imported plugin in a scratch Figma file, not a client file.</p>
+
+      <h2 class="ds-heading" data-level="3" style="margin-top:var(--s-16)">First safe use</h2>
+      <ol class="steps">
+        <li>Start or wait for a connection, and confirm that <code>status</code> reports the scratch file you opened.
+<pre class="ds-code"><code>node "$PWD/cli/dist/figma-agent.js" status --wait --timeout 60</code></pre></li>
+        <li>Select a frame in that file, copy its real <code>instanceId</code> from <code>status</code>, and make the first read-only request against that exact instance.
+<pre class="ds-code"><code>node "$PWD/cli/dist/figma-agent.js" get-selection --instance "&lt;instanceId&gt;"</code></pre></li>
+        <li>Optional, only in a scratch file: create a frame on that same instance.
+<pre class="ds-code"><code>node "$PWD/cli/dist/figma-agent.js" create-frame --name "Agent scratch" --w 320 --h 200 --instance "&lt;instanceId&gt;"</code></pre></li>
+      </ol>
+      <p><code>--instance</code> prevents ambiguity when several files share a name. Read the JSON reply before proceeding: it is the record of what the bridge actually selected or changed.</p>
+    </section>
+
+    <section id="loop" aria-labelledby="loop-h">
+      <h2 id="loop-h" class="ds-heading" data-level="2">A practical loop</h2>
+      <div class="register">
+        <div class="register-row"><h3><code>get-selection</code></h3><p>Serializes the current selection: hierarchy, text, component properties, styles.</p></div>
+        <div class="register-row"><h3><code>context &lt;nodeId&gt;</code></h3><p>Returns the Inspect panel's own CSS declarations, the variables and styles each node binds, text and component properties, and the designer's intent where it exists. Budgeted before the wire; counts everything it leaves out.</p></div>
+        <div class="register-row"><h3><code>changes --owner-only</code></h3><p>Reads the owner-edit feed for a bound project as plain sentences. Works even with the plugin closed.</p></div>
+        <div class="register-row"><h3><code>mutation-gate pause</code></h3><p>Pauses agent mutations for one raw Figma file key while reads stay available.</p></div>
+        <div class="register-row"><h3><code>install-skill</code></h3><p>Writes the generated skill to Claude Code's <code>~/.claude/skills</code> by default. Any shell-capable agent can use the command reference directly.</p></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="multi-h">
+      <h2 id="multi-h" class="ds-heading" data-level="2">Working from more than one computer</h2>
+      <p>Two planes of truth, never mixed: design lives in Figma, which already merges edits from several machines in real time, and context lives in one private Git repo. Each Mac runs its own Figma Desktop, its own imported plugin, and its own agents; a background job on every machine commits, rebases and pushes every five minutes.</p>
+      <figure class="ds-card branch-page-media">
+        <div class="ds-card-stage case-plate-evidence-stage">
+          <span class="ds-chip case-plate-chip" data-variant="mono">Architecture diagram</span>
+          <img src="images/multi-machine-architecture.png" width="1107" height="1360" alt="Two Macs, each with Figma Desktop, the design:os plugin and its own agents, both editing the same Figma files live and both syncing one private GitHub repo every five minutes">
+        </div>
+        <figcaption class="case-plate-caption">
+          <p>How the plugin keeps two machines in sync through one Figma file and one Git repo.</p>
+          <cite>Full recipe, sync script and launchd installer: <a href="multi-machine-setup.html">working from more than one computer</a>.</cite>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section id="faq" class="faq" aria-labelledby="faq-h">
+      <h2 id="faq-h" class="ds-heading" data-level="2">FAQ</h2>
+      <details><summary>Is it on Figma Community?</summary><p>No. It is a development plugin imported from its own repository through Plugins, Development, Import plugin from manifest.</p></details>
+      <details><summary>Does it run or pay for a model?</summary><p>No. The CLI and broker do not run a model; you choose and pay for your own agent or provider separately.</p></details>
+      <details><summary>Which agents can use it?</summary><p>Any shell-capable agent, through the generated command reference. For Claude Code, <code>install-skill</code> writes the skill to <code>~/.claude/skills</code>.</p></details>
+      <details><summary>Does it need a paid Figma seat?</summary><p>No. It uses the Public Plugin API in Figma Desktop. It needs edit access to the file for writes, and an imported plugin running in Figma Desktop.</p></details>
+      <details><summary>Can the agent undo its own work?</summary><p>Yes, for typed mutations: each one seals its own undo step, so ⌘Z rolls back one change, not a whole session. A script run with <code>exec-js --undo-group</code> attempts rollback when that script errors.</p></details>
+      <details><summary>Does it replace Figma's official MCP server?</summary><p>No. They coexist. The official MCP is the better tool for Code Connect, cross-library search, design-to-code and working with Figma Desktop closed. This bridge writes to the open file on Figma Free.</p></details>
+    </section>
+
+    <section aria-labelledby="read-h">
+      <h2 id="read-h" class="ds-heading" data-level="3">Read next</h2>
+      <div class="link-list">
+        <a class="ds-icon-row" href="https://github.com/jangtrinh/design-os-figma-plugin#readme"><span class="ds-icon-row-label">README: install, first safe use, comparison</span><span class="ds-icon-row-meta">github</span><span class="ds-icon-row-chevron" aria-hidden="true">→</span></a>
+        <a class="ds-icon-row" href="deep-dive.html"><span class="ds-icon-row-label">Deep dive: the evidence behind each promise</span><span class="ds-icon-row-meta">docs</span><span class="ds-icon-row-chevron" aria-hidden="true">→</span></a>
+        <a class="ds-icon-row" href="operations.html"><span class="ds-icon-row-label">Operations and troubleshooting</span><span class="ds-icon-row-meta">docs</span><span class="ds-icon-row-chevron" aria-hidden="true">→</span></a>
+        <a class="ds-icon-row" href="multi-machine-setup.html"><span class="ds-icon-row-label">Working from more than one computer</span><span class="ds-icon-row-meta">docs</span><span class="ds-icon-row-chevron" aria-hidden="true">→</span></a>
+        <a class="ds-icon-row" href="live-canvas-checklist.html"><span class="ds-icon-row-label">Live-canvas verification checklist</span><span class="ds-icon-row-meta">docs</span><span class="ds-icon-row-chevron" aria-hidden="true">→</span></a>
+        <a class="ds-icon-row" href="https://github.com/jangtrinh/design-os-figma-plugin/blob/main/skills/figma-agent/SKILL.md"><span class="ds-icon-row-label">Full command reference</span><span class="ds-icon-row-meta">github</span><span class="ds-icon-row-chevron" aria-hidden="true">→</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="ds-shell-footer">
+    <div class="ds-shell-footer-inner">
+      <a class="wordmark" href="https://jang-personal-site.vercel.app/">JANG<span>®</span></a>
+      <nav class="ds-shell-footer-nav" aria-label="Footer">
+        <a class="ds-tab" href="https://github.com/jangtrinh/design-os-figma-plugin">GitHub</a>
+        <a class="ds-tab" href="https://github.com/jangtrinh/design-os">DESIGN:OS</a>
+        <a class="ds-tab" href="https://github.com/jangtrinh/design-os-figma-plugin/blob/main/LICENSE">MIT</a>
+        <a class="ds-tab" href="#top">Back to top</a>
+      </nav>
+    </div>
+  </footer>
+</div>
+</body>
+</html>
