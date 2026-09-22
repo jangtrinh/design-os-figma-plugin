@@ -1,0 +1,19 @@
+# design-os-figma-plugin
+
+> Free Figma plugin + CLI so Claude Code, Codex or any shell agent can read and edit the Figma file you have open. Local WebSocket, one undo step per mutation, no seat.
+
+A lightweight bridge allowing AI coding agents to inspect, manipulate, and generate Figma canvas nodes in real-time through the official Public Plugin API on Figma Free, without cloud tokens or paid seats.
+
+## Documentation
+
+- [Landing Page & Overview](https://jangtrinh.github.io/design-os-figma-plugin/): Plugin setup, command surface, and verified evidence.
+- [Deep Dive Architecture](https://jangtrinh.github.io/design-os-figma-plugin/deep-dive.html): WebSocket transport, command serialization, and security boundaries.
+- [Operations Guide](https://jangtrinh.github.io/design-os-figma-plugin/operations.html): Full CLI tool reference and command cheat sheet.
+- [Multi-Machine Setup](https://jangtrinh.github.io/design-os-figma-plugin/multi-machine-setup.html): Configuring remote agent execution across SSH / Tailscale.
+- [GitHub Repository](https://github.com/jangtrinh/design-os-figma-plugin): Open-source plugin code, broker server, and TypeScript library.
+
+## Key Capabilities
+
+- **Figma Free Compatible**: Uses the Public Plugin API in Figma Desktop. No paid seat, no access token.
+- **Local WebSocket Broker**: Runs locally on ports 9410–9419 with strict origin isolation.
+- **Atomic Undo**: Each mutation seals its own undo step so ⌘Z rolls back one atomic operation, not a whole session.
