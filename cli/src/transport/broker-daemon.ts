@@ -35,6 +35,10 @@ import {
   clearReconnected, filterAwaitingReconnect, lastPluginsPathFor, readLastPlugins,
   toAwaitingReconnectStatus, writeLastPluginsAtomic, type AwaitingReconnectEntry, type LastPluginRecord,
 } from './last-plugins-log.ts';
+import {
+  appendDisconnectRecord, buildDisconnectRecord, disconnectLogPathFor, pushDisconnectRing, readDisconnectTail, rotateDisconnectLog,
+  type DisconnectClosedBy, type DisconnectRecord, type PluginLiveness, type PluginSocketInfo,
+} from './disconnect-log.ts';
 import { pinDisconnected, resolveRouteFilter, type RouteFilter } from './route-filter.ts';
 import { formatAmbiguousFileMessage } from './ambiguous-file-error.ts';
 import {
@@ -124,7 +128,7 @@ function pluginSupportsFileGuard(entry: PluginEntry<WebSocket>): boolean {
   return Array.isArray(caps) && caps.includes('fileGuard');
 }
 
-type TrackedWs = WebSocket & { isAlive?: boolean };
+type TrackedWs = WebSocket & { isAlive?: boolean; openedAt?: number };
 
 /** A request parked until a plugin (re)connects or the wait window elapses. */
 interface ParkedRequest {
@@ -626,6 +630,76 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       ),
     }),
   };
+
+  // Plugin-disconnect record — one JSONL line per plugin socket close, beside the
+  // advertisement. The socket map (set on PLUGIN_HELLO) is the gate, not
+  // `registry.getByWs`: a re-HELLO repoints the registry entry at the NEW socket, so a
+  // superseded orphan would otherwise look exactly like a CLI and go unrecorded. A socket
+  // leaves the map once its record is written, so shutdown + the later close never
+  // record it twice.
+  const disconnectLogPath = disconnectLogPathFor(advertisePath);
+  const pluginSockets = new WeakMap<WebSocket, PluginSocketInfo>();
+  const brokerCloseCause = new WeakMap<WebSocket, DisconnectClosedBy>();
+  let recentDisconnects: DisconnectRecord[] = [];
+  let disconnectLogAppendFailures = 0;
+  let disconnectLogReadFailures = 0;
+  try {
+    const seeded = readDisconnectTail(disconnectLogPath);
+    recentDisconnects = seeded.records;
+    if (seeded.records.length > 0 || seeded.skipped > 0) {
+      log(`DISCONNECT_LOG seeded ${seeded.records.length} record(s), skipped ${seeded.skipped} malformed`);
+    }
+  } catch (err) {
+    disconnectLogReadFailures += 1;
+    log(`DISCONNECT_LOG seed read failed: ${(err as Error).message}`);
+  }
+  const livenessOf = (entry: PluginEntry<WebSocket>): PluginLiveness => ({
+    fileName: (entry.scene.fileName as string | undefined) ?? null,
+    fileKey: (entry.scene.fileKey as string | null | undefined) ?? null,
+    lastSeenAt: entry.lastSeenAt,
+    lastAppFrameAt: entry.lastAppFrameAt,
+  });
+  /** Build the record from live state — call BEFORE any close cleanup removes the
+   *  socket's jobs or registry entry — then append it synchronously. Never throws. */
+  const recordPluginClose = (
+    ws: WebSocket, closedBy: DisconnectClosedBy, closeCode: number | null, closeReason: string | Buffer | undefined,
+  ): void => {
+    const info = pluginSockets.get(ws);
+    if (info === undefined) return;
+    pluginSockets.delete(ws);
+    let record: DisconnectRecord;
+    try {
+      const entry = st.registry.getByInstanceId(info.instanceId);
+      const inFlightJobs = [];
+      for (const [requestId, target] of st.dispatchedTo) {
+        if (target !== ws) continue;
+        const job = st.jobs.byRequestId(requestId);
+        if (job) inFlightJobs.push(job);
+      }
+      const queueDepthByFile: Record<string, number> = {};
+      for (const [fileSlug, q] of st.queues) {
+        if (q.running !== null || q.waiting.length > 0) queueDepthByFile[fileSlug] = q.waiting.length;
+      }
+      record = buildDisconnectRecord({
+        now: Date.now(), info, liveEntry: entry?.ws === ws ? livenessOf(entry) : null,
+        closedBy, closeCode, closeReason, inFlightJobs, queueDepthByFile,
+      });
+    } catch (err) {
+      disconnectLogAppendFailures += 1;
+      log(`DISCONNECT_LOG record build failed (${disconnectLogAppendFailures} total): ${(err as Error).message}`);
+      return;
+    }
+    recentDisconnects = pushDisconnectRing(recentDisconnects, record);
+    try {
+      appendDisconnectRecord(disconnectLogPath, record);
+    } catch (err) {
+      disconnectLogAppendFailures += 1;
+      log(`DISCONNECT_LOG append failed (${disconnectLogAppendFailures} total): ${(err as Error).message}`);
+      return;
+    }
+    try { rotateDisconnectLog(disconnectLogPath); } catch (err) { log(`DISCONNECT_LOG rotation failed: ${(err as Error).message}`); }
+  };
+
   let resourceObserverTeardown: (() => void) | null = null;
   if (options?.resourceObserver) {
     try {
@@ -841,6 +915,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
+    // Every still-connected plugin drops with this process: record each one now,
+    // synchronously, because `exit()` below never returns to run their close handlers.
+    for (const server of wss6 ? [wss, wss6] : [wss]) {
+      for (const client of server?.clients ?? []) recordPluginClose(client, 'broker-shutdown', null, reason);
+    }
     const teardown = resourceObserverTeardown;
     resourceObserverTeardown = null;
     if (teardown) {
@@ -2013,7 +2092,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     ...(entry.timeoutCappedMs !== undefined && { timeoutCappedMs: entry.timeoutCappedMs }),
   });
 
-  const handleClose = (ws: WebSocket): void => {
+  const handleClose = (ws: WebSocket, closeCode?: number, closeReason?: Buffer): void => {
+    recordPluginClose(ws, brokerCloseCause.get(ws) ?? 'peer', closeCode ?? null, closeReason);
     // Fail only the in-flight requests routed to THIS socket (a plugin, or a
     // superseded orphan) — other plugins' requests are untouched.
     for (const [id, target] of st.dispatchedTo) {
@@ -2217,8 +2297,17 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // file's plugin (the connect/disconnect flapping bug). A same-instance
         // reconnect supersedes its own stale socket, which we close here.
         st.cliClients.delete(ws);
+        const carriedId = typeof msg.data.instanceId === 'string' ? msg.data.instanceId : null;
+        const priorEntry = carriedId !== null ? st.registry.getByInstanceId(carriedId) : null;
         const { instanceId, replaced, superseded } = st.registry.register(ws, msg.data);
-        if (superseded) { try { superseded.close(); } catch { /* already gone */ } }
+        pluginSockets.set(ws, { instanceId, openedAt: (ws as TrackedWs).openedAt ?? Date.now() });
+        if (superseded) {
+          // The registry entry now describes the new socket; keep the old one's own view.
+          const orphan = pluginSockets.get(superseded);
+          if (orphan !== undefined && priorEntry?.ws === superseded) orphan.supersededSnapshot = livenessOf(priorEntry);
+          if (!brokerCloseCause.has(superseded)) brokerCloseCause.set(superseded, 'broker-superseded');
+          try { superseded.close(); } catch { /* already gone */ }
+        }
         st.lastBusyAt = Date.now();
         log(`plugin registered [${instanceId}]${replaced ? ' (replaced — same instance re-hello)' : ''}: ${JSON.stringify(msg.data)}`);
         // Live-sync (spec 004 P4): hand this plugin the idle window so its debounce
@@ -2477,6 +2566,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           {
             port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(),
             uptimeMs: Date.now() - startedAt, senderMismatchCount, legacyMigrationDeferred,
+            disconnects: { path: disconnectLogPath, last: recentDisconnects, appendFailures: disconnectLogAppendFailures, readFailures: disconnectLogReadFailures },
           },
           currentFilter(),
           Date.now,
@@ -2492,6 +2582,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const onConnection = (ws: WebSocket, req: import('node:http').IncomingMessage): void => {
     const tracked = ws as TrackedWs;
     tracked.isAlive = true;
+    tracked.openedAt = Date.now();
     st.cliClients.add(ws); // provisional; promoted to plugin on PLUGIN_HELLO
     st.lastBusyAt = Date.now();
     log(`connection from ${req.socket.remoteAddress ?? '?'} (clients: ${st.cliClients.size})`);
@@ -2501,7 +2592,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       try { handleMessage(ws, rawToString(raw)); }
       catch (err) { log(`handleMessage failed: ${(err as Error).message}`); }
     });
-    ws.on('close', () => handleClose(ws));
+    ws.on('close', (code, reason) => handleClose(ws, code, reason));
     try { ws.send(JSON.stringify(brokerHello())); } catch { /* ignore */ }
   };
   wss.on('connection', onConnection);
@@ -2520,7 +2611,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const allClients = [...wss!.clients, ...(wss6 ? wss6.clients : [])];
     for (const ws of allClients) {
       const tracked = ws as TrackedWs;
-      if (tracked.isAlive === false) { log('terminating unresponsive client (missed pong)'); tracked.terminate(); continue; }
+      if (tracked.isAlive === false) {
+        log('terminating unresponsive client (missed pong)');
+        if (!brokerCloseCause.has(ws)) brokerCloseCause.set(ws, 'broker-heartbeat-cull');
+        tracked.terminate();
+        continue;
+      }
       tracked.isAlive = false;
       tracked.ping();
     }
