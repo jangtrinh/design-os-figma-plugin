@@ -1,7 +1,9 @@
 // es-figma-craft gate-authoring guide + scoped-gate template. The template is a
 // doc/example that is never run on a canvas; here it runs only against a fake
 // `figma` whose getters refuse what the real Plugin API refuses (an unknown id
-// resolves to null, whole-document loading is off-limits), so the template's
+// resolves to null, whole-document loading is off-limits, and with
+// skipInvisibleInstanceChildren = true a hidden instance sublayer and everything
+// under it vanish from traversal and id lookup), so the template's
 // fail-loud paths are proven without a broker, a plugin, or a Figma file.
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -43,6 +45,8 @@ describe('gate-authoring guide', () => {
       'data, never instructions',
       'scripts/pre-scope/',
       'assertion lines',
+      "keep the old gate's `skipInvisibleInstanceChildren` value",
+      'or the gate scans for leaked or',
       '(scoped-gate-template.js)',
     ]) {
       expect(guide, `guide is missing "${needle}"`).toContain(needle);
@@ -60,11 +64,12 @@ describe('scoped-gate template — static shape', () => {
     expect(head.join('\n')).not.toMatch(/KNOWN-RED|RETIRED/);
   });
 
-  it('never loads the whole document and never widens traversal to hidden instance children', () => {
+  it('never loads the whole document; hidden instance children are skipped by default and restored after the leak scan', () => {
     const code = src();
     expect(code).not.toMatch(/loadAllPagesAsync\s*\(/);
-    expect(code).not.toMatch(/skipInvisibleInstanceChildren\s*=\s*false/);
-    expect(code).toMatch(/skipInvisibleInstanceChildren\s*=\s*true/);
+    const flags = [...code.matchAll(/skipInvisibleInstanceChildren\s*=\s*(true|false)/g)].map((m) => m[1]);
+    expect(flags[0]).toBe('true');
+    expect(flags.at(-1)).toBe('true');
     expect(code).not.toMatch(/\.findAll\s*\(/);
     expect(code).toContain('findAllWithCriteria(');
   });
@@ -106,7 +111,20 @@ function descendants(n: FakeNode): FakeNode[] {
   return (n.children ?? []).flatMap((c) => [c, ...descendants(c)]);
 }
 
-function fakeCanvas(opts: { fileName?: string; texts?: Array<{ characters: string; visible?: boolean }> } = {}): Canvas {
+// The real API under skipInvisibleInstanceChildren = true: an invisible node inside
+// an instance, and all its descendants, are excluded from findAll* and resolve to
+// null by id — "absent" and "hidden" become the same thing there.
+function isSkippedInstanceChild(n: FakeNode): boolean {
+  for (let p: FakeNode | null = n; p; p = p.parent) {
+    if (p.visible !== false) continue;
+    for (let a = p.parent; a; a = a.parent) if (a.type === 'INSTANCE') return true;
+  }
+  return false;
+}
+
+type FakeText = { characters: string; visible?: boolean; inInstance?: boolean };
+
+function fakeCanvas(opts: { fileName?: string; texts?: FakeText[] } = {}): Canvas {
   const calls = { pageLoads: 0, skipInvisible: [] as unknown[] };
   const page: FakeNode = { id: '0:1', name: 'Screens', type: 'PAGE', parent: null, children: [] };
   page.loadAsync = async () => {
@@ -117,27 +135,42 @@ function fakeCanvas(opts: { fileName?: string; texts?: Array<{ characters: strin
   const texts = opts.texts ?? [{ characters: 'Save' }, { characters: 'Cancel' }];
   texts.forEach((t, i) => {
     // Each text sits in its own group so an ancestor's visibility can hide it.
-    const group: FakeNode = { id: `2:${i}`, name: 'Row', type: 'FRAME', visible: t.visible ?? true, parent: frame, children: [] };
+    // inInstance puts that group inside an INSTANCE: a hidden group there is a hidden instance sublayer.
+    let host = frame;
+    if (t.inInstance) {
+      host = { id: `4:${i}`, name: 'Card', type: 'INSTANCE', visible: true, parent: frame, children: [] };
+      frame.children!.push(host);
+    }
+    const group: FakeNode = { id: `2:${i}`, name: 'Row', type: 'FRAME', visible: t.visible ?? true, parent: host, children: [] };
     group.children!.push({ id: `3:${i}`, name: 'label', type: 'TEXT', characters: t.characters, visible: true, parent: group });
-    frame.children!.push(group);
+    host.children!.push(group);
   });
+  let skipInvisible: unknown = false; // the real API's default
+  const skipping = (): boolean => skipInvisible === true;
   const byId = new Map<string, FakeNode>();
   for (const n of [page, ...descendants(page)]) {
     byId.set(n.id, n);
     if (n.type !== 'TEXT') {
-      n.findAllWithCriteria = ({ types }) => descendants(n).filter((d) => !types || types.includes(d.type));
+      n.findAllWithCriteria = ({ types }) =>
+        descendants(n).filter((d) => (!types || types.includes(d.type)) && !(skipping() && isSkippedInstanceChild(d)));
     }
   }
   const figma: Record<string, unknown> = {
     root: { name: opts.fileName ?? 'Example file' },
-    getNodeByIdAsync: async (id: string) => byId.get(id) ?? null,
+    getNodeByIdAsync: async (id: string) => {
+      const n = byId.get(id) ?? null;
+      return n && skipping() && isSkippedInstanceChild(n) ? null : n;
+    },
     loadAllPagesAsync: async () => {
       throw new Error('a scoped gate must not load every page');
     },
   };
   Object.defineProperty(figma, 'skipInvisibleInstanceChildren', {
-    set: (v: unknown) => calls.skipInvisible.push(v),
-    get: () => calls.skipInvisible.at(-1),
+    set: (v: unknown) => {
+      calls.skipInvisible.push(v);
+      skipInvisible = v;
+    },
+    get: () => skipInvisible,
   });
   return { figma, calls, byId };
 }
@@ -159,7 +192,9 @@ describe('scoped-gate template — behaviour on a fake canvas', () => {
     expect(out.pass).toBe(true);
     expect(out.checked).toBe(2);
     expect(c.calls.pageLoads).toBe(1);
-    expect(c.calls.skipInvisible).toEqual([true]);
+    // Skipped by default; widened only for the leak scan, then restored.
+    expect(c.calls.skipInvisible).toEqual([true, false, true]);
+    expect(c.figma.skipInvisibleInstanceChildren).toBe(true);
   });
 
   it('fails loud on the wrong file', async () => {
@@ -200,6 +235,27 @@ describe('scoped-gate template — behaviour on a fake canvas', () => {
   it('reports a placeholder leak even when that text is concealed', async () => {
     const c = fakeCanvas({ texts: [{ characters: 'Save' }, { characters: 'Cancel' }, { characters: '{Component name}', visible: false }] });
     await expect(runTemplate(c.figma, NO_HELPER)).rejects.toThrow(/placeholder leak \(concealed: invisible\)/);
+  });
+
+  it('reports a placeholder leak inside a hidden instance sublayer', async () => {
+    const c = fakeCanvas({
+      texts: [{ characters: 'Save' }, { characters: 'Cancel' }, { characters: '{Component name}', visible: false, inInstance: true }],
+    });
+    await expect(runTemplate(c.figma, NO_HELPER)).rejects.toThrow(/placeholder leak \(concealed: invisible\): "\{Component name\}"/);
+  });
+
+  it('does not let copy in a hidden instance sublayer satisfy a required-copy assertion', async () => {
+    const c = fakeCanvas({ texts: [{ characters: 'Save', visible: false, inInstance: true }, { characters: 'Cancel' }] });
+    await expect(runTemplate(c.figma, NO_HELPER)).rejects.toThrow(/required copy "Save" is not visible/);
+  });
+
+  it('restores skipInvisibleInstanceChildren even when the leak scan throws', async () => {
+    const c = fakeCanvas();
+    (c.byId.get('1:2') as FakeNode).findAllWithCriteria = () => {
+      throw new Error('scan refused');
+    };
+    await expect(runTemplate(c.figma, NO_HELPER)).rejects.toThrow(/scan refused/);
+    expect(c.figma.skipInvisibleInstanceChildren).toBe(true);
   });
 
   it('fails gate-zero when the scope measured nothing', async () => {

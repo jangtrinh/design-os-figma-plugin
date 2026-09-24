@@ -1,5 +1,5 @@
 // GATE <id> — <one line: what this gate proves>. Scoped: node-id roots only. Throws on any failure; returns {pass:true,…} when green.
-// Scope: <root names>. Budget: BUDGET_MS below. skipInvisibleInstanceChildren: true (flip only if an assertion reads a hidden instance sublayer — say which).
+// Scope: <root names>. Budget: BUDGET_MS below. skipInvisibleInstanceChildren: true, widened to false only around the leak scan (it must see hidden instance sublayers).
 // Copy to <plan>/scripts/<nn>-<topic>-verify.js; rules and rationale: es-figma-craft references/gate-authoring.md.
 //
 // TEMPLATE — a doc/example, never run on a canvas as-is. Replace every value in the CONFIG block; keep the skeleton.
@@ -11,7 +11,7 @@ const EXPECTED_FILE = 'Example file';
 // Ids renumber on sync, so every root carries its expected name + type; a mismatch FAILS (re-anchor), it never skips.
 const ROOTS = [{ id: '1:2', name: 'Screen · example', type: 'FRAME' }];
 const REQUIRED_COPY = ['Save', 'Cancel']; // must render where a human can see it
-const PLACEHOLDER = /\{[^}]+\}|TODO|lorem ipsum/i; // must not exist anywhere in scope, concealed or not
+const PLACEHOLDER = /\{[^}]+\}|TODO|lorem ipsum/i; // must not exist anywhere in scope, concealed or not — hidden instance sublayers included
 const MIN_CHECKED = 1; // gate-zero: a scope that measured fewer nodes proves nothing
 // Well under the 120 s exec-js cap: that cap counts from dispatch (queue wait included), and the suite runs serially.
 const BUDGET_MS = 20_000;
@@ -60,8 +60,17 @@ let checked = 0;
 for (const spec of ROOTS) {
   const root = await scopeRoot(spec);
   if (!root) continue;
-  // Typed criteria under the scoped root: no JS callback per node, no walk outside the root.
-  const texts = root.findAllWithCriteria({ types: ['TEXT'] });
+  // Typed criteria under the scoped root: no JS callback per node, no walk outside the root. With the flag `true` this
+  // search would drop hidden instance sublayers — the commonest home of leftover text — so the one scan that feeds the
+  // leak assertion runs with `false` and restores `true` whatever happens. Visible-copy checks reuse it and filter by
+  // concealment, so there is no second walk.
+  let texts;
+  figma.skipInvisibleInstanceChildren = false;
+  try {
+    texts = root.findAllWithCriteria({ types: ['TEXT'] });
+  } finally {
+    figma.skipInvisibleInstanceChildren = true;
+  }
   const shown = new Set();
   for (const t of texts) {
     checked++;
