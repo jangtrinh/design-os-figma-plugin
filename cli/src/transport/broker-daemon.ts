@@ -36,7 +36,7 @@ import {
   toAwaitingReconnectStatus, writeLastPluginsAtomic, type AwaitingReconnectEntry, type LastPluginRecord,
 } from './last-plugins-log.ts';
 import {
-  appendDisconnectRecord, buildDisconnectRecord, disconnectLogPathFor, pushDisconnectRing, rotateDisconnectLog,
+  appendDisconnectRecord, buildDisconnectRecord, disconnectLogPathFor, pushDisconnectRing, readDisconnectTail, rotateDisconnectLog,
   type DisconnectClosedBy, type DisconnectRecord, type PluginLiveness, type PluginSocketInfo,
 } from './disconnect-log.ts';
 import { pinDisconnected, resolveRouteFilter, type RouteFilter } from './route-filter.ts';
@@ -642,6 +642,17 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const brokerCloseCause = new WeakMap<WebSocket, DisconnectClosedBy>();
   let recentDisconnects: DisconnectRecord[] = [];
   let disconnectLogAppendFailures = 0;
+  let disconnectLogReadFailures = 0;
+  try {
+    const seeded = readDisconnectTail(disconnectLogPath);
+    recentDisconnects = seeded.records;
+    if (seeded.records.length > 0 || seeded.skipped > 0) {
+      log(`DISCONNECT_LOG seeded ${seeded.records.length} record(s), skipped ${seeded.skipped} malformed`);
+    }
+  } catch (err) {
+    disconnectLogReadFailures += 1;
+    log(`DISCONNECT_LOG seed read failed: ${(err as Error).message}`);
+  }
   const livenessOf = (entry: PluginEntry<WebSocket>): PluginLiveness => ({
     fileName: (entry.scene.fileName as string | undefined) ?? null,
     fileKey: (entry.scene.fileKey as string | null | undefined) ?? null,
@@ -2555,7 +2566,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           {
             port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(),
             uptimeMs: Date.now() - startedAt, senderMismatchCount, legacyMigrationDeferred,
-            disconnects: { path: disconnectLogPath, last: recentDisconnects, appendFailures: disconnectLogAppendFailures },
+            disconnects: { path: disconnectLogPath, last: recentDisconnects, appendFailures: disconnectLogAppendFailures, readFailures: disconnectLogReadFailures },
           },
           currentFilter(),
           Date.now,

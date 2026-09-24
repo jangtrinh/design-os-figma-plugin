@@ -4,7 +4,7 @@
 // The advertisement path is a scratch tmpdir and the port is OS-assigned, so the record
 // file lands in the scratch dir by construction and no test ever touches a live broker.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
@@ -43,7 +43,7 @@ interface DisconnectLine {
   queueDepthByFile: Record<string, number>;
 }
 
-interface DisconnectsHello { path: string; last: DisconnectLine[]; appendFailures: number }
+interface DisconnectsHello { path: string; last: DisconnectLine[]; appendFailures: number; readFailures: number }
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), 'fa-disconnect-log-'));
@@ -251,5 +251,27 @@ describe('plugin disconnect record — actual daemon', () => {
     const disconnects = await helloDisconnects(port);
     expect(disconnects!.appendFailures).toBe(1);
     expect(disconnects!.last.map((line) => line.instanceId)).toEqual(['unwritable']);
+  });
+  it('seeds the last-5 ring from the file tail at start: newest 5 valid records, newest first, malformed lines skipped', async () => {
+    const line = (id: string, at: string): string => JSON.stringify({
+      at, instanceId: id, fileName: null, fileKey: null, closeCode: 1006, closeReason: '', closedBy: 'broker-shutdown',
+      superseded: false, msSinceLastSeen: 1, msSinceLastAppFrame: 1, socketOpenForMs: 1, inFlightJobs: [], queueDepthByFile: {},
+    });
+    const lines = ['s1', 's2', 's3', 'not json {', 's4', 's5', 's6'].map((id, i) => (
+      id.startsWith('s') ? line(id, `2026-09-24T00:00:0${i}.000Z`) : id
+    ));
+    writeFileSync(recordPath, `${lines.join('\n')}\n`);
+    const port = await startBroker();
+    const disconnects = await helloDisconnects(port);
+    expect(disconnects!.last.map((entry) => entry.instanceId)).toEqual(['s6', 's5', 's4', 's3', 's2']);
+    expect(disconnects!.readFailures).toBe(0);
+    expect(readFileSync(join(scratch, 'broker.log'), 'utf8')).toContain('DISCONNECT_LOG seeded 5 record(s), skipped 1 malformed');
+  });
+
+  it('starts with an empty ring and no read failure when the record file does not exist', async () => {
+    const port = await startBroker();
+    const disconnects = await helloDisconnects(port);
+    expect(disconnects!.last).toEqual([]);
+    expect(disconnects!.readFailures).toBe(0);
   });
 });

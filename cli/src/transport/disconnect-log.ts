@@ -9,7 +9,7 @@
 // Privacy: a record carries identifiers, labels and timings only — never request
 // params, script source, or canvas content. `inFlightJobs` reads the job's envelope
 // fields (`cmd`, `activity`), which the broker already treats as metadata.
-import { closeSync, constants, fchmodSync, fstatSync, openSync, writeSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, openSync, readSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { rotateIfNeeded } from './log-rotate.ts';
 
@@ -18,6 +18,8 @@ export const DISCONNECT_LOG_FILENAME = 'figma-disconnects.jsonl';
 export const DISCONNECT_RING_SIZE = 5;
 /** A WebSocket close reason is at most 123 bytes on the wire; never store more. */
 const CLOSE_REASON_MAX_BYTES = 123;
+/** Startup seed reads at most this much of the file's end. */
+const SEED_TAIL_MAX_BYTES = 64 * 1024;
 
 export type DisconnectClosedBy = 'peer' | 'broker-heartbeat-cull' | 'broker-superseded' | 'broker-shutdown';
 
@@ -49,6 +51,8 @@ export interface DisconnectsStatus {
   path: string;
   last: DisconnectRecord[];
   appendFailures: number;
+  /** Startup reads of the record file that failed (a missing file is not one). */
+  readFailures: number;
 }
 
 /** What the broker knows about one plugin socket, independent of the registry entry —
@@ -151,4 +155,48 @@ export function rotateDisconnectLog(path: string): void {
 /** Newest-first ring of the last `DISCONNECT_RING_SIZE` records. Returns a new array. */
 export function pushDisconnectRing(ring: readonly DisconnectRecord[], record: DisconnectRecord): DisconnectRecord[] {
   return [record, ...ring].slice(0, DISCONNECT_RING_SIZE);
+}
+
+/**
+ * Newest-first records from the END of the file, for seeding the ring at broker start so
+ * `status` still shows records written before a restart (incl. `broker-shutdown` ones).
+ * Reads at most `SEED_TAIL_MAX_BYTES`; a line cut by the window's start is dropped, and
+ * lines that do not parse as a record are counted in `skipped`. A missing file is empty.
+ * Throws only on a real read error — the caller counts it.
+ */
+export function readDisconnectTail(path: string): { records: DisconnectRecord[]; skipped: number } {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { records: [], skipped: 0 };
+    throw err;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - SEED_TAIL_MAX_BYTES);
+    const buf = Buffer.alloc(size - start);
+    let filled = 0;
+    while (filled < buf.length) {
+      const n = readSync(fd, buf, filled, buf.length - filled, start + filled);
+      if (n === 0) break;
+      filled += n;
+    }
+    const lines = buf.subarray(0, filled).toString('utf8').split('\n');
+    if (start > 0) lines.shift();
+    if (lines[lines.length - 1] === '') lines.pop();
+    const records: DisconnectRecord[] = [];
+    let skipped = 0;
+    for (const line of lines) {
+      if (line.trim() === '') continue;
+      try {
+        const parsed = JSON.parse(line) as DisconnectRecord;
+        if (parsed === null || typeof parsed !== 'object' || typeof parsed.at !== 'string' || typeof parsed.instanceId !== 'string') skipped += 1;
+        else records.push(parsed);
+      } catch { skipped += 1; }
+    }
+    return { records: records.slice(-DISCONNECT_RING_SIZE).reverse(), skipped };
+  } finally {
+    closeSync(fd);
+  }
 }
