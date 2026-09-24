@@ -66,6 +66,7 @@ npm run build
 In Figma Desktop, choose **Plugins → Development → Import plugin from manifest…**, then select `plugin/manifest.json`. For the first run, open the imported plugin in a scratch Figma file.
 
 No global npm link is required. [The plugin manifest](plugin/manifest.json) lists external hosts used by rendering features.
+To replace a globally installed `figma-agent` (and the broker it runs), follow [upgrading the installed CLI and broker](docs/operations.md#upgrading-the-installed-cli-and-broker).
 
 ## First safe use
 

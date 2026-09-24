@@ -6,6 +6,7 @@ import { APP_READINESS_VERSION, type JobInfo, type MutationGateRow, type Mutatio
 import type { RouteFilter } from './route-filter.ts';
 import type { SessionTally } from './session-tallies.ts';
 import { fileIdentity } from './file-identity.ts';
+import type { DisconnectsStatus } from './disconnect-log.ts';
 
 /** Concurrency & jobs (backlog 1.1+2.6+4.3) — one file's job status for `status` (4.3).
  *  `runningJob` is `null` for an idle file, never an omitted key (absent vs zero is a
@@ -42,6 +43,10 @@ export interface BrokerMeta {
    *  startup. The staged data itself is untouched (migration is copy-before-delete),
    *  but an operator needs to know it's still stuck at the old location. */
   legacyMigrationDeferred: boolean;
+  /** Plugin-disconnect record summary: the JSONL path, the newest records (newest
+   *  first), and how many appends failed this daemon run. Optional so a caller that
+   *  omits it keeps the payload byte-identical. */
+  disconnects?: DisconnectsStatus;
 }
 
 /**
@@ -115,6 +120,7 @@ export function buildBrokerHelloData(
     // nothing to migrate — the overwhelming common case) keeps this payload
     // byte-identical to before this field existed.
     ...(meta.legacyMigrationDeferred && { legacyMigrationDeferred: true }),
+    ...(meta.disconnects !== undefined && { disconnects: meta.disconnects }),
     // ── legacy compat shim (mirrors the ACTIVE plugin) ──
     pluginConnected: connected,
     pluginState: connected ? 'connected' : 'disconnected',

@@ -35,6 +35,10 @@ import {
   clearReconnected, filterAwaitingReconnect, lastPluginsPathFor, readLastPlugins,
   toAwaitingReconnectStatus, writeLastPluginsAtomic, type AwaitingReconnectEntry, type LastPluginRecord,
 } from './last-plugins-log.ts';
+import {
+  appendDisconnectRecord, buildDisconnectRecord, disconnectLogPathFor, pushDisconnectRing, readDisconnectTail, rotateDisconnectLog,
+  type DisconnectClosedBy, type DisconnectRecord, type PluginLiveness, type PluginSocketInfo,
+} from './disconnect-log.ts';
 import { pinDisconnected, resolveRouteFilter, type RouteFilter } from './route-filter.ts';
 import { formatAmbiguousFileMessage } from './ambiguous-file-error.ts';
 import {
@@ -124,7 +128,7 @@ function pluginSupportsFileGuard(entry: PluginEntry<WebSocket>): boolean {
   return Array.isArray(caps) && caps.includes('fileGuard');
 }
 
-type TrackedWs = WebSocket & { isAlive?: boolean };
+type TrackedWs = WebSocket & { isAlive?: boolean; openedAt?: number };
 
 /** A request parked until a plugin (re)connects or the wait window elapses. */
 interface ParkedRequest {
@@ -626,6 +630,76 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       ),
     }),
   };
+
+  // Plugin-disconnect record — one JSONL line per plugin socket close, beside the
+  // advertisement. The socket map (set on PLUGIN_HELLO) is the gate, not
+  // `registry.getByWs`: a re-HELLO repoints the registry entry at the NEW socket, so a
+  // superseded orphan would otherwise look exactly like a CLI and go unrecorded. A socket
+  // leaves the map once its record is written, so shutdown + the later close never
+  // record it twice.
+  const disconnectLogPath = disconnectLogPathFor(advertisePath);
+  const pluginSockets = new WeakMap<WebSocket, PluginSocketInfo>();
+  const brokerCloseCause = new WeakMap<WebSocket, DisconnectClosedBy>();
+  let recentDisconnects: DisconnectRecord[] = [];
+  let disconnectLogAppendFailures = 0;
+  let disconnectLogReadFailures = 0;
+  try {
+    const seeded = readDisconnectTail(disconnectLogPath);
+    recentDisconnects = seeded.records;
+    if (seeded.records.length > 0 || seeded.skipped > 0) {
+      log(`DISCONNECT_LOG seeded ${seeded.records.length} record(s), skipped ${seeded.skipped} malformed`);
+    }
+  } catch (err) {
+    disconnectLogReadFailures += 1;
+    log(`DISCONNECT_LOG seed read failed: ${(err as Error).message}`);
+  }
+  const livenessOf = (entry: PluginEntry<WebSocket>): PluginLiveness => ({
+    fileName: (entry.scene.fileName as string | undefined) ?? null,
+    fileKey: (entry.scene.fileKey as string | null | undefined) ?? null,
+    lastSeenAt: entry.lastSeenAt,
+    lastAppFrameAt: entry.lastAppFrameAt,
+  });
+  /** Build the record from live state — call BEFORE any close cleanup removes the
+   *  socket's jobs or registry entry — then append it synchronously. Never throws. */
+  const recordPluginClose = (
+    ws: WebSocket, closedBy: DisconnectClosedBy, closeCode: number | null, closeReason: string | Buffer | undefined,
+  ): void => {
+    const info = pluginSockets.get(ws);
+    if (info === undefined) return;
+    pluginSockets.delete(ws);
+    let record: DisconnectRecord;
+    try {
+      const entry = st.registry.getByInstanceId(info.instanceId);
+      const inFlightJobs = [];
+      for (const [requestId, target] of st.dispatchedTo) {
+        if (target !== ws) continue;
+        const job = st.jobs.byRequestId(requestId);
+        if (job) inFlightJobs.push(job);
+      }
+      const queueDepthByFile: Record<string, number> = {};
+      for (const [fileSlug, q] of st.queues) {
+        if (q.running !== null || q.waiting.length > 0) queueDepthByFile[fileSlug] = q.waiting.length;
+      }
+      record = buildDisconnectRecord({
+        now: Date.now(), info, liveEntry: entry?.ws === ws ? livenessOf(entry) : null,
+        closedBy, closeCode, closeReason, inFlightJobs, queueDepthByFile,
+      });
+    } catch (err) {
+      disconnectLogAppendFailures += 1;
+      log(`DISCONNECT_LOG record build failed (${disconnectLogAppendFailures} total): ${(err as Error).message}`);
+      return;
+    }
+    recentDisconnects = pushDisconnectRing(recentDisconnects, record);
+    try {
+      appendDisconnectRecord(disconnectLogPath, record);
+    } catch (err) {
+      disconnectLogAppendFailures += 1;
+      log(`DISCONNECT_LOG append failed (${disconnectLogAppendFailures} total): ${(err as Error).message}`);
+      return;
+    }
+    try { rotateDisconnectLog(disconnectLogPath); } catch (err) { log(`DISCONNECT_LOG rotation failed: ${(err as Error).message}`); }
+  };
+
   let resourceObserverTeardown: (() => void) | null = null;
   if (options?.resourceObserver) {
     try {
@@ -695,6 +769,27 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const sendEvent = (ws: WebSocket, type: EventMsg['type'], data: Record<string, unknown>): void => {
     try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, data } satisfies EventMsg)); }
     catch { /* socket already gone */ }
+  };
+
+  /**
+   * The JOB_STATE event payload. `announcesRunning` tells the requester this broker also
+   * sends `running` at dispatch, so the CLI may start its run budget then; an older CLI
+   * just records the event as its last-seen job. Event-only on purpose: `toJobInfo` also
+   * feeds job polls, `job --list` and `status`, which keep their shape.
+   */
+  const jobStateEvent = (job: JobRecord, blockedBy?: string): Record<string, unknown> => ({
+    ...toJobInfo(job),
+    announcesRunning: true,
+    ...(blockedBy !== undefined ? { blockedBy } : {}),
+  });
+
+  /** The job holding `fileSlug`'s slot after the watchdog failed it (it stays until an
+   *  audited `job <id> --force-release`), or undefined when the head is live or absent. */
+  const heldHeadOf = (fileSlug: string): string | undefined => {
+    const head = st.queues.get(fileSlug)?.running;
+    if (head === null || head === undefined) return undefined;
+    const rec = st.jobs.byId(head);
+    return rec !== 'unknown' && rec !== 'expired' && rec.retentionHeld === true ? head : undefined;
   };
 
   // Broker-restart reconnect visibility — how many `writeLastPluginsAtomic` failures
@@ -820,6 +915,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
+    // Every still-connected plugin drops with this process: record each one now,
+    // synchronously, because `exit()` below never returns to run their close handlers.
+    for (const server of wss6 ? [wss, wss6] : [wss]) {
+      for (const client of server?.clients ?? []) recordPluginClose(client, 'broker-shutdown', null, reason);
+    }
     const teardown = resourceObserverTeardown;
     resourceObserverTeardown = null;
     if (teardown) {
@@ -1139,6 +1239,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const dispatchJob = (job: JobRecord, targetWs: WebSocket): void => {
     try {
       sendFrames(targetWs, job.requestFrames);
+      // The requester's run budget starts here, not at send. Sent on the requester's own
+      // socket, so it always precedes any reply to a cancel that socket sends afterwards.
+      if (job.from) sendEvent(job.from, 'JOB_STATE', jobStateEvent(job));
     } catch (err) {
       const msg = `relay to plugin failed: ${(err as Error).message}`;
       st.jobs.finish(job.jobId, false, [errReplyFrame(job.requestId, 'E_PLUGIN_ERROR', msg)]);
@@ -1439,7 +1542,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     });
     // JOB_STATE — sent BEFORE any timeout can fire, so a CLI that gives up waiting still
     // knows its own jobId (the entire point of "timeout → poll, never re-dispatch").
-    sendEvent(from, 'JOB_STATE', toJobInfo(job) as unknown as Record<string, unknown>);
+    sendEvent(from, 'JOB_STATE', jobStateEvent(job));
 
     if (isReadOnly) {
       if (!st.jobs.transitionQueuedToRunning(job.jobId)) return;
@@ -1459,7 +1562,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       const pos = queuePosition(nextQ, job.jobId);
       if (pos !== undefined) {
         job.queuePosition = pos;
-        sendEvent(from, 'JOB_STATE', toJobInfo(job) as unknown as Record<string, unknown>);
+        // A watchdog-held head never drains on its own: say so now, so the waiting CLI
+        // can give up at once instead of spending its whole queue limit.
+        sendEvent(from, 'JOB_STATE', jobStateEvent(job, heldHeadOf(fileSlug)));
       }
     }
   };
@@ -1987,7 +2092,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     ...(entry.timeoutCappedMs !== undefined && { timeoutCappedMs: entry.timeoutCappedMs }),
   });
 
-  const handleClose = (ws: WebSocket): void => {
+  const handleClose = (ws: WebSocket, closeCode?: number, closeReason?: Buffer): void => {
+    recordPluginClose(ws, brokerCloseCause.get(ws) ?? 'peer', closeCode ?? null, closeReason);
     // Fail only the in-flight requests routed to THIS socket (a plugin, or a
     // superseded orphan) — other plugins' requests are untouched.
     for (const [id, target] of st.dispatchedTo) {
@@ -2191,8 +2297,17 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         // file's plugin (the connect/disconnect flapping bug). A same-instance
         // reconnect supersedes its own stale socket, which we close here.
         st.cliClients.delete(ws);
+        const carriedId = typeof msg.data.instanceId === 'string' ? msg.data.instanceId : null;
+        const priorEntry = carriedId !== null ? st.registry.getByInstanceId(carriedId) : null;
         const { instanceId, replaced, superseded } = st.registry.register(ws, msg.data);
-        if (superseded) { try { superseded.close(); } catch { /* already gone */ } }
+        pluginSockets.set(ws, { instanceId, openedAt: (ws as TrackedWs).openedAt ?? Date.now() });
+        if (superseded) {
+          // The registry entry now describes the new socket; keep the old one's own view.
+          const orphan = pluginSockets.get(superseded);
+          if (orphan !== undefined && priorEntry?.ws === superseded) orphan.supersededSnapshot = livenessOf(priorEntry);
+          if (!brokerCloseCause.has(superseded)) brokerCloseCause.set(superseded, 'broker-superseded');
+          try { superseded.close(); } catch { /* already gone */ }
+        }
         st.lastBusyAt = Date.now();
         log(`plugin registered [${instanceId}]${replaced ? ' (replaced — same instance re-hello)' : ''}: ${JSON.stringify(msg.data)}`);
         // Live-sync (spec 004 P4): hand this plugin the idle window so its debounce
@@ -2451,6 +2566,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
           {
             port, pid: process.pid, protocolV: PROTOCOL_VERSION, buildMtime: selfBuildMtime(),
             uptimeMs: Date.now() - startedAt, senderMismatchCount, legacyMigrationDeferred,
+            disconnects: { path: disconnectLogPath, last: recentDisconnects, appendFailures: disconnectLogAppendFailures, readFailures: disconnectLogReadFailures },
           },
           currentFilter(),
           Date.now,
@@ -2466,6 +2582,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const onConnection = (ws: WebSocket, req: import('node:http').IncomingMessage): void => {
     const tracked = ws as TrackedWs;
     tracked.isAlive = true;
+    tracked.openedAt = Date.now();
     st.cliClients.add(ws); // provisional; promoted to plugin on PLUGIN_HELLO
     st.lastBusyAt = Date.now();
     log(`connection from ${req.socket.remoteAddress ?? '?'} (clients: ${st.cliClients.size})`);
@@ -2475,7 +2592,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       try { handleMessage(ws, rawToString(raw)); }
       catch (err) { log(`handleMessage failed: ${(err as Error).message}`); }
     });
-    ws.on('close', () => handleClose(ws));
+    ws.on('close', (code, reason) => handleClose(ws, code, reason));
     try { ws.send(JSON.stringify(brokerHello())); } catch { /* ignore */ }
   };
   wss.on('connection', onConnection);
@@ -2494,7 +2611,12 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     const allClients = [...wss!.clients, ...(wss6 ? wss6.clients : [])];
     for (const ws of allClients) {
       const tracked = ws as TrackedWs;
-      if (tracked.isAlive === false) { log('terminating unresponsive client (missed pong)'); tracked.terminate(); continue; }
+      if (tracked.isAlive === false) {
+        log('terminating unresponsive client (missed pong)');
+        if (!brokerCloseCause.has(ws)) brokerCloseCause.set(ws, 'broker-heartbeat-cull');
+        tracked.terminate();
+        continue;
+      }
       tracked.isAlive = false;
       tracked.ping();
     }
@@ -2602,7 +2724,15 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       st.jobs.finishHeld(job.jobId, false, [errReplyFrame(job.requestId, 'E_TIMEOUT', msg)]);
       recordContention(job);
       log(`watchdog: job ${job.jobId} (${job.cmd}) timed out — slot for "${job.fileSlug}" stays blocked`);
-      // Deliberately do not drain here — see the comment above.
+      // Deliberately do not drain here — see the comment above. Tell every job waiting
+      // behind the held slot who blocks it, so its CLI can give up now.
+      if (heldHeadOf(job.fileSlug) === job.jobId) {
+        for (const waitingId of st.queues.get(job.fileSlug)?.waiting ?? []) {
+          const waiting = st.jobs.byId(waitingId);
+          if (waiting === 'unknown' || waiting === 'expired' || waiting.state !== 'queued' || !waiting.from) continue;
+          sendEvent(waiting.from, 'JOB_STATE', jobStateEvent(waiting, job.jobId));
+        }
+      }
     }
   }, Math.min(30_000, Math.max(1_000, Math.floor(WATCHDOG_TIMEOUT_MS / 4))));
 
