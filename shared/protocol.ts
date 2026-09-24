@@ -801,6 +801,8 @@ export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   AUDIT_DS: 120_000, // usage scan traverses EVERY page's instances — heavier than the DS scan
   EXEC_JS: 30_000, // CLI --timeout may raise, capped at 120s
   BATCH: 60_000,
+  // A large frame at scale 2 renders past the 15s default; the CLI --timeout may raise this, capped at 120s.
+  EXPORT_PNG: 60_000,
   // Fallback only — cowork.ts always passes an explicit timeoutMs derived from the
   // caller's OWN --timeout (which can exceed this default), same "hop buffer past the
   // requested budget" shape as batch.ts's own scaled timeout.

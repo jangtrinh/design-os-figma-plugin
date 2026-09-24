@@ -218,7 +218,7 @@ export const COMMANDS: CommandCatalogEntry[] = [
   {
     name: 'export-png',
     description:
-      '--node <id|selection> --out file.png [--scale 2] [--assert <script.js> [--assert-timeout ms] '
+      '--node <id|selection> --out file.png [--scale 2] [--timeout ms, default 60000, max 120000] [--assert <script.js> [--assert-timeout ms] '
       + '[--no-lint] [--strict]]   --assert runs the script FIRST as a plugin-enforced read-only '
       + 'exec-js (same preflight lint as exec-js; a script that writes is refused by the plugin '
       + 'with E_READONLY_VIOLATION — the write is sealed into its own undo step, never applied '

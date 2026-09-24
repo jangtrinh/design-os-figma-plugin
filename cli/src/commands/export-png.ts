@@ -13,6 +13,7 @@ import type { CommandArgs } from '../figma-agent.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 import { runCommand } from '../transport/broker-client.ts';
 import { preflightExecJs, readScriptFile } from './exec-js-preflight.ts';
+import { readTimeoutFlag, resolveTimeoutFlag } from '../util/timeout-flag.ts';
 
 const WIRE_MARGIN_MS = 2_000;
 
@@ -60,6 +61,13 @@ export async function run(args: CommandArgs): Promise<unknown> {
   const outPath = resolve(args.req('out'));
   const scale = args.num('scale') ?? 2;
   const assertPath = args.str('assert');
+  const requestedTimeout = readTimeoutFlag(args, 'timeout');
+  let exportTimeoutMs = COMMAND_TIMEOUTS.EXPORT_PNG ?? 60_000;
+  if (requestedTimeout !== undefined) {
+    const { effective, notice } = resolveTimeoutFlag(requestedTimeout, EXEC_JS_MAX_TIMEOUT_MS, '--timeout');
+    if (notice) process.stderr.write(notice);
+    exportTimeoutMs = effective;
+  }
   if (args.bool('assert') && assertPath === undefined) {
     throw new CliError('E_INVALID_ARGS', '--assert needs a script path, e.g. --assert verify/screen.js');
   }
@@ -69,7 +77,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     nodeId: target === 'selection' ? undefined : target,
     useSelection: target === 'selection',
     scale,
-  })) as { base64?: string; w?: number; h?: number };
+  }, { timeoutMs: exportTimeoutMs })) as { base64?: string; w?: number; h?: number };
 
   if (!result || typeof result.base64 !== 'string') {
     throw new CliError('E_PLUGIN_ERROR', 'EXPORT_PNG reply missing base64 image data');

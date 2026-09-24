@@ -556,6 +556,8 @@ body {
     EXEC_JS: 3e4,
     // CLI --timeout may raise, capped at 120s
     BATCH: 6e4,
+    // A large frame at scale 2 renders past the 15s default; the CLI --timeout may raise this, capped at 120s.
+    EXPORT_PNG: 6e4,
     // Fallback only — cowork.ts always passes an explicit timeoutMs derived from the
     // caller's OWN --timeout (which can exceed this default), same "hop buffer past the
     // requested budget" shape as batch.ts's own scaled timeout.
@@ -1863,7 +1865,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "8029b07" : "dev"}`;
+  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "8d8e90e" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;
