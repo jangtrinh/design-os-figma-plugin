@@ -16,6 +16,7 @@
 // say nothing. A caller cannot ask for what it was never told is missing.
 import { utf8ByteLength } from '../../../shared/utf8-byte-length';
 import { buildContextRecord, childrenOf, messageOf, type ContextNodeLike } from './context-node-record';
+import type { ConcealmentMemo } from './text-concealment';
 import { safe } from './scan-node-utils';
 
 /** Measured live: `getCSSAsync` costs ~7-8ms per node and `Promise.all` batches of 16 save
@@ -172,6 +173,9 @@ export async function walkContext(
   let cssMs = 0;
   let batches = 0;
   let stopped: 'budget' | 'deadline' | null = null;
+  // Per walk, never module-level: a memo that outlived this walk would answer for a canvas
+  // that has since changed.
+  const concealMemo: ConcealmentMemo = new WeakMap();
 
   const pushFrontier = (node: ContextNodeLike, reason: FrontierReason): void => {
     frontierTotal += 1;
@@ -197,7 +201,7 @@ export async function walkContext(
     const batchStartedAt = deps.now();
     const built = await Promise.all(batch.map((pending) => build(pending.node, {
       depth: pending.depth, parentId: pending.parentId, childIndex: pending.childIndex,
-      includeCss: opts.includeCss,
+      includeCss: opts.includeCss, concealMemo,
       // A reader that refuses ENTIRELY still owes the caller an identified node: a record
       // silently absent from `nodes[]` with no frontier entry is the hole this walk exists
       // to make impossible.

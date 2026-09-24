@@ -26,6 +26,7 @@ import { readLayout, readSelfSizing } from './scan-node-layout';
 import { asFills, effectToExport, readIndividualStrokeWeights } from './scan-node-paint';
 import { readText } from './scan-node-text';
 import { r2, safe } from './scan-node-utils';
+import type { ConcealmentMemo } from './text-concealment';
 
 export type { ScanExtensions, ScannedNode } from './scan-node-types';
 export type { MainComponentRef } from './scan-node-instance';
@@ -193,12 +194,15 @@ function readFrameVisuals(n: Record<string, unknown>, out: ScannedNode): void {
  * INSTANCE composition is NOT recursed: an instance is captured as a reference to
  * its main component plus its overrides (spec-005 P2) — the inner tree is the
  * component's definition, and the builder rebuilds it via createInstance().
+ * `concealMemo` is the scan's ONE concealment memo (text-concealment.ts): created at the
+ * root call and handed down, so each ancestor is read once per scan, never across scans.
  */
 export function nodeToSpec(
   node: SceneNode,
   tokenNames?: Map<string, string>,
   mainComps?: Map<string, MainComponentRef>,
   keyedVars?: ReadonlyMap<string, FigmaKeyedBinding>,
+  concealMemo: ConcealmentMemo = new WeakMap(),
 ): ScannedNode {
   const n = node as unknown as Record<string, unknown>;
   const type = node.type;
@@ -212,7 +216,7 @@ export function nodeToSpec(
   readSelfSizing(n, out); // applies to text + frame children alike
 
   if (out.type === 'TEXT') {
-    readText(n, out);
+    readText(n, out, concealMemo);
   } else {
     readLayout(n, out);
     readFrameVisuals(n, out);
@@ -233,7 +237,7 @@ export function nodeToSpec(
   // Children — recurse, EXCEPT into an instance (composition is the component's).
   if (type !== 'INSTANCE' && 'children' in node) {
     const kids = (node as SceneNode & ChildrenMixin).children;
-    if (kids.length) out.children = kids.map((c) => nodeToSpec(c as SceneNode, tokenNames, mainComps, keyedVars));
+    if (kids.length) out.children = kids.map((c) => nodeToSpec(c as SceneNode, tokenNames, mainComps, keyedVars, concealMemo));
   }
 
   return out;

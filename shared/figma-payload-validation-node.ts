@@ -15,7 +15,7 @@ const NODE_FIELDS = new Set([
   'textAutoResize', 'textColor', 'textDecoration', 'textCase', 'textTruncation', 'blendMode', 'rotation', 'counterAxisAlignContent',
   'imageUrl', 'svgContent', 'motion', 'clipsContent', 'absolutePosition', 'x', 'y', 'textSegments', 'keyedBindings', 'tokenRefs',
   'componentKey', 'componentId', 'componentName', 'componentProperties', 'innerOverrides', 'figmaScanUnreproducibleInner',
-  'figmaScanBindings', 'figmaScanSourceType', 'figmaScanInnerOverrides', 'figmaScanUnbindable', 'children',
+  'figmaScanBindings', 'figmaScanSourceType', 'figmaScanInnerOverrides', 'figmaScanUnbindable', 'concealed', 'children',
 ]);
 
 const ENUM_FIELDS: Record<string, readonly string[]> = {

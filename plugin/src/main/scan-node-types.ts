@@ -3,6 +3,7 @@
 // without importing scan-node.ts back (circular import).
 
 import type { FigmaExportNode } from '../../../shared/figma-payload-types';
+import type { Concealment } from './text-concealment';
 
 /** Material captured beyond the reversible FigmaExportNode fields. */
 export interface ScanExtensions {
@@ -23,6 +24,10 @@ export interface ScanExtensions {
   // as raw ids; this names them so the loss reads as Figma's limit rather than
   // ours, and so the mirror can tell the two apart (spec-005 P9).
   figmaScanUnbindable?: string[];
+  // TEXT a human cannot see on the canvas (see text-concealment.ts). A read-only
+  // annotation about where the node sits — never replayed by a rebuild, and ignored by
+  // the mirror's diff (cli/src/util/mirror-normalize-concealed.ts). Absent on visible text.
+  concealed?: Concealment;
 }
 
 export type ScannedNode = FigmaExportNode & ScanExtensions;

@@ -24,6 +24,7 @@
 // refused read must never abort a whole subtree's record.
 import { jsonSafe } from './serialize-node';
 import { r2, readBindings, safe } from './scan-node-utils';
+import { readConcealment, type ConcealmentMemo } from './text-concealment';
 
 /** The only surface this module touches. A real `SceneNode` satisfies it after the one
  *  documented cast in executor-context.ts — the same shape `readBindings` already takes,
@@ -43,6 +44,9 @@ export interface ContextRecordOptions {
   /** `false` for `--no-css`: `getCSSAsync` is then never called at all (it is the whole
    *  cost of this command, ~7-8ms per node), not called-and-discarded. */
   includeCss: boolean;
+  /** The walk's ONE concealment memo (text-concealment.ts), so every TEXT in a walk
+   *  shares each ancestor read. A lone call without it gets a fresh one. */
+  concealMemo?: ConcealmentMemo;
 }
 
 export interface ContextRecordResult {
@@ -248,6 +252,9 @@ export async function buildContextRecord(
       ));
       if (Array.isArray(read) && read.length > 0) record.segments = jsonSafe(read);
     }
+    // Flagged, never stripped: the characters above stay. Absent on visible text.
+    const concealed = readConcealment(node, opts.concealMemo ?? new WeakMap());
+    if (concealed) record.concealed = concealed;
   }
 
   if (type === 'INSTANCE') {

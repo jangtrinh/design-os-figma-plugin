@@ -5,6 +5,7 @@ import type { FigmaColor, FigmaExportNode } from '../../../shared/figma-payload-
 import type { ScannedNode } from './scan-node-types';
 import { asFills } from './scan-node-paint';
 import { safe } from './scan-node-utils';
+import { readConcealment, type ConcealmentMemo } from './text-concealment';
 
 // Inverse of executor-fonts.getFontStyleVariants: a Figma style name → numeric
 // weight. Only recovers the weight the build path could have emitted; unknown
@@ -54,8 +55,9 @@ function readFontName(n: Record<string, unknown>): FontName | undefined {
   return isFontName(font) ? font : undefined;
 }
 
-/** Text-only fields — inverse of executor-text.createTextNode. */
-export function readText(n: Record<string, unknown>, out: ScannedNode): void {
+/** Text-only fields — inverse of executor-text.createTextNode. `memo` is the scan's
+ *  one concealment memo, so sibling texts share each ancestor read. */
+export function readText(n: Record<string, unknown>, out: ScannedNode, memo: ConcealmentMemo = new WeakMap()): void {
   if (typeof n.characters === 'string') out.characters = n.characters;
   const font = readFontName(n);
   if (font) {
@@ -76,4 +78,7 @@ export function readText(n: Record<string, unknown>, out: ScannedNode): void {
   // TEXT colour lives in fills[0]; surface it as textColor (build-path convention).
   const fills = asFills(n.fills);
   if (fills && fills[0]?.type === 'SOLID' && fills[0].color) out.textColor = fills[0].color as FigmaColor;
+  // Set only when something conceals the text: a visible node serialises exactly as before.
+  const concealed = readConcealment(n, memo);
+  if (concealed) out.concealed = concealed;
 }
