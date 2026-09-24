@@ -20,6 +20,8 @@ A defect that slips past the gates and is caught downstream (curator/owner) trig
 
 Build agents that hit an ungated defect class mid-build: **record it in the gate backlog + report — do NOT fix the gate mid-task** (one-agent-one-job). The orchestrator dispatches gate-work before the next build batch.
 
+**Writing a gate:** scope, budget, header and concealed-text rules + a template live in [gate-authoring.md](gate-authoring.md). A suite of whole-page gates can freeze the file it guards.
+
 ## Gate honesty rules (gates can lie too)
 
 - **N/A ≠ PASS.** A gate that measured 0 nodes proves nothing — fail-loud, report "not measured".
