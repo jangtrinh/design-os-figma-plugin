@@ -247,7 +247,12 @@ export const COMMANDS: CommandCatalogEntry[] = [
   {
     name: 'exec-js',
     description:
-      '<file|-> [--timeout ms (cap 120000)] [--undo-group] [--no-lint] [--strict] — exec-js lints scripts '
+      '<file|-> [--timeout ms (cap 120000)] [--queue-timeout ms (default 600000)] [--undo-group] [--no-lint] '
+      + '[--strict] — --timeout above the cap is lowered with one stderr notice. Against a broker that '
+      + 'announces dispatch, --timeout counts from the moment the script is sent to the plugin, not '
+      + 'while it waits behind other scripts on the same file; a script still queued after '
+      + '--queue-timeout is cancelled and never runs, and one queued behind a wedged job fails at once '
+      + 'naming that job and its --force-release. exec-js lints scripts '
       + 'before dispatch; --no-lint explicitly bypasses that local preflight. Hard findings (sync '
       + 'dynamic-page getters, import declarations) refuse; warnings go to stderr — the sync '
       + 'mainComponent getter, findAll without a visible filter, componentProperties on a '

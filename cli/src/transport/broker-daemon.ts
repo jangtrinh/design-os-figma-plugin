@@ -697,6 +697,27 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     catch { /* socket already gone */ }
   };
 
+  /**
+   * The JOB_STATE event payload. `announcesRunning` tells the requester this broker also
+   * sends `running` at dispatch, so the CLI may start its run budget then; an older CLI
+   * just records the event as its last-seen job. Event-only on purpose: `toJobInfo` also
+   * feeds job polls, `job --list` and `status`, which keep their shape.
+   */
+  const jobStateEvent = (job: JobRecord, blockedBy?: string): Record<string, unknown> => ({
+    ...toJobInfo(job),
+    announcesRunning: true,
+    ...(blockedBy !== undefined ? { blockedBy } : {}),
+  });
+
+  /** The job holding `fileSlug`'s slot after the watchdog failed it (it stays until an
+   *  audited `job <id> --force-release`), or undefined when the head is live or absent. */
+  const heldHeadOf = (fileSlug: string): string | undefined => {
+    const head = st.queues.get(fileSlug)?.running;
+    if (head === null || head === undefined) return undefined;
+    const rec = st.jobs.byId(head);
+    return rec !== 'unknown' && rec !== 'expired' && rec.retentionHeld === true ? head : undefined;
+  };
+
   // Broker-restart reconnect visibility — how many `writeLastPluginsAtomic` failures
   // since this broker started, same "discarded thing gets a machine-readable counter"
   // contract as errorLogAppendFailures/contentionLogAppendFailures above.
@@ -1139,6 +1160,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   const dispatchJob = (job: JobRecord, targetWs: WebSocket): void => {
     try {
       sendFrames(targetWs, job.requestFrames);
+      // The requester's run budget starts here, not at send. Sent on the requester's own
+      // socket, so it always precedes any reply to a cancel that socket sends afterwards.
+      if (job.from) sendEvent(job.from, 'JOB_STATE', jobStateEvent(job));
     } catch (err) {
       const msg = `relay to plugin failed: ${(err as Error).message}`;
       st.jobs.finish(job.jobId, false, [errReplyFrame(job.requestId, 'E_PLUGIN_ERROR', msg)]);
@@ -1439,7 +1463,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     });
     // JOB_STATE — sent BEFORE any timeout can fire, so a CLI that gives up waiting still
     // knows its own jobId (the entire point of "timeout → poll, never re-dispatch").
-    sendEvent(from, 'JOB_STATE', toJobInfo(job) as unknown as Record<string, unknown>);
+    sendEvent(from, 'JOB_STATE', jobStateEvent(job));
 
     if (isReadOnly) {
       if (!st.jobs.transitionQueuedToRunning(job.jobId)) return;
@@ -1459,7 +1483,9 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       const pos = queuePosition(nextQ, job.jobId);
       if (pos !== undefined) {
         job.queuePosition = pos;
-        sendEvent(from, 'JOB_STATE', toJobInfo(job) as unknown as Record<string, unknown>);
+        // A watchdog-held head never drains on its own: say so now, so the waiting CLI
+        // can give up at once instead of spending its whole queue limit.
+        sendEvent(from, 'JOB_STATE', jobStateEvent(job, heldHeadOf(fileSlug)));
       }
     }
   };
@@ -2602,7 +2628,15 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       st.jobs.finishHeld(job.jobId, false, [errReplyFrame(job.requestId, 'E_TIMEOUT', msg)]);
       recordContention(job);
       log(`watchdog: job ${job.jobId} (${job.cmd}) timed out — slot for "${job.fileSlug}" stays blocked`);
-      // Deliberately do not drain here — see the comment above.
+      // Deliberately do not drain here — see the comment above. Tell every job waiting
+      // behind the held slot who blocks it, so its CLI can give up now.
+      if (heldHeadOf(job.fileSlug) === job.jobId) {
+        for (const waitingId of st.queues.get(job.fileSlug)?.waiting ?? []) {
+          const waiting = st.jobs.byId(waitingId);
+          if (waiting === 'unknown' || waiting === 'expired' || waiting.state !== 'queued' || !waiting.from) continue;
+          sendEvent(waiting.from, 'JOB_STATE', jobStateEvent(waiting, job.jobId));
+        }
+      }
     }
   }, Math.min(30_000, Math.max(1_000, Math.floor(WATCHDOG_TIMEOUT_MS / 4))));
 

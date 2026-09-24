@@ -383,6 +383,12 @@ export interface JobInfo {
   dispatchState?: 'queued-not-dispatched-readiness-wait';
   uncertaintyReason?: string;
   recovery?: JobRecovery;
+  /** JOB_STATE events only: this broker also sends `running` when it dispatches the job,
+   *  so the CLI may start the run budget then instead of at send. Never on a job poll. */
+  announcesRunning?: boolean;
+  /** Queued JOB_STATE events only: the file's slot is held by this watchdog-failed job,
+   *  which stays until `figma-agent job <blockedBy> --force-release`. */
+  blockedBy?: string;
 }
 
 export type MutationGateState = 'paused' | 'open';
