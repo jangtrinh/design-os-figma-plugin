@@ -3,7 +3,8 @@
 // `figma` whose getters refuse what the real Plugin API refuses (an unknown id
 // resolves to null, whole-document loading is off-limits, and with
 // skipInvisibleInstanceChildren = true a hidden instance sublayer and everything
-// under it vanish from traversal and id lookup), so the template's
+// under it vanish from traversal and id lookup, and reading any property of a node
+// object already in hand for one of them throws), so the template's
 // fail-loud paths are proven without a broker, a plugin, or a Figma file.
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -47,6 +48,7 @@ describe('gate-authoring guide', () => {
       'assertion lines',
       "keep the old gate's `skipInvisibleInstanceChildren` value",
       'or the gate scans for leaked or',
+      'Never read a node collected under `false` after restoring `true`',
       '(scoped-gate-template.js)',
     ]) {
       expect(guide, `guide is missing "${needle}"`).toContain(needle);
@@ -113,7 +115,8 @@ function descendants(n: FakeNode): FakeNode[] {
 
 // The real API under skipInvisibleInstanceChildren = true: an invisible node inside
 // an instance, and all its descendants, are excluded from findAll* and resolve to
-// null by id — "absent" and "hidden" become the same thing there.
+// null by id — "absent" and "hidden" become the same thing there — and reading a
+// property of such a node object obtained earlier (under `false`) throws.
 function isSkippedInstanceChild(n: FakeNode): boolean {
   for (let p: FakeNode | null = n; p; p = p.parent) {
     if (p.visible !== false) continue;
@@ -147,19 +150,45 @@ function fakeCanvas(opts: { fileName?: string; texts?: FakeText[] } = {}): Canva
   });
   let skipInvisible: unknown = false; // the real API's default
   const skipping = (): boolean => skipInvisible === true;
+  // byId holds the raw nodes (tests edit them); the template only ever sees proxies,
+  // whose every property read refuses a hidden instance sublayer while the flag is true.
   const byId = new Map<string, FakeNode>();
+  const proxies = new WeakMap<FakeNode, FakeNode>();
+  const wrap = (n: FakeNode | null): FakeNode | null => {
+    if (!n) return n;
+    let p = proxies.get(n);
+    if (!p) {
+      p = new Proxy(n, {
+        get(target, prop) {
+          if (typeof prop === 'string' && skipping() && isSkippedInstanceChild(target)) {
+            throw new Error(
+              `fake Plugin API: read "${prop}" of hidden instance sublayer ${target.id} while skipInvisibleInstanceChildren = true`,
+            );
+          }
+          const v = Reflect.get(target, prop) as unknown;
+          if (prop === 'parent') return wrap(v as FakeNode | null);
+          if (prop === 'children') return (v as FakeNode[] | undefined)?.map((c) => wrap(c)!);
+          return v;
+        },
+      });
+      proxies.set(n, p);
+    }
+    return p;
+  };
   for (const n of [page, ...descendants(page)]) {
     byId.set(n.id, n);
     if (n.type !== 'TEXT') {
       n.findAllWithCriteria = ({ types }) =>
-        descendants(n).filter((d) => (!types || types.includes(d.type)) && !(skipping() && isSkippedInstanceChild(d)));
+        descendants(n)
+          .filter((d) => (!types || types.includes(d.type)) && !(skipping() && isSkippedInstanceChild(d)))
+          .map((d) => wrap(d)!);
     }
   }
   const figma: Record<string, unknown> = {
     root: { name: opts.fileName ?? 'Example file' },
     getNodeByIdAsync: async (id: string) => {
       const n = byId.get(id) ?? null;
-      return n && skipping() && isSkippedInstanceChild(n) ? null : n;
+      return n && skipping() && isSkippedInstanceChild(n) ? null : wrap(n);
     },
     loadAllPagesAsync: async () => {
       throw new Error('a scoped gate must not load every page');
@@ -242,6 +271,15 @@ describe('scoped-gate template — behaviour on a fake canvas', () => {
       texts: [{ characters: 'Save' }, { characters: 'Cancel' }, { characters: '{Component name}', visible: false, inInstance: true }],
     });
     await expect(runTemplate(c.figma, NO_HELPER)).rejects.toThrow(/placeholder leak \(concealed: invisible\): "\{Component name\}"/);
+  });
+
+  it('passes when an innocent label sits in a hidden instance sublayer', async () => {
+    const c = fakeCanvas({
+      texts: [{ characters: 'Save' }, { characters: 'Cancel' }, { characters: 'Clear', visible: false, inInstance: true }],
+    });
+    const out = (await runTemplate(c.figma, NO_HELPER)) as { pass: boolean; checked: number };
+    expect(out).toMatchObject({ pass: true, checked: 3 });
+    expect(c.figma.skipInvisibleInstanceChildren).toBe(true);
   });
 
   it('does not let copy in a hidden instance sublayer satisfy a required-copy assertion', async () => {

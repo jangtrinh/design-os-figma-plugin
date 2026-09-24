@@ -1,5 +1,5 @@
 // GATE <id> — <one line: what this gate proves>. Scoped: node-id roots only. Throws on any failure; returns {pass:true,…} when green.
-// Scope: <root names>. Budget: BUDGET_MS below. skipInvisibleInstanceChildren: true, widened to false only around the leak scan (it must see hidden instance sublayers).
+// Scope: <root names>. Budget: BUDGET_MS below. skipInvisibleInstanceChildren: true, except false around each root's leak scan and every read of its results.
 // Copy to <plan>/scripts/<nn>-<topic>-verify.js; rules and rationale: es-figma-craft references/gate-authoring.md.
 //
 // TEMPLATE — a doc/example, never run on a canvas as-is. Replace every value in the CONFIG block; keep the skeleton.
@@ -61,24 +61,25 @@ for (const spec of ROOTS) {
   const root = await scopeRoot(spec);
   if (!root) continue;
   // Typed criteria under the scoped root: no JS callback per node, no walk outside the root. With the flag `true` this
-  // search would drop hidden instance sublayers — the commonest home of leftover text — so the one scan that feeds the
-  // leak assertion runs with `false` and restores `true` whatever happens. Visible-copy checks reuse it and filter by
-  // concealment, so there is no second walk.
-  let texts;
+  // search would drop hidden instance sublayers — the commonest home of leftover text — so the leak scan runs with
+  // `false`. Every node that search returns stays readable only while the flag is `false` (with `true`, reading ANY
+  // property of a hidden instance sublayer throws), so the window covers the scan AND every read of its results —
+  // concealment, characters, ids, assertions — and restores `true` whatever happens. Visible-copy checks reuse the
+  // same scan and filter by concealment, so there is no second walk.
   figma.skipInvisibleInstanceChildren = false;
   try {
-    texts = root.findAllWithCriteria({ types: ['TEXT'] });
+    const texts = root.findAllWithCriteria({ types: ['TEXT'] });
+    const shown = new Set();
+    for (const t of texts) {
+      checked++;
+      const c = concealment(t);
+      if (!c) shown.add(t.characters.trim());
+      ok(!PLACEHOLDER.test(t.characters), spec.name + ' placeholder leak' + (c ? ' (concealed: ' + c.reasons.join('+') + ')' : '') + ': "' + t.characters.slice(0, 40) + '" ' + t.id);
+    }
+    for (const copy of REQUIRED_COPY) ok(shown.has(copy), spec.name + ' required copy "' + copy + '" is not visible');
   } finally {
-    figma.skipInvisibleInstanceChildren = true;
+    figma.skipInvisibleInstanceChildren = true; // after the last read of any node the scan returned — never before
   }
-  const shown = new Set();
-  for (const t of texts) {
-    checked++;
-    const c = concealment(t);
-    if (!c) shown.add(t.characters.trim());
-    ok(!PLACEHOLDER.test(t.characters), spec.name + ' placeholder leak' + (c ? ' (concealed: ' + c.reasons.join('+') + ')' : '') + ': "' + t.characters.slice(0, 40) + '" ' + t.id);
-  }
-  for (const copy of REQUIRED_COPY) ok(shown.has(copy), spec.name + ' required copy "' + copy + '" is not visible');
 }
 
 const ms = Date.now() - T0;

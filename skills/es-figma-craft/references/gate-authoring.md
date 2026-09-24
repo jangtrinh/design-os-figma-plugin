@@ -23,13 +23,19 @@ as-is; copy it into `<plan>/scripts/` under a `*verify*.js` name and replace its
      silently skips its root measures nothing and stays green forever.
 2. **`figma.skipInvisibleInstanceChildren = true`** as the first statement, unless an assertion reads a hidden
    sublayer inside an instance (e.g. "the Clear button exists and is hidden") or the gate scans for leaked or
-   concealed text (rule 6's "must not exist" scans). With `true`, invisible nodes inside instances — and their descendants — are
-   skipped by `findAll*` and `children`, and `getNodeByIdAsync` returns `null` for them, so "absent" and "hidden"
-   become indistinguishable there (a root that is a hidden instance sublayer reads as "root missing"). Hidden instance
+   concealed text (rule 6's "must not exist" scans). With `true`, invisible nodes inside instances — and their
+   descendants — are skipped by `findAll*` and `children`, `getNodeByIdAsync` returns `null` for them, and reading
+   ANY property of such a node object you already hold throws (Plugin API typings). So "absent" and "hidden" become
+   indistinguishable there (a root that is a hidden instance sublayer reads as "root missing"). Hidden instance
    sublayers are the commonest home of leftover text, so a leak scan under `true` passes on exactly the leaks it
-   exists to catch. Widen to `false` only around the search that needs it and restore `true` in a `finally` (the
-   template does this for its leak scan). Needing `false` is a reason to narrow the scope further, and the gate's
-   header says which assertion needs it.
+   exists to catch.
+   - Set `false` right before the search that needs it, keep it `false` through every read of what that search
+     returned — traversal, concealment, `characters`, `id`, `parent`, the assertions themselves — and restore `true`
+     in a `finally` after the last such read. **Never read a node collected under `false` after restoring `true`**:
+     on a hidden instance sublayer that read throws, so a clean screen goes red and a real leak fails with an API
+     error instead of its label. If a result must outlive the window, copy plain values out (`{id, characters,
+     reasons}`) while `false`. The template wraps each root's whole scan-and-assert body this way.
+   - Needing `false` is a reason to narrow the scope further, and the gate's header says which assertion needs it.
 3. **Load one page: `page.loadAsync()`** for the page that owns each scoped root (walk `parent` to the `PAGE`; load
    each page once). Never `figma.loadAllPagesAsync()` — its cost is the whole document, every run.
 4. **A per-gate time budget well under the 120 s CLI cap.** Declare `BUDGET_MS` (default 20 000; never above 40 000 —
@@ -67,8 +73,10 @@ as-is; copy it into `<plan>/scripts/` under a `*verify*.js` name and replace its
 - **Also keep the old gate's `skipInvisibleInstanceChildren` value** for every search that feeds an assertion. The flag
   decides which nodes an assertion sees, so it is part of the assertion's coverage, not a lookup detail: turning an
   old `false` — or an old gate that never set it, since the default is `false` in Figma (`true` only in Dev Mode) —
-  into `true` silently drops hidden instance sublayers from its scans. Change it only with written proof that no assertion reads those sublayers, and
-  never for a leak / "must not exist" scan. Reviewers diff the flag's assignments alongside the assertion lines.
+  into `true` silently drops hidden instance sublayers from its scans. Change it only with written proof that no
+  assertion reads those sublayers, and never for a leak / "must not exist" scan. Reviewers diff the flag's
+  assignments alongside the assertion lines, and check that no node the `false` search returned is read after the
+  flag goes back to `true`.
 - Move the original to `scripts/pre-scope/<same-name>` — the suite glob is not recursive, so it stops running
   but stays runnable by explicit path.
 - Prove it on the current canvas, one hand, in an owner window: (a) the scoped gate's verdict equals the
@@ -81,7 +89,8 @@ as-is; copy it into `<plan>/scripts/` under a `*verify*.js` name and replace its
 
 - [ ] `// GATE` line; no `KNOWN-RED`/`RETIRED` text in lines 1–3 unless intended
 - [ ] File guard (`figma.root.name`) first; `skipInvisibleInstanceChildren = true` (or the named reason for `false`);
-      leak scans run under `false`; a converted gate keeps the old gate's value for every assertion's search
+      leak scans run under `false`, and every read of their results stays inside that window (restore `true` only
+      after the last read); a converted gate keeps the old gate's value for every assertion's search
 - [ ] Roots by `getNodeByIdAsync` + expected name/type; missing/renamed → FAIL "re-anchor"
 - [ ] `findAllWithCriteria({types})` under the roots; no `loadAllPagesAsync`, no whole-page `findAll`
 - [ ] Owning page loaded once with `page.loadAsync()`
