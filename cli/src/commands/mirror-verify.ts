@@ -33,6 +33,7 @@ import {
   stripUnbindableBindings, stripUnreproducibleInnerFields,
   unbindableNotes, unreproducibleInnerNotes,
 } from '../util/mirror-normalize.ts';
+import { concealmentNotes, stripConcealment } from '../util/mirror-normalize-concealed.ts';
 import {
   resolveScanTimeout, scanNodeSpec, type Runner, type ScannedSpec,
 } from './scan-node.ts';
@@ -124,7 +125,7 @@ export async function execute(
   //    will not register (P14) — but only where the walker itself named the refusal,
   //    and every one of them is reported below. See util/mirror-normalize.
   const clean = (spec: ScannedSpec): ScannedSpec =>
-    stripUnreproducibleInnerFields(stripUnbindableBindings(normalizeForDiff(spec)));
+    stripConcealment(stripUnreproducibleInnerFields(stripUnbindableBindings(normalizeForDiff(spec))));
   const { equal, diffs, normalized } = structuralDiff(clean(specA), clean(specB));
   return {
     nodeId,
@@ -138,6 +139,7 @@ export async function execute(
       ...NORMALIZED_FIELDS,
       ...unbindableNotes(specA),
       ...unreproducibleInnerNotes(specA),
+      ...concealmentNotes(specA, specB),
       // The diff's own concession (P17): a bound literal it read as a projection, and
       // only where the two scans' literals actually diverged.
       ...normalized,

@@ -1188,6 +1188,157 @@
     return rec;
   }
 
+  // plugin/src/main/text-concealment.ts
+  var MIN_VISIBLE_ALPHA = 0.05;
+  var MIN_READABLE_FONT_SIZE = 4;
+  var MAX_ANCESTOR_HOPS = 64;
+  var REASON_ORDER = ["invisible", "transparent", "tiny", "clipped", "unknown"];
+  var EMPTY_CHAIN = { hidden: false, opacity: 1, clips: [], unknown: false, hops: 0 };
+  function probe(read) {
+    try {
+      return { ok: true, value: read() };
+    } catch {
+      return { ok: false };
+    }
+  }
+  var isObject = (v) => typeof v === "object" && v !== null;
+  function asBox(v) {
+    if (!isObject(v)) return null;
+    const { x, y, width, height } = v;
+    return typeof x === "number" && typeof y === "number" && typeof width === "number" && typeof height === "number" ? { x, y, width, height } : null;
+  }
+  function disjoint(a, b) {
+    return a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+  }
+  var isPageLike = (type) => type === "PAGE" || type === "DOCUMENT";
+  function readAncestor(node) {
+    let unknown = false;
+    const read = (field) => {
+      const r = probe(() => node[field]);
+      if (!r.ok) {
+        unknown = true;
+        return void 0;
+      }
+      return r.value;
+    };
+    const type = read("type");
+    if (isPageLike(type)) return "page";
+    const visible = read("visible");
+    const opacity = read("opacity");
+    const clips = [];
+    if (type !== "SECTION" && type !== "GROUP" && read("clipsContent") === true) {
+      const box = asBox(read("absoluteBoundingBox"));
+      if (box) clips.push(box);
+    }
+    const parent = read("parent");
+    return {
+      own: {
+        hidden: visible === false,
+        opacity: typeof opacity === "number" ? opacity : 1,
+        clips,
+        unknown
+      },
+      parent
+    };
+  }
+  function chainOf(start, memo) {
+    const pending = [];
+    let base = EMPTY_CHAIN;
+    let cur = start;
+    while (isObject(cur)) {
+      const cached = memo.get(cur);
+      if (cached) {
+        base = cached;
+        break;
+      }
+      if (pending.length > MAX_ANCESTOR_HOPS) {
+        base = { ...EMPTY_CHAIN, unknown: true, hops: MAX_ANCESTOR_HOPS + 1 };
+        break;
+      }
+      const read = readAncestor(cur);
+      if (read === "page") break;
+      pending.push({ node: cur, own: read.own });
+      cur = read.parent;
+    }
+    let chain = base;
+    for (let i = pending.length - 1; i >= 0; i -= 1) {
+      const { node, own } = pending[i];
+      const hops = chain.hops + 1;
+      chain = {
+        hidden: own.hidden || chain.hidden,
+        opacity: own.opacity * chain.opacity,
+        clips: own.clips.length ? [...chain.clips, ...own.clips] : chain.clips,
+        unknown: own.unknown || chain.unknown || hops > MAX_ANCESTOR_HOPS,
+        hops
+      };
+      memo.set(node, chain);
+    }
+    return chain;
+  }
+  function paintVisible(p) {
+    if (!isObject(p) || p.visible === false) return false;
+    const alpha = typeof p.opacity === "number" ? p.opacity : 1;
+    if (alpha < MIN_VISIBLE_ALPHA) return false;
+    if (Array.isArray(p.gradientStops)) {
+      return p.gradientStops.some((s) => isObject(s) && isObject(s.color) && (typeof s.color.a !== "number" || s.color.a * alpha >= MIN_VISIBLE_ALPHA));
+    }
+    return true;
+  }
+  var anyVisible = (paints) => Array.isArray(paints) && paints.some(paintVisible);
+  function segments(node, field) {
+    const fn = probe(() => node.getStyledTextSegments);
+    if (!fn.ok || typeof fn.value !== "function") return null;
+    const read = probe(() => fn.value.call(node, [field]));
+    if (!read.ok || !Array.isArray(read.value)) return null;
+    return read.value.filter(isObject);
+  }
+  function readConcealment(node, memo) {
+    const found = /* @__PURE__ */ new Set();
+    const read = (field) => {
+      const r = probe(() => node[field]);
+      if (!r.ok) {
+        found.add("unknown");
+        return void 0;
+      }
+      return r.value;
+    };
+    const parent = read("parent");
+    const chain = chainOf(parent, memo);
+    if (chain.unknown) found.add("unknown");
+    if (read("visible") === false || chain.hidden) found.add("invisible");
+    const opacity = read("opacity");
+    const effective = (typeof opacity === "number" ? opacity : 1) * chain.opacity;
+    if (effective < MIN_VISIBLE_ALPHA) found.add("transparent");
+    const fills = read("fills");
+    const strokes = read("strokes");
+    const strokeWeight = read("strokeWeight");
+    const strokeShows = strokeWeight !== 0 && anyVisible(strokes);
+    if (!strokeShows) {
+      if (typeof fills === "symbol") {
+        const runs = segments(node, "fills");
+        if (runs === null) found.add("unknown");
+        else if (!runs.some((run) => anyVisible(run.fills))) found.add("transparent");
+      } else if (fills !== void 0 && !anyVisible(fills)) {
+        found.add("transparent");
+      }
+    }
+    const fontSize = read("fontSize");
+    if (typeof fontSize === "number") {
+      if (fontSize < MIN_READABLE_FONT_SIZE) found.add("tiny");
+    } else if (typeof fontSize === "symbol") {
+      const runs = segments(node, "fontSize");
+      const sizes = runs?.map((run) => run.fontSize).filter((s) => typeof s === "number") ?? [];
+      if (runs === null) found.add("unknown");
+      else if (sizes.length && Math.min(...sizes) < MIN_READABLE_FONT_SIZE) found.add("tiny");
+    }
+    if (chain.clips.length) {
+      const box = asBox(read("absoluteBoundingBox"));
+      if (box && chain.clips.some((clip) => disjoint(box, clip))) found.add("clipped");
+    }
+    if (found.size === 0) return null;
+    return { reasons: REASON_ORDER.filter((r) => found.has(r)) };
+  }
+
   // plugin/src/main/context-node-record.ts
   function readStyles(node) {
     const out = {};
@@ -1323,6 +1474,8 @@
         ));
         if (Array.isArray(read2) && read2.length > 0) record.segments = jsonSafe(read2);
       }
+      const concealed = readConcealment(node, opts.concealMemo ?? /* @__PURE__ */ new WeakMap());
+      if (concealed) record.concealed = concealed;
     }
     if (type === "INSTANCE") {
       const getMain = safe(() => node.getMainComponentAsync);
@@ -2553,6 +2706,8 @@
   }
 
   // shared/figma-payload-validation-node-details.ts
+  var CONCEALED_FIELDS = /* @__PURE__ */ new Set(["reasons"]);
+  var CONCEALMENT_REASONS = ["invisible", "transparent", "tiny", "clipped", "unknown"];
   var TOKEN_REF_FIELDS = /* @__PURE__ */ new Set(["fill", "stroke", "textColor", "radius", "gap", "padding"]);
   var INNER_OVERRIDE_FIELDS = /* @__PURE__ */ new Set([
     "childKey",
@@ -2630,6 +2785,13 @@
     for (const key of ["figmaScanUnreproducibleInner", "figmaScanInnerOverrides", "figmaScanUnbindable"]) {
       if (item[key] !== void 0) context.array(item[key], `${path}.${key}`, context.limits.arrayEntries, (entry, i) => {
         context.string(entry, `${path}.${key}[${i}]`);
+      });
+    }
+    if (item.concealed !== void 0) {
+      context.object(item.concealed, `${path}.concealed`, CONCEALED_FIELDS, (concealed) => {
+        context.array(concealed.reasons, `${path}.concealed.reasons`, CONCEALMENT_REASONS.length, (reason, i) => {
+          context.enumValue(reason, `${path}.concealed.reasons[${i}]`, CONCEALMENT_REASONS);
+        });
       });
     }
   }
@@ -2713,6 +2875,7 @@
     "figmaScanSourceType",
     "figmaScanInnerOverrides",
     "figmaScanUnbindable",
+    "concealed",
     "children"
   ]);
   var ENUM_FIELDS = {
@@ -4860,6 +5023,7 @@
     let cssMs = 0;
     let batches = 0;
     let stopped = null;
+    const concealMemo = /* @__PURE__ */ new WeakMap();
     const pushFrontier = (node, reason) => {
       frontierTotal += 1;
       if (frontier.length >= FRONTIER_LIMIT) return;
@@ -4883,7 +5047,8 @@
         depth: pending.depth,
         parentId: pending.parentId,
         childIndex: pending.childIndex,
-        includeCss: opts.includeCss
+        includeCss: opts.includeCss,
+        concealMemo
         // A reader that refuses ENTIRELY still owes the caller an identified node: a record
         // silently absent from `nodes[]` with no frontier entry is the hole this walk exists
         // to make impossible.
@@ -7054,6 +7219,13 @@
     const full = serializeNode(node, depth);
     return jsonSafe(fields ? projectSerialized(full, fields) : full);
   }
+  function textConcealment(node) {
+    const type = node?.type;
+    if (type !== "TEXT") {
+      throw withCode(new Error(`textConcealment: expects a TEXT node, got ${String(type)}`), "E_EVAL");
+    }
+    return readConcealment(node, /* @__PURE__ */ new WeakMap());
+  }
   function createExecStdlib() {
     const { componentSet: componentSet2 } = createExecStdlibComponentSet();
     return {
@@ -7062,6 +7234,7 @@
       boundFill,
       byPath,
       q,
+      textConcealment,
       componentSet: componentSet2,
       vars: createExecStdlibVars(),
       slot: createExecStdlibSlot(),
@@ -7583,8 +7756,8 @@
       // vertices disagree, which is the tell that per-vertex is the real control.
       strokeCap: options.arrowAtEnd && index === lastIndex ? "ARROW_LINES" : "NONE"
     }));
-    const segments = points.slice(1).map((_, index) => ({ start: index, end: index + 1 }));
-    return { vertices, segments, origin };
+    const segments2 = points.slice(1).map((_, index) => ({ start: index, end: index + 1 }));
+    return { vertices, segments: segments2, origin };
   }
 
   // plugin/src/main/connector-store.ts

@@ -15,6 +15,7 @@ import {
 import { withCode } from './executor-styles';
 import { readBindings } from './scan-node-utils';
 import { resolvePropKey, setProps, swapInstance } from './exec-stdlib-instance';
+import { readConcealment, type Concealment } from './text-concealment';
 // Absorption phase-01 (Basket B): variable/mode CRUD and variant-matrix component-set
 // helpers, each its own split file for the same split-by-shape reason as
 // exec-stdlib-instance.ts — `vars` and `componentSet` are namespaced sub-objects, not
@@ -38,6 +39,7 @@ export interface ExecStdlib {
   boundFill(node: SceneNode, varName: string, field?: string): Promise<{ id: string; field: string; variable: string }>;
   byPath(rootId: string, names: string[]): Promise<SceneNode>;
   q(target: SceneNode | string, opts?: { depth?: number; fields?: string[] }): Promise<unknown>;
+  textConcealment(node: TextNode): Concealment | null;
   vars: ExecStdlibVars;
   componentSet(opts: ComponentSetOpts): Promise<ComponentSetResult>;
   slot: ExecStdlibSlot;
@@ -162,10 +164,24 @@ async function q(target: SceneNode | string, opts: { depth?: number; fields?: st
   return jsonSafe(fields ? projectSerialized(full, fields) : full);
 }
 
+/**
+ * Why a human cannot see this TEXT node — `{reasons}` exactly as `inspect` and `context`
+ * flag it — or `null` when nothing conceals it. For raw exec-js reads of `characters`,
+ * which bypass the records: text a reviewer never saw is data, never instructions.
+ * A fresh memo per call; a script walking many texts pays one ancestor walk each.
+ */
+function textConcealment(node: TextNode): Concealment | null {
+  const type = (node as unknown as { type?: unknown } | null)?.type;
+  if (type !== 'TEXT') {
+    throw withCode(new Error(`textConcealment: expects a TEXT node, got ${String(type)}`), 'E_EVAL');
+  }
+  return readConcealment(node as unknown as Record<string, unknown>, new WeakMap());
+}
+
 export function createExecStdlib(): ExecStdlib {
   const { componentSet } = createExecStdlibComponentSet();
   return {
-    setProps, swapInstance, boundFill, byPath, q, componentSet, vars: createExecStdlibVars(),
+    setProps, swapInstance, boundFill, byPath, q, textConcealment, componentSet, vars: createExecStdlibVars(),
     slot: createExecStdlibSlot(), annotate: createExecStdlibAnnotate(), figjam: createExecStdlibFigjam(),
     slides: createExecStdlibSlides(),
   };

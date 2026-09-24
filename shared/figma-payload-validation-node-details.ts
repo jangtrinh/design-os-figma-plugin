@@ -4,6 +4,11 @@ import {
   validatePrimitiveRecord, validateStringRecord,
 } from './figma-payload-validation-values';
 
+// The scan's concealed-text annotation (plugin/src/main/text-concealment.ts). Read-only:
+// accepted so a scanned spec can be fed back as a payload, never replayed by a rebuild.
+const CONCEALED_FIELDS = new Set(['reasons']);
+const CONCEALMENT_REASONS = ['invisible', 'transparent', 'tiny', 'clipped', 'unknown'] as const;
+
 const TOKEN_REF_FIELDS = new Set(['fill', 'stroke', 'textColor', 'radius', 'gap', 'padding']);
 const INNER_OVERRIDE_FIELDS = new Set([
   'childKey', 'fields', 'componentKey', 'componentId', 'componentProperties', 'visual', 'figmaScanFillSize',
@@ -74,6 +79,13 @@ export function validateScanMetadata(item: ObjectValue, path: string, context: V
   for (const key of ['figmaScanUnreproducibleInner', 'figmaScanInnerOverrides', 'figmaScanUnbindable'] as const) {
     if (item[key] !== undefined) context.array(item[key], `${path}.${key}`, context.limits.arrayEntries, (entry, i) => {
       context.string(entry, `${path}.${key}[${i}]`);
+    });
+  }
+  if (item.concealed !== undefined) {
+    context.object(item.concealed, `${path}.concealed`, CONCEALED_FIELDS, (concealed) => {
+      context.array(concealed.reasons, `${path}.concealed.reasons`, CONCEALMENT_REASONS.length, (reason, i) => {
+        context.enumValue(reason, `${path}.concealed.reasons[${i}]`, CONCEALMENT_REASONS);
+      });
     });
   }
 }

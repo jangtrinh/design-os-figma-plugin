@@ -1863,7 +1863,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "8029b07" : "dev"}`;
+  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "02393c3" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;
@@ -3961,6 +3961,8 @@ body {
   }
 
   // shared/figma-payload-validation-node-details.ts
+  var CONCEALED_FIELDS = /* @__PURE__ */ new Set(["reasons"]);
+  var CONCEALMENT_REASONS = ["invisible", "transparent", "tiny", "clipped", "unknown"];
   var TOKEN_REF_FIELDS = /* @__PURE__ */ new Set(["fill", "stroke", "textColor", "radius", "gap", "padding"]);
   var INNER_OVERRIDE_FIELDS = /* @__PURE__ */ new Set([
     "childKey",
@@ -4038,6 +4040,13 @@ body {
     for (const key of ["figmaScanUnreproducibleInner", "figmaScanInnerOverrides", "figmaScanUnbindable"]) {
       if (item[key] !== void 0) context.array(item[key], `${path}.${key}`, context.limits.arrayEntries, (entry, i) => {
         context.string(entry, `${path}.${key}[${i}]`);
+      });
+    }
+    if (item.concealed !== void 0) {
+      context.object(item.concealed, `${path}.concealed`, CONCEALED_FIELDS, (concealed) => {
+        context.array(concealed.reasons, `${path}.concealed.reasons`, CONCEALMENT_REASONS.length, (reason, i) => {
+          context.enumValue(reason, `${path}.concealed.reasons[${i}]`, CONCEALMENT_REASONS);
+        });
       });
     }
   }
@@ -4121,6 +4130,7 @@ body {
     "figmaScanSourceType",
     "figmaScanInnerOverrides",
     "figmaScanUnbindable",
+    "concealed",
     "children"
   ]);
   var ENUM_FIELDS = {
