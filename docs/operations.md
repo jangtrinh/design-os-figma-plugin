@@ -193,6 +193,9 @@ overwrite the foreign `figma-agent` bin; that is why the swap below removes the 
 
 **Quiet canvas.** No job may be running or queued. On a broker that has the job table, `figma-agent job
 --list` must show nothing running; otherwise ask the people on the canvas. Do not proceed on a busy canvas.
+Pause every agent, watcher, hook or cron job that invokes `figma-agent` (e.g. project SessionStart/PreToolUse
+hooks, comment pollers) until the verify step passes — any of them could otherwise become the first post-swap
+command and spawn the broker from an arbitrary cwd.
 
 **Plugin caps.** The new broker refuses a `--file` mutation to a plugin whose HELLO lacks `fileGuard`
 (`E_PLUGIN_STALE`, [`broker-daemon.ts:126-129, 1417-1420`](../cli/src/transport/broker-daemon.ts)), and
@@ -241,6 +244,9 @@ node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$(readli
 ### 5. Rollback
 
 Relinking alone does nothing: the old CLI reuses the newer broker. Stop the new broker explicitly.
+
+Quiet canvas first, as in step 1: no job running (`figma-agent job --list` on the new broker), because killing
+the broker mid-job loses the reply.
 
 ```sh
 rm "$(npm prefix -g)/bin/figma-agent" "$(npm root -g)/design-os-figma-plugin"
