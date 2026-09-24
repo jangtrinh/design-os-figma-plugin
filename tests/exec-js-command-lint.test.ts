@@ -42,7 +42,7 @@ describe('exec-js command pre-dispatch lint', () => {
     expect(runCommand).toHaveBeenCalledWith(
       'EXEC_JS',
       { code: 'return instance.mainComponent', timeoutMs: 5000 },
-      { timeoutMs: 7000, activity: `Run script · ${path}` },
+      { timeoutMs: 7000, activity: `Run script · ${path}`, queueTimeoutMs: 600000 },
     );
   });
 

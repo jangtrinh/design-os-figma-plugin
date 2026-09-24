@@ -15,6 +15,7 @@ import {
   type CommandName,
   type FileContext,
   type JobInfo,
+  type ReplyMsg,
   type WireError,
 } from '../../../shared/protocol.ts';
 import { ensureBroker, isPidAlive, loopbackWsUrl } from './broker-discovery.ts';
@@ -147,6 +148,20 @@ function connectWs(port: number): Promise<WebSocket> {
   });
 }
 
+/** Opt-in extras for `exchange`. Absent, the call keeps the single clock from send. */
+export interface ExchangeOptions {
+  /**
+   * Against a broker that announces dispatch (`JOB_STATE.announcesRunning`), wait at most
+   * this long while queued (the job is then cancelled before it can reach the plugin), and
+   * give the run `timeoutMs` from the `running` event instead of from send. A broker that
+   * never announces keeps the single clock.
+   */
+  queueTimeoutMs?: number;
+}
+
+/** Why a queued job is being cancelled; it shapes the final error's code and wording. */
+type CancelCause = { kind: 'queue-limit' } | { kind: 'blocked'; by: string } | { kind: 'plugin-gone' };
+
 // Exported (not just internal to `runCommand`) so the JOB_STATE → timeout-hint wiring
 // is unit-testable with a fake socket (EventEmitter + a stubbed `send`), without needing
 // a live broker connection — `runCommand`'s own `ensureBroker`/`connectWs` calls are real
@@ -158,33 +173,125 @@ export function exchange(
   timeoutMs: number,
   activity?: string,
   readOnly?: boolean,
+  opts?: ExchangeOptions,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = makeRequestId(++requestCounter, requestNamespace);
     const assembler = new ChunkAssembler();
+    const queueTimeoutMs = opts?.queueTimeoutMs;
+    const sentAt = Date.now();
     let settled = false;
     // Concurrency & jobs (backlog 1.1+2.6+4.3) — the LAST JOB_STATE seen before the reply
     // (or the timeout) lands. Remembered, not acted on immediately: the request keeps
     // waiting for its real reply exactly as before: JOB_STATE only tells the CLI its own
     // jobId in case the timeout fires first.
     let lastJob: JobInfo | undefined;
+    // One clock at a time: `legacy` is the single budget from send; with `queueTimeoutMs`
+    // and an announcing broker, `queued` runs the queue limit, `cancelling` waits for the
+    // cancel reply, and `running` runs `timeoutMs` from dispatch. `armTimer` always drops
+    // the previous timer, so exactly one is ever armed.
+    let phase: 'legacy' | 'queued' | 'cancelling' | 'running' = 'legacy';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const armTimer = (ms: number, onFire: () => void): void => {
+      clearTimeout(timer);
+      timer = setTimeout(onFire, ms);
+    };
+    let queuedJobId = '';
+    let runStartedAt: number | undefined;
+    let cancelId: string | undefined;
+    let cause: CancelCause = { kind: 'queue-limit' };
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       fn();
     };
-    const timer = setTimeout(
-      () => finish(() => reject(new CliError(
-        'E_TIMEOUT',
-        lastJob
-          ? `${cmd} still running after ${timeoutMs}ms — job ${lastJob.jobId} was NOT cancelled. ` +
-            `Get the result with: figma-agent job ${lastJob.jobId} --wait`
-          : `${cmd} timed out after ${timeoutMs}ms`,
-        { jobId: lastJob?.jobId },
-      ))),
-      timeoutMs,
+    armTimer(timeoutMs, () => finish(() => reject(new CliError(
+      'E_TIMEOUT',
+      lastJob
+        ? `${cmd} still running after ${timeoutMs}ms — job ${lastJob.jobId} was NOT cancelled. ` +
+          `Get the result with: figma-agent job ${lastJob.jobId} --wait`
+        : `${cmd} timed out after ${timeoutMs}ms`,
+      { jobId: lastJob?.jobId },
+    ))));
+
+    const causeText = (): string => {
+      if (cause.kind === 'blocked') {
+        return `file blocked by wedged job ${cause.by} — figma-agent job ${cause.by} --force-release after checking the canvas`;
+      }
+      return cause.kind === 'plugin-gone'
+        ? 'Figma plugin disconnected while the job was queued'
+        : `queue limit of ${String(queueTimeoutMs)}ms reached`;
+    };
+    const failCancelled = (message: string): void => finish(() => reject(new CliError(
+      cause.kind === 'plugin-gone' ? 'E_NO_PLUGIN' : 'E_TIMEOUT', message, { jobId: queuedJobId },
+    )));
+    const cancelUnknown = (verdict: string): void => failCancelled(
+      `${causeText()}; ${verdict} — job state unknown, check figma-agent job ${queuedJobId}`,
     );
+    // Cancel through the broker's own JOB handler on this socket: a queued job leaves the
+    // file's FIFO and never reaches the plugin. Only from `queued`, so at most one cancel.
+    const startCancel = (why: CancelCause): void => {
+      if (phase !== 'queued') return;
+      phase = 'cancelling';
+      cause = why;
+      cancelId = makeRequestId(++requestCounter, requestNamespace);
+      armTimer(DEFAULT_TIMEOUT_MS, () => cancelUnknown(`cancel failed (no reply within ${DEFAULT_TIMEOUT_MS}ms)`));
+      try {
+        sendWireMsg(ws, makeRequestFrame(cancelId, 'JOB', { mode: 'cancel', jobId: queuedJobId }));
+      } catch (err) {
+        cancelUnknown(`cancel failed (${(err as Error).message})`);
+      }
+    };
+    // `running` is sent at dispatch on this same socket, so it precedes any refusal of a
+    // cancel sent after it. It starts the run budget exactly once, from any phase.
+    const startRun = (jobId: string): void => {
+      if (runStartedAt !== undefined) return;
+      const startedAt = Date.now();
+      runStartedAt = startedAt;
+      phase = 'running';
+      armTimer(timeoutMs, () => finish(() => reject(new CliError(
+        'E_TIMEOUT',
+        `${cmd} still running: ran ${Date.now() - startedAt}ms after ${startedAt - sentAt}ms in queue — ` +
+          `job ${jobId} was NOT cancelled. Get the result with: figma-agent job ${jobId} --wait`,
+        { jobId },
+      ))));
+    };
+    const onJobState = (job: JobInfo): void => {
+      // Keep waiting — this frame is not the reply, only the jobId the timeout
+      // handler above needs so "the CLI never re-dispatches" is actually true.
+      lastJob = job;
+      if (queueTimeoutMs === undefined || job.announcesRunning !== true) return;
+      if (job.state === 'running') {
+        startRun(job.jobId);
+        return;
+      }
+      if (job.state !== 'queued') return;
+      if (phase === 'legacy') {
+        phase = 'queued';
+        queuedJobId = job.jobId;
+        armTimer(queueTimeoutMs, () => startCancel({ kind: 'queue-limit' }));
+      }
+      if (job.blockedBy !== undefined) startCancel({ kind: 'blocked', by: job.blockedBy });
+    };
+    const onCancelReply = (reply: ReplyMsg): void => {
+      // Once running, the run timer and the original reply decide; the refusal is expected.
+      if (runStartedAt !== undefined) return;
+      if (!reply.ok) {
+        cancelUnknown(`cancel failed (${reply.error.code}: ${reply.error.message})`);
+        return;
+      }
+      const verdict = reply.result as { ok?: unknown; reason?: unknown } | null;
+      if (verdict?.ok === true) {
+        failCancelled(
+          `${cmd} cancelled while queued after ${Date.now() - sentAt}ms — never ran (${causeText()}; job ${queuedJobId})`,
+        );
+        return;
+      }
+      // Refused with no `running` seen: the job is unknown or already finished, never
+      // dispatched, so there is no run budget left to wait out.
+      cancelUnknown(`cancel refused (${typeof verdict?.reason === 'string' ? verdict.reason : 'no reason given'})`);
+    };
 
     ws.on('message', (raw) => {
       let msg = parseWireMsg(rawToString(raw));
@@ -203,14 +310,21 @@ export function exchange(
       if (isEventMsg(msg)) {
         const { type, data } = msg;
         if (type === 'PLUGIN_GONE') {
-          finish(() => reject(new CliError('E_NO_PLUGIN', 'Figma plugin disconnected while waiting for the reply')));
+          // A queued job would otherwise wait in the broker for the NEXT plugin instance,
+          // with nobody left to read its reply: cancel it first.
+          if (phase === 'queued') startCancel({ kind: 'plugin-gone' });
+          else if (phase !== 'cancelling') {
+            finish(() => reject(new CliError('E_NO_PLUGIN', 'Figma plugin disconnected while waiting for the reply')));
+          }
         } else if (type === 'BROKER_HELLO' && data.protocolV !== undefined && data.protocolV !== PROTOCOL_VERSION) {
           finish(() => reject(new CliError('E_VERSION_MISMATCH', `broker speaks protocol v${String(data.protocolV)}, CLI expects v${PROTOCOL_VERSION}`)));
         } else if (type === 'JOB_STATE') {
-          // Keep waiting — this frame is not the reply, only the jobId the timeout
-          // handler above needs so "the CLI never re-dispatches" is actually true.
-          lastJob = data as unknown as JobInfo;
+          onJobState(data as unknown as JobInfo);
         }
+        return;
+      }
+      if (isReplyMsg(msg) && cancelId !== undefined && msg.id === cancelId) {
+        onCancelReply(msg);
         return;
       }
       if (isReplyMsg(msg) && msg.id === id) {
@@ -226,8 +340,14 @@ export function exchange(
         });
       }
     });
-    ws.on('close', () => finish(() => reject(new CliError('E_NO_BROKER', 'broker connection closed before the reply arrived'))));
-    ws.on('error', (err) => finish(() => reject(new CliError('E_NO_BROKER', `broker socket error: ${err.message}`))));
+    ws.on('close', () => {
+      if (phase === 'cancelling') cancelUnknown('cancel failed (broker connection closed)');
+      else finish(() => reject(new CliError('E_NO_BROKER', 'broker connection closed before the reply arrived')));
+    });
+    ws.on('error', (err) => {
+      if (phase === 'cancelling') cancelUnknown(`cancel failed (broker socket error: ${err.message})`);
+      else finish(() => reject(new CliError('E_NO_BROKER', `broker socket error: ${err.message}`)));
+    });
 
     try {
       sendWireMsg(ws, makeRequestFrame(
@@ -317,11 +437,15 @@ export async function retryAmbiguousConnect(
  * `opts.readOnly` (concurrency & jobs, backlog 1.1+2.6+4.3) overrides the global
  * `--read-only` flag (`setReadOnly`). A true value must name a broker safe-read; an
  * undefined value falls back to the global flag's current value.
+ *
+ * `opts.queueTimeoutMs` opts into the dispatch budget (see `ExchangeOptions`).
  */
 export async function runCommand(
   cmd: string,
   params: unknown,
-  opts?: { timeoutMs?: number; activity?: string; readOnly?: boolean; pluginEnforcedReadOnly?: boolean },
+  opts?: {
+    timeoutMs?: number; activity?: string; readOnly?: boolean; pluginEnforcedReadOnly?: boolean; queueTimeoutMs?: number;
+  },
 ): Promise<unknown> {
   const wireCmd = cmd as CommandName;
   // `pluginEnforcedReadOnly` (EXEC_JS only — see resolveWireReadOnly) asks the PLUGIN to
@@ -384,7 +508,9 @@ export async function runCommand(
         ),
       });
     }
-    return await exchange(ws, wireCmd, params, timeoutMs, opts?.activity, readOnlyRequested);
+    return await exchange(ws, wireCmd, params, timeoutMs, opts?.activity, readOnlyRequested, {
+      queueTimeoutMs: opts?.queueTimeoutMs,
+    });
   } finally {
     try {
       ws.close();
