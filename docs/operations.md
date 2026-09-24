@@ -154,6 +154,130 @@ records in the broker log without payloads or paths. The executable contract liv
 [`request-chunk-admission.ts`](../cli/src/transport/request-chunk-admission.ts), with daemon coverage
 in [`broker-request-chunk-admission.test.ts`](../tests/broker-request-chunk-admission.test.ts).
 
+## Upgrading the installed CLI and broker
+
+Swapping the global `figma-agent` replaces the broker that serves every open Figma file. Do it on a quiet
+canvas, from a release checkout that nothing rebuilds, and keep the rollback targets written down first.
+
+**How a newer build takes over.** Every connecting command calls `ensureBroker`
+([`broker-discovery.ts:284-310`](../cli/src/transport/broker-discovery.ts)). It reuses the advertised broker
+only when its `protocolV` equals the CLI's `PROTOCOL_VERSION` and the CLI's bundle is not newer than the
+broker's `buildMtime` (1 ms tolerance). Otherwise it sends `BROKER_SHUTDOWN_REQUEST`, waits up to 3 s,
+sends SIGTERM if the pid is still alive (`:206-240`), and spawns its own broker. So the **first** connecting
+command from the new build replaces the running broker; open plugin panels drop and reconnect to it on
+their own. The reverse never happens: an older build with the same `PROTOCOL_VERSION` reuses a newer
+broker, and a new daemon refuses to start while a same-or-newer one is live
+([`broker-daemon.ts:538-544`](../cli/src/transport/broker-daemon.ts)). No CLI command shuts a broker
+down, which is why rollback below has an explicit `kill -TERM`.
+
+**The spawned broker inherits the spawning command's cwd and environment**
+([`broker-discovery.ts:243-249`](../cli/src/transport/broker-discovery.ts)). The change log defaults to
+`<cwd>/design` unless `FIGMA_AGENT_CHANGES_DIR` is set
+([`change-log.ts:31-35`](../cli/src/transport/change-log.ts)), and `FIGMA_AGENT_*` knobs are read from that
+environment. Run the first post-swap command from a fixed, neutral directory with only the variables you
+mean the broker to keep.
+
+### 1. Pre-flight (read-only)
+
+```sh
+readlink -f "$(which figma-agent)"                   # the bundle the global command runs
+ls -la "$(npm root -g)" | grep figma                 # the global package link(s)
+ls -la "$(npm prefix -g)/bin/figma-agent"            # the global bin link
+python3 -c "import json;d=json.load(open('/tmp/figma-agent-broker.json'));print(d['pid'],d['buildMtime'],d['protocolV'])"
+```
+
+Write down both link targets **verbatim** (`readlink`, not `readlink -f`) — they are the rollback. On a
+machine where the global package is a symlink to a folder without a `package.json` (an older monorepo
+workspace), `npm ls -g` shows `figma-agent@` with an empty version and `npm install -g .` can refuse to
+overwrite the foreign `figma-agent` bin; that is why the swap below removes the links by hand.
+
+**Quiet canvas.** No job may be running or queued. On a broker that has the job table, `figma-agent job
+--list` must show nothing running; otherwise ask the people on the canvas. Do not proceed on a busy canvas.
+Pause every agent, watcher, hook or cron job that invokes `figma-agent` (e.g. project SessionStart/PreToolUse
+hooks, comment pollers) until the verify step passes — any of them could otherwise become the first post-swap
+command and spawn the broker from an arbitrary cwd.
+
+**Plugin caps.** The new broker refuses a `--file` mutation to a plugin whose HELLO lacks `fileGuard`
+(`E_PLUGIN_STALE`, [`broker-daemon.ts:126-129, 1417-1420`](../cli/src/transport/broker-daemon.ts)), and
+app-readiness needs `correlatedHeartbeatV1` + `appProbeV1`
+([`plugin-registry.ts:100-106`](../cli/src/transport/plugin-registry.ts)). Check the plugin folder imported in
+Figma (Plugins → Development): `grep -c '"fileGuard"' <plugin-folder>/ui.html` must print a non-zero count. If
+it does not, rebuild and reopen that plugin before the swap.
+
+### 2. Build a release checkout
+
+```sh
+git -C <repo> fetch origin
+git -C <repo> worktree add ~/Products/figma-agent-release <merged-commit-or-tag>
+cd ~/Products/figma-agent-release && npm ci && npm run build
+```
+
+npm installs a folder as a **symlink**, so the global command *is* this checkout: never develop in it or
+rebuild it in place — a rebuild changes `buildMtime` under the live broker. Keep its `node_modules`; the
+bundle loads runtime dependencies from it. The next release gets its own worktree.
+
+### 3. Swap
+
+```sh
+rm "$(npm prefix -g)/bin/figma-agent" "$(npm root -g)/figma-agent"   # only the two recorded links
+npm install -g ~/Products/figma-agent-release
+readlink "$(npm prefix -g)/bin/figma-agent"   # ../lib/node_modules/design-os-figma-plugin/cli/dist/figma-agent.js
+readlink -f "$(npm root -g)/design-os-figma-plugin"   # the release worktree (npm writes a relative link)
+```
+
+The package installs as `design-os-figma-plugin` (this repo's name), so `npm ls -g figma-agent` finds nothing
+afterwards; the bin is still `figma-agent`.
+
+### 4. First command and verify
+
+```sh
+cd <neutral-dir> && figma-agent status          # replaces the broker; spawns the new one here
+python3 -c "import json;d=json.load(open('/tmp/figma-agent-broker.json'));print(d['pid'],d['buildMtime'])"
+node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$(readlink -f "$(which figma-agent)")"
+```
+
+- The advertised `pid` changed, and `buildMtime` equals the new bundle's mtime. `status` does not print
+  `buildMtime`; read it from `/tmp/figma-agent-broker.json`.
+- `figma-agent status --wait` shows the plugin connected (`appHeartbeatMode: "correlated"` on its row).
+- One read-only `exec-js` round trip succeeds, e.g. `echo 'return figma.currentPage.name' | figma-agent exec-js -`.
+
+### 5. Rollback
+
+Relinking alone does nothing: the old CLI reuses the newer broker. Stop the new broker explicitly.
+
+Quiet canvas first, as in step 1: no job running (`figma-agent job --list` on the new broker), because killing
+the broker mid-job loses the reply.
+
+```sh
+rm "$(npm prefix -g)/bin/figma-agent" "$(npm root -g)/design-os-figma-plugin"
+ln -s <recorded bin target> "$(npm prefix -g)/bin/figma-agent"
+ln -s <recorded package target> "$(npm root -g)/figma-agent"
+kill -TERM "$(python3 -c "import json;print(json.load(open('/tmp/figma-agent-broker.json'))['pid'])")"
+```
+
+SIGTERM runs the broker's `shutdown()`: it records each connected plugin as a `broker-shutdown` disconnect
+and removes the advertisement only if it still owns it
+([`broker-daemon.ts:910-962`](../cli/src/transport/broker-daemon.ts)). Wait until that pid is gone
+(`kill -0 <pid>` fails), then run the old CLI's first command from the neutral directory and verify as in
+step 4. Any later invocation of a newer build — another shell, a worktree's `node cli/dist/figma-agent.js` —
+replaces the old broker again, so stop those first.
+
+### What operators will meet after the swap
+
+- **One script at a time per file.** `exec-js` jobs queue in a per-file FIFO. Against this broker,
+  `--timeout` counts from dispatch, not from send; `--queue-timeout` (default 600 000 ms) bounds the wait
+  and cancels a still-queued script, which then never runs.
+- **Wedged jobs keep the slot.** The watchdog marks a silent job `E_TIMEOUT` at ~125 s, but the file's
+  mutation slot stays held until the plugin replies or `figma-agent job <id> --force-release`. A script
+  queued behind it fails at once, naming the blocker and that command.
+- **Refusal codes** a July-era build never returned: `E_MUTATION_GATE_UNAVAILABLE`,
+  `E_FILE_KEY_UNAVAILABLE`, `E_STALE_ADMISSION`, `E_OUTCOME_UNKNOWN`.
+- **Flags:** `export-png --timeout` (default 60 000, max 120 000); `exec-js --timeout` above 120 000 is
+  lowered with one stderr notice; `exec-js --queue-timeout`.
+- **Disconnect record:** every plugin socket close appends one line to `/tmp/figma-disconnects.jsonl`
+  (mode 0600; `/tmp` is cleared on reboot), and `status` shows a `disconnects` field with the path, the
+  newest records, and the append-failure count.
+
 ## Troubleshooting
 
 - **Panel says "No broker yet" and never connects** — that's the resting state; it only connects once a CLI

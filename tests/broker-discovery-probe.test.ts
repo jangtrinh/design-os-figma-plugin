@@ -26,6 +26,10 @@ import { isConfirmedDeadAfterFailedConnect, retryAmbiguousConnect } from '../cli
 import { PROTOCOL_VERSION, LOOPBACK_HOST } from '../shared/protocol.ts';
 import type { BrokerAdvertisement } from '../shared/protocol.ts';
 
+// Exercises the real module across `vi.resetModules()` (env-derived constants are read at
+// load time), which the setup-file guard's cached mock would freeze. Never calls `ensureBroker`.
+vi.unmock('../cli/src/transport/broker-discovery.ts');
+
 function fakeAd(overrides: Partial<BrokerAdvertisement> = {}): BrokerAdvertisement {
   return { port: 9410, pid: 4242, protocolV: 1, buildMtime: 0, startedAt: 0, lastSeen: 0, ...overrides };
 }

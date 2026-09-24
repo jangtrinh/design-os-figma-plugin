@@ -259,6 +259,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
     // as `senderMismatchCount`/`legacyMigrationDeferred` on `broker` above.
     ...(Array.isArray(hello.awaitingReconnect) && hello.awaitingReconnect.length > 0
       && { awaitingReconnect: hello.awaitingReconnect }),
+    // Plugin-disconnect record: the file path, the broker's newest records, and its
+    // append-failure count. Absent from a broker that predates the record.
+    ...(hello.disconnects !== null && typeof hello.disconnects === 'object'
+      && { disconnects: hello.disconnects }),
     // auto-connect slice 2 — present only when `--wait` actually waited (mirror-only-
     // when-relevant contract, same as the fields above).
     ...(waitedMs !== undefined && { waitedMs }),

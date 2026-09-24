@@ -383,6 +383,12 @@ export interface JobInfo {
   dispatchState?: 'queued-not-dispatched-readiness-wait';
   uncertaintyReason?: string;
   recovery?: JobRecovery;
+  /** JOB_STATE events only: this broker also sends `running` when it dispatches the job,
+   *  so the CLI may start the run budget then instead of at send. Never on a job poll. */
+  announcesRunning?: boolean;
+  /** Queued JOB_STATE events only: the file's slot is held by this watchdog-failed job,
+   *  which stays until `figma-agent job <blockedBy> --force-release`. */
+  blockedBy?: string;
 }
 
 export type MutationGateState = 'paused' | 'open';
@@ -801,6 +807,8 @@ export const COMMAND_TIMEOUTS: Partial<Record<CommandName, number>> = {
   AUDIT_DS: 120_000, // usage scan traverses EVERY page's instances — heavier than the DS scan
   EXEC_JS: 30_000, // CLI --timeout may raise, capped at 120s
   BATCH: 60_000,
+  // A large frame at scale 2 renders past the 15s default; the CLI --timeout may raise this, capped at 120s.
+  EXPORT_PNG: 60_000,
   // Fallback only — cowork.ts always passes an explicit timeoutMs derived from the
   // caller's OWN --timeout (which can exceed this default), same "hop buffer past the
   // requested budget" shape as batch.ts's own scaled timeout.
