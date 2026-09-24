@@ -219,7 +219,7 @@ bundle loads runtime dependencies from it. The next release gets its own worktre
 rm "$(npm prefix -g)/bin/figma-agent" "$(npm root -g)/figma-agent"   # only the two recorded links
 npm install -g ~/Products/figma-agent-release
 readlink "$(npm prefix -g)/bin/figma-agent"   # ../lib/node_modules/design-os-figma-plugin/cli/dist/figma-agent.js
-readlink "$(npm root -g)/design-os-figma-plugin"   # the release worktree
+readlink -f "$(npm root -g)/design-os-figma-plugin"   # the release worktree (npm writes a relative link)
 ```
 
 The package installs as `design-os-figma-plugin` (this repo's name), so `npm ls -g figma-agent` finds nothing
