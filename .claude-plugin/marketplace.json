@@ -1,0 +1,15 @@
+{
+  "name": "design-os-figma-plugin",
+  "metadata": {
+    "description": "Zero-cost live Figma canvas bridge (`figma-agent` CLI + Ease Design Figma Agent plugin) for AI coding agents — works on Figma Free."
+  },
+  "owner": {
+    "name": "Jang Trinh"
+  },
+  "plugins": [
+    {
+      "name": "design-os-figma-plugin",
+      "source": "./"
+    }
+  ]
+}

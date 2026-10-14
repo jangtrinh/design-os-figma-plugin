@@ -1,0 +1,42 @@
+{
+  "name": "design-os-figma-plugin",
+  "description": "Zero-cost live Figma canvas bridge (`figma-agent` CLI + Ease Design Figma Agent plugin) for AI coding agents — works on Figma Free.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Jang Trinh",
+    "url": "https://github.com/jangtrinh"
+  },
+  "homepage": "https://jangtrinh.github.io/design-os-figma-plugin/",
+  "repository": "https://github.com/jangtrinh/design-os-figma-plugin",
+  "license": "MIT",
+  "keywords": [
+    "figma",
+    "figma-plugin",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "design-tokens",
+    "design-os"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "DESIGN:OS Figma Plugin & CLI",
+    "shortDescription": "Zero-cost live Figma canvas bridge (`figma-agent` CLI + Ease Design Figma Agent plugin) for AI coding agents — works on Figma Free.",
+    "longDescription": "Inspect live selections, scan design systems, create frames, bind variables, mutate auto-layout traits, and export visual verification PNGs directly from Claude Code, Codex, Gemini CLI, and Antigravity.",
+    "developerName": "DESIGN:OS",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://jangtrinh.github.io/design-os-figma-plugin/",
+    "privacyPolicyURL": "https://github.com/jangtrinh/design-os-figma-plugin/blob/main/PRIVACY.md",
+    "defaultPrompt": [
+      "Inspect the currently selected Figma frame, extract its auto-layout and variable tokens, and build the matching React component.",
+      "Scan the active Figma file's design system tokens and create a new 1440x900 pricing section frame using our DLS components.",
+      "Update the copy and spacing on the selected hero frame in Figma and export a 2x PNG snapshot to verify visual parity."
+    ],
+    "brandColor": "#202020",
+    "logo": "./docs/images/cover.png"
+  }
+}
