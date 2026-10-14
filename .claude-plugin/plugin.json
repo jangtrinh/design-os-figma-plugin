@@ -1,0 +1,21 @@
+{
+  "name": "design-os-figma-plugin",
+  "description": "Zero-cost live Figma canvas bridge (`figma-agent` CLI + Ease Design Figma Agent plugin) for AI coding agents — works on Figma Free.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Jang Trinh",
+    "url": "https://github.com/jangtrinh"
+  },
+  "homepage": "https://jangtrinh.github.io/design-os-figma-plugin/",
+  "repository": "https://github.com/jangtrinh/design-os-figma-plugin",
+  "license": "MIT",
+  "keywords": [
+    "figma",
+    "figma-plugin",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "design-tokens",
+    "design-os"
+  ]
+}
