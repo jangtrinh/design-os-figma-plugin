@@ -10,7 +10,7 @@ A lightweight bridge allowing AI coding agents to inspect, manipulate, and gener
 - [Deep Dive Architecture](https://jangtrinh.github.io/design-os-figma-plugin/deep-dive.html): WebSocket transport, command serialization, and security boundaries.
 - [Operations Guide](https://jangtrinh.github.io/design-os-figma-plugin/operations.html): Full CLI tool reference and command cheat sheet.
 - [Multi-Machine Setup](https://jangtrinh.github.io/design-os-figma-plugin/multi-machine-setup.html): Configuring remote agent execution across SSH / Tailscale.
-- [GitHub Repository](https://github.com/jangtrinh/design-os-figma-plugin): Open-source plugin code, broker server, and TypeScript library.
+- [GitHub Repository](https://github.com/jangtrinh/design-os-figma-plugin): Source-available plugin code, broker server, and TypeScript library.
 
 ## Key Capabilities
 
