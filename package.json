@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Thin CLI + Figma plugin relay — an agent and a designer in the same Figma file. Drives a Figma Free plugin (Plugin API) over a local WebSocket broker; never the paid official write MCP.",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jangtrinh/design-os-figma-plugin.git"

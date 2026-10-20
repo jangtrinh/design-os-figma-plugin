@@ -21,7 +21,7 @@ nav:
 footer:
   - { title: GitHub, url: https://github.com/jangtrinh/design-os-figma-plugin }
   - { title: "DESIGN:OS", url: https://github.com/jangtrinh/design-os }
-  - { title: MIT, url: https://github.com/jangtrinh/design-os-figma-plugin/blob/main/LICENSE }
+  - { title: PolyForm Shield 1.0.0, url: https://github.com/jangtrinh/design-os-figma-plugin/blob/main/LICENSE }
 plugins:
   - jekyll-seo-tag
   - jekyll-sitemap
