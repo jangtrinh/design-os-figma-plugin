@@ -212,7 +212,7 @@ same as absent from the product.
 | Published large-file numbers | yes, 418k nodes | no | no | no | no | no |
 | Design-to-code context | CSS + tokens, no codegen | yes, `get_design_context` and Code Connect | read tools | extraction | no | yes |
 | No desktop app needed | no | yes, remote server | no | Cloud mode, read-only | no | yes |
-| Licence | MIT | proprietary | MIT | MIT | MIT | MIT |
+| Licence | PolyForm Shield 1.0.0 | proprietary | MIT | MIT | MIT | MIT |
 
 Read the grid honestly. Row 5 is not a win: figma-console-mcp documents live change monitoring and
 cast-to-figma ships `cowork`. What is particular here is the combination of rows 6, 7 and 10:
