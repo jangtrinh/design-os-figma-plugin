@@ -92,7 +92,7 @@ Every deliverable produced by `design-os-figma-plugin` is backed by a determinis
 
 ## Installation
 
-Choose the setup that matches your AI coding agent. Every option installs the same canonical skill (`skills/es-figma-craft/SKILL.md`) and `/doctor` diagnostic suite.
+Choose the setup that matches your AI coding agent. Every option installs the same canonical skill (`skills/design-os-figma-craft/SKILL.md`) and `/doctor` diagnostic suite.
 
 ### Claude Code
 
@@ -109,9 +109,9 @@ Install to your personal Codex skills directory:
 
 ```bash
 git clone https://github.com/jangtrinh/design-os-figma-plugin.git /tmp/design-os-figma-plugin
-mkdir -p ~/.codex/skills/es-figma-craft ~/.codex/prompts
-cp -R /tmp/design-os-figma-plugin/skills/es-figma-craft/* ~/.codex/skills/es-figma-craft/
-cp /tmp/design-os-figma-plugin/prompts/doctor.md ~/.codex/prompts/es-figma-craft-doctor.md
+mkdir -p ~/.codex/skills/design-os-figma-craft ~/.codex/prompts
+cp -R /tmp/design-os-figma-plugin/skills/design-os-figma-craft/* ~/.codex/skills/design-os-figma-craft/
+cp /tmp/design-os-figma-plugin/prompts/doctor.md ~/.codex/prompts/design-os-figma-craft-doctor.md
 rm -rf /tmp/design-os-figma-plugin
 ```
 
@@ -119,8 +119,8 @@ rm -rf /tmp/design-os-figma-plugin
 
 ```bash
 git clone https://github.com/jangtrinh/design-os-figma-plugin.git /tmp/design-os-figma-plugin
-mkdir -p ~/.gemini/skills/es-figma-craft
-cp -R /tmp/design-os-figma-plugin/skills/es-figma-craft/* ~/.gemini/skills/es-figma-craft/
+mkdir -p ~/.gemini/skills/design-os-figma-craft
+cp -R /tmp/design-os-figma-plugin/skills/design-os-figma-craft/* ~/.gemini/skills/design-os-figma-craft/
 rm -rf /tmp/design-os-figma-plugin
 ```
 
@@ -128,8 +128,8 @@ rm -rf /tmp/design-os-figma-plugin
 
 ```bash
 git clone https://github.com/jangtrinh/design-os-figma-plugin.git /tmp/design-os-figma-plugin
-mkdir -p ~/.agents/skills/es-figma-craft
-cp -R /tmp/design-os-figma-plugin/skills/es-figma-craft/* ~/.agents/skills/es-figma-craft/
+mkdir -p ~/.agents/skills/design-os-figma-craft
+cp -R /tmp/design-os-figma-plugin/skills/design-os-figma-craft/* ~/.agents/skills/design-os-figma-craft/
 rm -rf /tmp/design-os-figma-plugin
 ```
 
@@ -147,7 +147,7 @@ Or run `/doctor` inside Claude Code / Codex to inspect installed skill paths, pl
 **Uninstall:**
 
 ```bash
-rm -rf ~/.claude/skills/es-figma-craft ~/.codex/skills/es-figma-craft ~/.gemini/skills/es-figma-craft ~/.agents/skills/es-figma-craft
+rm -rf ~/.claude/skills/design-os-figma-craft ~/.codex/skills/design-os-figma-craft ~/.gemini/skills/design-os-figma-craft ~/.agents/skills/design-os-figma-craft
 ```
 
 </details>
@@ -156,7 +156,7 @@ rm -rf ~/.claude/skills/es-figma-craft ~/.codex/skills/es-figma-craft ~/.gemini/
 
 ## Usage & Prompt Cookbook
 
-Once installed, `skills/es-figma-craft/SKILL.md` activates automatically when your prompt matches its domain triggers. Browse [`docs/cookbook.md`](docs/cookbook.md) for copy-paste prompt recipes.
+Once installed, `skills/design-os-figma-craft/SKILL.md` activates automatically when your prompt matches its domain triggers. Browse [`docs/cookbook.md`](docs/cookbook.md) for copy-paste prompt recipes.
 
 **Generate & Scaffold**
 
@@ -190,7 +190,7 @@ Once installed, `skills/es-figma-craft/SKILL.md` activates automatically when yo
 
 ## How it works
 
-1. **Intent Routing** — Your AI agent matches your request against `skills/es-figma-craft/SKILL.md` frontmatter triggers.
+1. **Intent Routing** — Your AI agent matches your request against `skills/design-os-figma-craft/SKILL.md` frontmatter triggers.
 2. **Progressive Context Loading** — Only the entry-point `SKILL.md` router loads initially; detailed recipes and scripts load on demand.
 3. **Deterministic Execution** — Domain scripts and contracts execute locally with reproducible inputs and outputs.
 4. **Gate Verification** — `scripts/self_check.py` and domain verifiers (`node bin/figma-agent.mjs status --peek`) validate the artifact before completion.
@@ -201,7 +201,7 @@ User Prompt / CLI Invocation
             │
             ▼
 ┌───────────────────────────────────────────────┐
-│ skills/es-figma-craft/SKILL.md
+│ skills/design-os-figma-craft/SKILL.md
 │ Progressive disclosure router & hard rules    │
 └───────────┬───────────────────────────────────┘
             │ loads on demand
@@ -224,7 +224,7 @@ User Prompt / CLI Invocation
 
 | File | Loaded when |
 | :--- | :--- |
-| `skills/es-figma-craft/SKILL.md` | Always (~100–150 lines) — routing rules, triggers, and execution workflow |
+| `skills/design-os-figma-craft/SKILL.md` | Always (~100–150 lines) — routing rules, triggers, and execution workflow |
 | `docs/cookbook.md` | When selecting multi-step prompt recipes or domain patterns |
 | `commands/doctor.md` / `prompts/doctor.md` | Only when running `/doctor` diagnostics |
 | `llms.txt` | When indexed by AI answer engines, RAG pipelines, or repo crawlers |
@@ -246,7 +246,7 @@ design-os-figma-plugin/
 │   ├── plugin.json                 # Factory / Droid plugin manifest
 │   └── marketplace.json            # Factory marketplace metadata
 ├── skills/
-│   └── es-figma-craft/
+│   └── design-os-figma-craft/
 │       └── SKILL.md                # Canonical agent skill entrypoint
 ├── commands/
 │   └── doctor.md                   # /doctor diagnostic slash command
@@ -273,9 +273,9 @@ design-os-figma-plugin/
 
 ### It's working if...
 
-- `python3 scripts/self_check.py` prints `ok: design-os-figma-plugin self-check passed (es-figma-craft)` and exits `0`.
+- `python3 scripts/self_check.py` prints `ok: design-os-figma-plugin self-check passed (design-os-figma-craft)` and exits `0`.
 - `node bin/figma-agent.mjs status --peek` passes with zero contract or test regressions.
-- Your AI coding agent loads `skills/es-figma-craft/SKILL.md` automatically when given any prompt from [`docs/cookbook.md`](docs/cookbook.md).
+- Your AI coding agent loads `skills/design-os-figma-craft/SKILL.md` automatically when given any prompt from [`docs/cookbook.md`](docs/cookbook.md).
 - Network traffic during execution remains zero (guaranteed by [`PRIVACY.md`](PRIVACY.md)).
 
 ### When not to use

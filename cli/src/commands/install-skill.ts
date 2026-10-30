@@ -1,5 +1,5 @@
 // `figma-agent install-skill` — writes THIS CLI's own emitted SKILL.md into a
-// Claude Code skills folder. Never copies the committed skills/figma-agent/SKILL.md
+// Claude Code skills folder. Never copies the committed skills/design-os-figma-agent/SKILL.md
 // (that risks shipping a stale artifact) — always renders fresh from the SAME
 // emitter `npm run emit:skill` uses, so the installed copy always matches the
 // binary that installed it.
@@ -13,7 +13,7 @@ import { CliError } from '../transport/protocol-helpers.ts';
 import { renderSkill } from '../skill-emitter.ts';
 import { CLI_VERSION } from '../version.ts';
 
-const CRAFT_SKILL_DIR = 'es-figma-craft';
+const CRAFT_SKILL_DIR = 'design-os-figma-craft';
 
 interface InstallSkillResult {
   folder: string;
@@ -44,7 +44,7 @@ async function confirm(question: string): Promise<boolean> {
 }
 
 /**
- * This install's own repo root — es-figma-craft ships alongside it, wherever
+ * This install's own repo root — design-os-figma-craft ships alongside it, wherever
  * "it" is. Counting a fixed number of `..` from `import.meta.url` is wrong on
  * one of the two shapes this module ever runs as: three levels up is correct
  * from source (`cli/src/commands/install-skill.ts`) but one level too many from
@@ -68,7 +68,7 @@ function repoRoot(): string {
 }
 
 /**
- * Copy `craftSrc` (skills/es-figma-craft) into `craftDest`, with the same
+ * Copy `craftSrc` (skills/design-os-figma-craft) into `craftDest`, with the same
  * never-overwrite-silently protection `run()` gives SKILL.md — an entire
  * bundled skill folder has no single version field to compare, so this
  * compares its anchor file's (SKILL.md) content instead: identical → no-op,
@@ -103,7 +103,7 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
   const installed: string[] = [];
   const skipped: { path: string; reason: string }[] = [];
 
-  const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+  const skillPath = join(folder, 'design-os-figma-agent', 'SKILL.md');
   const freshSkill = renderSkill();
   let writeSkill = true;
   if (existsSync(skillPath)) {
@@ -133,12 +133,12 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
     }
   }
   if (writeSkill) {
-    mkdirSync(join(folder, 'figma-agent'), { recursive: true });
+    mkdirSync(join(folder, 'design-os-figma-agent'), { recursive: true });
     writeFileSync(skillPath, freshSkill);
     installed.push(skillPath);
   }
 
-  // es-figma-craft bundling — a non-interactive run needs an explicit decision;
+  // design-os-figma-craft bundling — a non-interactive run needs an explicit decision;
   // silently defaulting a non-TTY run to "yes" would install an unrequested skill.
   const withCraft = args.bool('with-craft');
   const noCraft = args.bool('no-craft');
@@ -148,7 +148,7 @@ export async function run(args: CommandArgs): Promise<InstallSkillResult> {
   if (withCraft) bundleCraft = true;
   else if (noCraft) { bundleCraft = false; skipReason = 'skipped: --no-craft'; }
   else if (process.stdin.isTTY) {
-    bundleCraft = await confirm('also install skills/es-figma-craft (Figma canvas engineering discipline)?');
+    bundleCraft = await confirm('also install skills/design-os-figma-craft (Figma canvas engineering discipline)?');
     if (!bundleCraft) skipReason = 'declined';
   } else {
     bundleCraft = false;

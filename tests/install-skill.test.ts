@@ -17,7 +17,7 @@ import { renderSkill } from '../cli/src/skill-emitter.ts';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CLI_DIST = join(ROOT, 'cli', 'dist', 'figma-agent.js');
-const CRAFT_SKILL_DIR = 'es-figma-craft';
+const CRAFT_SKILL_DIR = 'design-os-figma-craft';
 
 function fakeArgs(flags: Record<string, string | boolean> = {}): CommandArgs {
   return {
@@ -46,7 +46,7 @@ describe('install-skill — writes the emitted SKILL.md, never a stale copy', ()
   it('fresh folder: creates figma-agent/SKILL.md matching renderSkill()', async () => {
     const folder = join(scratchDir, 'skills');
     const result = await run(fakeArgs({ folder, 'no-craft': true }));
-    const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+    const skillPath = join(folder, 'design-os-figma-agent', 'SKILL.md');
     expect(existsSync(skillPath)).toBe(true);
     expect(readFileSync(skillPath, 'utf8')).toBe(renderSkill());
     expect(result.installed).toContain(skillPath);
@@ -56,7 +56,7 @@ describe('install-skill — writes the emitted SKILL.md, never a stale copy', ()
   it('same version already installed → unchanged, no write', async () => {
     const folder = join(scratchDir, 'skills');
     await run(fakeArgs({ folder, 'no-craft': true }));
-    const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+    const skillPath = join(folder, 'design-os-figma-agent', 'SKILL.md');
     const before = readFileSync(skillPath, 'utf8');
     const result = await run(fakeArgs({ folder, 'no-craft': true }));
     expect(readFileSync(skillPath, 'utf8')).toBe(before);
@@ -65,12 +65,12 @@ describe('install-skill — writes the emitted SKILL.md, never a stale copy', ()
 
   it('same version, byte-different (stale description installed before an emitter update): --yes replaces it, no --yes preserves it and reports declined', async () => {
     const folder = join(scratchDir, 'skills');
-    mkdirSync(join(folder, 'figma-agent'), { recursive: true });
-    const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+    mkdirSync(join(folder, 'design-os-figma-agent'), { recursive: true });
+    const skillPath = join(folder, 'design-os-figma-agent', 'SKILL.md');
     // Same version as CLI_VERSION, but the body differs from what renderSkill()
     // produces now — e.g. installed before an emitter description update shipped
     // under an unchanged version number.
-    const staleSameVersion = `---\nname: figma-agent\nversion: ${CLI_VERSION}\n---\nold description body`;
+    const staleSameVersion = `---\nname: design-os-figma-agent\nversion: ${CLI_VERSION}\n---\nold description body`;
     writeFileSync(skillPath, staleSameVersion);
 
     const declined = await run(fakeArgs({ folder, 'no-craft': true }));
@@ -85,21 +85,21 @@ describe('install-skill — writes the emitted SKILL.md, never a stale copy', ()
 
   it('older version present, --yes → overwrites without prompting', async () => {
     const folder = join(scratchDir, 'skills');
-    mkdirSync(join(folder, 'figma-agent'), { recursive: true });
-    writeFileSync(join(folder, 'figma-agent', 'SKILL.md'), '---\nname: figma-agent\nversion: 0.0.1\n---\nstale');
+    mkdirSync(join(folder, 'design-os-figma-agent'), { recursive: true });
+    writeFileSync(join(folder, 'design-os-figma-agent', 'SKILL.md'), '---\nname: design-os-figma-agent\nversion: 0.0.1\n---\nstale');
     const result = await run(fakeArgs({ folder, 'no-craft': true, yes: true }));
-    const skillPath = join(folder, 'figma-agent', 'SKILL.md');
+    const skillPath = join(folder, 'design-os-figma-agent', 'SKILL.md');
     expect(readFileSync(skillPath, 'utf8')).toBe(renderSkill());
     expect(result.installed).toContain(skillPath);
   });
 
   it('older version present, non-interactive, no --yes → refuses to overwrite silently', async () => {
     const folder = join(scratchDir, 'skills');
-    mkdirSync(join(folder, 'figma-agent'), { recursive: true });
-    const stale = '---\nname: figma-agent\nversion: 0.0.1\n---\nstale';
-    writeFileSync(join(folder, 'figma-agent', 'SKILL.md'), stale);
+    mkdirSync(join(folder, 'design-os-figma-agent'), { recursive: true });
+    const stale = '---\nname: design-os-figma-agent\nversion: 0.0.1\n---\nstale';
+    writeFileSync(join(folder, 'design-os-figma-agent', 'SKILL.md'), stale);
     const result = await run(fakeArgs({ folder, 'no-craft': true }));
-    expect(readFileSync(join(folder, 'figma-agent', 'SKILL.md'), 'utf8')).toBe(stale);
+    expect(readFileSync(join(folder, 'design-os-figma-agent', 'SKILL.md'), 'utf8')).toBe(stale);
     expect(result.installed).toEqual([]);
     expect(result.skipped.some((s) => s.reason.includes('declined'))).toBe(true);
   });
@@ -113,26 +113,26 @@ describe('install-skill — writes the emitted SKILL.md, never a stale copy', ()
   it('non-interactive with neither --with-craft nor --no-craft skips craft and says so', async () => {
     const folder = join(scratchDir, 'skills');
     const result = await run(fakeArgs({ folder }));
-    const craftEntry = result.skipped.find((s) => s.path === join(folder, 'es-figma-craft'));
+    const craftEntry = result.skipped.find((s) => s.path === join(folder, 'design-os-figma-craft'));
     expect(craftEntry?.reason).toContain('non-interactive');
   });
 
   it('--no-craft skips it explicitly, no prompt', async () => {
     const folder = join(scratchDir, 'skills');
     const result = await run(fakeArgs({ folder, 'no-craft': true }));
-    const craftEntry = result.skipped.find((s) => s.path === join(folder, 'es-figma-craft'));
+    const craftEntry = result.skipped.find((s) => s.path === join(folder, 'design-os-figma-craft'));
     expect(craftEntry?.reason).toBe('skipped: --no-craft');
-    expect(existsSync(join(folder, 'es-figma-craft'))).toBe(false);
+    expect(existsSync(join(folder, 'design-os-figma-craft'))).toBe(false);
   });
 
-  it("--with-craft copies the repo's skills/es-figma-craft directory (source-tree seam)", async () => {
+  it("--with-craft copies the repo's skills/design-os-figma-craft directory (source-tree seam)", async () => {
     // Exercises the path arithmetic when this module is imported straight from
     // cli/src/commands/ (what THIS test process does) — see the describe block
     // below for the same behavior exercised against the built cli/dist bundle,
     // which is what a real install actually runs.
     const folder = join(scratchDir, 'skills');
     const result = await run(fakeArgs({ folder, 'with-craft': true }));
-    const craftDest = join(folder, 'es-figma-craft');
+    const craftDest = join(folder, 'design-os-figma-craft');
     expect(existsSync(join(craftDest, 'SKILL.md'))).toBe(true);
     expect(result.installed).toContain(craftDest);
   });
@@ -140,7 +140,7 @@ describe('install-skill — writes the emitted SKILL.md, never a stale copy', ()
   it('--with-craft on an already-installed craft folder: unchanged if identical, refuses to silently overwrite if edited', async () => {
     const folder = join(scratchDir, 'skills');
     await run(fakeArgs({ folder, 'with-craft': true }));
-    const craftDest = join(folder, 'es-figma-craft');
+    const craftDest = join(folder, 'design-os-figma-craft');
     const before = readFileSync(join(craftDest, 'SKILL.md'), 'utf8');
 
     // Re-running with an identical install is a no-op, not a re-copy.
@@ -162,14 +162,14 @@ describe('install-skill --with-craft — subprocess, against the BUILT cli/dist 
     execFileSync(process.execPath, ['scripts/build.mjs', 'cli'], { cwd: ROOT });
   });
 
-  it('copies skills/es-figma-craft from the shipped binary, not just from source', () => {
+  it('copies skills/design-os-figma-craft from the shipped binary, not just from source', () => {
     const folder = join(scratchDir, 'skills');
     const out = execFileSync(process.execPath, [CLI_DIST, 'install-skill', '--folder', folder, '--with-craft', '--yes'], {
       cwd: ROOT,
       encoding: 'utf8',
     });
     const result = JSON.parse(out) as { installed: string[]; skipped: { path: string; reason: string }[] };
-    const craftDest = join(folder, 'es-figma-craft');
+    const craftDest = join(folder, 'design-os-figma-craft');
     expect(existsSync(join(craftDest, 'SKILL.md'))).toBe(true);
     expect(result.installed).toContain(craftDest);
     expect(result.skipped).toEqual([]);
@@ -177,7 +177,7 @@ describe('install-skill --with-craft — subprocess, against the BUILT cli/dist 
 
   it('an explicit --with-craft that cannot be satisfied exits non-zero with a named reason, never a silent success', () => {
     // Simulate "unsatisfiable" against the REAL built bundle + real repoRoot()
-    // resolution by briefly renaming the repo's own skills/es-figma-craft out of
+    // resolution by briefly renaming the repo's own skills/design-os-figma-craft out of
     // the way — this exercises the actual anchor-walk this fix relies on,
     // without needing a relocated copy of node_modules for a bundle that
     // externals `ws`. Window is a single synchronous subprocess call.

@@ -326,7 +326,7 @@ export const COMMANDS: CommandCatalogEntry[] = [
     description:
       '[--folder ~/.claude/skills] [--with-craft|--no-craft] [--yes]   write this emitted SKILL.md to a '
       + 'folder Claude Code reads skills from; prompts before overwriting an older installed version and '
-      + 'before bundling skills/es-figma-craft — a non-interactive run needs --with-craft/--no-craft '
+      + 'before bundling skills/design-os-figma-craft — a non-interactive run needs --with-craft/--no-craft '
       + 'or it skips craft and says so',
   },
   {

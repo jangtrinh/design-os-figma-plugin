@@ -1,6 +1,6 @@
 # `design-os-figma-plugin` Prompt & CLI Cookbook
 
-Copy-paste recipes for **DESIGN:OS Figma Plugin & CLI** (`skills/es-figma-craft/SKILL.md`).
+Copy-paste recipes for **DESIGN:OS Figma Plugin & CLI** (`skills/design-os-figma-craft/SKILL.md`).
 
 ---
 

@@ -60,7 +60,7 @@ def main() -> int:
             print(f"FAIL: {item}", file=sys.stderr)
         return 1
 
-    print("ok: design-os-figma-plugin self-check passed (es-figma-craft)")
+    print("ok: design-os-figma-plugin self-check passed (design-os-figma-craft)")
     return 0
 
 

@@ -93,7 +93,7 @@ export const EXEC_JS_LINT_RULES: readonly ExecJsLintRule[] = [
     message: 'font assignment without a visible loadFontAsync may throw',
     fix: 'await figma.loadFontAsync(font) before assigning the font',
   },
-  // Craft footguns (es-figma-craft, plugin-api-gotchas): a hidden template layer or an
+  // Craft footguns (design-os-figma-craft, plugin-api-gotchas): a hidden template layer or an
   // archived duplicate is exactly what a bare findAll sweeps up, and a COMPONENT_SET has
   // no componentProperties (the getter throws) — its API is componentPropertyDefinitions.
   // `\.findAll\s*\(` deliberately does not match findAllWithCriteria (no predicate to
