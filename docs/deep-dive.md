@@ -4,7 +4,7 @@ The README makes four promises in one clause each. This page is the evidence beh
 comparison with Figma's official MCP server, the observability contract, and what is shipped versus
 still open. Operational reference (structure, the editing loop, the rail, multi-file targeting,
 troubleshooting) lives in [operations.md](operations.md); the command manual is
-[`../skills/figma-agent/SKILL.md`](../skills/figma-agent/SKILL.md).
+[`../skills/design-os-figma-agent/SKILL.md`](../skills/design-os-figma-agent/SKILL.md).
 
 ## 1. The agent arrives already knowing
 
@@ -134,7 +134,7 @@ subtrees by identity first, content-hash only for unbound literals, and `inflate
 raw reply (deep-equal, not byte-identical: key order moves), round-trip tested. `--dev-resources` is opt-in because that one subtree-wide read
 costs a measured ≈2 s on a Free file regardless of subtree size. Measured on a 121-node frame:
 773 ms wall with CSS, 124 ms without, 36% smaller with `--dedup`. Command reference:
-[`../skills/figma-agent/SKILL.md`](../skills/figma-agent/SKILL.md).
+[`../skills/design-os-figma-agent/SKILL.md`](../skills/design-os-figma-agent/SKILL.md).
 
 ## With this plugin, or Figma's official MCP alone?
 
@@ -225,7 +225,7 @@ Visual Copilot, Anima and Locofy are design-to-code or one-shot import products.
 
 ## Commands
 
-Full reference in [`../skills/figma-agent/SKILL.md`](../skills/figma-agent/SKILL.md), emitted from the
+Full reference in [`../skills/design-os-figma-agent/SKILL.md`](../skills/design-os-figma-agent/SKILL.md), emitted from the
 CLI's own command table so `--help` and the skill cannot disagree.
 
 | | |

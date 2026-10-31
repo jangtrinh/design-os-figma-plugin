@@ -1,4 +1,4 @@
-// The skill's own prose — everything in skills/figma-agent/SKILL.md that is
+// The skill's own prose — everything in skills/design-os-figma-agent/SKILL.md that is
 // NOT the command reference (that section is rendered separately from
 // command-catalog.ts by skill-emitter.ts). Pure data, no fs, no catalog import.
 

@@ -14,5 +14,5 @@ node bin/figma-agent.mjs status --peek
 ## Guidelines
 
 1. **Zero Telemetry**: Never introduce external network calls, analytics, or unpinned runtime dependencies.
-2. **Progressive Context Disclosure**: Keep `skills/es-figma-craft/SKILL.md` concise (~150 lines) and place detailed recipes in `docs/cookbook.md`.
+2. **Progressive Context Disclosure**: Keep `skills/design-os-figma-craft/SKILL.md` concise (~150 lines) and place detailed recipes in `docs/cookbook.md`.
 3. **Conventional Commits**: Use `feat:`, `fix:`, `docs:`, or `chore:` commit prefixes.

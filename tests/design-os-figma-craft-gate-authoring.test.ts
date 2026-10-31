@@ -1,4 +1,4 @@
-// es-figma-craft gate-authoring guide + scoped-gate template. The template is a
+// design-os-figma-craft gate-authoring guide + scoped-gate template. The template is a
 // doc/example that is never run on a canvas; here it runs only against a fake
 // `figma` whose getters refuse what the real Plugin API refuses (an unknown id
 // resolves to null, whole-document loading is off-limits, and with
@@ -19,7 +19,7 @@ vi.mock('../cli/src/transport/broker-discovery.ts', () => ({
 }));
 
 const REPO = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const CRAFT = join(REPO, 'skills', 'es-figma-craft');
+const CRAFT = join(REPO, 'skills', 'design-os-figma-craft');
 const GUIDE = join(CRAFT, 'references', 'gate-authoring.md');
 const TEMPLATE = join(CRAFT, 'references', 'scoped-gate-template.js');
 const EXEC_JS_CAP_MS = 120_000;

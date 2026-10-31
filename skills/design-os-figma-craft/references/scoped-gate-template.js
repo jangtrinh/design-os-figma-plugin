@@ -1,6 +1,6 @@
 // GATE <id> — <one line: what this gate proves>. Scoped: node-id roots only. Throws on any failure; returns {pass:true,…} when green.
 // Scope: <root names>. Budget: BUDGET_MS below. skipInvisibleInstanceChildren: true, except false around each root's leak scan and every read of its results.
-// Copy to <plan>/scripts/<nn>-<topic>-verify.js; rules and rationale: es-figma-craft references/gate-authoring.md.
+// Copy to <plan>/scripts/<nn>-<topic>-verify.js; rules and rationale: design-os-figma-craft references/gate-authoring.md.
 //
 // TEMPLATE — a doc/example, never run on a canvas as-is. Replace every value in the CONFIG block; keep the skeleton.
 // Quarantine a copy (never this template) by adding this as its own line within the first 3 lines, beside the GATE line:
