@@ -1,6 +1,6 @@
 # DESIGN:OS Figma Plugin & CLI (`design-os-figma-plugin`)
 
-**Zero-cost live Figma canvas bridge (`figma-agent` CLI + Ease Design Figma Agent plugin) for AI coding agents — works on Figma Free.**
+**Zero-cost live Figma canvas bridge (`figma-agent` CLI + DESIGN:OS Bridge plugin) for AI coding agents — works on Figma Free.**
 
 Inspect live selections, scan design systems, create frames, bind variables, mutate auto-layout traits, and export visual verification PNGs directly from Claude Code, Codex, Gemini CLI, and Antigravity.
 

@@ -24,7 +24,7 @@ metadata:
 
 | Bridge | Use for | Notes |
 |---|---|---|
-| **design:os `figma-agent` CLI** (Ease Design Figma Agent plugin) | ALL mutations when the project is design:os-onboarded | Preferred canonical hand. `figma-agent status` must show `plugin.connected:true` for the RIGHT file, checked 2× ~15s apart before long batches. Prefer typed ops (`clone-traits`, `inspect`) over raw `exec-js`. |
+| **design:os `figma-agent` CLI** (DESIGN:OS Bridge plugin) | ALL mutations when the project is design:os-onboarded | Preferred canonical hand. `figma-agent status` must show `plugin.connected:true` for the RIGHT file, checked 2× ~15s apart before long batches. Prefer typed ops (`clone-traits`, `inspect`) over raw `exec-js`. |
 | **`use_figma` MCP** | Mutations where no figma-agent is wired; reads | MANDATORY: load the `figma-use` skill first, every call. |
 | **`html_to_design` (DesignAgent)** | Bulk HTML→Figma imports of authored screens | HTML-first authoring pipeline; not for surgical edits. |
 | **MCP read tools** (`get_metadata`/`get_screenshot`/`get_design_context`) | Diagnosis, recon, verification | Cheapest-first: metadata → screenshot → design_context (last resort, 25K-token cap). |
