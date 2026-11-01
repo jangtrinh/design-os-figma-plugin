@@ -18,6 +18,23 @@ A lightweight bridge allowing AI coding agents to inspect, manipulate, and gener
 - **Local WebSocket Broker**: Runs locally on ports 9410–9419 with strict origin isolation.
 - **Atomic Undo**: Each mutation seals its own undo step so ⌘Z rolls back one atomic operation, not a whole session.
 
+## Use with your agent
+
+- Build: `git clone https://github.com/jangtrinh/design-os-figma-plugin.git && cd design-os-figma-plugin && npm ci && npm run build` (Node.js 22).
+- Import `plugin/manifest.json` in Figma Desktop: Plugins, Development, Import plugin from manifest.
+- Claude Code: `/plugin marketplace add jangtrinh/design-os-figma-plugin`, or `node cli/dist/figma-agent.js install-skill --folder ~/.claude/skills`.
+- Cursor: `node cli/dist/figma-agent.js install-skill --folder ~/.cursor/skills`.
+- Codex: `node cli/dist/figma-agent.js install-skill --folder ~/.agents/skills`.
+- Check the connection: `node cli/dist/figma-agent.js status --wait --timeout 60`.
+
+## FAQ
+
+- Does it replace Figma's official MCP server? No, they coexist. The official server is better for Code Connect, cross-library search and working with Figma Desktop closed. This bridge reads and writes the open file through the Public Plugin API.
+- Does it need a paid Figma seat? No seat or access token for the bridge. Writes need edit access to the file.
+- Is it on Figma Community? No. It is a development plugin imported from the repository.
+- Does it run a model? No. You choose and pay for your own agent or provider.
+- What licence? Source-available under PolyForm Shield 1.0.0: free to use and modify, not for resale or building a competing product.
+
 ## DESIGN:OS Ecosystem
 
 - [design-os](https://jangtrinh.github.io/design-os/): DESIGN:OS CLI — Multi-runtime design CLI for Claude Code, Codex & Antigravity (cli)
