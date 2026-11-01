@@ -46,6 +46,22 @@ layout: null
         { "@type": "Question", "name": "Can the agent undo its own work?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, for typed mutations: each one seals its own undo step, so ⌘Z rolls back one change, not a whole session." } },
         { "@type": "Question", "name": "Does it replace Figma’s official MCP server?", "acceptedAnswer": { "@type": "Answer", "text": "No. They coexist. The official MCP is the better tool for Code Connect, cross-library search, design-to-code and working with Figma Desktop closed. This bridge writes to the open file on Figma Free." } }
       ]
+    },
+    {
+      "@type": "HowTo",
+      "name": "Use design-os-figma-plugin with Claude Code, Cursor or Codex",
+      "description": "Build the figma-agent CLI, import the plugin into Figma Desktop, install the skill for your agent, and make a first read-only request.",
+      "tool": [
+        { "@type": "HowToTool", "name": "Node.js 22" },
+        { "@type": "HowToTool", "name": "Figma Desktop" }
+      ],
+      "step": [
+        { "@type": "HowToStep", "position": 1, "name": "Build the CLI and plugin", "text": "Clone the repository, then run npm ci and npm run build from the repository root." },
+        { "@type": "HowToStep", "position": 2, "name": "Import the plugin", "text": "In Figma Desktop choose Plugins, Development, Import plugin from manifest, then select plugin/manifest.json. Open it in a scratch file first." },
+        { "@type": "HowToStep", "position": 3, "name": "Install the skill for your agent", "text": "Run node cli/dist/figma-agent.js install-skill with --folder ~/.claude/skills for Claude Code, ~/.cursor/skills for Cursor, or ~/.agents/skills for Codex." },
+        { "@type": "HowToStep", "position": 4, "name": "Check the connection", "text": "Run node cli/dist/figma-agent.js status --wait --timeout 60 and confirm it reports the scratch file you opened." },
+        { "@type": "HowToStep", "position": 5, "name": "Make a first read-only request", "text": "Select a frame, copy the instanceId from status, and run get-selection with --instance set to that id." }
+      ]
     }
   ]
 }
@@ -147,6 +163,16 @@ npm run build</code></pre>
 <pre class="ds-code"><code>node "$PWD/cli/dist/figma-agent.js" create-frame --name "Agent scratch" --w 320 --h 200 --instance "&lt;instanceId&gt;"</code></pre></li>
       </ol>
       <p><code>--instance</code> prevents ambiguity when several files share a name. Read the JSON reply before proceeding: it is the record of what the bridge actually selected or changed.</p>
+    </section>
+
+    <section id="use-with" data-pace="tight" aria-labelledby="usewith-h">
+      <h2 id="usewith-h" class="ds-heading" data-level="3">Use with Claude Code, Cursor and Codex</h2>
+      <p>After the install above, give your agent the skill so it knows the <code>figma-agent</code> commands. Each agent reads skills from its own folder.</p>
+      <dl class="facts">
+        <div><dt>Claude Code</dt><dd><code>/plugin marketplace add jangtrinh/design-os-figma-plugin</code>, or <code>node cli/dist/figma-agent.js install-skill --folder ~/.claude/skills</code></dd></div>
+        <div><dt>Cursor</dt><dd><code>node cli/dist/figma-agent.js install-skill --folder ~/.cursor/skills</code></dd></div>
+        <div><dt>Codex</dt><dd><code>node cli/dist/figma-agent.js install-skill --folder ~/.agents/skills</code></dd></div>
+      </dl>
     </section>
 
     <section id="loop" aria-labelledby="loop-h">
