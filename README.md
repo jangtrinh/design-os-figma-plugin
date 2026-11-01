@@ -24,11 +24,11 @@ Inspect live selections, scan design systems, create frames, bind variables, mut
 
 ## Why this exists
 
-Official read-only Figma MCPs dump 150k+ characters of noisy JSON into your context window and cannot write back to the canvas without expensive enterprise seats. **`design-os-figma-plugin`** pairs a local WebSocket relay with typed CLI commands (`inspect`, `scan-design-system`, `create-frame`, `set-text`, `export-png --assert`) that work on **Figma Free**.
+Figma's official MCP server is remote and plan-gated: write tools need a Professional or higher plan and edit access, and read calls are capped on lower tiers (see [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/)). Large node dumps can also fill an agent's context window. This bridge is a local alternative for the file you already have open in Figma Desktop, and it coexists with the official server. **`design-os-figma-plugin`** pairs a local WebSocket relay with typed CLI commands (`inspect`, `scan-design-system`, `create-frame`, `set-text`, `export-png --assert`) that work on **Figma Free**.
 
 | Dimension | Generic AI / Manual Workflow | DESIGN:OS Figma Plugin & CLI (`DESIGN:OS`) |
 | :--- | :--- | :--- |
-| **Canvas Write Access** | Read-only REST APIs or enterprise-only beta bridges | Full bidirectional read + write (`create-frame`, `set-text`, `clone-traits`, `exec-js`) on Figma Free |
+| **Canvas Write Access** | Official MCP writes need a paid plan and edit access; REST APIs are read-only | Full bidirectional read + write (`create-frame`, `set-text`, `clone-traits`, `exec-js`) on Figma Free |
 | **Context Window Usage** | 155K-character raw node dumps that overflow agent context | Compact, depth-controlled `inspect` and `context` summaries |
 | **Visual Verification** | Blindly mutating nodes without checking the rendered result | Mandatory `export-png --assert` visual proof loop before and after mutations |
 | **Privacy & Cost** | Cloud relay servers and paid Dev Mode seat requirements | 100% localhost WebSocket bridge (`127.0.0.1`) with zero external telemetry |
@@ -52,8 +52,11 @@ Official read-only Figma MCPs dump 150k+ characters of noisy JSON into your cont
 ```bash
 git clone https://github.com/jangtrinh/design-os-figma-plugin.git
 cd design-os-figma-plugin
-node bin/figma-agent.mjs status --peek
+npm ci && npm run build          # Node.js 22; builds cli/dist/figma-agent.js and plugin/code.js
+node cli/dist/figma-agent.js status --peek
 ```
+
+Then, in Figma Desktop: **Plugins → Development → Import plugin from manifest…** and pick `plugin/manifest.json`. Full steps: [Use with Claude Code, Cursor and Codex](#use-with-claude-code-cursor-and-codex).
 
 ### 2. Ask in plain English
 
@@ -70,6 +73,71 @@ Open your project in your AI coding agent and describe what you need:
 ```bash
 python3 scripts/self_check.py
 ```
+
+---
+
+## Use with Claude Code, Cursor and Codex
+
+The bridge has two parts: a **plugin** that runs inside Figma Desktop, and the **`figma-agent` CLI** that your agent runs in a shell. The CLI talks to the plugin over a local WebSocket on `127.0.0.1` (ports 9410 to 9419). No model runs inside the bridge, and you bring your own agent.
+
+**Set up once (any agent)**
+
+```bash
+git clone https://github.com/jangtrinh/design-os-figma-plugin.git
+cd design-os-figma-plugin
+npm ci && npm run build
+```
+
+In Figma Desktop: **Plugins → Development → Import plugin from manifest…**, then choose `plugin/manifest.json`. Open the plugin in a scratch file first.
+
+Check the connection from the repository root:
+
+```bash
+node "$PWD/cli/dist/figma-agent.js" status --wait --timeout 60
+```
+
+**Claude Code**
+
+```text
+/plugin marketplace add jangtrinh/design-os-figma-plugin
+/plugin install design-os-figma-plugin@design-os-figma-plugin
+```
+
+Or write the skill from your built CLI: `node cli/dist/figma-agent.js install-skill --folder ~/.claude/skills --with-craft --yes`.
+
+**Cursor**
+
+Cursor loads skills from `~/.cursor/skills/` and `~/.agents/skills/` ([Cursor docs](https://cursor.com/docs/skills)).
+
+```bash
+node cli/dist/figma-agent.js install-skill --folder ~/.cursor/skills --with-craft --yes
+```
+
+Then ask in Agent chat: "Inspect my current Figma selection with the design-os-figma-agent skill."
+
+**Codex**
+
+Codex scans `~/.agents/skills/` for user skills ([Codex skills docs](https://developers.openai.com/codex/skills)).
+
+```bash
+node cli/dist/figma-agent.js install-skill --folder ~/.agents/skills --with-craft --yes
+```
+
+Without a skills folder, tell any shell agent to run `node "$PWD/cli/dist/figma-agent.js" status` and then read its command list.
+
+## FAQ
+
+**Does it replace Figma's official MCP server?** No. They coexist. The official server is the better tool for Code Connect, cross-library search and working with Figma Desktop closed. This bridge reads and writes the open file through the Public Plugin API.
+
+**Does it need a paid Figma seat?** No seat or access token for the bridge. It needs edit access to the file for writes, and Figma Desktop running the imported plugin.
+
+**Is it on Figma Community?** No. It is a development plugin imported from this repository.
+
+**Does it run or pay for a model?** No. You choose and pay for your own agent or provider.
+
+**Can the agent undo its own work?** Yes. Each typed mutation seals its own undo step, so ⌘Z rolls back one change.
+
+**What licence is it under?** It is source-available under [PolyForm Shield 1.0.0](LICENSE): free to use and modify, but you may not resell it or build a competing product from it.
 
 ---
 
@@ -184,7 +252,7 @@ Once installed, `skills/design-os-figma-craft/SKILL.md` activates automatically 
 | :--- | :--- | :--- |
 | `/doctor` | Claude Code / Codex | Read-only diagnostic check of installed skill paths, plugin manifests, and runtime prerequisites |
 | `python3 scripts/self_check.py` | Terminal / CI | Deterministic offline verification of manifests, skill contracts, and governance files |
-| `node bin/figma-agent.mjs status --peek` | Terminal / CI | Check live WebSocket bridge connection to the active Figma canvas without consuming queue commands |
+| `node cli/dist/figma-agent.js status --peek` | Terminal / CI | Check live WebSocket bridge connection to the active Figma canvas without consuming queue commands |
 
 ---
 
@@ -193,7 +261,7 @@ Once installed, `skills/design-os-figma-craft/SKILL.md` activates automatically 
 1. **Intent Routing** — Your AI agent matches your request against `skills/design-os-figma-craft/SKILL.md` frontmatter triggers.
 2. **Progressive Context Loading** — Only the entry-point `SKILL.md` router loads initially; detailed recipes and scripts load on demand.
 3. **Deterministic Execution** — Domain scripts and contracts execute locally with reproducible inputs and outputs.
-4. **Gate Verification** — `scripts/self_check.py` and domain verifiers (`node bin/figma-agent.mjs status --peek`) validate the artifact before completion.
+4. **Gate Verification** — `scripts/self_check.py` and domain verifiers (`node cli/dist/figma-agent.js status --peek`) validate the artifact before completion.
 5. **Zero-Telemetry Delivery** — Verified files are written directly to your workspace with zero external network calls.
 
 ```text
@@ -207,7 +275,7 @@ User Prompt / CLI Invocation
             │ loads on demand
             ▼
 ┌───────────────────────────────────────────────┐
-│ node bin/figma-agent.mjs status --peek
+│ node cli/dist/figma-agent.js status --peek
 │ Deterministic build & contract enforcement    │
 └───────────┬───────────────────────────────────┘
             │ verifies
@@ -274,7 +342,7 @@ design-os-figma-plugin/
 ### It's working if...
 
 - `python3 scripts/self_check.py` prints `ok: design-os-figma-plugin self-check passed (design-os-figma-craft)` and exits `0`.
-- `node bin/figma-agent.mjs status --peek` passes with zero contract or test regressions.
+- `node cli/dist/figma-agent.js status --peek` passes with zero contract or test regressions.
 - Your AI coding agent loads `skills/design-os-figma-craft/SKILL.md` automatically when given any prompt from [`docs/cookbook.md`](docs/cookbook.md).
 - Network traffic during execution remains zero (guaranteed by [`PRIVACY.md`](PRIVACY.md)).
 

@@ -8,7 +8,7 @@ Every pull request must pass the local self-check and repository test suite befo
 
 ```bash
 python3 scripts/self_check.py
-node bin/figma-agent.mjs status --peek
+node cli/dist/figma-agent.js status --peek
 ```
 
 ## Guidelines

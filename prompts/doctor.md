@@ -22,4 +22,4 @@ Run a read-only diagnostic check of the `design-os-figma-plugin` installation an
    - Manifest integrity (`.claude-plugin`, `.codex-plugin`, `.agents/plugins`, `.factory-plugin`)
    - Canonical skill (`skills/design-os-figma-craft/SKILL.md`)
    - Trust & privacy governance (`PRIVACY.md`, `SECURITY.md`, `LICENSE`)
-   - Domain command readiness (`node bin/figma-agent.mjs status --peek`)
+   - Domain command readiness (`node cli/dist/figma-agent.js status --peek`)
