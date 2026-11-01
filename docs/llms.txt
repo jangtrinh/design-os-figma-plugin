@@ -50,3 +50,8 @@ A lightweight bridge allowing AI coding agents to inspect, manipulate, and gener
 - [design-os-voice-ux](https://jangtrinh.github.io/design-os-voice-ux/): Voice UX & AI Agent Architecture — Full-duplex barge-in FSMs & sub-500ms voice specs (voice-ai)
 - [design-os-code2flow](https://jangtrinh.github.io/design-os-code2flow/): Code2Flow — Local-first codebase-to-user-flow audit CLI across 7 UI frameworks (ast / audit)
 - [design-os-generative-ui](https://jangtrinh.github.io/design-os-generative-ui/): Generative UI — Streaming interactive visual runtime with morphdom & WebGL (runtime)
+
+## Videos
+
+- [Autonomous Design Agent Ep. 5: Two-way bridge: One Comment, the AI Fixes Design and Code](https://www.youtube.com/watch?v=c6yc314JsTI): Autonomous Design Agent Ep. 5: how a two-way bridge lets one review comment drive changes to both the design file and the code, through the DESIGN:OS Bridge plugin and CLI. Vietnamese, with English terms.
+- [design:os by Jang on YouTube](https://www.youtube.com/@designosbyjang): channel.
