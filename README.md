@@ -354,6 +354,20 @@ design-os-figma-plugin/
 
 ---
 
+## Watch
+
+DESIGN:OS Bridge is free and source-available (PolyForm Shield). One episode of the Autonomous Design Agent series from the [design:os by Jang](https://www.youtube.com/@designosbyjang) channel (Vietnamese, with English terms):
+
+<p align="left">
+  <a href="https://www.youtube.com/watch?v=c6yc314JsTI"><img src="docs/images/video/c6yc314JsTI.jpg" alt="Autonomous Design Agent Ep. 5: Two-way bridge: One Comment, the AI Fixes Design and Code (YouTube, 2:44)" width="320"></a>
+</p>
+
+Watch [Autonomous Design Agent Ep. 5: Two-way bridge: One Comment, the AI Fixes Design and Code](https://www.youtube.com/watch?v=c6yc314JsTI) (2:44) for how one review comment can drive changes to both the design file and the code through the DESIGN:OS Bridge plugin and CLI.
+
+More episodes: [Autonomous Design Agent playlist](https://www.youtube.com/playlist?list=PLAgHz-2MRSJw).
+
+---
+
 ## DESIGN:OS Ecosystem
 
 `design-os-figma-plugin` is one of the 13 source-available engines in the **`DESIGN:OS`** ecosystem:
