@@ -16,9 +16,25 @@ const REASON = 'Figma exports a code layer as its static shell, not its running 
   + 'is not a render of what the canvas shows. To check it visually, start the layer\'s preview '
   + 'in Figma and capture the Figma window.';
 
+const CONTAINS_REASON = 'This node contains a code layer. Figma exports a code layer as its static shell, '
+  + 'not its running code, so that part of this PNG is not a render of what the canvas shows. To check it '
+  + 'visually, start the layer\'s preview in Figma and capture the Figma window.';
+
 /** The note for a node of this type, or undefined when its export is a real render. */
 export function staticRenderNote(nodeType: unknown): StaticRenderNote | undefined {
   return typeof nodeType === 'string' && STATIC_EXPORT_NODE_TYPES.has(nodeType)
     ? { nodeType, reason: REASON }
     : undefined;
+}
+
+/** The note for a node whose exported image includes a visible code layer below it. */
+export function containedStaticRenderNote(innerNodeType: string): StaticRenderNote {
+  return { nodeType: innerNodeType, reason: CONTAINS_REASON };
+}
+
+/** What a caller should do with an exported PNG: check it, or check the window instead. */
+export function visualCheckContract(note: StaticRenderNote | undefined): string {
+  return note
+    ? 'VISUAL_CHECK_REQUIRED: this PNG is not a render of the canvas; capture the Figma window with the code layer\'s preview running instead.'
+    : 'VISUAL_CHECK_REQUIRED: inspect this screenshot before and after visual edits.';
 }

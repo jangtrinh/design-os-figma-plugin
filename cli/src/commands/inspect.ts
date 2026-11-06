@@ -6,7 +6,7 @@ import { runCommand } from '../transport/broker-client.ts';
 import { scanNodeSpec, resolveScanTimeout } from './scan-node.ts';
 import { resolveSafeTarget } from '../../../shared/safe-target.ts';
 import type { CorrectionEvent } from '../../../shared/supervised-memory.ts';
-import { staticRenderNote, type StaticRenderNote } from '../../../shared/code-layer-static-export.ts';
+import { staticRenderNote, visualCheckContract, type StaticRenderNote } from '../../../shared/code-layer-static-export.ts';
 
 interface SelectionReply {
   selection?: { id?: string }[];
@@ -51,7 +51,7 @@ export async function inspectTarget(input: {
       width: image.w,
       height: image.h,
       required: true,
-      contract: 'VISUAL_CHECK_REQUIRED: inspect this screenshot before and after visual edits.',
+      contract: visualCheckContract(staticRender),
       ...(staticRender && { reliable: false, reason: staticRender.reason }),
     },
   };

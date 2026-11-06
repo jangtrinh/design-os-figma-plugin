@@ -58,6 +58,26 @@ describe('PNG export of a code layer', () => {
     expect(reply.staticRender).toMatchObject({ nodeType: 'CODE_INSTANCE' });
   });
 
+  it('says so when the exported frame contains a visible code layer', async () => {
+    const parent = figma.createFrame() as unknown as FakeNode;
+    parent.width = 1600; parent.height = 1000;
+    parent.exportAsync = async () => new Uint8Array([1]);
+    parent.appendChild(codeLayer());
+    const reply = await opExportPng({ nodeId: parent.id, scale: 1 }) as { staticRender?: { nodeType: string; reason: string } };
+    expect(reply.staticRender?.nodeType).toBe('CODE_INSTANCE');
+    expect(reply.staticRender?.reason).toMatch(/contains/i);
+  });
+
+  it('ignores a hidden code layer inside the frame (it is not in the image)', async () => {
+    const parent = figma.createFrame() as unknown as FakeNode;
+    parent.exportAsync = async () => new Uint8Array([1]);
+    const hidden = codeLayer();
+    hidden.visible = false;
+    parent.appendChild(hidden);
+    const reply = await opExportPng({ nodeId: parent.id, scale: 1 }) as Record<string, unknown>;
+    expect(reply.staticRender).toBeUndefined();
+  });
+
   it('adds no note for an ordinary frame', async () => {
     const node = figma.createFrame() as unknown as FakeNode;
     node.width = 10; node.height = 10;
@@ -82,6 +102,8 @@ describe('inspect of a code layer', () => {
     };
     expect(result.visualArtifact.reliable).toBe(false);
     expect(result.visualArtifact.reason).toMatch(/static shell/);
+    // A caller that reads only the contract must not be told this PNG is the check.
+    expect((result.visualArtifact as { contract?: string }).contract).not.toMatch(/inspect this screenshot/);
   });
 
   it('still marks it unreliable when an older plugin sends no flag', async () => {
