@@ -5312,6 +5312,13 @@
     ], { booted });
   }
 
+  // shared/code-layer-static-export.ts
+  var STATIC_EXPORT_NODE_TYPES = /* @__PURE__ */ new Set(["CODE_INSTANCE"]);
+  var REASON = "Figma exports a code layer as its static shell, not its running code, so this PNG is not a render of what the canvas shows. To check it visually, start the layer's preview in Figma and capture the Figma window.";
+  function staticRenderNote(nodeType) {
+    return typeof nodeType === "string" && STATIC_EXPORT_NODE_TYPES.has(nodeType) ? { nodeType, reason: REASON } : void 0;
+  }
+
   // plugin/src/main/executor-ops.ts
   var PLUGIN_VERSION = "0.1.0";
   var LAYOUT_MODE_MAP = {
@@ -5578,10 +5585,12 @@
     if (!target) throw withCode(new Error("EXPORT_PNG: no node id given and selection is empty"), "E_INVALID_ARGS");
     const scale = typeof params.scale === "number" && params.scale > 0 ? params.scale : 2;
     const bytes = await target.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
+    const staticRender = staticRenderNote(target.type);
     return {
       base64: figma.base64Encode(bytes),
       w: Math.round(target.width * scale),
-      h: Math.round(target.height * scale)
+      h: Math.round(target.height * scale),
+      ...staticRender && { staticRender }
     };
   }
 

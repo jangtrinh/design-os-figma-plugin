@@ -14,6 +14,7 @@ import { CliError } from '../transport/protocol-helpers.ts';
 import { runCommand } from '../transport/broker-client.ts';
 import { preflightExecJs, readScriptFile } from './exec-js-preflight.ts';
 import { readTimeoutFlag, resolveTimeoutFlag } from '../util/timeout-flag.ts';
+import type { StaticRenderNote } from '../../../shared/code-layer-static-export.ts';
 
 const WIRE_MARGIN_MS = 2_000;
 
@@ -77,7 +78,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     nodeId: target === 'selection' ? undefined : target,
     useSelection: target === 'selection',
     scale,
-  }, { timeoutMs: exportTimeoutMs })) as { base64?: string; w?: number; h?: number };
+  }, { timeoutMs: exportTimeoutMs })) as { base64?: string; w?: number; h?: number; staticRender?: StaticRenderNote };
 
   if (!result || typeof result.base64 !== 'string') {
     throw new CliError('E_PLUGIN_ERROR', 'EXPORT_PNG reply missing base64 image data');
@@ -85,6 +86,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
   writeFileSync(outPath, Buffer.from(result.base64, 'base64'));
   return {
     path: outPath, w: result.w, h: result.h,
+    ...(result.staticRender && { reliable: false, reason: result.staticRender.reason }),
     ...(assertPath !== undefined && { assert: { script: assertPath, result: assertResult } }),
   };
 }
