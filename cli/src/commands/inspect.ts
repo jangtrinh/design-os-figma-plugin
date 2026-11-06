@@ -6,6 +6,7 @@ import { runCommand } from '../transport/broker-client.ts';
 import { scanNodeSpec, resolveScanTimeout } from './scan-node.ts';
 import { resolveSafeTarget } from '../../../shared/safe-target.ts';
 import type { CorrectionEvent } from '../../../shared/supervised-memory.ts';
+import { staticRenderNote, visualCheckContract, type StaticRenderNote } from '../../../shared/code-layer-static-export.ts';
 
 interface SelectionReply {
   selection?: { id?: string }[];
@@ -32,7 +33,11 @@ export async function inspectTarget(input: {
   const image = await runner('EXPORT_PNG', {
     nodeId: target.nodeId,
     scale: input.scale ?? 1,
-  }, { activity: `Inspect screenshot · ${target.nodeId}` }) as { base64: string; w: number; h: number };
+  }, { activity: `Inspect screenshot · ${target.nodeId}` }) as { base64: string; w: number; h: number; staticRender?: StaticRenderNote };
+  // The plugin flags a static render itself; the scanned source type covers a plugin
+  // build that predates the flag, so an old panel cannot make an empty PNG look checked.
+  const staticRender = image.staticRender
+    ?? staticRenderNote((structure as { figmaScanSourceType?: unknown } | null)?.figmaScanSourceType);
   const defaultPath = join(tmpdir(), `figma-inspect-${target.nodeId.replace(/[^a-z0-9]+/gi, '-')}.png`);
   const screenshotPath = resolve(input.out ?? defaultPath);
   writeFileSync(screenshotPath, Buffer.from(image.base64, 'base64'));
@@ -46,7 +51,8 @@ export async function inspectTarget(input: {
       width: image.w,
       height: image.h,
       required: true,
-      contract: 'VISUAL_CHECK_REQUIRED: inspect this screenshot before and after visual edits.',
+      contract: visualCheckContract(staticRender),
+      ...(staticRender && { reliable: false, reason: staticRender.reason }),
     },
   };
 }

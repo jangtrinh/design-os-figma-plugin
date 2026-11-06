@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { runCommand } from '../transport/broker-client.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 import type { EditFrame } from '../../../shared/edit-feed.ts';
+import { staticRenderNote, type StaticRenderNote } from '../../../shared/code-layer-static-export.ts';
 
 export interface ChangePngEntry {
   nodeId: string;
@@ -26,6 +27,9 @@ export interface ChangePngEntry {
   before: string | null;
   beforeSource: 'prior-export' | null;
   note?: string;
+  /** Present (false) only when the after PNG is not a render of what the canvas shows. */
+  reliable?: false;
+  reason?: string;
 }
 
 export interface ChangePngSkipped {
@@ -107,11 +111,11 @@ export async function exportChangePngs(
     const afterPath = join(dir, `${stem}.after.png`);
     const beforePath = join(dir, `${stem}.before.png`);
 
-    let reply: { base64?: unknown } | null;
+    let reply: { base64?: unknown; staticRender?: StaticRenderNote } | null;
     try {
       reply = (await runner('EXPORT_PNG', { nodeId, scale: opts.scale }, {
         readOnly: true, activity: `Export · ${last.nodeName ?? nodeId}`,
-      })) as { base64?: unknown } | null;
+      })) as { base64?: unknown; staticRender?: StaticRenderNote } | null;
     } catch (err) {
       if (!(err instanceof CliError)) throw err;
       if (!ABORTING_CODES.has(err.code)) {
@@ -130,10 +134,13 @@ export async function exportChangePngs(
     const before = resolveBefore(afterPath, beforePath, group.firstEditTs);
     if (before.renameAfter) renameSync(afterPath, beforePath);
     writeFileSync(afterPath, Buffer.from(reply.base64, 'base64'));
+    // The plugin's note first; the feed's node type covers a plugin build without it.
+    const staticRender = reply.staticRender ?? staticRenderNote(last.nodeType);
     exported.push({
       nodeId, nodeName: last.nodeName, nodeType: last.nodeType, after: afterPath,
       before: before.path, beforeSource: before.path !== null ? 'prior-export' : null,
       ...(before.path === null && { note: 'no prior export predates the edit — only the after PNG exists' }),
+      ...(staticRender && { reliable: false as const, reason: staticRender.reason }),
     });
   }
   return { dir, scale: opts.scale, exported, skipped, ...(error !== undefined && { error }) };

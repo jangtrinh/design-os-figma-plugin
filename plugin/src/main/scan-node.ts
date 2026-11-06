@@ -44,6 +44,14 @@ function mapType(t: string): FigmaExportNode['type'] {
   return 'FRAME'; // FRAME / COMPONENT / COMPONENT_SET / SECTION
 }
 
+/** Raw types that map to a schema type without losing what the node is. Any other
+ *  type (a code layer, a boolean operation, a type Figma adds later) still degrades
+ *  to FRAME, but its raw type is recorded so nobody mistakes it for a frame. */
+const MODELLED_SOURCE_TYPES: ReadonlySet<string> = new Set([
+  'FRAME', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'TEXT', 'GROUP', 'INSTANCE',
+  'RECTANGLE', 'ELLIPSE', 'VECTOR', 'LINE', 'STAR', 'POLYGON',
+]);
+
 /**
  * The file's variable id → name map — the join source that makes bindings
  * reversible. Same source as serializeDesignSystem's `tokens` (local variables
@@ -207,6 +215,7 @@ export function nodeToSpec(
   const n = node as unknown as Record<string, unknown>;
   const type = node.type;
   const out: ScannedNode = { type: mapType(type), name: node.name };
+  if (!MODELLED_SOURCE_TYPES.has(type)) out.figmaScanSourceType = type;
 
   const w = safe(() => node.width);
   const h = safe(() => node.height);
