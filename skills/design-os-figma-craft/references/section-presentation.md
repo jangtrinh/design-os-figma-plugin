@@ -9,6 +9,7 @@ Owner law captured 2026-08-20 and re-confirmed through three app campaigns (2026
 - **Y** is reserved for the family header (fixed y, e.g. 200) and the screens below it (`header.y + live header height + gap`).
 - Gaps: column gap ≈ 800, cluster gap ≈ 400, header note dx = 0 / gap 30 — airy, never edge-to-edge. Bind the exact numbers in the adapter; inspect the header's LIVE height every session (it is HUG).
 - Overlays (dialog/drawer/toast demos) sit in the column of the screen that opens them.
+- No connectors between artboards: order is the X axis + the step number in the name (owner ruling 2026-09-04). Connectors belong to the owner's flow boards, not to presentation sections.
 - **Resize a section to fit; never move it** — position is the owner's. `resizeWithoutConstraints(maxX + pad, maxY + pad)`.
 
 ## 2. Notes — group level, not per screen
