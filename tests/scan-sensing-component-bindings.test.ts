@@ -9,7 +9,7 @@ import { alias, entryFor, instanceOf, localComponent, node, page, pagesOf, sn } 
 async function senseOne(c: ReturnType<typeof node>) {
   const r = await applySensing([entryFor(c)], [sn(c)], pagesOf());
   expect(r.extra.sensing).toEqual({ status: 'complete' });
-  return r.components[0] as { boundVariables: string[]; instances: Array<{ component: string; count: number }> };
+  return r.components[0] as { boundVariables: string[]; instances: Array<{ component: string; count: number }>; unresolvedInstances?: number };
 }
 
 describe('components[].boundVariables — binding locations', () => {
@@ -107,5 +107,38 @@ describe('instance boundary and sets', () => {
     const r = await senseOne(set);
     expect(r.boundVariables).toEqual(['V:a', 'V:b']);
     expect(r.instances).toEqual([{ component: icon.id, count: 2 }]);
+  });
+
+  it('a component whose subtree holds unresolved instances reports their count; a set sums its variants; none writes no key', async () => {
+    const lib = page('Lib'); const ok = localComponent(lib, 'Ok');
+    const plain = localComponent(lib, 'Plain'); plain.appendChild(instanceOf(ok));
+    expect('unresolvedInstances' in await senseOne(plain)).toBe(false);
+    const set = node('COMPONENT_SET', 'Btn'); lib.appendChild(set);
+    for (const name of ['State=A', 'State=B']) {
+      const variant = node('COMPONENT', name); set.appendChild(variant);
+      variant.appendChild(instanceOf(null));
+      const throwing = instanceOf(null);
+      throwing.getMainComponentAsync = async () => { throw new Error('lookup failed'); };
+      variant.appendChild(throwing);
+    }
+    const r = await senseOne(set);
+    expect(r.unresolvedInstances).toBe(4);
+    expect(r.instances).toEqual([]);
+  });
+
+  it('a set never lists itself: a variant using a sibling variant is dropped by rule, not counted as unresolved', async () => {
+    const lib = page('Lib'); const other = localComponent(lib, 'Other');
+    const set = node('COMPONENT_SET', 'Tab'); lib.appendChild(set);
+    const a = node('COMPONENT', 'On=true'); const b = node('COMPONENT', 'On=false'); set.appendChild(a); set.appendChild(b);
+    a.appendChild(instanceOf(b)); a.appendChild(instanceOf(other));
+    const r = await senseOne(set);
+    expect(r.instances).toEqual([{ component: other.id, count: 1 }]);
+    expect(r.unresolvedInstances).toBeUndefined();
+  });
+
+  it('reads property-definition defaults on a lone component that is not a set', async () => {
+    const c = node('COMPONENT', 'Lone');
+    c.componentPropertyDefinitions = { 'Label#1': { type: 'TEXT', defaultValue: 'x', boundVariables: { defaultValue: alias('V:lone') } } };
+    expect((await senseOne(c)).boundVariables).toEqual(['V:lone']);
   });
 });

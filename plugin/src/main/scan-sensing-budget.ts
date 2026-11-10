@@ -21,6 +21,8 @@ export class SensingBudget {
   constructor(budgetMs: number = SENSING_BUDGET_MS, private readonly now: () => number = Date.now) {
     this.deadline = now() + budgetMs;
   }
+  /** Milliseconds left before the deadline (never negative). */
+  remainingMs(): number { return Math.max(0, this.deadline - this.now()); }
   /** Throws when the deadline has passed. */
   check(): void { if (this.now() > this.deadline) throw new SensingBudgetExceeded(); }
   /** Cheap per-node hook: reads the clock once per CLOCK_CHECK_EVERY nodes. */
@@ -34,10 +36,18 @@ export class SensingBudget {
  * nodes of a real file). A `children` read that throws propagates: a half-walked subtree
  * would assert a list the scan never fully saw.
  */
-export function walkToInstanceBoundary(root: SceneNode, visit: (n: SceneNode) => void, budget: SensingBudget): void {
+export function walkToInstanceBoundary(
+  root: SceneNode,
+  visit: (n: SceneNode) => void,
+  budget: SensingBudget,
+  /** Frame walks: a component or set definition met below the root is a boundary too —
+   *  neither visited nor descended (its content belongs to its own entry). */
+  skipComponentDefinitions = false,
+): void {
   const stack: SceneNode[] = [root];
   while (stack.length > 0) {
     const n = stack.pop() as SceneNode;
+    if (skipComponentDefinitions && n !== root && (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET')) continue;
     budget.tick();
     visit(n);
     if (n.type === 'INSTANCE' && n !== root) continue;

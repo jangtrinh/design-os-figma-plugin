@@ -1145,6 +1145,10 @@
       this.ticks = 0;
       this.deadline = now() + budgetMs;
     }
+    /** Milliseconds left before the deadline (never negative). */
+    remainingMs() {
+      return Math.max(0, this.deadline - this.now());
+    }
     /** Throws when the deadline has passed. */
     check() {
       if (this.now() > this.deadline) throw new SensingBudgetExceeded();
@@ -1154,10 +1158,11 @@
       if (++this.ticks % CLOCK_CHECK_EVERY === 0) this.check();
     }
   };
-  function walkToInstanceBoundary(root, visit, budget) {
+  function walkToInstanceBoundary(root, visit, budget, skipComponentDefinitions = false) {
     const stack = [root];
     while (stack.length > 0) {
       const n = stack.pop();
+      if (skipComponentDefinitions && n !== root && (n.type === "COMPONENT" || n.type === "COMPONENT_SET")) continue;
       budget.tick();
       visit(n);
       if (n.type === "INSTANCE" && n !== root) continue;
@@ -1175,12 +1180,23 @@
     if (main.remote === true || target.remote === true) return target.key || null;
     return main.parent ? target.id || null : null;
   }
-  async function lookupRef(inst) {
+  async function lookupRef(inst, budget) {
+    let timer;
+    const expired = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new SensingBudgetExceeded()), budget.remainingMs());
+    });
+    const lookup = (async () => {
+      try {
+        const main = await inst.getMainComponentAsync();
+        return main ? componentRefOf(main) : null;
+      } catch {
+        return null;
+      }
+    })();
     try {
-      const main = await inst.getMainComponentAsync();
-      return main ? componentRefOf(main) : null;
-    } catch {
-      return null;
+      return await Promise.race([lookup, expired]);
+    } finally {
+      if (timer !== void 0) clearTimeout(timer);
     }
   }
   var byCode = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -1191,7 +1207,7 @@
       while (next < insts.length) {
         const i = next++;
         budget.check();
-        refs[i] = await lookupRef(insts[i]);
+        refs[i] = await lookupRef(insts[i], budget);
       }
     };
     await Promise.all(Array.from({ length: Math.min(LOOKUP_CONCURRENCY, insts.length) }, worker));
@@ -1204,13 +1220,13 @@
     const instances = [...counts].map(([component, count]) => ({ component, count })).sort((a, b) => byCode(a.component, b.component));
     return { instances, unresolved };
   }
-  function walkRoot(root, budget) {
+  function walkRoot(root, budget, isComponent) {
     const bound = /* @__PURE__ */ new Set();
     const insts = [];
     walkToInstanceBoundary(root, (n) => {
-      collectOwnBindings(n, bound);
+      if (isComponent) collectOwnBindings(n, bound);
       if (n.type === "INSTANCE" && n !== root) insts.push(n);
-    }, budget);
+    }, budget, !isComponent);
     return { bound, insts };
   }
   function frameRoots(page) {
@@ -1233,14 +1249,21 @@
         sensedComponents.push(entry);
         continue;
       }
-      const { bound, insts } = walkRoot(node, budget);
-      const { instances } = await countInstances(insts, budget);
-      sensedComponents.push({ ...entry, boundVariables: [...bound].sort(byCode), instances });
+      const { bound, insts } = walkRoot(node, budget, true);
+      const { instances, unresolved } = await countInstances(insts, budget);
+      const sensed = {
+        ...entry,
+        boundVariables: [...bound].sort(byCode),
+        instances: instances.filter((i) => i.component !== node.id)
+        // no self-reference
+      };
+      if (unresolved > 0) sensed.unresolvedInstances = unresolved;
+      sensedComponents.push(sensed);
     }
     const frames = [];
     for (const page of pages) {
       for (const { frame, section: section2 } of frameRoots(page)) {
-        const { insts } = walkRoot(frame, budget);
+        const { insts } = walkRoot(frame, budget, false);
         const { instances, unresolved } = await countInstances(insts, budget);
         const out = { id: frame.id, name: frame.name, page: { id: page.id, name: page.name } };
         if (section2 !== void 0) out.section = section2;

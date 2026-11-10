@@ -81,4 +81,31 @@ describe('sensing can never fail the scan', () => {
     const b = JSON.stringify(await serializeDesignSystem());
     expect(a).toBe(b);
   });
+
+  it('a lookup that never settles cannot hang the scan: it ends as skipped with the budget reason, inside the test deadline', async () => {
+    const lib = page('Lib'); const c = localComponent(lib, 'C');
+    const pg = page('Screens'); const fr = node('FRAME', 'F'); pg.appendChild(fr);
+    const stuck = instanceOf(c); stuck.getMainComponentAsync = () => new Promise(() => {});
+    fr.appendChild(stuck);
+    const entries = [entryFor(c)];
+    const r = await applySensing(entries, [sn(c)], pagesOf(pg), new SensingBudget(50));
+    expect(r.extra).toEqual({ sensing: { status: 'skipped', reason: 'time-budget-exceeded' } });
+    expect(r.components).toBe(entries);
+  });
+
+  it('a never-settling lookup inside a component ends the sensing step the same way', async () => {
+    const c = node('COMPONENT', 'C');
+    const stuck = instanceOf(null); stuck.getMainComponentAsync = () => new Promise(() => {});
+    c.appendChild(stuck);
+    const r = await applySensing([entryFor(c)], [sn(c)], pagesOf(), new SensingBudget(50));
+    expect(r.extra.sensing).toEqual({ status: 'skipped', reason: 'time-budget-exceeded' });
+  });
+
+  it('the walk itself checks the budget: a big subtree with no instance still ends as skipped', async () => {
+    const c = node('COMPONENT', 'Big');
+    for (let k = 0; k < 200; k++) c.appendChild(node('FRAME', `f${k}`));
+    let t = 0;
+    const r = await applySensing([entryFor(c)], [sn(c)], pagesOf(), new SensingBudget(1500, () => (t += 1000)));
+    expect(r.extra).toEqual({ sensing: { status: 'skipped', reason: 'time-budget-exceeded' } });
+  });
 });

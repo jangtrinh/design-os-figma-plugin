@@ -51,6 +51,30 @@ describe('frames[] — instances', () => {
     expect(refs(f)).toEqual([{ component: btn.id, count: 2 }]);
   });
 
+  it('a component or set definition inside a frame is a boundary: not counted as an instance, not descended', async () => {
+    const lib = page('Lib'); const btn = localComponent(lib, 'Button');
+    const pg = page('Screens'); const fr = node('FRAME', 'Kit', 1, 1); pg.appendChild(fr);
+    const comp = node('COMPONENT', 'Inline'); comp.appendChild(instanceOf(btn)); fr.appendChild(comp);
+    const set = node('COMPONENT_SET', 'InlineSet'); const v = node('COMPONENT', 'A=1'); v.appendChild(instanceOf(btn));
+    set.appendChild(v); fr.appendChild(set);
+    fr.appendChild(instanceOf(btn));
+    expect(refs((await framesOf(pg))[0])).toEqual([{ component: btn.id, count: 1 }]);
+  });
+
+  it('the frame walk reads no binding field (bindings are read only when walking components)', async () => {
+    const lib = page('Lib'); const btn = localComponent(lib, 'Button');
+    const pg = page('Screens'); const fr = node('FRAME', 'F'); pg.appendChild(fr);
+    const inner = node('FRAME', 'inner'); fr.appendChild(inner); inner.appendChild(instanceOf(btn));
+    const reads: string[] = [];
+    for (const n of [fr, inner, fr.children[0], inner.children[0]]) {
+      for (const field of ['boundVariables', 'fills', 'strokes', 'effects', 'layoutGrids']) {
+        Object.defineProperty(n, field, { get() { reads.push(field); return undefined; }, configurable: true });
+      }
+    }
+    await framesOf(pg);
+    expect(reads).toEqual([]);
+  });
+
   it('a variant folds into its set; a library component is named by key, and by its set key when the lookup gives a set', async () => {
     const lib = page('Lib'); const set = node('COMPONENT_SET', 'Card'); lib.appendChild(set);
     const variant = node('COMPONENT', 'Size=L'); set.appendChild(variant);

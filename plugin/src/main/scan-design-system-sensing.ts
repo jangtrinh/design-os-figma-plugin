@@ -8,13 +8,16 @@
 // resolved through the ASYNC main-component lookup (the sync getter throws under
 // dynamic-page); a lookup that returns nothing, throws, or returns a local component that
 // is no longer in the document (no parent, not remote) is NOT given a `component` — it is
-// counted in `unresolvedInstances`, written only when above 0. `component` carries no
+// counted in `unresolvedInstances` (on a frame and on a component or set, summed over its
+// variants), written only when above 0. A component or set never lists ITSELF in its own
+// `instances` (a variant using a sibling variant of the same set folds to the set's id): the
+// count is dropped by rule, it carries nothing for the closure and would only make a cycle. `component` carries no
 // marker: a local id looks like `<n>:<n>`, a library key is a hex string.
 // Sensing runs after the existing result is complete and can never fail the scan: on any
 // throw or on budget overrun the caller keeps the pre-feature result plus `skipped`.
 import { collectOwnBindings } from './scan-bound-variables';
 import { r2 } from './scan-node-utils';
-import { LOOKUP_CONCURRENCY, SensingBudget, walkToInstanceBoundary } from './scan-sensing-budget';
+import { LOOKUP_CONCURRENCY, SensingBudget, SensingBudgetExceeded, walkToInstanceBoundary } from './scan-sensing-budget';
 
 export interface InstanceCount { component: string; count: number }
 export interface ScannedFrame {
@@ -45,12 +48,26 @@ function componentRefOf(main: ComponentNode): string | null {
   return main.parent ? target.id || null : null;
 }
 
-async function lookupRef(inst: InstanceNode): Promise<string | null> {
+/** Race a lookup against what is left of the budget: a promise that never settles must not
+ *  keep the sensing step pending past its budget (the command would time out and the scan
+ *  would lose every field). The budget winning throws; the lookup's own failure is `null`. */
+async function lookupRef(inst: InstanceNode, budget: SensingBudget): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SensingBudgetExceeded()), budget.remainingMs());
+  });
+  const lookup = (async (): Promise<string | null> => {
+    try {
+      const main = await inst.getMainComponentAsync();
+      return main ? componentRefOf(main) : null;
+    } catch {
+      return null;
+    }
+  })();
   try {
-    const main = await inst.getMainComponentAsync();
-    return main ? componentRefOf(main) : null;
-  } catch {
-    return null;
+    return await Promise.race([lookup, expired]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -64,7 +81,7 @@ async function countInstances(insts: readonly InstanceNode[], budget: SensingBud
     while (next < insts.length) {
       const i = next++;
       budget.check();
-      refs[i] = await lookupRef(insts[i]);
+      refs[i] = await lookupRef(insts[i], budget);
     }
   };
   await Promise.all(Array.from({ length: Math.min(LOOKUP_CONCURRENCY, insts.length) }, worker));
@@ -78,14 +95,18 @@ async function countInstances(insts: readonly InstanceNode[], budget: SensingBud
   return { instances, unresolved };
 }
 
-/** Walk one root under the instance boundary: its bound variable ids and its instance nodes. */
-function walkRoot(root: SceneNode, budget: SensingBudget): { bound: Set<string>; insts: InstanceNode[] } {
+/**
+ * Walk one root under the instance boundary: its instance nodes and, for a component only,
+ * its bound variable ids. A frame walk reads no binding field (cost) and treats a component
+ * or set definition inside the frame as a boundary.
+ */
+function walkRoot(root: SceneNode, budget: SensingBudget, isComponent: boolean): { bound: Set<string>; insts: InstanceNode[] } {
   const bound = new Set<string>();
   const insts: InstanceNode[] = [];
   walkToInstanceBoundary(root, (n) => {
-    collectOwnBindings(n as unknown as Record<string, unknown>, bound);
+    if (isComponent) collectOwnBindings(n as unknown as Record<string, unknown>, bound);
     if (n.type === 'INSTANCE' && n !== root) insts.push(n as InstanceNode);
-  }, budget);
+  }, budget, !isComponent);
   return { bound, insts };
 }
 
@@ -118,14 +139,20 @@ async function senseAll(
   for (const entry of components) {
     const node = nodeById.get(entry.id as string);
     if (!node) { sensedComponents.push(entry); continue; }
-    const { bound, insts } = walkRoot(node, budget);
-    const { instances } = await countInstances(insts, budget);
-    sensedComponents.push({ ...entry, boundVariables: [...bound].sort(byCode), instances });
+    const { bound, insts } = walkRoot(node, budget, true);
+    const { instances, unresolved } = await countInstances(insts, budget);
+    const sensed: Record<string, unknown> = {
+      ...entry,
+      boundVariables: [...bound].sort(byCode),
+      instances: instances.filter((i) => i.component !== node.id), // no self-reference
+    };
+    if (unresolved > 0) sensed.unresolvedInstances = unresolved;
+    sensedComponents.push(sensed);
   }
   const frames: ScannedFrame[] = [];
   for (const page of pages) {
     for (const { frame, section } of frameRoots(page)) {
-      const { insts } = walkRoot(frame, budget);
+      const { insts } = walkRoot(frame, budget, false);
       const { instances, unresolved } = await countInstances(insts, budget);
       const out: ScannedFrame = { id: frame.id, name: frame.name, page: { id: page.id, name: page.name } } as ScannedFrame;
       if (section !== undefined) out.section = section;
