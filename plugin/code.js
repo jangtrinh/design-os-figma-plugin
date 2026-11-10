@@ -1059,6 +1059,129 @@
     return null;
   }
 
+  // plugin/src/main/scan-node-utils.ts
+  var r2 = (n) => Math.round(n * 100) / 100;
+  function safe(read) {
+    try {
+      const v = read();
+      if (typeof v === "symbol") return void 0;
+      return v;
+    } catch {
+      return void 0;
+    }
+  }
+  function aliasId(val) {
+    const alias = Array.isArray(val) ? val[0] : val;
+    return alias?.id;
+  }
+  function readBindings(n) {
+    const rec = {};
+    const bound = safe(() => n.boundVariables);
+    if (bound && typeof bound === "object") {
+      for (const [field, val] of Object.entries(bound)) {
+        const id = aliasId(val);
+        if (id) rec[field] = id;
+      }
+    }
+    for (const field of ["fills", "strokes"]) {
+      const paints = safe(() => n[field]);
+      if (!Array.isArray(paints)) continue;
+      for (const p of paints) {
+        const id = aliasId(p.boundVariables?.color);
+        if (id) {
+          rec[field] = id;
+          break;
+        }
+      }
+    }
+    return rec;
+  }
+
+  // plugin/src/main/scan-design-system-sensing.ts
+  function collectAliasIds(value, into, depth = 0) {
+    if (!value || typeof value !== "object" || depth > 4) return;
+    if (Array.isArray(value)) {
+      for (const v of value) collectAliasIds(v, into, depth + 1);
+      return;
+    }
+    const alias = value;
+    if (alias.type === "VARIABLE_ALIAS" && typeof alias.id === "string" && alias.id) {
+      into.add(alias.id);
+      return;
+    }
+    for (const v of Object.values(value)) collectAliasIds(v, into, depth + 1);
+  }
+  function collectOwnBindings(n, into) {
+    collectAliasIds(safe(() => n.boundVariables), into);
+    for (const field of ["fills", "strokes", "effects", "layoutGrids"]) {
+      const list3 = safe(() => n[field]);
+      if (!Array.isArray(list3)) continue;
+      for (const item of list3) {
+        collectAliasIds(safe(() => item.boundVariables), into);
+      }
+    }
+  }
+  function boundVariableIdsOf(root) {
+    const ids = /* @__PURE__ */ new Set();
+    const stack = [root];
+    while (stack.length > 0) {
+      const n = stack.pop();
+      collectOwnBindings(n, ids);
+      if (n.type === "INSTANCE") continue;
+      const kids = safe(() => n.children);
+      if (Array.isArray(kids)) for (const k of kids) stack.push(k);
+    }
+    return [...ids].sort();
+  }
+  function componentRefOf(main) {
+    const set2 = main.parent && main.parent.type === "COMPONENT_SET" ? main.parent : null;
+    const target = set2 ?? main;
+    if (target.remote === true) return target.key || null;
+    return target.id || null;
+  }
+  async function instancesOf(frame) {
+    const counts = /* @__PURE__ */ new Map();
+    let unresolved = 0;
+    const found = frame.findAllWithCriteria({ types: ["INSTANCE"] });
+    const mains = await Promise.all(found.map(async (inst) => {
+      try {
+        return await inst.getMainComponentAsync();
+      } catch {
+        return null;
+      }
+    }));
+    for (const main of mains) {
+      const ref = main ? componentRefOf(main) : null;
+      if (!ref) {
+        unresolved++;
+        continue;
+      }
+      counts.set(ref, (counts.get(ref) ?? 0) + 1);
+    }
+    const instances = [...counts].map(([component, count]) => ({ component, count })).sort((a, b) => a.component < b.component ? -1 : a.component > b.component ? 1 : 0);
+    return { instances, unresolved };
+  }
+  async function serializeFrames(pages) {
+    const out = [];
+    for (const page of pages) {
+      for (const child of page.children) {
+        if (child.type !== "FRAME") continue;
+        const { instances, unresolved } = await instancesOf(child);
+        const frame = {
+          id: child.id,
+          name: child.name,
+          page: { id: page.id, name: page.name },
+          w: r2(child.width),
+          h: r2(child.height),
+          instances
+        };
+        if (unresolved > 0) frame.unresolvedInstances = unresolved;
+        out.push(frame);
+      }
+    }
+    return out;
+  }
+
   // plugin/src/main/serialize-node.ts
   var SERIALIZED_NODE_FIELDS = /* @__PURE__ */ new Set(["id", "name", "type", "x", "y", "width", "height", "children"]);
   function serializeNode(node, depth = 1) {
@@ -1100,6 +1223,7 @@
     await figma.loadAllPagesAsync();
     const nodes = figma.root.findAllWithCriteria({ types: ["COMPONENT", "COMPONENT_SET"] });
     const components = serializeComponentEntries(nodes);
+    const frames = await serializeFrames(figma.root.children);
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const variables = await figma.variables.getLocalVariablesAsync();
     const collectionName = new Map(collections.map((c) => [c.id, c.name]));
@@ -1123,6 +1247,7 @@
       components,
       tokens,
       styles,
+      frames,
       counts: { components: components.length, tokens: tokens.length, styles: styles.length }
     };
   }
@@ -1136,7 +1261,8 @@
         key: n.key,
         name: n.name,
         type: n.type,
-        page: page ? { id: page.id, name: page.name } : null
+        page: page ? { id: page.id, name: page.name } : null,
+        boundVariables: boundVariableIdsOf(n)
       };
       try {
         const defs = n.componentPropertyDefinitions;
@@ -1150,44 +1276,6 @@
       components.push(entry);
     }
     return components;
-  }
-
-  // plugin/src/main/scan-node-utils.ts
-  var r2 = (n) => Math.round(n * 100) / 100;
-  function safe(read) {
-    try {
-      const v = read();
-      if (typeof v === "symbol") return void 0;
-      return v;
-    } catch {
-      return void 0;
-    }
-  }
-  function aliasId(val) {
-    const alias = Array.isArray(val) ? val[0] : val;
-    return alias?.id;
-  }
-  function readBindings(n) {
-    const rec = {};
-    const bound = safe(() => n.boundVariables);
-    if (bound && typeof bound === "object") {
-      for (const [field, val] of Object.entries(bound)) {
-        const id = aliasId(val);
-        if (id) rec[field] = id;
-      }
-    }
-    for (const field of ["fills", "strokes"]) {
-      const paints = safe(() => n[field]);
-      if (!Array.isArray(paints)) continue;
-      for (const p of paints) {
-        const id = aliasId(p.boundVariables?.color);
-        if (id) {
-          rec[field] = id;
-          break;
-        }
-      }
-    }
-    return rec;
   }
 
   // plugin/src/main/text-concealment.ts

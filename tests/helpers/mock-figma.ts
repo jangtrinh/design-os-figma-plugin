@@ -255,11 +255,30 @@ export class FakeNode {
     return out;
   }
 
+  /** Under documentAccess: dynamic-page a PAGE must be loaded before its subtree can be
+   * searched; Figma throws otherwise. Opt-in per test (`page.pageLoaded = false`) so every
+   * existing fixture keeps its always-loaded pages; `figma.loadAllPagesAsync()` and
+   * `page.loadAsync()` flip it. */
+  private assertSearchable(method: string): void {
+    let page: FakeNode | null = this;
+    while (page && page.type !== 'PAGE') page = page.parent;
+    if (page && page.pageLoaded === false) {
+      throw new Error(
+        `in ${method}: Cannot call with documentAccess: dynamic-page on an unloaded page. `
+        + 'Call page.loadAsync() or figma.loadAllPagesAsync() first.',
+      );
+    }
+  }
+
+  /** PageNode.loadAsync. */
+  async loadAsync(): Promise<void> { this.pageLoaded = true; }
+
   /** ChildrenMixin.findAllWithCriteria({types}) — deep search, matching Figma's own
    * (a nested instance's own SLOT is found too; absorption phase-02 fact 10 depends
    * on exactly this so its stricter direct-vs-nested ambiguity rule has something
    * real to walk). */
   findAllWithCriteria(criteria: { types: readonly string[] }): FakeNode[] {
+    this.assertSearchable('findAllWithCriteria');
     const out: FakeNode[] = [];
     const walk = (n: FakeNode): void => {
       for (const c of n.children) {
@@ -969,6 +988,11 @@ export interface MockFigma {
   /** figma.viewport.slidesView — 'grid' | 'single-slide' (absorption phase-04). */
   viewport: { slidesView: 'grid' | 'single-slide' };
   loadFontAsync(font: FontName): Promise<void>;
+  /** figma.loadAllPagesAsync — loads every page under the document root. */
+  loadAllPagesAsync(): Promise<void>;
+  getLocalPaintStylesAsync(): Promise<Array<{ id: string; name: string }>>;
+  getLocalTextStylesAsync(): Promise<Array<{ id: string; name: string }>>;
+  getLocalEffectStylesAsync(): Promise<Array<{ id: string; name: string }>>;
   listAvailableFontsAsync(): Promise<Array<{ fontName: FontName }>>;
   getNodeByIdAsync(id: string): Promise<FakeNode | null>;
   importComponentByKeyAsync(key: string): Promise<FakeNode>;
@@ -1083,6 +1107,10 @@ export function installMockFigma(): MockFigma {
     mixed: FIGMA_MIXED,
     root: (() => { const r = new FakeNode('DOCUMENT'); r.name = 'Mock File'; return r; })(),
     get currentUser() { return mockCurrentUser; },
+    loadAllPagesAsync: async () => { for (const p of figma.root.children) p.pageLoaded = true; },
+    getLocalPaintStylesAsync: async () => [],
+    getLocalTextStylesAsync: async () => [],
+    getLocalEffectStylesAsync: async () => [],
     currentPage,
     get editorType() { return mockEditorType; },
     annotations: {
