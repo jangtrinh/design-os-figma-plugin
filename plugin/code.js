@@ -1097,7 +1097,7 @@
     return rec;
   }
 
-  // plugin/src/main/scan-design-system-sensing.ts
+  // plugin/src/main/scan-bound-variables.ts
   function collectAliasIds(value, into, depth = 0) {
     if (!value || typeof value !== "object" || depth > 4) return;
     if (Array.isArray(value)) {
@@ -1111,75 +1111,156 @@
     }
     for (const v of Object.values(value)) collectAliasIds(v, into, depth + 1);
   }
+  function collectItemBindings(item, into) {
+    collectAliasIds(safe(() => item.boundVariables), into);
+    const stops = safe(() => item.gradientStops);
+    if (Array.isArray(stops)) for (const stop of stops) collectAliasIds(safe(() => stop.boundVariables), into);
+  }
   function collectOwnBindings(n, into) {
     collectAliasIds(safe(() => n.boundVariables), into);
     for (const field of ["fills", "strokes", "effects", "layoutGrids"]) {
       const list3 = safe(() => n[field]);
-      if (!Array.isArray(list3)) continue;
-      for (const item of list3) {
-        collectAliasIds(safe(() => item.boundVariables), into);
+      if (Array.isArray(list3)) for (const item of list3) collectItemBindings(item, into);
+    }
+    if (n.type === "COMPONENT" || n.type === "COMPONENT_SET") {
+      const defs = safe(() => n.componentPropertyDefinitions);
+      if (defs && typeof defs === "object") {
+        for (const def of Object.values(defs)) collectAliasIds(safe(() => def.boundVariables), into);
       }
     }
   }
-  function boundVariableIdsOf(root) {
-    const ids = /* @__PURE__ */ new Set();
+
+  // plugin/src/main/scan-sensing-budget.ts
+  var SENSING_BUDGET_MS = 15e3;
+  var LOOKUP_CONCURRENCY = 16;
+  var CLOCK_CHECK_EVERY = 64;
+  var SensingBudgetExceeded = class extends Error {
+    constructor() {
+      super("time-budget-exceeded");
+    }
+  };
+  var SensingBudget = class {
+    constructor(budgetMs = SENSING_BUDGET_MS, now = Date.now) {
+      this.now = now;
+      this.ticks = 0;
+      this.deadline = now() + budgetMs;
+    }
+    /** Throws when the deadline has passed. */
+    check() {
+      if (this.now() > this.deadline) throw new SensingBudgetExceeded();
+    }
+    /** Cheap per-node hook: reads the clock once per CLOCK_CHECK_EVERY nodes. */
+    tick() {
+      if (++this.ticks % CLOCK_CHECK_EVERY === 0) this.check();
+    }
+  };
+  function walkToInstanceBoundary(root, visit, budget) {
     const stack = [root];
     while (stack.length > 0) {
       const n = stack.pop();
-      collectOwnBindings(n, ids);
-      if (n.type === "INSTANCE") continue;
-      const kids = safe(() => n.children);
-      if (Array.isArray(kids)) for (const k of kids) stack.push(k);
+      budget.tick();
+      visit(n);
+      if (n.type === "INSTANCE" && n !== root) continue;
+      if ("children" in n) for (const k of n.children) stack.push(k);
     }
-    return [...ids].sort();
+  }
+
+  // plugin/src/main/scan-design-system-sensing.ts
+  function isFoldedVariant(n) {
+    return n.type === "COMPONENT" && !!n.parent && n.parent.type === "COMPONENT_SET";
   }
   function componentRefOf(main) {
     const set2 = main.parent && main.parent.type === "COMPONENT_SET" ? main.parent : null;
     const target = set2 ?? main;
-    if (target.remote === true) return target.key || null;
-    return target.id || null;
+    if (main.remote === true || target.remote === true) return target.key || null;
+    return main.parent ? target.id || null : null;
   }
-  async function instancesOf(frame) {
+  async function lookupRef(inst) {
+    try {
+      const main = await inst.getMainComponentAsync();
+      return main ? componentRefOf(main) : null;
+    } catch {
+      return null;
+    }
+  }
+  var byCode = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  async function countInstances(insts, budget) {
+    const refs = new Array(insts.length).fill(null);
+    let next = 0;
+    const worker = async () => {
+      while (next < insts.length) {
+        const i = next++;
+        budget.check();
+        refs[i] = await lookupRef(insts[i]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(LOOKUP_CONCURRENCY, insts.length) }, worker));
     const counts = /* @__PURE__ */ new Map();
     let unresolved = 0;
-    const found = frame.findAllWithCriteria({ types: ["INSTANCE"] });
-    const mains = await Promise.all(found.map(async (inst) => {
-      try {
-        return await inst.getMainComponentAsync();
-      } catch {
-        return null;
-      }
-    }));
-    for (const main of mains) {
-      const ref = main ? componentRefOf(main) : null;
-      if (!ref) {
-        unresolved++;
-        continue;
-      }
-      counts.set(ref, (counts.get(ref) ?? 0) + 1);
+    for (const ref of refs) {
+      if (ref === null) unresolved++;
+      else counts.set(ref, (counts.get(ref) ?? 0) + 1);
     }
-    const instances = [...counts].map(([component, count]) => ({ component, count })).sort((a, b) => a.component < b.component ? -1 : a.component > b.component ? 1 : 0);
+    const instances = [...counts].map(([component, count]) => ({ component, count })).sort((a, b) => byCode(a.component, b.component));
     return { instances, unresolved };
   }
-  async function serializeFrames(pages) {
+  function walkRoot(root, budget) {
+    const bound = /* @__PURE__ */ new Set();
+    const insts = [];
+    walkToInstanceBoundary(root, (n) => {
+      collectOwnBindings(n, bound);
+      if (n.type === "INSTANCE" && n !== root) insts.push(n);
+    }, budget);
+    return { bound, insts };
+  }
+  function frameRoots(page) {
     const out = [];
+    const visit = (container, section2) => {
+      for (const child of container.children) {
+        if (child.type === "FRAME") out.push({ frame: child, section: section2 });
+        else if (child.type === "SECTION") visit(child, child.name);
+      }
+    };
+    visit(page);
+    return out;
+  }
+  async function senseAll(components, componentNodes, pages, budget) {
+    const nodeById = new Map(componentNodes.map((n) => [n.id, n]));
+    const sensedComponents = [];
+    for (const entry of components) {
+      const node = nodeById.get(entry.id);
+      if (!node) {
+        sensedComponents.push(entry);
+        continue;
+      }
+      const { bound, insts } = walkRoot(node, budget);
+      const { instances } = await countInstances(insts, budget);
+      sensedComponents.push({ ...entry, boundVariables: [...bound].sort(byCode), instances });
+    }
+    const frames = [];
     for (const page of pages) {
-      for (const child of page.children) {
-        if (child.type !== "FRAME") continue;
-        const { instances, unresolved } = await instancesOf(child);
-        const frame = {
-          id: child.id,
-          name: child.name,
-          page: { id: page.id, name: page.name },
-          w: r2(child.width),
-          h: r2(child.height),
-          instances
-        };
-        if (unresolved > 0) frame.unresolvedInstances = unresolved;
-        out.push(frame);
+      for (const { frame, section: section2 } of frameRoots(page)) {
+        const { insts } = walkRoot(frame, budget);
+        const { instances, unresolved } = await countInstances(insts, budget);
+        const out = { id: frame.id, name: frame.name, page: { id: page.id, name: page.name } };
+        if (section2 !== void 0) out.section = section2;
+        out.w = r2(frame.width);
+        out.h = r2(frame.height);
+        out.instances = instances;
+        if (unresolved > 0) out.unresolvedInstances = unresolved;
+        frames.push(out);
       }
     }
-    return out;
+    return { components: sensedComponents, frames };
+  }
+  async function applySensing(components, componentNodes, pages, budget = new SensingBudget()) {
+    try {
+      const sensed = await senseAll(components, componentNodes, pages, budget);
+      return { components: sensed.components, extra: { frames: sensed.frames, sensing: { status: "complete" } } };
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      return { components, extra: { sensing: { status: "skipped", reason } } };
+    }
   }
 
   // plugin/src/main/serialize-node.ts
@@ -1223,7 +1304,6 @@
     await figma.loadAllPagesAsync();
     const nodes = figma.root.findAllWithCriteria({ types: ["COMPONENT", "COMPONENT_SET"] });
     const components = serializeComponentEntries(nodes);
-    const frames = await serializeFrames(figma.root.children);
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const variables = await figma.variables.getLocalVariablesAsync();
     const collectionName = new Map(collections.map((c) => [c.id, c.name]));
@@ -1243,13 +1323,13 @@
       ...text.map((s) => ({ id: s.id, name: s.name, type: "TEXT" })),
       ...effect.map((s) => ({ id: s.id, name: s.name, type: "EFFECT" }))
     ];
-    return {
+    const counts = { components: components.length, tokens: tokens.length, styles: styles.length };
+    const sensed = await applySensing(
       components,
-      tokens,
-      styles,
-      frames,
-      counts: { components: components.length, tokens: tokens.length, styles: styles.length }
-    };
+      nodes.filter((n) => !isFoldedVariant(n)),
+      figma.root.children
+    );
+    return { components: sensed.components, tokens, styles, counts, ...sensed.extra };
   }
   function serializeComponentEntries(nodes) {
     const components = [];
@@ -1261,8 +1341,7 @@
         key: n.key,
         name: n.name,
         type: n.type,
-        page: page ? { id: page.id, name: page.name } : null,
-        boundVariables: boundVariableIdsOf(n)
+        page: page ? { id: page.id, name: page.name } : null
       };
       try {
         const defs = n.componentPropertyDefinitions;

@@ -1,124 +1,157 @@
-// The two additive sensing fields of SCAN_DESIGN_SYSTEM: the variables bound inside each
-// component (`components[].boundVariables`) and, per page, the component instances each
-// top-level frame is built from (`frames[]`). The plugin only SENSES; judging which
-// variable is a design-system token or which page holds screens belongs to the kernel.
-//
-// Dynamic-page rules this module obeys (the manifest is `documentAccess: dynamic-page`):
-//   - the sync `InstanceNode.mainComponent` getter THROWS, so every instance's main
-//     component is reached through `getMainComponentAsync()` and never the sync getter;
-//   - a page must be loaded before it is searched (the caller awaits loadAllPagesAsync);
-//   - `getMainComponentAsync()` may resolve to null (a deleted or unreachable library
-//     component) or to a component with no parent (remote / soft-deleted) — both are
-//     counted as `unresolvedInstances`, never dropped and never guessed.
-import { r2, safe } from './scan-node-utils';
+// The additive sensing fields of SCAN_DESIGN_SYSTEM (field shape version 1):
+//   components[].boundVariables  sorted unique variable ids (see scan-bound-variables.ts)
+//   components[].instances       [{component, count}] components used directly inside it
+//   frames[]                     page frames (also inside sections) with their instances
+//   sensing                      {status: "complete"} or {status: "skipped", reason}
+// The plugin only SENSES; the kernel judges which variable is a token and which page holds
+// screens. Rules: the walk stops at an instance (scan-sensing-budget.ts); every instance is
+// resolved through the ASYNC main-component lookup (the sync getter throws under
+// dynamic-page); a lookup that returns nothing, throws, or returns a local component that
+// is no longer in the document (no parent, not remote) is NOT given a `component` — it is
+// counted in `unresolvedInstances`, written only when above 0. `component` carries no
+// marker: a local id looks like `<n>:<n>`, a library key is a hex string.
+// Sensing runs after the existing result is complete and can never fail the scan: on any
+// throw or on budget overrun the caller keeps the pre-feature result plus `skipped`.
+import { collectOwnBindings } from './scan-bound-variables';
+import { r2 } from './scan-node-utils';
+import { LOOKUP_CONCURRENCY, SensingBudget, walkToInstanceBoundary } from './scan-sensing-budget';
 
-interface AliasLike { type?: unknown; id?: unknown }
-
-/** Every `VARIABLE_ALIAS` id found anywhere inside a boundVariables-shaped value. */
-function collectAliasIds(value: unknown, into: Set<string>, depth = 0): void {
-  if (!value || typeof value !== 'object' || depth > 4) return;
-  if (Array.isArray(value)) {
-    for (const v of value) collectAliasIds(v, into, depth + 1);
-    return;
-  }
-  const alias = value as AliasLike;
-  if (alias.type === 'VARIABLE_ALIAS' && typeof alias.id === 'string' && alias.id) {
-    into.add(alias.id);
-    return;
-  }
-  for (const v of Object.values(value)) collectAliasIds(v, into, depth + 1);
-}
-
-/** Variable ids bound on ONE node: its own fields plus the paints/effects/grids it carries. */
-function collectOwnBindings(n: Record<string, unknown>, into: Set<string>): void {
-  collectAliasIds(safe(() => n.boundVariables), into);
-  for (const field of ['fills', 'strokes', 'effects', 'layoutGrids'] as const) {
-    const list = safe(() => n[field]);
-    if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      collectAliasIds(safe(() => (item as { boundVariables?: unknown }).boundVariables), into);
-    }
-  }
-}
-
-/**
- * Every variable id bound anywhere inside a component or component set (a set's variants
- * included), sorted for a stable payload. The walk does not descend into a nested
- * INSTANCE: its children belong to another component, which carries its own entry.
- */
-export function boundVariableIdsOf(root: SceneNode): string[] {
-  const ids = new Set<string>();
-  const stack: unknown[] = [root];
-  while (stack.length > 0) {
-    const n = stack.pop() as Record<string, unknown>;
-    collectOwnBindings(n, ids);
-    if (n.type === 'INSTANCE') continue;
-    const kids = safe(() => n.children) as unknown[] | undefined;
-    if (Array.isArray(kids)) for (const k of kids) stack.push(k);
-  }
-  return [...ids].sort();
-}
-
-/** The identity a frame's instance list names: id for a local component, key for a library one. */
-function componentRefOf(main: ComponentNode): string | null {
-  // Variants fold into their set, exactly as `components[]` does.
-  const set = main.parent && main.parent.type === 'COMPONENT_SET' ? (main.parent as ComponentSetNode) : null;
-  const target = set ?? main;
-  if (target.remote === true) return target.key || null;
-  return target.id || null;
-}
-
-export interface FrameInstanceCount { component: string; count: number }
+export interface InstanceCount { component: string; count: number }
 export interface ScannedFrame {
   id: string;
   name: string;
   page: { id: string; name: string };
+  /** Innermost enclosing section; absent for a direct child of the page. */
+  section?: string;
   w: number;
   h: number;
-  instances: FrameInstanceCount[];
-  /** Present only when > 0: instances whose main component could not be resolved. */
+  instances: InstanceCount[];
+  /** Present only when > 0. */
   unresolvedInstances?: number;
 }
+export type Sensing = { status: 'complete' } | { status: 'skipped'; reason: string };
 
-async function instancesOf(frame: FrameNode): Promise<{ instances: FrameInstanceCount[]; unresolved: number }> {
+/** True for a COMPONENT folded into its COMPONENT_SET's entry (no entry of its own). */
+export function isFoldedVariant(n: SceneNode): boolean {
+  return n.type === 'COMPONENT' && !!n.parent && n.parent.type === 'COMPONENT_SET';
+}
+
+/** The `component` value of a resolved main component, or null when it cannot be named. */
+function componentRefOf(main: ComponentNode): string | null {
+  const set = main.parent && main.parent.type === 'COMPONENT_SET' ? (main.parent as ComponentSetNode) : null;
+  const target = set ?? main;
+  if (main.remote === true || target.remote === true) return target.key || null;
+  // A local component with no parent was removed from the document: it names nothing.
+  return main.parent ? target.id || null : null;
+}
+
+async function lookupRef(inst: InstanceNode): Promise<string | null> {
+  try {
+    const main = await inst.getMainComponentAsync();
+    return main ? componentRefOf(main) : null;
+  } catch {
+    return null;
+  }
+}
+
+const byCode = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Resolve instances with bounded concurrency; counts per component, sorted. */
+async function countInstances(insts: readonly InstanceNode[], budget: SensingBudget): Promise<{ instances: InstanceCount[]; unresolved: number }> {
+  const refs: Array<string | null> = new Array(insts.length).fill(null);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < insts.length) {
+      const i = next++;
+      budget.check();
+      refs[i] = await lookupRef(insts[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(LOOKUP_CONCURRENCY, insts.length) }, worker));
   const counts = new Map<string, number>();
   let unresolved = 0;
-  const found = frame.findAllWithCriteria({ types: ['INSTANCE'] });
-  const mains = await Promise.all(found.map(async (inst) => {
-    try {
-      return await inst.getMainComponentAsync();
-    } catch {
-      return null;
-    }
-  }));
-  for (const main of mains) {
-    const ref = main ? componentRefOf(main) : null;
-    if (!ref) { unresolved++; continue; }
-    counts.set(ref, (counts.get(ref) ?? 0) + 1);
+  for (const ref of refs) {
+    if (ref === null) unresolved++;
+    else counts.set(ref, (counts.get(ref) ?? 0) + 1);
   }
-  const instances = [...counts].map(([component, count]) => ({ component, count }))
-    .sort((a, b) => (a.component < b.component ? -1 : a.component > b.component ? 1 : 0));
+  const instances = [...counts].map(([component, count]) => ({ component, count })).sort((a, b) => byCode(a.component, b.component));
   return { instances, unresolved };
 }
 
-/**
- * The top-level FRAMEs of every page with the components instantiated inside them. Pages
- * must already be loaded (a failing search on an unloaded page propagates: a scan that
- * silently skipped a page would assert a screen list it never saw).
- */
-export async function serializeFrames(pages: readonly PageNode[]): Promise<ScannedFrame[]> {
-  const out: ScannedFrame[] = [];
+/** Walk one root under the instance boundary: its bound variable ids and its instance nodes. */
+function walkRoot(root: SceneNode, budget: SensingBudget): { bound: Set<string>; insts: InstanceNode[] } {
+  const bound = new Set<string>();
+  const insts: InstanceNode[] = [];
+  walkToInstanceBoundary(root, (n) => {
+    collectOwnBindings(n as unknown as Record<string, unknown>, bound);
+    if (n.type === 'INSTANCE' && n !== root) insts.push(n as InstanceNode);
+  }, budget);
+  return { bound, insts };
+}
+
+/** Frames that are direct children of a page or of a section at any depth under it. */
+function frameRoots(page: PageNode): Array<{ frame: FrameNode; section?: string }> {
+  const out: Array<{ frame: FrameNode; section?: string }> = [];
+  const visit = (container: ChildrenMixin, section?: string): void => {
+    for (const child of container.children) {
+      if (child.type === 'FRAME') out.push({ frame: child, section });
+      else if (child.type === 'SECTION') visit(child, child.name);
+    }
+  };
+  visit(page);
+  return out;
+}
+
+export interface SensedDesignSystem {
+  components: Record<string, unknown>[];
+  frames: ScannedFrame[];
+}
+
+async function senseAll(
+  components: readonly Record<string, unknown>[],
+  componentNodes: readonly SceneNode[],
+  pages: readonly PageNode[],
+  budget: SensingBudget,
+): Promise<SensedDesignSystem> {
+  const nodeById = new Map(componentNodes.map((n) => [n.id, n]));
+  const sensedComponents: Record<string, unknown>[] = [];
+  for (const entry of components) {
+    const node = nodeById.get(entry.id as string);
+    if (!node) { sensedComponents.push(entry); continue; }
+    const { bound, insts } = walkRoot(node, budget);
+    const { instances } = await countInstances(insts, budget);
+    sensedComponents.push({ ...entry, boundVariables: [...bound].sort(byCode), instances });
+  }
+  const frames: ScannedFrame[] = [];
   for (const page of pages) {
-    for (const child of page.children) {
-      if (child.type !== 'FRAME') continue;
-      const { instances, unresolved } = await instancesOf(child);
-      const frame: ScannedFrame = {
-        id: child.id, name: child.name, page: { id: page.id, name: page.name },
-        w: r2(child.width), h: r2(child.height), instances,
-      };
-      if (unresolved > 0) frame.unresolvedInstances = unresolved;
-      out.push(frame);
+    for (const { frame, section } of frameRoots(page)) {
+      const { insts } = walkRoot(frame, budget);
+      const { instances, unresolved } = await countInstances(insts, budget);
+      const out: ScannedFrame = { id: frame.id, name: frame.name, page: { id: page.id, name: page.name } } as ScannedFrame;
+      if (section !== undefined) out.section = section;
+      out.w = r2(frame.width); out.h = r2(frame.height); out.instances = instances;
+      if (unresolved > 0) out.unresolvedInstances = unresolved;
+      frames.push(out);
     }
   }
-  return out;
+  return { components: sensedComponents, frames };
+}
+
+/**
+ * Add the sensing fields to an already-complete scan, or leave it untouched. Returns the
+ * (possibly enriched) components and the extra top-level keys to append after `counts`.
+ */
+export async function applySensing(
+  components: Record<string, unknown>[],
+  componentNodes: readonly SceneNode[],
+  pages: readonly PageNode[],
+  budget: SensingBudget = new SensingBudget(),
+): Promise<{ components: Record<string, unknown>[]; extra: Record<string, unknown> }> {
+  try {
+    const sensed = await senseAll(components, componentNodes, pages, budget);
+    return { components: sensed.components, extra: { frames: sensed.frames, sensing: { status: 'complete' } satisfies Sensing } };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return { components, extra: { sensing: { status: 'skipped', reason } satisfies Sensing } };
+  }
 }

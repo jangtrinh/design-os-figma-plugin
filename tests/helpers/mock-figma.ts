@@ -167,7 +167,19 @@ export class FakeNode {
   width = 0;
   height = 0;
   parent: FakeNode | null = null;
-  children: FakeNode[] = [];
+  private _children: FakeNode[] = [];
+  /** Under documentAccess: dynamic-page, reading `children` of a PAGE that is not loaded
+   * throws (typings: PageNode must be loaded first). Opt-in via `page.pageLoaded = false`. */
+  get children(): FakeNode[] {
+    if (this.type === 'PAGE' && this.pageLoaded === false) {
+      throw new Error(
+        'in get_children: Cannot call with documentAccess: dynamic-page on an unloaded page. '
+        + 'Call page.loadAsync() or figma.loadAllPagesAsync() first.',
+      );
+    }
+    return this._children;
+  }
+  set children(v: FakeNode[]) { this._children = v; }
   boundVariables: Record<string, unknown> = {};
   private _corners: Corners = { tl: 0, tr: 0, br: 0, bl: 0 };
   private _sides: Sides = { top: 1, right: 1, bottom: 1, left: 1 };
@@ -459,6 +471,9 @@ export class FakeNode {
   private _fills: unknown;
   private _strokes: unknown;
   private mirrorPaintBinding(field: 'fills' | 'strokes', paints: unknown): void {
+    // A test can switch the mirror off (`node.paintBindingMirror = false`) so the paint-level
+    // read — the authoritative one — is the ONLY place a binding can be found.
+    if (this.paintBindingMirror === false) return;
     const first = Array.isArray(paints)
       ? (paints[0] as { boundVariables?: { color?: { id?: string } } } | undefined)
       : undefined;
@@ -516,7 +531,7 @@ export class FakeNode {
   private cloneAs(type: string): FakeNode {
     const copy = new FakeNode(type);
     for (const [k, v] of Object.entries(this)) {
-      if (k === 'id' || k === 'type' || k === 'parent' || k === 'children') continue;
+      if (k === 'id' || k === 'type' || k === 'parent' || k === 'children' || k === '_children') continue;
       copy[k] = v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v;
     }
     for (const c of this.children) copy.appendChild(c.cloneAs(c.type));

@@ -1,7 +1,7 @@
 // JSON-safe serialization: scene nodes (GET_SELECTION), arbitrary values
 // (EXEC_JS results), and the design-system registry (SCAN_DESIGN_SYSTEM).
 import { pageOf } from './page-of-node';
-import { boundVariableIdsOf, serializeFrames } from './scan-design-system-sensing';
+import { applySensing, isFoldedVariant } from './scan-design-system-sensing';
 
 export interface SerializedNode {
   id: string;
@@ -74,8 +74,6 @@ export async function serializeDesignSystem(): Promise<Record<string, unknown>> 
   // Components + component sets (variant children are covered by their set)
   const nodes = figma.root.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] });
   const components = serializeComponentEntries(nodes);
-  // Sensing fields: top-level frames per page with the component instances inside them.
-  const frames = await serializeFrames(figma.root.children);
 
   // Variable tokens (value resolved against the collection's default mode)
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -100,13 +98,14 @@ export async function serializeDesignSystem(): Promise<Record<string, unknown>> 
     ...effect.map((s) => ({ id: s.id, name: s.name, type: 'EFFECT' })),
   ];
 
-  return {
-    components,
-    tokens,
-    styles,
-    frames,
-    counts: { components: components.length, tokens: tokens.length, styles: styles.length },
-  };
+  const counts = { components: components.length, tokens: tokens.length, styles: styles.length };
+
+  // Sensing runs last, on a finished result, and never fails the scan: on a throw or a
+  // time-budget overrun the result below is exactly the pre-sensing one plus `sensing`.
+  const sensed = await applySensing(
+    components, nodes.filter((n) => !isFoldedVariant(n)), figma.root.children,
+  );
+  return { components: sensed.components, tokens, styles, counts, ...sensed.extra };
 }
 
 /**
@@ -125,7 +124,6 @@ export function serializeComponentEntries(nodes: readonly SceneNode[]): Record<s
     const entry: Record<string, unknown> = {
       id: n.id, key: (n as ComponentNode).key, name: n.name, type: n.type,
       page: page ? { id: page.id, name: page.name } : null,
-      boundVariables: boundVariableIdsOf(n),
     };
     try {
       const defs = (n as ComponentSetNode).componentPropertyDefinitions;
