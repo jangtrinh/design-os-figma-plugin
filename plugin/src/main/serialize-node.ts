@@ -1,6 +1,7 @@
 // JSON-safe serialization: scene nodes (GET_SELECTION), arbitrary values
 // (EXEC_JS results), and the design-system registry (SCAN_DESIGN_SYSTEM).
 import { pageOf } from './page-of-node';
+import { applySensing, isFoldedVariant } from './scan-design-system-sensing';
 
 export interface SerializedNode {
   id: string;
@@ -97,12 +98,14 @@ export async function serializeDesignSystem(): Promise<Record<string, unknown>> 
     ...effect.map((s) => ({ id: s.id, name: s.name, type: 'EFFECT' })),
   ];
 
-  return {
-    components,
-    tokens,
-    styles,
-    counts: { components: components.length, tokens: tokens.length, styles: styles.length },
-  };
+  const counts = { components: components.length, tokens: tokens.length, styles: styles.length };
+
+  // Sensing runs last, on a finished result, and never fails the scan: on a throw or a
+  // time-budget overrun the result below is exactly the pre-sensing one plus `sensing`.
+  const sensed = await applySensing(
+    components, nodes.filter((n) => !isFoldedVariant(n)), figma.root.children,
+  );
+  return { components: sensed.components, tokens, styles, counts, ...sensed.extra };
 }
 
 /**
