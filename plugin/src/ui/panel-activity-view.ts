@@ -16,7 +16,8 @@ export function labelControl(target: HTMLElement, label: string): void {
 }
 
 export interface FailureBadgeTarget {
-  hidden: boolean;
+  get hidden(): boolean | string;
+  set hidden(value: boolean);
   textContent: string | null;
   setAttribute(name: string, value: string): void;
 }
@@ -45,8 +46,11 @@ export class ActivityView {
   private records: ActivityRecord[] = [];
   private readonly activeTools = new Map<string, string>();
   readonly failures = new BoundedKeySet();
+  private readonly failureCount: FailureBadgeTarget;
 
-  constructor(private readonly failureCount: FailureBadgeTarget) {}
+  constructor(failureCount: FailureBadgeTarget) {
+    this.failureCount = failureCount;
+  }
 
   push(record: ActivityRecord): void {
     this.records = pushActivity(this.records, record);

@@ -10,7 +10,6 @@ import { flattenContention, run, validateSinceDays, type ContentionRow } from '.
 import { CONTENTION_LOG_FILENAME, type ContentionStore } from '../cli/src/transport/contention-log.ts';
 import { CliError } from '../cli/src/transport/protocol-helpers.ts';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 0, 15, 12, 0, 0);
 
 const FIXTURE: ContentionStore = {

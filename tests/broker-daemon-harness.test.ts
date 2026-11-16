@@ -1081,7 +1081,7 @@ describe('daemon harness — cancel-then-complete never dispatches the cancelled
     await new Promise((resolve) => setTimeout(resolve, 200)); // let routeFromPlugin/advanceQueue settle
 
     // Job B was never dispatched — the plugin received EXACTLY one request frame (job A's).
-    const requestFrames = pluginFrames.frames.filter((f) => 'cmd' in (f as Record<string, unknown>));
+    const requestFrames = pluginFrames.frames.filter((f) => 'cmd' in (f as unknown as Record<string, unknown>));
     expect(requestFrames).toHaveLength(1);
     expect((requestFrames[0] as { id: string }).id).toBe('req-a');
 
@@ -1139,7 +1139,7 @@ describe('daemon harness — actual transport loss preserves dispatched mutation
     await helloPlugin(plugin2, 'plugin-2', 'F2', 'RawF2');
     const plugin2Frames = collectFrames(plugin2);
     await new Promise((resolve) => setTimeout(resolve, 200));
-    const dispatched = plugin2Frames.frames.filter((f) => 'cmd' in (f as Record<string, unknown>));
+    const dispatched = plugin2Frames.frames.filter((f) => 'cmd' in (f as unknown as Record<string, unknown>));
     expect(dispatched).toHaveLength(0);
     const { hello: heldStatus } = await connectAndAwaitBrokerHello(port);
     const heldPlugin = (heldStatus.data as { plugins: Array<{ instanceId: string; runningJob?: JobInfo }> })
@@ -2119,7 +2119,7 @@ describe('daemon harness — force-release refuses a HEALTHY running job, allows
     expect(polledA.job.state).toBe('running');
     const polledB = await pollJob(cliB, jobB, 'req-fr1-poll-b');
     expect(polledB.job.state).toBe('queued');
-    const requestFrames = pluginFrames.frames.filter((f) => 'cmd' in (f as Record<string, unknown>));
+    const requestFrames = pluginFrames.frames.filter((f) => 'cmd' in (f as unknown as Record<string, unknown>));
     expect(requestFrames).toHaveLength(1);
     expect((requestFrames[0] as { id: string }).id).toBe('req-fr1-a');
   });
@@ -2680,7 +2680,7 @@ describe('daemon harness — each connection reports its own delta, and the log 
     const plugin = await connectSocket(port);
     await helloPlugin(plugin, 'inst-unknown-evt', 'Unknown Event File');
 
-    plugin.send(JSON.stringify({ type: 'PLUGIN_FUTURE_TELEMETRY', data: { whatever: [1, 2, 3] } } satisfies EventMsg));
+    plugin.send(JSON.stringify({ type: 'PLUGIN_FUTURE_TELEMETRY', data: { whatever: [1, 2, 3] } }));
 
     // The socket still works: an app-level PING is still answered.
     const pong = nextFrame<EventMsg>(plugin, (m) => (m as EventMsg).type === 'PONG');

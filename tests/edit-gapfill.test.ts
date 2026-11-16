@@ -8,7 +8,7 @@ import { createSingleFlightWriter, normalizeSnapshotCoord } from '../plugin/src/
 import {
   baselineMissingNotice, deletedPageIds, deletedPageLabel, diffSnapshots, diffTopLevel,
   fromBaselineRecord, gapfillEditsForPage, mergeUpdatedRecords, pageWasTruncated,
-  resolveBaselinePage, snapshotProviderFrom, toBaselineRecord, withoutSurvivingNodes,
+  resolveBaselinePage, snapshotProviderFrom, toBaselineRecord,
 } from '../plugin/src/main/gapfill-diff.ts';
 import type { NodeSnapshot, TopLevelRecord } from '../plugin/src/main/page-walk-bounded.ts';
 import type { BaselinePage } from '../plugin/src/main/gapfill-baseline-store.ts';

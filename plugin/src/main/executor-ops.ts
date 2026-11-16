@@ -17,7 +17,7 @@ import {
   STATIC_EXPORT_NODE_TYPES, containedStaticRenderNote, staticRenderNote, type StaticRenderNote,
 } from '../../../shared/code-layer-static-export';
 
-export const PLUGIN_VERSION = '0.1.0';
+export const PLUGIN_VERSION = '0.2.0';
 
 type Params = Record<string, unknown>;
 

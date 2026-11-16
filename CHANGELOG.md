@@ -4,8 +4,11 @@ All notable changes to `design-os-figma-plugin` are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
 ### Changed
 - Renamed the bundled skills with the `design-os-` prefix: `skills/figma-agent` is now `skills/design-os-figma-agent` and `skills/es-figma-craft` (`es:figma-craft`) is now `skills/design-os-figma-craft`. The `figma-agent` CLI binary keeps its name. `figma-agent install-skill` now writes to `design-os-figma-agent/`; an older `figma-agent/` folder from a previous install is left in place and can be deleted by hand.
+- Upgraded the TypeScript toolchain to TypeScript 7 (`^7.0.2` native Go compiler) with shared strictness defaults (`verbatimModuleSyntax`, `erasableSyntaxOnly`, `noImplicitOverride`, `noFallthroughCasesInSwitch`, `noUncheckedSideEffectImports`), isolated `DOM` vs Figma sandbox configs across `plugin/` and `tests/`, and full test-suite typechecking.
 
 ## [1.0.0] - 2026-10-14
 

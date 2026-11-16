@@ -192,7 +192,7 @@ describe('unresolvable ref — honest, not silent (the library/remote edge)', ()
 
 describe('the pre-P6 flow is untouched (payload tokens stay authoritative)', () => {
   const TOKENS: FigmaExportTokens = {
-    colors: [{ name: 'color.primary', color: { r: 1, g: 0, b: 0, a: 1 } }],
+    colors: [{ name: 'color.primary', hex: '#ff0000', color: { r: 1, g: 0, b: 0, a: 1 } }],
     typography: [], spacing: [], radii: [], shadows: [],
   };
 

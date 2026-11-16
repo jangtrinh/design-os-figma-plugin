@@ -5324,7 +5324,7 @@
   }
 
   // plugin/src/main/executor-ops.ts
-  var PLUGIN_VERSION = "0.1.0";
+  var PLUGIN_VERSION = "0.2.0";
   var LAYOUT_MODE_MAP = {
     H: "HORIZONTAL",
     V: "VERTICAL",

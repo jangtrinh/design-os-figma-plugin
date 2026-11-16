@@ -300,7 +300,7 @@ describe('the truncation notice names the side that is actually over the cap', (
 
 describe('writeBaseline — the storage quota REFUSAL', () => {
   function otherFileBaseline(writtenAt: string): FileBaseline {
-    return { writtenAt, writtenBy: 'Owner', pages: [{ id: 'x', name: 'X', truncated: false, top: [], records: [] }] };
+    return { fileKey: null, fileName: 'Other', writtenAt, writtenBy: 'Owner', pages: [{ id: 'x', name: 'X', truncated: false, top: [], records: [] }] };
   }
 
   it('a refusal evicts the OLDEST other file\'s baseline, retries once, and succeeds', async () => {

@@ -303,7 +303,7 @@ describe('exec-js command — timeout notice and --queue-timeout', () => {
   afterEach(() => stderr.mockRestore());
 
   const opts = (): Record<string, unknown> => vi.mocked(runCommand).mock.calls[0]![2] as Record<string, unknown>;
-  const notices = (): string[] => stderr.mock.calls.map(([line]) => String(line)).filter((l) => l.startsWith('notice:'));
+  const notices = (): string[] => (stderr.mock.calls as unknown[][]).map(([line]) => String(line)).filter((l: string) => l.startsWith('notice:'));
 
   it('prints one notice naming the requested and effective values when --timeout exceeds the ceiling', async () => {
     await run(parseArgs([path, '--timeout', '300000']));
