@@ -10,14 +10,14 @@
 // Keeping both is the point: when they disagree, the difference is precisely the
 // loss that remains, and it stays on the record instead of being normalised away.
 
-import type { FigmaInnerOverride, FigmaKeyedBinding } from '../../../shared/figma-payload-types';
-import { readFillSize } from './instance-inner-fill-sizing';
+import type { FigmaInnerOverride, FigmaKeyedBinding } from '../../../shared/figma-payload-types.ts';
+import { readFillSize } from './instance-inner-fill-sizing.ts';
 import {
   INNER_OVERRIDE_FIELDS, innerChildKey, innerOverrideEntries, keyInnerChildren,
-} from './instance-inner-override-keys';
-import { readInnerVisual } from './instance-inner-visual';
-import type { MainComponentRef } from './scan-node-instance';
-import { r2, safe } from './scan-node-utils';
+} from './instance-inner-override-keys.ts';
+import { readInnerVisual } from './instance-inner-visual.ts';
+import type { MainComponentRef } from './scan-node-instance.ts';
+import { r2, safe } from './scan-node-utils.ts';
 
 /**
  * Fields overridden on the instance's INNER children (deduped + sorted).

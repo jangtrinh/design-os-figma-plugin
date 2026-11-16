@@ -4,7 +4,7 @@
 // registry-driven match: a cached figma.listAvailableFontsAsync() pass + CSS
 // font-stack walk so brand fonts (and their fallbacks) resolve before Inter.
 
-import { matchFamily, matchFamilyStack, parseFontStack, pickStyle } from './font-match';
+import { matchFamily, matchFamilyStack, parseFontStack, pickStyle } from './font-match.ts';
 
 /**
  * Returns an array of possible font style names for a given weight.

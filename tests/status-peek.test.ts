@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { peek, projectReadiness } from '../cli/src/transport/broker-peek.ts';
 import { mutationGatePathFor } from '../cli/src/transport/mutation-admission-gate.ts';
+import { BRIDGE_VERSION } from '../shared/version.ts';
 
 /** Accepts a TCP connection and then says nothing, forever — the ONLY way to
  *  actually exercise the deadline-timer branch of peek()'s race (a closed port
@@ -139,10 +140,10 @@ describe('peek() — in-process, real broker + fake plugin', () => {
     await mod.runBrokerDaemon({ advertisePath, ports: [0], exit: testExit() });
     const ad = JSON.parse(readFileSync(advertisePath, 'utf8')) as { port: number };
     const ws = await connectSocket(ad.port);
-    await helloPlugin(ws, 'p_1', 'Test File', '0.2.0', 1);
+    await helloPlugin(ws, 'p_1', 'Test File', BRIDGE_VERSION, 1);
     const result = await peek({ path: advertisePath });
     expect(result.connected).toBe(true);
-    expect(result.plugins?.[0]).toMatchObject({ fileName: 'Test File', pluginVersion: '0.2.0', protocolV: 1, versionMatch: true, protocolMatch: true });
+    expect(result.plugins?.[0]).toMatchObject({ fileName: 'Test File', pluginVersion: BRIDGE_VERSION, protocolV: 1, versionMatch: true, protocolMatch: true });
     expect(result.versionMatch).toBe(true);
     expect(result.protocolMatch).toBe(true);
     expect(result.broker).toMatchObject({ appReadinessVersion: 1, appReadinessVersionMatch: true });

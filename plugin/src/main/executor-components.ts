@@ -12,10 +12,10 @@
 //   - Vibma guard: destination is a COMPONENT inside a COMPONENT_SET (else
 //     Figma fails silently) — verify the reaction actually fires in prototype
 //   - hover auto-reverts (else fall back to MOUSE_ENTER/LEAVE pair)
-import type { FigmaColor, FigmaExportNode } from '../../../shared/figma-payload-types';
-import { parseCssColor } from '../ui/converter/color-utils';
-import { createFigmaNode } from './executor-frame';
-import { pushImportWarning } from './executor-styles';
+import type { FigmaColor, FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import { parseCssColor } from '../ui/converter/color-utils.ts';
+import { createFigmaNode } from './executor-frame.ts';
+import { pushImportWarning } from './executor-styles.ts';
 
 /** One computed-style delta captured on hover/focus (behavior.json states). */
 export interface StateDelta { property: string; from: string; to: string }

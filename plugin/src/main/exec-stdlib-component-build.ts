@@ -7,10 +7,10 @@
 // (stage-4 review, PR #10 issue 2). This is a compensating action for THIS helper's
 // own mutations, not a second undo system — `--undo-group` still covers everything
 // else in the script; knowledge/component-sets.md states that requirement plainly.
-import { withCode } from './executor-styles';
+import { withCode } from './executor-styles.ts';
 import {
   MAX_VARIANTS, assertCleanToken, comboName, cartesianProduct, parseComboName,
-} from './exec-stdlib-component-matrix';
+} from './exec-stdlib-component-matrix.ts';
 
 export interface BuildResult {
   nodes: ComponentNode[];

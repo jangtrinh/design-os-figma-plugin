@@ -13,6 +13,7 @@
       "node",
       "plugin-typings"
     ],
+    "noUncheckedIndexedAccess": false,
     "rootDir": ".."
   },
   "include": [

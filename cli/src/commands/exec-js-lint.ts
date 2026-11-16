@@ -133,6 +133,7 @@ export function maskExecJsLiterals(source: string): string {
 
   for (let i = 0; i < source.length; i++) {
     const char = source[i];
+    if (char === undefined) continue;
     const next = source[i + 1];
 
     if (state === 'code') {
@@ -168,7 +169,7 @@ export function maskExecJsLiterals(source: string): string {
         canStartRegex = true; // division is followed by an expression
       } else if (/[A-Za-z_$]/.test(char)) {
         let end = i + 1;
-        while (end < source.length && /[\w$]/.test(source[end])) end++;
+        while (end < source.length && /[\w$]/.test(source[end] ?? '')) end++;
         const token = source.slice(i, end);
         out += token;
         canStartRegex = expressionKeywords.has(token);

@@ -2,10 +2,10 @@
 // the fork's Slides handlers (MIT; see THIRD-PARTY.md), code.js:6530-6806.
 // Reuse, do not re-implement: `requireEditor` (exec-stdlib-editor.ts), `resolveSlide`
 // (exec-stdlib-slides-resolve.ts).
-import { requireEditor } from './exec-stdlib-editor';
-import { withCode } from './executor-styles';
-import { resolveSlide } from './exec-stdlib-slides-resolve';
-import type { SlideSummary, GridRowSummary } from './exec-stdlib-slides-types';
+import { requireEditor } from './exec-stdlib-editor.ts';
+import { withCode } from './executor-styles.ts';
+import { resolveSlide } from './exec-stdlib-slides-resolve.ts';
+import type { SlideSummary, GridRowSummary } from './exec-stdlib-slides-types.ts';
 
 /** Absorbed fact 1: `figma.getSlideGrid()` returns rows that are array-like —
  * iterate by numeric index; they are not objects with `.children` (the fork's own

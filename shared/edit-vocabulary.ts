@@ -7,8 +7,8 @@
 // because THREE consumers read this one table: `figma-agent changes` (phase 02), the
 // distill step (phase 03), and later a panel row — that is the DRY the brief asks for;
 // copying the panel's command table would not be.
-import type { EditOp } from './edit-feed';
-import type { EditIntent } from './edit-intent';
+import type { EditOp } from './edit-feed.ts';
+import type { EditIntent } from './edit-intent.ts';
 
 export type SceneEditVerb =
   'created' | 'renamed' | 'described' | 'annotated' | 'moved' | 'restyled' | 'deleted';

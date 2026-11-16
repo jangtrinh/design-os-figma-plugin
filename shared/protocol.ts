@@ -326,7 +326,7 @@ export interface ReplyOk {
   id: string;
   ok: true;
   result: unknown;
-  fileContext?: FileContext;
+  fileContext?: FileContext | undefined;
 }
 
 export interface JobRecovery {
@@ -349,7 +349,7 @@ export interface ReplyErr {
   id: string;
   ok: false;
   error: WireError;
-  fileContext?: FileContext;
+  fileContext?: FileContext | undefined;
   /**
    * Error log writer (backlog 4.6), additive: the failed command + its intent label,
    * echoed back by ui-relay.ts from the SAME `RequestMsg.cmd`/`.activity` it already
@@ -358,8 +358,8 @@ export interface ReplyErr {
    * value the request already carried. Optional so an older relay build (no cmd/activity
    * echo) still interoperates — the error just logs with `cmd: null`.
    */
-  cmd?: CommandName;
-  activity?: string;
+  cmd?: CommandName | undefined;
+  activity?: string | undefined;
 }
 export type ReplyMsg = ReplyOk | ReplyErr;
 
@@ -374,21 +374,21 @@ export interface JobInfo {
   jobId: string;
   state: 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'outcome-unknown';
   cmd: string;
-  activity?: string;
+  activity?: string | undefined;
   fileSlug: string;       // which file's per-file FIFO queue it belongs to
-  queuePosition?: number; // 1-based, present only while `state === 'queued'`
-  queuedMs?: number;      // time spent waiting — the evidence for the subtree-lock upgrade trigger
-  startedAt?: number;
-  finishedAt?: number;
-  dispatchState?: 'queued-not-dispatched-readiness-wait';
-  uncertaintyReason?: string;
-  recovery?: JobRecovery;
+  queuePosition?: number | undefined; // 1-based, present only while `state === 'queued'`
+  queuedMs?: number | undefined;      // time spent waiting — the evidence for the subtree-lock upgrade trigger
+  startedAt?: number | undefined;
+  finishedAt?: number | undefined;
+  dispatchState?: 'queued-not-dispatched-readiness-wait' | undefined;
+  uncertaintyReason?: string | undefined;
+  recovery?: JobRecovery | undefined;
   /** JOB_STATE events only: this broker also sends `running` when it dispatches the job,
    *  so the CLI may start the run budget then instead of at send. Never on a job poll. */
-  announcesRunning?: boolean;
+  announcesRunning?: boolean | undefined;
   /** Queued JOB_STATE events only: the file's slot is held by this watchdog-failed job,
    *  which stays until `figma-agent job <blockedBy> --force-release`. */
-  blockedBy?: string;
+  blockedBy?: string | undefined;
 }
 
 export type MutationGateState = 'paused' | 'open';

@@ -3,8 +3,8 @@
 // expression-vs-statement compilation, node-ish result summarization, and the empty/null/
 // undefined result classification are all pure functions of their input, so a plain import
 // works without a Figma sandbox (the exec-js-normalize.test.ts suite relies on exactly this).
-import { jsonSafe } from './serialize-node';
-import type { createExecStdlib } from './exec-stdlib';
+import { jsonSafe } from './serialize-node.ts';
+import type { createExecStdlib } from './exec-stdlib.ts';
 
 export type ConsoleProxy = Record<'log' | 'info' | 'warn' | 'error', (...args: unknown[]) => void>;
 export type ExecFn = (console: ConsoleProxy, ui: ReturnType<typeof createExecStdlib>) => Promise<unknown>;

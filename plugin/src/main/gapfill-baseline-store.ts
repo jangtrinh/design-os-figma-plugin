@@ -11,8 +11,8 @@
 //
 // The store is an INTERFACE, not a direct `figma.clientStorage` call, for one reason that
 // matters: the quota REFUSAL is the interesting path, and a test double can encode it.
-import { utf8ByteLength } from '../../../shared/utf8-byte-length';
-import type { TopLevelRecord } from './page-walk-bounded';
+import { utf8ByteLength } from '../../../shared/utf8-byte-length.ts';
+import type { TopLevelRecord } from './page-walk-bounded.ts';
 
 /** `[id, name, type, x, y, parentId]` — the tuple form of one node, ~40% smaller than the
  *  object form across a 4 000-record page and the only shape ever persisted. */

@@ -169,7 +169,7 @@ export async function peek(opts?: { path?: string; queryMs?: number }): Promise<
       port: ad.port,
       pid: ad.pid,
       protocolVersion: (hello.protocolV as number | undefined) ?? PROTOCOL_VERSION,
-      uptimeMs: (hello.uptimeMs as number | undefined) ?? undefined,
+      ...(typeof hello.uptimeMs === 'number' ? { uptimeMs: hello.uptimeMs } : {}),
       ...(hello.targetFileKeyAdmissionV === 1 && { targetFileKeyAdmissionV: 1 as const }),
       ...(rawReadinessVersion !== undefined && { appReadinessVersion: rawReadinessVersion }),
       appReadinessVersionMatch: rawReadinessVersion === undefined ? null : readinessSupported,

@@ -91,7 +91,11 @@ export function buildSlots(nodes: readonly Record_[]): { slots: Slot[]; roots: n
     // normal case for the walk's target, and the honest case for a record whose parent the
     // budget dropped: it is treated as its own tree rather than silently orphaned.
     if (parent === undefined) roots.push(i);
-    else { slots[parent].children.push(i); slot.parentIndex = parent; }
+    else {
+      const parentSlot = slots[parent];
+      if (parentSlot) { parentSlot.children.push(i); slot.parentIndex = parent; }
+      else roots.push(i);
+    }
   });
   return { slots, roots };
 }
@@ -104,21 +108,25 @@ export function computeSignatures(slots: Slot[], roots: readonly number[], hash:
   while (stack.length > 0) {
     const frame = stack.pop() as { at: number; expanded: boolean };
     const slot = slots[frame.at];
+    if (!slot) continue;
     if (!frame.expanded) {
       stack.push({ at: frame.at, expanded: true });
       for (let i = slot.children.length - 1; i >= 0; i -= 1) {
-        stack.push({ at: slot.children[i], expanded: false });
+        const childIdx = slot.children[i];
+        if (childIdx !== undefined) {
+          stack.push({ at: childIdx, expanded: false });
+        }
       }
       continue;
     }
-    slot.size = 1 + slot.children.reduce((sum, child) => sum + slots[child].size, 0);
-    if (!slot.addressable || slot.children.some((child) => isPoisoned(slots[child].sig))) {
+    slot.size = 1 + slot.children.reduce((sum, child) => sum + (slots[child]?.size ?? 0), 0);
+    if (!slot.addressable || slot.children.some((child) => isPoisoned(slots[child]?.sig ?? ''))) {
       slot.sig = `${POISON}${frame.at}`;
       continue;
     }
     const shape: Record_ = { ...slot.record };
     for (const field of PER_OCCURRENCE) delete shape[field];
-    slot.sig = interner.intern(`${canonicalContent(shape)}|${slot.children.map((c) => slots[c].sig).join(',')}`);
+    slot.sig = interner.intern(`${canonicalContent(shape)}|${slot.children.map((c) => slots[c]?.sig ?? '').join(',')}`);
   }
 }
 
@@ -132,7 +140,10 @@ export function subtreeOrder(slots: readonly Slot[], root: number): number[] {
   while (queue.length > 0) {
     const at = queue.shift() as number;
     order.push(at);
-    for (const child of slots[at].children) queue.push(child);
+    const slot = slots[at];
+    if (slot) {
+      for (const child of slot.children) queue.push(child);
+    }
   }
   return order;
 }

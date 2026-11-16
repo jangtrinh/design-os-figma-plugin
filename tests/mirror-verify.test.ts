@@ -12,7 +12,7 @@ import { COMMAND_TIMEOUTS } from '../shared/protocol.ts';
 import { execute, normalizeForDiff } from '../cli/src/commands/mirror-verify.ts';
 import { validateImportPayload } from '../shared/figma-payload-validation.ts';
 
-interface Call { cmd: string; params: unknown; opts?: { timeoutMs?: number } }
+interface Call { cmd: string; params: unknown; opts?: { timeoutMs?: number } | undefined }
 
 const CARD = {
   type: 'FRAME', name: 'Card', width: 320, height: 200,

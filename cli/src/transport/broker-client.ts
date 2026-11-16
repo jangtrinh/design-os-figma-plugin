@@ -212,7 +212,7 @@ export function exchange(
         ? `${cmd} still running after ${timeoutMs}ms — job ${lastJob.jobId} was NOT cancelled. ` +
           `Get the result with: figma-agent job ${lastJob.jobId} --wait`
         : `${cmd} timed out after ${timeoutMs}ms`,
-      { jobId: lastJob?.jobId },
+      lastJob?.jobId !== undefined ? { jobId: lastJob.jobId } : undefined,
     ))));
 
     const causeText = (): string => {
@@ -332,11 +332,16 @@ export function exchange(
         if (reply.fileContext) lastFileContext = reply.fileContext;
         finish(() => {
           if (reply.ok) resolve(reply.result);
-          else reject(new CliError(reply.error.code, reply.error.message, {
-            rolledBack: (reply.error as WireError).rolledBack,
-            jobId: reply.error.jobId ?? (reply.error.code === 'E_OUTCOME_UNKNOWN' ? lastJob?.jobId : undefined),
-            recovery: reply.error.recovery,
-          }));
+          else {
+            const rolledBack = (reply.error as WireError).rolledBack;
+            const jobId = reply.error.jobId ?? (reply.error.code === 'E_OUTCOME_UNKNOWN' ? lastJob?.jobId : undefined);
+            const recovery = reply.error.recovery;
+            reject(new CliError(reply.error.code, reply.error.message, {
+              ...(rolledBack !== undefined ? { rolledBack } : {}),
+              ...(jobId !== undefined ? { jobId } : {}),
+              ...(recovery !== undefined ? { recovery } : {}),
+            }));
+          }
         });
       }
     });
@@ -496,21 +501,26 @@ export async function runCommand(
     // it to is registered (bounded wait, `--no-wait` opts out). Runs AFTER the connect so
     // a dead broker surfaces as E_NO_BROKER above, never as a 60s wait for a plugin that
     // has nowhere to register.
-    if (needsPluginAdmission({ cmd: wireCmd, noWait: noWaitGlobal, targetFileKey })) {
+    if (needsPluginAdmission({
+      cmd: wireCmd,
+      noWait: noWaitGlobal,
+      ...(targetFileKey !== undefined ? { targetFileKey } : {}),
+    })) {
       await awaitPluginAdmission({
         port: ad.port,
         timeoutMs: PLUGIN_ADMISSION_WAIT_SECONDS * 1_000,
-        fileFilter: expectedFile,
-        instanceFilter: expectedInstance,
+        ...(expectedFile !== undefined ? { fileFilter: expectedFile } : {}),
+        ...(expectedInstance !== undefined ? { instanceFilter: expectedInstance } : {}),
         onWaiting: () => process.stderr.write(
           `waiting up to ${PLUGIN_ADMISSION_WAIT_SECONDS}s for a plugin to register before ${wireCmd} `
             + '(open Plugins > figma-agent in the target file; --no-wait skips this)\n',
         ),
       });
     }
-    return await exchange(ws, wireCmd, params, timeoutMs, opts?.activity, readOnlyRequested, {
-      queueTimeoutMs: opts?.queueTimeoutMs,
-    });
+    return await exchange(
+      ws, wireCmd, params, timeoutMs, opts?.activity, readOnlyRequested,
+      opts?.queueTimeoutMs !== undefined ? { queueTimeoutMs: opts.queueTimeoutMs } : undefined,
+    );
   } finally {
     try {
       ws.close();

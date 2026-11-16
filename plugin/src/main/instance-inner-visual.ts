@@ -25,9 +25,9 @@
 
 import type {
   FigmaExportEffect, FigmaExportFill, FigmaInnerVisual, FigmaKeyedBinding,
-} from '../../../shared/figma-payload-types';
-import { effectToExport, paintToFill } from './scan-node-paint';
-import { readBindings, safe } from './scan-node-utils';
+} from '../../../shared/figma-payload-types.ts';
+import { effectToExport, paintToFill } from './scan-node-paint.ts';
+import { readBindings, safe } from './scan-node-utils.ts';
 
 /**
  * The visual fields this codebase can both READ off a live child and WRITE back onto

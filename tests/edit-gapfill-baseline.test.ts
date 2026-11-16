@@ -511,7 +511,8 @@ describe('runGapfillDiff — the baseline must belong to THIS file', () => {
 
     const perf = createPerfStats();
     markBootComplete(perf);
-    const coverage = buildPluginCoverage({ gapfill: toGapfillStatus(stats), perf: toPerfStatus(perf) });
+    const perfStatus = toPerfStatus(perf);
+    const coverage = buildPluginCoverage({ gapfill: toGapfillStatus(stats), ...(perfStatus ? { perf: perfStatus } : {}) });
     expect(coverage).toEqual({
       complete: false,
       gaps: [

@@ -18,12 +18,12 @@
 import {
   hasComponentIntent, readAnnotations, readComponentIntent, readDevStatus,
   type ComponentIntent, type SubtreeDevResources,
-} from './context-intent-readers';
-import { buildContextRecord, messageOf, type ContextNodeLike, type ContextRecordResult } from './context-node-record';
-import { safe } from './scan-node-utils';
+} from './context-intent-readers.ts';
+import { buildContextRecord, messageOf, type ContextNodeLike, type ContextRecordResult } from './context-node-record.ts';
+import { safe } from './scan-node-utils.ts';
 
-export { countAttachedDevResources, noDevResourcesRead, readSubtreeDevResources } from './context-intent-readers';
-export type { ComponentIntent, DevResourceEntry, SubtreeDevResources } from './context-intent-readers';
+export { countAttachedDevResources, noDevResourcesRead, readSubtreeDevResources } from './context-intent-readers.ts';
+export type { ComponentIntent, DevResourceEntry, SubtreeDevResources } from './context-intent-readers.ts';
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 

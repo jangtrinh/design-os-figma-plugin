@@ -196,14 +196,14 @@ export class JobTable {
   private counter = 0;
 
   private readonly now: () => number;
-  private readonly mintId?: () => string;
+  private readonly mintId?: (() => string) | undefined;
 
   constructor(
     now: () => number = Date.now,
     mintId?: () => string,
   ) {
     this.now = now;
-    this.mintId = mintId;
+    if (mintId !== undefined) this.mintId = mintId;
   }
 
   private mint(): string {

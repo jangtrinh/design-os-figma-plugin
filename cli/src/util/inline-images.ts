@@ -19,15 +19,22 @@ const EXTENSION_MIME: Record<string, string> = {
 };
 
 function guessMime(url: string, headerMime: string | null): string {
-  if (headerMime && headerMime.startsWith('image/')) return headerMime.split(';')[0].trim();
+  if (headerMime && headerMime.startsWith('image/')) {
+    const part = headerMime.split(';')[0];
+    if (part) return part.trim();
+  }
   const match = /\.([a-z0-9]+)(?:[?#]|$)/i.exec(new URL(url).pathname);
-  return (match && EXTENSION_MIME[match[1].toLowerCase()]) || 'application/octet-stream';
+  const ext = match?.[1]?.toLowerCase();
+  return (ext && EXTENSION_MIME[ext]) || 'application/octet-stream';
 }
 
 function collectImageUrls(html: string): string[] {
   const urls = new Set<string>();
   for (const re of [IMG_SRC_RE, CSS_URL_RE]) {
-    for (const match of html.matchAll(re)) urls.add(match[2]);
+    for (const match of html.matchAll(re)) {
+      const src = match[2];
+      if (src) urls.add(src);
+    }
   }
   return [...urls];
 }

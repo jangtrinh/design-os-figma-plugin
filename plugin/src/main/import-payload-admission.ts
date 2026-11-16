@@ -1,10 +1,10 @@
-import { validateImportPayload } from '../../../shared/figma-payload-validation';
+import { validateImportPayload } from '../../../shared/figma-payload-validation.ts';
 import {
   createColorStyles, createEffectStyles, createTextStyles, getImportWarnings, resetImportWarnings,
-} from './executor-styles';
-import { createFigmaNode } from './executor-frame';
-import { resetKeyedVariableCache } from './executor-keyed-vars';
-import { resolveTokenVars } from './executor-token-var-resolve';
+} from './executor-styles.ts';
+import { createFigmaNode } from './executor-frame.ts';
+import { resetKeyedVariableCache } from './executor-keyed-vars.ts';
+import { resolveTokenVars } from './executor-token-var-resolve.ts';
 
 type Params = Record<string, unknown>;
 

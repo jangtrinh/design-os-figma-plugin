@@ -3,10 +3,10 @@
 // createImageNode, createSvgNode, createImageNodeWithFetch). Adapted for
 // documentAccess:"dynamic-page": fillStyleId → setFillStyleIdAsync.
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import { rgbToFigma, figmaColorToHex, mapExportEffects, pushImportWarning, specNodeName } from './executor-styles';
-import { applyStrokes } from './executor-strokes';
-import { applyTokenRefs } from './executor-variables';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import { rgbToFigma, figmaColorToHex, mapExportEffects, pushImportWarning, specNodeName } from './executor-styles.ts';
+import { applyStrokes } from './executor-strokes.ts';
+import { applyTokenRefs } from './executor-variables.ts';
 
 const PLACEHOLDER_FILL: SolidPaint = { type: 'SOLID', color: { r: 0.85, g: 0.85, b: 0.85 }, opacity: 1 };
 
@@ -23,7 +23,7 @@ export async function createRectangleNode(
   // Fills — reuse a generated paint style when the color matches a token
   if (exportNode.fills && exportNode.fills.length > 0) {
     const fill = exportNode.fills[0];
-    if (fill.color) {
+    if (fill && fill.color) {
       const hex = figmaColorToHex(fill.color);
       const paintStyle = colorStyles.get(hex);
       if (paintStyle) {

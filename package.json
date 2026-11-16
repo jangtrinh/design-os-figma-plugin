@@ -1,6 +1,6 @@
 {
   "name": "design-os-figma-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Thin CLI + Figma plugin relay — an agent and a designer in the same Figma file. Drives a Figma Free plugin (Plugin API) over a local WebSocket broker; never the paid official write MCP.",
   "license": "SEE LICENSE IN LICENSE",
@@ -18,7 +18,7 @@
     "build:plugin-main": "node scripts/build.mjs plugin-main",
     "build:plugin-ui": "node scripts/build.mjs plugin-ui",
     "emit:skill": "npm run build:cli --silent && node cli/dist/figma-agent.js __emit-skill > skills/design-os-figma-agent/SKILL.md",
-    "typecheck": "tsc -p cli --noEmit && tsc -p plugin --noEmit && tsc -p plugin/tsconfig.main.json --noEmit && tsc -p tests --noEmit && tsc -p tests/tsconfig.main.json --noEmit",
+    "typecheck": "node scripts/typecheck.mjs",
     "test": "vitest run --config vitest.config.ts",
     "lint:comments": "node scripts/check-comment-hygiene.mjs",
     "lint:comments:update-baseline": "node scripts/check-comment-hygiene.mjs --update-baseline",

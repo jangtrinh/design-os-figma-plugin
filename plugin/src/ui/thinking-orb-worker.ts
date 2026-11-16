@@ -1,5 +1,5 @@
-import type { OrbPresentation } from './thinking-orb';
-import { paintThinkingOrb } from './thinking-orb-painter';
+import type { OrbPresentation } from './thinking-orb.ts';
+import { paintThinkingOrb } from './thinking-orb-painter.ts';
 
 interface OrbWorkerState {
   canvas: OffscreenCanvas;

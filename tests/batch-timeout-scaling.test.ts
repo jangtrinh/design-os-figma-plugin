@@ -61,7 +61,7 @@ describe('batch execute() — threads the scaled timeout into the transport call
     const ops = Array.from({ length: 3 }, () => ({ cmd: 'SET_TEXT', params: { nodeId: '1:1', text: 'x' } }));
     const filePath = writeBatchFile(ops);
     try {
-      const calls: Array<{ cmd: string; params: unknown; opts?: { timeoutMs?: number } }> = [];
+      const calls: Array<{ cmd: string; params: unknown; opts?: { timeoutMs?: number } | undefined }> = [];
       const runner: Runner = async (cmd, params, opts) => {
         calls.push({ cmd, params, opts });
         return { ok: true };
@@ -80,7 +80,7 @@ describe('batch execute() — threads the scaled timeout into the transport call
     const ops = Array.from({ length: 60 }, () => ({ cmd: 'SET_TEXT', params: { nodeId: '1:1', text: 'x' } }));
     const filePath = writeBatchFile(ops);
     try {
-      const calls: Array<{ opts?: { timeoutMs?: number } }> = [];
+      const calls: Array<{ opts?: { timeoutMs?: number } | undefined }> = [];
       const runner: Runner = async (_cmd, _params, opts) => {
         calls.push({ opts });
         return { ok: true };

@@ -21,7 +21,7 @@
 // SILENTLY when the two subtrees differ (a variant swap, a nested instance) — it
 // always finds *a* node. Fail-safe beats format-independence here.
 
-import { safe } from './scan-node-utils';
+import { safe } from './scan-node-utils.ts';
 
 /**
  * The inner-override fields that survive a rebuild — i.e. the ones this codebase can

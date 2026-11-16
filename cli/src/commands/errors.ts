@@ -84,7 +84,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
 
   const path = errorLogPath();
   const { frames: allFrames, warnings } = readErrorLog(path);
-  const filtered = filterErrors(allFrames, { since, file });
+  const filtered = filterErrors(allFrames, {
+    ...(since !== undefined ? { since } : {}),
+    ...(file !== undefined ? { file } : {}),
+  });
   const limited = limitErrors(filtered, limit);
 
   // Stage-4 fix round (minor 6) — `--file` here FILTERS a single SHARED log (module

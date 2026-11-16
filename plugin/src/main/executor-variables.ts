@@ -3,8 +3,8 @@
 // (createVariables) — extended per phase-1 plan §3 (create-variable /
 // bind-variable) with getLocalVariablesAsync de-dup lookup.
 
-import type { FigmaExportTokens, FigmaExportNode, FigmaColor } from '../../../shared/figma-payload-types';
-import { hexToFigmaColor, pushImportWarning, withCode } from './executor-styles';
+import type { FigmaExportTokens, FigmaExportNode, FigmaColor } from '../../../shared/figma-payload-types.ts';
+import { hexToFigmaColor, pushImportWarning, withCode } from './executor-styles.ts';
 
 const COLLECTION_NAME = 'EaseDesign Tokens';
 const VARIABLE_TYPES = ['COLOR', 'FLOAT', 'STRING', 'BOOLEAN'] as const;
@@ -59,7 +59,9 @@ async function findReusableVariable(
   value: VariableValue,
 ): Promise<Variable | null> {
   const vars = await figma.variables.getLocalVariablesAsync(type);
-  const modeId = collection.modes[0].modeId;
+  const firstMode = collection.modes[0];
+  if (!firstMode) return null;
+  const modeId = firstMode.modeId;
   for (const v of vars) {
     if (v.variableCollectionId !== collection.id) continue;
     const existing = v.valuesByMode[modeId];
@@ -78,8 +80,10 @@ async function createOrReuseVariable(
 ): Promise<{ variable: Variable; reused: boolean }> {
   const existing = await findReusableVariable(collection, type, value);
   if (existing) return { variable: existing, reused: true };
+  const firstMode = collection.modes[0];
+  if (!firstMode) throw new Error(`Collection ${collection.name} has no modes`);
   const variable = figma.variables.createVariable(name, collection, type);
-  variable.setValueForMode(collection.modes[0].modeId, value);
+  variable.setValueForMode(firstMode.modeId, value);
   return { variable, reused: false };
 }
 

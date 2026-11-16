@@ -53,7 +53,8 @@ export function inPageManifestWalk(): Omit<Manifest, 'version' | 'url' | 'captur
     if (cs.display === 'none' || cs.visibility === 'hidden') continue;
 
     // Used fonts — only where the element actually renders text.
-    const fam = cs.fontFamily.split(',')[0].replace(/["']/g, '').trim();
+    const fontPart = cs.fontFamily.split(',')[0];
+    const fam = fontPart ? fontPart.replace(/["']/g, '').trim() : '';
     if (fam && (el.textContent || '').trim()) {
       const key = `${fam}|${cs.fontWeight}|${cs.fontStyle}`;
       if (!usedFonts.has(key)) usedFonts.set(key, { family: fam, weight: cs.fontWeight, style: cs.fontStyle });
@@ -66,7 +67,11 @@ export function inPageManifestWalk(): Omit<Manifest, 'version' | 'url' | 'captur
       if (bg && bg !== 'none' && bg.indexOf('url(') >= 0) {
         const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
         if (m && m[1] && !m[1].startsWith('data:')) {
-          backgroundImages.push({ url: abs(m[1]), bbox: boxOf(el), pseudo: pseudo || undefined });
+          backgroundImages.push({
+            url: abs(m[1]),
+            bbox: boxOf(el),
+            ...(pseudo ? { pseudo } : {}),
+          });
         }
       }
     }

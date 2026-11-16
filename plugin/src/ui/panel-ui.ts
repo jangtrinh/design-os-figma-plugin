@@ -1,13 +1,14 @@
-import { PORT_RANGE_START } from '../../../shared/protocol';
-import type { ConnectionState, ConnectionStatePayload } from '../../../shared/protocol';
-import { toActivityRecord, toActivityResult } from './activity-feed';
-import { ActivityView, labelControl, replaceIcon } from './panel-activity-view';
+import { PORT_RANGE_START } from '../../../shared/protocol.ts';
+import type { ConnectionState, ConnectionStatePayload } from '../../../shared/protocol.ts';
+import { BRIDGE_VERSION } from '../../../shared/version.ts';
+import { toActivityRecord, toActivityResult } from './activity-feed.ts';
+import { ActivityView, labelControl, replaceIcon } from './panel-activity-view.ts';
 import {
   acknowledgeHint, connectionTrouble, fileNote, railSentence, syncNowLabel, syncPromptLabel,
   syncResultLabel, syncResultSentence, syncStartSentence, syncStuckSentence,
   syncSupersededSentence, shouldClearPendingCount, SYNC_STUCK_TIMEOUT_MS, type RailLayer,
-} from './panel-model';
-import { mountThinkingOrb, orbPresentation } from './thinking-orb';
+} from './panel-model.ts';
+import { mountThinkingOrb, orbPresentation } from './thinking-orb.ts';
 
 declare const __BUILD_ID__: string;
 const el = (id: string): HTMLElement => document.getElementById(id) as HTMLElement;
@@ -25,7 +26,7 @@ const activityView = new ActivityView(el('fga-failure-count'));
 const thinkingOrb = mountThinkingOrb(orbHost);
 // The version row went with the inspector; the build identity stays reachable on the orb's
 // tooltip (never its accessible name — a screen reader wants the status, not a hash).
-const BUILD_LINE = `v0.2.0 · ${typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'}`;
+const BUILD_LINE = `v${BRIDGE_VERSION} · ${typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'}`;
 const SYNC_RESULT_HOLD_MS = 4_000;
 
 let payload: ConnectionStatePayload | null = null;

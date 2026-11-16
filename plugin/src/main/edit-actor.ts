@@ -13,7 +13,7 @@
 // So the classifier takes TWO signals: a time-bounded "an agent command is executing right
 // now" flag (covers every command class, including EXEC_JS and batch children) plus the
 // per-node declarations where they exist.
-import type { EditActor, EditOp } from '../../../shared/edit-feed';
+import type { EditActor, EditOp } from '../../../shared/edit-feed.ts';
 
 /** "The agent touched this recently" — cannot claim owner within this window. Also the
  *  trailing grace window after the LAST in-flight dispatch drains to zero (post-review

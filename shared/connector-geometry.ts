@@ -9,7 +9,7 @@
 //      only artifact a renderer may consume, and this module deliberately emits no path
 //      string for one to reach for by mistake.
 
-import type { Point, VectorNetworkSpec, VectorVertexSpec } from './connector-types';
+import type { Point, VectorNetworkSpec, VectorVertexSpec } from './connector-types.ts';
 
 export interface NetworkOptions {
   /** Cap the terminal vertex with an arrowhead. A flow edge is directed; a plain rule is not. */

@@ -16,9 +16,9 @@
 // duplicate variables in the owner's file whenever a value drifted. This module
 // never creates a variable; it only ever binds to one that already exists.
 
-import type { FigmaExportTokens } from '../../../shared/figma-payload-types';
-import { createVariablesFromTokens } from './executor-variables';
-import { pushImportWarning } from './executor-styles';
+import type { FigmaExportTokens } from '../../../shared/figma-payload-types.ts';
+import { createVariablesFromTokens } from './executor-variables.ts';
+import { pushImportWarning } from './executor-styles.ts';
 
 /** True when the payload carries no token of any kind (the rebuild-from-spec case). */
 function tokensAreEmpty(tokens: FigmaExportTokens): boolean {

@@ -22,7 +22,7 @@ export type HeartbeatLeaseEffect =
 
 export type HeartbeatLeaseEvent =
   | { type: 'tick'; now: number; nextProbeId: string }
-  | { type: 'pong'; now: number; probeId?: string };
+  | { type: 'pong'; now: number; probeId?: string | undefined };
 
 export interface HeartbeatLeaseDecision {
   state: HeartbeatLeaseState;

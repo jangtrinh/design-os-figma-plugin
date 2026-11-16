@@ -27,7 +27,11 @@ export async function inspectTarget(input: {
     : ((await runner('GET_CORRECTION_MEMORY', {}, { activity: 'Resolve recent target' })) as {
       events?: CorrectionEvent[];
     }).events?.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((event) => event.nodeId) ?? [];
-  const target = resolveSafeTarget({ explicit: input.explicit, selection: selected, recent });
+  const target = resolveSafeTarget({
+    ...(input.explicit !== undefined ? { explicit: input.explicit } : {}),
+    selection: selected,
+    recent,
+  });
   const timeout = resolveScanTimeout(input.timeout);
   const structure = await scanNodeSpec(target.nodeId, timeout, runner, `Inspect · ${target.nodeId}`);
   const image = await runner('EXPORT_PNG', {
@@ -58,10 +62,14 @@ export async function inspectTarget(input: {
 }
 
 export async function run(args: CommandArgs): Promise<unknown> {
+  const explicit = args.str('node') ?? args.positionals[0];
+  const out = args.str('out');
+  const scale = args.num('scale');
+  const timeout = args.num('timeout');
   return inspectTarget({
-    explicit: args.str('node') ?? args.positionals[0],
-    out: args.str('out'),
-    scale: args.num('scale'),
-    timeout: args.num('timeout'),
+    ...(explicit !== undefined ? { explicit } : {}),
+    ...(out !== undefined ? { out } : {}),
+    ...(scale !== undefined ? { scale } : {}),
+    ...(timeout !== undefined ? { timeout } : {}),
   });
 }

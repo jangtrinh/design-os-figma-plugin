@@ -2,9 +2,9 @@
 // reads as its own surface (backlog 3.1/3.2). Reuse, do not re-implement: component-ref
 // resolution goes through resolveMainComponent (resolve-main-component.ts:1-10) — a
 // second copy of ref-resolution here would be the mistake that module exists to avoid.
-import { resolveMainComponent } from './resolve-main-component';
-import { withCode } from './executor-styles';
-import { requireDesignFile } from './exec-stdlib-editor';
+import { resolveMainComponent } from './resolve-main-component.ts';
+import { withCode } from './executor-styles.ts';
+import { requireDesignFile } from './exec-stdlib-editor.ts';
 
 /**
  * PURE — exported for unit tests: base name → the instance's actual `Name#12:34` key.
@@ -20,7 +20,9 @@ export function resolvePropKey(keys: readonly string[], name: string): string {
   if (matches.length > 1) {
     throw new Error(`property "${name}" is ambiguous: ${matches.join(', ')}`);
   }
-  return matches[0];
+  const first = matches[0];
+  if (!first) throw new Error(`property "${name}" not found — available: ${keys.join(', ')}`);
+  return first;
 }
 
 export async function setProps(

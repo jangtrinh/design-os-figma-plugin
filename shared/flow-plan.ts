@@ -2,7 +2,7 @@
 // Pure — no `figma`, no filesystem. The kernel owns `flow.json` and lints it; this only
 // reads the part a renderer needs, so the graph stays authored in exactly one place.
 
-import type { Point } from './connector-types';
+import type { Point } from './connector-types.ts';
 
 export interface FlowEdge {
   transitionId: string;
@@ -50,7 +50,7 @@ function frameFor(ref: unknown, screens: Map<string, ScreenSpec>): { frame: stri
   return { frame: stateFrame ?? spec?.frame ?? screenId, ref: trimmed };
 }
 
-interface ScreenSpec { id: string; frame?: string; stateFrames?: Record<string, string> }
+interface ScreenSpec { id: string; frame?: string | undefined; stateFrames?: Record<string, string> | undefined }
 
 /**
  * Read a parsed flow.json into an edge list.
@@ -120,5 +120,8 @@ export function planFlow(document: unknown, fallbackName: string): FlowPlan {
  */
 export function routesMatch(a: readonly Point[], b: readonly Point[], epsilon = 0.5): boolean {
   if (a.length !== b.length) return false;
-  return a.every((point, i) => Math.abs(point.x - b[i].x) <= epsilon && Math.abs(point.y - b[i].y) <= epsilon);
+  return a.every((point, i) => {
+    const target = b[i];
+    return target !== undefined && Math.abs(point.x - target.x) <= epsilon && Math.abs(point.y - target.y) <= epsilon;
+  });
 }

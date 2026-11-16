@@ -17,13 +17,13 @@
 // subset (characters, fontName, fills…) are still a real loss, and the two lists
 // disagreeing is exactly how the mirror reports how much of it is left.
 
-import type { FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types';
-import { unbindableFields } from '../../../shared/figma-unbindable-fields';
-import { readUnreproducibleInnerFields } from './instance-inner-fill-sizing';
-import { readInnerOverrideFields, readInnerOverrides } from './scan-node-inner-overrides';
-import type { ScannedNode } from './scan-node-types';
-import { readBindings, safe } from './scan-node-utils';
-import { bindingsToKeyedBindings, bindingsToTokenRefs } from './scan-token-refs';
+import type { FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types.ts';
+import { unbindableFields } from '../../../shared/figma-unbindable-fields.ts';
+import { readUnreproducibleInnerFields } from './instance-inner-fill-sizing.ts';
+import { readInnerOverrideFields, readInnerOverrides } from './scan-node-inner-overrides.ts';
+import type { ScannedNode } from './scan-node-types.ts';
+import { readBindings, safe } from './scan-node-utils.ts';
+import { bindingsToKeyedBindings, bindingsToTokenRefs } from './scan-token-refs.ts';
 
 /** A main component's identity, as the async pre-pass resolved it. */
 export interface MainComponentRef { key?: string; id?: string; name?: string }
