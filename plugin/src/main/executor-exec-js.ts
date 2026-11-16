@@ -2,18 +2,18 @@
 // classify the result so a script can never fail silently. --undo-group brackets the run
 // in one undo step; the sentinel guarantees that step is non-empty, so a rollback can never
 // consume the CALLER's previous undo step.
-import { withCode } from './executor-styles';
-import { safeStringify } from './serialize-node';
-import { createExecStdlib } from './exec-stdlib';
+import { withCode } from './executor-styles.ts';
+import { safeStringify } from './serialize-node.ts';
+import { createExecStdlib } from './exec-stdlib.ts';
 import {
   compile, resultWarning, summarize, type ConsoleProxy, type ExecFn,
-} from './exec-js-normalize';
-import { registerSentinel } from './undo-sentinel-registry';
+} from './exec-js-normalize.ts';
+import { registerSentinel } from './undo-sentinel-registry.ts';
 
 // Re-exported so existing callers/tests of the normalization functions keep importing them
 // from this module — executor-exec-js.ts stays the public face of the EXEC_JS feature, the
 // same way exec-stdlib.ts re-exports resolvePropKey from exec-stdlib-instance.ts.
-export { compile, expressionCandidates, resultWarning, summarize } from './exec-js-normalize';
+export { compile, expressionCandidates, resultWarning, summarize } from './exec-js-normalize.ts';
 
 const SENTINEL_NAME = '[figma-agent] undo sentinel';
 

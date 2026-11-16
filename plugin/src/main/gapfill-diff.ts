@@ -6,9 +6,9 @@
 // clientStorage read/write, the boot diff's control flow). The dependency runs one way:
 // this module imports only the wire format plus TYPES from the walker and the baseline
 // store, and neither of those imports gap-fill — so there is no cycle to route around.
-import type { EditInput, EditOp } from '../../../shared/edit-feed';
-import type { BaselinePage, BaselineRecord } from './gapfill-baseline-store';
-import type { NodeSnapshot, TopLevelRecord } from './page-walk-bounded';
+import type { EditInput, EditOp } from '../../../shared/edit-feed.ts';
+import type { BaselinePage, BaselineRecord } from './gapfill-baseline-store.ts';
+import type { NodeSnapshot, TopLevelRecord } from './page-walk-bounded.ts';
 
 export function toBaselineRecord(rec: NodeSnapshot): BaselineRecord {
   return [rec.id, rec.name, rec.type, rec.x, rec.y, rec.parent];

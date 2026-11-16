@@ -136,7 +136,7 @@ describe('Lucide and control accessibility', () => {
     expect(icons).toContain("viewBox', '0 0 24 24'");
     expect(icons).toContain("stroke-width', '2'");
     expect(icons).not.toContain('innerHTML');
-    expect(activityView).toContain("from './lucide-icons'");
+    expect(activityView).toContain("from './lucide-icons.ts'");
     expect(`${panelUi}${activityView}${icons}`).not.toContain('Phosphor');
   });
 

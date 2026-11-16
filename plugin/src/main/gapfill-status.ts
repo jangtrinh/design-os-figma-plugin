@@ -5,7 +5,7 @@
 // appears once it is non-zero is the repo's standing answer to that — a session that wrote
 // no baseline now reports `baselineWrittenAt: null` instead of looking identical to one
 // that did.
-import type { GapfillStatus } from '../../../shared/protocol';
+import type { GapfillStatus } from '../../../shared/protocol.ts';
 
 export interface GapfillStats {
   pagesDiffed: number;

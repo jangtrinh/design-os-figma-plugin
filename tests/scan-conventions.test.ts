@@ -16,7 +16,7 @@ import {
 } from '../cli/src/commands/scan-conventions.ts';
 
 /** A stub runner that returns a fixed EXEC_JS `{result}` and records its calls. */
-function stubRunner(result: unknown, calls?: Array<{ cmd: string; params: unknown; opts?: { timeoutMs?: number; readOnly?: boolean } }>): Runner {
+function stubRunner(result: unknown, calls?: Array<{ cmd: string; params: unknown; opts?: { timeoutMs?: number; readOnly?: boolean } | undefined }>): Runner {
   return async (cmd, params, opts) => {
     calls?.push({ cmd, params, opts });
     return { result, console: [], ms: 1 };

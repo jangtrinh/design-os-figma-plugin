@@ -4,8 +4,8 @@
 // throws a wrong-editor-type refusal. Every `ui.figjam.*` helper's first line is
 // `requireEditor('ui.figjam.<name>', ['figjam'])` — no hand-written refusal string
 // anywhere else in this codebase.
-import { editorRefusal, type EditorType } from '../../../shared/editor-surface';
-import { withCode } from './executor-styles';
+import { editorRefusal, type EditorType } from '../../../shared/editor-surface.ts';
+import { withCode } from './executor-styles.ts';
 
 /**
  * Throws `E_INVALID_ARGS` naming the capability, the editor type found, the editor

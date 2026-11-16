@@ -118,7 +118,11 @@ export function expandContextTemplates(
   const stream: Record_[] = [];
   for (let i = 0; i < nodes.length; i += 1) {
     const occurrence = plan[i];
-    if (occurrence === null) { stream.push({ ...nodes[i] }); continue; }
+    if (!occurrence) {
+      const node = nodes[i];
+      if (node !== undefined) stream.push({ ...node });
+      continue;
+    }
     const { root, placed } = expandOccurrence(occurrence);
     stream.push(root);
     for (const [at, record] of placed) {
@@ -130,7 +134,11 @@ export function expandContextTemplates(
   }
   let next = 0;
   for (let i = 0; i < total; i += 1) {
-    if (out[i] === undefined) { out[i] = stream[next]; next += 1; }
+    if (out[i] === undefined) {
+      const item = stream[next];
+      if (item !== undefined) out[i] = item;
+      next += 1;
+    }
   }
   return out.filter((record): record is Record_ => record !== undefined);
 }

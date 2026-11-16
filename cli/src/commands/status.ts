@@ -79,11 +79,12 @@ export async function run(args: CommandArgs): Promise<unknown> {
     process.stderr.write(link.url ? `${link.url}\n` : `(no deep link: ${link.reason})\n`);
     process.stderr.write('Open the file above, then open the figma-agent plugin panel.\n');
 
+    const instanceFilter = args.str('instance');
     const result = await waitForPlugin({
       port: ad.port,
       timeoutMs,
-      fileFilter: wantedFile,
-      instanceFilter: args.str('instance'),
+      ...(wantedFile !== undefined ? { fileFilter: wantedFile } : {}),
+      ...(instanceFilter !== undefined ? { instanceFilter } : {}),
     });
     if (!result.registered) {
       throw new CliError(

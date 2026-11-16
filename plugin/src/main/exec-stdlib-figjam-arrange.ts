@@ -2,9 +2,9 @@
 // x/y/width/height — port the math (code.js:482-520), not the fork's delivery
 // mechanism (they build a JS string and ship it through executeCodeViaUI; we are
 // already inside the sandbox and need none of that).
-import { requireEditor } from './exec-stdlib-editor';
-import { withCode } from './executor-styles';
-import { MAX_ARRANGE_NODES, type ArrangeOpts, type ArrangeResult } from './exec-stdlib-figjam-types';
+import { requireEditor } from './exec-stdlib-editor.ts';
+import { withCode } from './executor-styles.ts';
+import { MAX_ARRANGE_NODES, type ArrangeOpts, type ArrangeResult } from './exec-stdlib-figjam-types.ts';
 
 interface Positionable { x: number; y: number; width: number; height: number }
 

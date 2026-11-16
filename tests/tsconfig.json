@@ -10,6 +10,7 @@
     "types": [
       "node"
     ],
+    "noUncheckedIndexedAccess": false,
     "rootDir": ".."
   },
   "files": [

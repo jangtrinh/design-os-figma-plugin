@@ -13,26 +13,26 @@
 // the boot diff's control flow, exercised through an injected store and fake pages in
 // tests/edit-gapfill-baseline.test.ts. The pure half — diff, record codec, notice frames,
 // write decision — lives in gapfill-diff.ts and is unit-tested directly.
-import type { EditInput } from '../../../shared/edit-feed';
+import type { EditInput } from '../../../shared/edit-feed.ts';
 import {
   baselineKeyFor, clearStaleBaseline, legacyBaselineKeyFor, readFileBaseline, writeFileBaseline,
   type BaselineIdentity, type BaselinePage, type BaselineStore, type FileBaseline,
-} from './gapfill-baseline-store';
+} from './gapfill-baseline-store.ts';
 import {
   baselineMissingNotice, baselineUnreadableNotice, deletedPageIds, diffSnapshots, diffTopLevel,
   fromBaselineRecord, gapfillEditsForPage, pageDeletedNotice, pageWasTruncated,
   previouslyTruncatedNotice, resolveBaselinePage, snapshotProviderFrom, truncatedNotice,
   walkErrorsNotice, withoutSurvivingNodes,
   type GapfillDiff, type PageSnapshotResult,
-} from './gapfill-diff';
-import { recordGapfillError, recordGapfillEviction, type GapfillStats } from './gapfill-status';
+} from './gapfill-diff.ts';
+import { recordGapfillError, recordGapfillEviction, type GapfillStats } from './gapfill-status.ts';
 import {
   DEFAULT_SLICE_BUDGET_MS, normalizeSnapshotCoord, walkPageSliced,
   type NodeSnapshot, type SlicedWalkTiming,
-} from './page-walk-bounded';
+} from './page-walk-bounded.ts';
 import {
   createPerfStats, recordPageLoadAsync, recordWalk, type PerfStats, type WalkPhase,
-} from './perf-stats';
+} from './perf-stats.ts';
 
 export { normalizeSnapshotCoord };
 export type { NodeSnapshot, PageSnapshotResult };
@@ -180,7 +180,7 @@ function currentBaselineKey(): string {
  */
 async function readBaseline(
   store: BaselineStore, stats: GapfillStats,
-): Promise<{ baseline: FileBaseline | null; readFailed: boolean; error?: string }> {
+): Promise<{ baseline: FileBaseline | null; readFailed: boolean; error?: string | undefined }> {
   const { baseline, error, readFailed } = await readFileBaseline(store, currentBaselineKey(), currentIdentity());
   if (error && error !== stats.bootReadError) recordGapfillError(stats, error);
   return { baseline, readFailed: readFailed === true, error };

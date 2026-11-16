@@ -8,7 +8,7 @@
 // too. Living under plugin/src/main previously meant the CLI reached across a cli→plugin
 // edge to import it — harmless today (this file has zero `figma` dependency) but an edge
 // that invites a non-pure import down the line. shared/ has no such boundary to cross.
-import type { CommandName } from './protocol';
+import type { CommandName } from './protocol.ts';
 
 /**
  * The only commands that can bypass broker mutation admission. This is intentionally

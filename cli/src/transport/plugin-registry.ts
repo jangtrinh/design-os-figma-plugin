@@ -87,8 +87,8 @@ export interface PluginEntry<S extends RegistrySocket = RegistrySocket> {
   // running. `undefined` (never sent — an older plugin bundle) is distinct from
   // any real value; `statusList()` itself only surfaces these raw fields — the
   // computed versionMatch/protocolMatch comparison lives in broker-peek.ts.
-  pluginVersion?: string;
-  protocolV?: number;
+  pluginVersion?: string | undefined;
+  protocolV?: number | undefined;
   /** Readiness capabilities as advertised by this HELLO. Kept separate from scene
    *  identity so capability negotiation cannot accidentally influence file matching. */
   appHeartbeatMode: AppHeartbeatMode;

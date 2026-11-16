@@ -22,9 +22,9 @@
 // models, and a published variable is not in getLocalVariablesAsync to be named at
 // all. The key is the only handle that clears both walls.
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import { pushImportWarning } from './executor-styles';
-import { bindVariableToField } from './executor-variables';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import { pushImportWarning } from './executor-styles.ts';
+import { bindVariableToField } from './executor-variables.ts';
 
 /** key → the resolved Variable, or null once resolution has been proven to fail.
  * Scoped to one import (main.importPayload resets it): a key appears on many nodes

@@ -141,28 +141,18 @@ interface ParkedRequest {
   // ADMISSION POINT at flush time — a parked request must teach the binding exactly like
   // a direct one, not silently skip it because a plugin happened to be offline when it
   // was first sent.
-  projectDir?: string;
-  // Concurrency & jobs (backlog 1.1+2.6+4.3) — a parked request re-enters `admitRequest`
-  // at flush time (stage-4 ruling: parking must not exempt the highest-risk interleaving
-  // window from the queue), so it needs the SAME classification inputs a fresh request
-  // carries. Read at park time (from the envelope), never re-derived by re-parsing
-  // `rawText` at flush.
-  cmd?: string;
-  readOnly?: boolean;
-  activity?: string;
-  /** Exact raw assertion captured before a mutation parks; never inferred at flush. */
-  targetFileKey?: string;
-  /** Original caller selector; distinct from the observed mutation key above. */
-  requestedTargetFileKey?: string;
-  /** Target-local gate revision that was open when this parked mutation was admitted. */
-  admissionRevision?: number;
-  /** Audit timestamp of that parking admission; no durable parked job is ever created. */
-  admittedAt?: number;
-  /** Set only after an exact live instance was resolved but lacked fresh app evidence. */
-  targetInstanceId?: string;
-  observedFileKey?: string | null;
-  readinessProbeId?: string;
-  awaitingReadiness?: true;
+  projectDir?: string | undefined;
+  cmd?: string | undefined;
+  readOnly?: boolean | undefined;
+  activity?: string | undefined;
+  targetFileKey?: string | undefined;
+  requestedTargetFileKey?: string | undefined;
+  admissionRevision?: number | undefined;
+  admittedAt?: number | undefined;
+  targetInstanceId?: string | undefined;
+  observedFileKey?: string | null | undefined;
+  readinessProbeId?: string | undefined;
+  awaitingReadiness?: true | undefined;
 }
 
 interface DispatchReservation {
@@ -381,7 +371,12 @@ function appendDocChange(changesPath: string, data: Record<string, unknown>): vo
     // null) still has a second rung on the identity chain instead of collapsing to
     // 'unknown'. Optional — an older plugin bundle omitting it degrades to today's shape.
     const fileName = typeof data.fileName === 'string' ? data.fileName : undefined;
-    const written = appendChangeFrames(changesPath, changes, { page, fileKey, fileName }, captureTimestamp('DOC_CHANGE', data));
+    const written = appendChangeFrames(
+      changesPath,
+      changes,
+      { page, fileKey, ...(fileName !== undefined ? { fileName } : {}) },
+      captureTimestamp('DOC_CHANGE', data),
+    );
     if (written > 0) {
       const replayNote = readReplayed(data) ? ` — replayed ${written} frame(s) captured while no broker was reachable` : '';
       log(`DOC_CHANGE: appended ${written} change frame(s) → ${changesPath}${replayNote}`);
@@ -2129,7 +2124,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
                 id,
                 'E_OUTCOME_UNKNOWN',
                 `${reason}; the canvas may or may not have changed. Inspect the canvas, then force-release the held slot.`,
-                { jobId: job.jobId, recovery: job.recovery },
+                { jobId: job.jobId, ...(job.recovery !== undefined ? { recovery: job.recovery } : {}) },
               );
             }
           }

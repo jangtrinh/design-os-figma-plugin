@@ -2,8 +2,8 @@
 // parseCssGradient (linear/radial/conic) + parseBoxShadow.
 // Pure string → payload-fill/effect mapping, no DOM access.
 
-import type { FigmaExportEffect, FigmaExportFill } from '../../../../shared/figma-payload-types';
-import { parseCssColor } from './color-utils';
+import type { FigmaExportEffect, FigmaExportFill } from '../../../../shared/figma-payload-types.ts';
+import { parseCssColor } from './color-utils.ts';
 
 /**
  * Parse a CSS gradient string (linear/radial/conic) into a Figma fill.
@@ -25,7 +25,8 @@ export function parseCssGradient(cssGradient: string): FigmaExportFill | null {
     if (isRadial) {
       // Skip shape/size/position part, just extract color stops
       let colorStartIndex = 0;
-      const first = parts[0].trim().toLowerCase();
+      const firstPart = parts[0];
+      const first = (firstPart !== undefined ? firstPart : '').trim().toLowerCase();
       if (first.includes('circle') || first.includes('ellipse') || first.includes('at ') || first.includes('closest') || first.includes('farthest')) {
         colorStartIndex = 1;
       }
@@ -44,7 +45,8 @@ export function parseCssGradient(cssGradient: string): FigmaExportFill | null {
 
     if (isConic) {
       let colorStartIndex = 0;
-      const first = parts[0].trim().toLowerCase();
+      const firstPart = parts[0];
+      const first = (firstPart !== undefined ? firstPart : '').trim().toLowerCase();
       if (first.includes('from') || first.includes('at ')) {
         colorStartIndex = 1;
       }
@@ -62,7 +64,8 @@ export function parseCssGradient(cssGradient: string): FigmaExportFill | null {
     }
 
     // ─── Linear gradient: determine direction/angle
-    const first = parts[0].trim();
+    const firstPart = parts[0];
+    const first = (firstPart !== undefined ? firstPart : '').trim();
     let angleDeg = 180; // default: to bottom
     let colorStartIndex = 0;
 
@@ -115,7 +118,9 @@ export function parseBoxShadow(shadow: string): FigmaExportEffect | null {
   const match = cleanedShadow.match(
     /([-\d.]+)(?:px)?\s+([-\d.]+)(?:px)?\s+([-\d.]+)(?:px)?(?:\s+([-\d.]+)(?:px)?)?\s+(.*)/,
   );
-  if (!match) return null;
+  if (!match || match[1] === undefined || match[2] === undefined || match[3] === undefined || match[5] === undefined) {
+    return null;
+  }
 
   const color = parseCssColor(match[5].trim());
   if (!color) return null;

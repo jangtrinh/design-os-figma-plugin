@@ -4,6 +4,12 @@ All notable changes to `design-os-figma-plugin` are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-16
+
+### Changed
+- Enabled `exactOptionalPropertyTypes` across the entire repository and `noUncheckedIndexedAccess` across all production targets (`shared/`, `cli/`, `plugin/`), eliminating implicit `undefined` key serialization on wire payloads and unguarded array/dictionary accesses in the Figma sandbox and CLI.
+- Consolidated CLI and Figma plugin version strings into a single shared constant (`shared/version.ts`), added a parallel Go-native compiler runner (`scripts/typecheck.mjs`), normalized all relative `.ts` import specifiers for native Node TypeScript compatibility, and shrank retired entries from the comment-hygiene baseline.
+
 ## [0.2.0] - 2026-11-16
 
 ### Changed

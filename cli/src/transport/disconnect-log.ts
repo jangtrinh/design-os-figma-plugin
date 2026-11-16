@@ -99,7 +99,7 @@ export interface BuildDisconnectRecordInput {
   closedBy: DisconnectClosedBy;
   closeCode: number | null;
   closeReason: string | Buffer | undefined;
-  inFlightJobs: Array<{ jobId: string; cmd: string; activity?: string; startedAt?: number; createdAt: number }>;
+  inFlightJobs: Array<{ jobId: string; cmd: string; activity?: string | undefined; startedAt?: number | undefined; createdAt: number }>;
   queueDepthByFile: Record<string, number>;
 }
 

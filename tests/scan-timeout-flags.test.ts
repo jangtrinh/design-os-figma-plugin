@@ -12,7 +12,7 @@ import {
   type Runner as ConvRunner,
 } from '../cli/src/commands/scan-conventions.ts';
 
-interface Call { cmd: string; params: unknown; opts?: { timeoutMs?: number } }
+interface Call { cmd: string; params: unknown; opts?: { timeoutMs?: number; readOnly?: boolean } | undefined }
 
 /** A runner that records its calls and returns a fixed reply. */
 function recorder(reply: unknown, calls: Call[]): DsRunner & ConvRunner {

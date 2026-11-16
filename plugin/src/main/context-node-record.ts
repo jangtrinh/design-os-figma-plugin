@@ -22,9 +22,9 @@
 // `documentAccess: "dynamic-page"` the sync `mainComponent` getter throws, `componentProperties`
 // throws on a COMPONENT_SET, and style ids / fontName read back `figma.mixed` — a single
 // refused read must never abort a whole subtree's record.
-import { jsonSafe } from './serialize-node';
-import { r2, readBindings, safe } from './scan-node-utils';
-import { readConcealment, type ConcealmentMemo } from './text-concealment';
+import { jsonSafe } from './serialize-node.ts';
+import { r2, readBindings, safe } from './scan-node-utils.ts';
+import { readConcealment, type ConcealmentMemo } from './text-concealment.ts';
 
 /** The only surface this module touches. A real `SceneNode` satisfies it after the one
  *  documented cast in executor-context.ts — the same shape `readBindings` already takes,

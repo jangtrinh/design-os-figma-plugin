@@ -1,10 +1,10 @@
 // TEXT node creation incl. styled segments (mixed bold/italic runs).
 // Ported verbatim from EaseUI figma-plugin/code.ts:332-460 (createTextNode).
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import { loadBestFont } from './executor-fonts';
-import { rgbToFigma, specNodeName } from './executor-styles';
-import { applyTokenRefs } from './executor-variables';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import { loadBestFont } from './executor-fonts.ts';
+import { rgbToFigma, specNodeName } from './executor-styles.ts';
+import { applyTokenRefs } from './executor-variables.ts';
 
 export async function createTextNode(exportNode: FigmaExportNode, tokenVars?: Map<string, Variable>): Promise<TextNode> {
   const textNode = figma.createText();

@@ -96,6 +96,7 @@ export async function execute(
   //    protocol and the UI relay forwards every non-HTML_TO_FIGMA command to the
   //    main thread unchanged, so a CLI call lands on the same handler the
   //    html-to-figma path uses.
+  const timeoutMs = COMMAND_TIMEOUTS.IMPORT_PAYLOAD;
   const imported = (await run('IMPORT_PAYLOAD', {
     payload: {
       version: 1,
@@ -105,8 +106,11 @@ export async function execute(
       tokens: EMPTY_TOKENS,
       rootNode: specA,
     },
-    parentId: opts.parentId,
-  }, { timeoutMs: COMMAND_TIMEOUTS.IMPORT_PAYLOAD, activity: 'Mirror-verify · rebuild' })) as ImportReply | null;
+    ...(opts.parentId !== undefined ? { parentId: opts.parentId } : {}),
+  }, {
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    activity: 'Mirror-verify · rebuild',
+  })) as ImportReply | null;
 
   const rebuiltId = imported?.id;
   if (!rebuiltId) throw new CliError('E_PLUGIN_ERROR', 'IMPORT_PAYLOAD returned no rebuilt node id');
@@ -163,8 +167,9 @@ return { removed: !!n };`;
 export async function run(args: CommandArgs): Promise<unknown> {
   const nodeId = args.positionals[0];
   if (!nodeId) throw new CliError('E_INVALID_ARGS', 'mirror-verify requires a <nodeId>');
+  const parentId = args.str('parent');
   return execute(nodeId, {
-    parentId: args.str('parent'),
+    ...(parentId !== undefined ? { parentId } : {}),
     keep: args.bool('keep'),
     timeoutMs: resolveScanTimeout(args.num('timeout')),
   });

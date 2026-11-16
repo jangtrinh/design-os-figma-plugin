@@ -45,7 +45,9 @@ async function runAssert(scriptPath: string, args: CommandArgs): Promise<unknown
   } catch (err) {
     if (err instanceof CliError) {
       throw new CliError(err.code, `assert script "${scriptPath}" failed before export (PNG not written): ${err.message}`, {
-        rolledBack: err.rolledBack, jobId: err.jobId, recovery: err.recovery,
+        ...(err.rolledBack !== undefined ? { rolledBack: err.rolledBack } : {}),
+        ...(err.jobId !== undefined ? { jobId: err.jobId } : {}),
+        ...(err.recovery !== undefined ? { recovery: err.recovery } : {}),
       });
     }
     throw err;

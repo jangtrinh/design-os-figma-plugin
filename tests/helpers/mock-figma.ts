@@ -175,7 +175,7 @@ export class FakeNode {
   private _lsh: string | undefined;
   private _lsv: string | undefined;
   private _name = 'Node';
-  private _main: { id?: string; key?: string; name?: string } | null = null;
+  private _main: { id?: string | undefined; key?: string | undefined; name?: string | undefined } | null = null;
   [key: string]: unknown;
 
   constructor(type: string) {
@@ -196,7 +196,7 @@ export class FakeNode {
   get name(): string { return this._name; }
 
   // ── mainComponent: sync getter is UNUSABLE under documentAccess: dynamic-page ──
-  set mainComponent(v: { id?: string; key?: string; name?: string } | null) { this._main = v; }
+  set mainComponent(v: { id?: string | undefined; key?: string | undefined; name?: string | undefined } | null) { this._main = v; }
   get mainComponent(): never {
     throw new Error(
       'in get_mainComponent: Cannot call with documentAccess: dynamic-page. '
@@ -208,7 +208,7 @@ export class FakeNode {
   get mainRefId(): string | undefined { return this._main?.id; }
 
   /** InstanceNode.getMainComponentAsync — the ONLY way to reach the main live. */
-  async getMainComponentAsync(): Promise<{ id?: string; key?: string; name?: string } | null> {
+  async getMainComponentAsync(): Promise<{ id?: string | undefined; key?: string | undefined; name?: string | undefined } | null> {
     return this._main;
   }
 

@@ -1,13 +1,13 @@
 // `ui.slides.*` content helpers (absorption phase-04): background, addText,
 // addShape, content. Adapted from the fork's Slides handlers (MIT; see
 // THIRD-PARTY.md), code.js:7103-7220 — `background` REWRITTEN, not ported (below).
-import { requireEditor } from './exec-stdlib-editor';
-import { withCode, hexToFigmaColor, rgbToFigma } from './executor-styles';
-import { serializeNode, jsonSafe, type SerializedNode } from './serialize-node';
-import { resolveSlide } from './exec-stdlib-slides-resolve';
+import { requireEditor } from './exec-stdlib-editor.ts';
+import { withCode, hexToFigmaColor, rgbToFigma } from './executor-styles.ts';
+import { serializeNode, jsonSafe, type SerializedNode } from './serialize-node.ts';
+import { resolveSlide } from './exec-stdlib-slides-resolve.ts';
 import {
   MAX_TEXT_CHARS, MAX_FONT_SIZE, MAX_DIMENSION, type AddTextOpts, type AddShapeOpts,
-} from './exec-stdlib-slides-types';
+} from './exec-stdlib-slides-types.ts';
 
 const FALLBACK_FONT: FontName = { family: 'Inter', style: 'Medium' };
 

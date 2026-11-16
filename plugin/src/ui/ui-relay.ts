@@ -10,7 +10,7 @@
 // Side-effect import FIRST: the P2 panel controller attaches its conn-state /
 // activity listeners at module-eval time, before this file's connectLoop fires
 // its opening transition below — otherwise the panel would miss the first PROBE.
-import './panel-ui';
+import './panel-ui.ts';
 import {
   CHUNK_LIMIT, PLUGIN_CAPABILITIES, PLUGIN_HEARTBEAT_INTERVAL_MS, PLUGIN_PONG_TIMEOUT_MS,
   PORT_RANGE_END, PORT_RANGE_START, PROTOCOL_VERSION,
@@ -18,22 +18,23 @@ import {
   makeStatePayload, nextBackoff, reduceConnState,
   type ChunkMsg, type CommandName, type ConnectionEvent, type ConnectionState, type ConnectionStatePayload,
   type ErrorCode, type FileContext, type ReplyMsg, type RequestMsg, type WireError,
-} from '../../../shared/protocol';
+} from '../../../shared/protocol.ts';
+import { BRIDGE_VERSION } from '../../../shared/version.ts';
 import {
   probeBrokerPort, scanPortsForBroker,
   type BrokerProbeResult, type ProbeTransport,
-} from './broker-scan';
-import { createPreOpenBuffer, handshakeBatch, isBufferableFrame, stampCapturedFrame } from './outbound-buffer';
-import { flushHandshake, refuseAdoption } from './socket-adoption';
-import { renderHtmlToPayload } from './render-host';
-import { forwardValidatedDirectImport, forwardValidatedHtmlImport } from '../../../shared/figma-payload-validation-relay';
-import { PayloadValidationError } from '../../../shared/figma-payload-validation';
-import { renderGradientToPng, GradientRenderError } from './gradient-host';
-import { summarizeError, summarizeResult } from './activity-summary';
-import { createHeartbeatDriver } from './heartbeat-driver';
-import type { HeartbeatMode } from './heartbeat-lease';
+} from './broker-scan.ts';
+import { createPreOpenBuffer, handshakeBatch, isBufferableFrame, stampCapturedFrame } from './outbound-buffer.ts';
+import { flushHandshake, refuseAdoption } from './socket-adoption.ts';
+import { renderHtmlToPayload } from './render-host.ts';
+import { forwardValidatedDirectImport, forwardValidatedHtmlImport } from '../../../shared/figma-payload-validation-relay.ts';
+import { PayloadValidationError } from '../../../shared/figma-payload-validation.ts';
+import { renderGradientToPng, GradientRenderError } from './gradient-host.ts';
+import { summarizeError, summarizeResult } from './activity-summary.ts';
+import { createHeartbeatDriver } from './heartbeat-driver.ts';
+import type { HeartbeatMode } from './heartbeat-lease.ts';
 
-const PLUGIN_VERSION = '0.2.0';
+const PLUGIN_VERSION = BRIDGE_VERSION;
 const PORT_PROBE_TIMEOUT_MS = 1200; // a real broker greets in <50ms; short = fast scan
 const BACKOFF_OPTS = { minMs: RECONNECT_BACKOFF_MIN_MS, maxMs: RECONNECT_BACKOFF_MAX_MS };
 
@@ -75,11 +76,22 @@ function dispatchActivity(detail: Record<string, unknown>): void {
  *  request's outgoing ReplyErr, below. */
 function startActivity(req: RequestMsg): void {
   const at = Date.now();
-  activityStart.set(req.id, { cmd: req.cmd, label: req.activity, at });
+  activityStart.set(req.id, {
+    cmd: req.cmd,
+    at,
+    ...(req.activity !== undefined ? { label: req.activity } : {}),
+  });
   // `agent` (auto-connect slice 2) is start-only, like `label` — never echoed back on
   // the done-event, so it needs no entry in the `activityStart` map above, only the
   // dispatch here.
-  dispatchActivity({ phase: 'start', id: req.id, tool: req.cmd, label: req.activity, at, agent: req.agent });
+  dispatchActivity({
+    phase: 'start',
+    id: req.id,
+    tool: req.cmd,
+    at,
+    ...(req.activity !== undefined ? { label: req.activity } : {}),
+    ...(req.agent !== undefined ? { agent: req.agent } : {}),
+  });
 }
 
 /** A reply's own `name`, when it carried one (CREATE_FRAME/CREATE_INSTANCE/SET_TEXT/
@@ -307,11 +319,17 @@ async function handleRequest(req: RequestMsg): Promise<void> {
       setStatusText('connected', 'ok');
       // The HTML render above still runs before main can refuse a wrong-file HTML_TO_FIGMA —
       // wasted work only; the iframe cannot touch the scene, and main's guard still fires here.
+      const placement: { x?: number; y?: number; parentId?: string; replaceId?: string } = {};
+      if (p.x !== undefined) placement.x = p.x;
+      if (p.y !== undefined) placement.y = p.y;
+      if (p.parentId !== undefined) placement.parentId = p.parentId;
+      if (p.replaceId !== undefined) placement.replaceId = p.replaceId;
+
       forwardValidatedHtmlImport({
         requestId: req.id,
-        expectedFile: req.expectedFile,
         payload,
-        placement: { x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId },
+        placement,
+        ...(req.expectedFile !== undefined ? { expectedFile: req.expectedFile } : {}),
       }, (message) => parent.postMessage(message, '*'));
     } else if (req.cmd === 'SHADER_GRADIENT_PROBE') {
       // Read-only capability probe. Renders a deliberately tiny field and reports the
@@ -387,9 +405,9 @@ async function handleRequest(req: RequestMsg): Promise<void> {
     } else if (req.cmd === 'IMPORT_PAYLOAD') {
       forwardValidatedDirectImport({
         requestId: req.id,
-        expectedFile: req.expectedFile,
         params: req.params,
-        readOnly: req.readOnly,
+        ...(req.expectedFile !== undefined ? { expectedFile: req.expectedFile } : {}),
+        ...(req.readOnly !== undefined ? { readOnly: req.readOnly } : {}),
       }, (message) => parent.postMessage(message, '*'));
     } else {
       // Everything else is a main-thread op — forward unchanged. `readOnly` is carried
@@ -493,11 +511,11 @@ const heartbeatDriver = createHeartbeatDriver({
   },
   emitConnected: () => {
     if (!ws) return;
-    const { url, port } = socketConnectionInfo(ws);
+    const info = socketConnectionInfo(ws);
     transition('READY', {
-      detail: `broker at ${url} · protocol v${PROTOCOL_VERSION}`,
-      brokerUrl: url,
-      port,
+      detail: `broker at ${info.url} · protocol v${PROTOCOL_VERSION}`,
+      brokerUrl: info.url,
+      ...(info.port !== undefined ? { port: info.port } : {}),
       appState: 'ready',
     });
   },
@@ -550,7 +568,9 @@ function scanForBroker(): Promise<BrokerProbeResult<WebSocket> | null> {
 function socketConnectionInfo(socket: WebSocket): { url: string; port?: number } {
   const url = socket.url.replace(/\/$/, '');
   const portMatch = /:(\d+)/.exec(url);
-  return { url, port: portMatch ? Number(portMatch[1]) : undefined };
+  const info: { url: string; port?: number } = { url };
+  if (portMatch && portMatch[1] !== undefined) info.port = Number(portMatch[1]);
+  return info;
 }
 
 function adoptSocket(probe: BrokerProbeResult<WebSocket>): void {
@@ -574,9 +594,14 @@ function adoptSocket(probe: BrokerProbeResult<WebSocket>): void {
   backoffBase = 0; // reset backoff on a live connection
   chunkBuffers.clear();
   heartbeatMode = hello.appReadinessV === 1 ? 'correlated' : 'legacy';
-  const { url, port } = socketConnectionInfo(socket);
+  const info = socketConnectionInfo(socket);
 
-  transition('FOUND', { detail: `broker at ${url}`, brokerUrl: url, port, appState: 'probing' });
+  transition('FOUND', {
+    detail: `broker at ${info.url}`,
+    brokerUrl: info.url,
+    ...(info.port !== undefined ? { port: info.port } : {}),
+    appState: 'probing',
+  });
   socket.onmessage = (ev) => handleWireData(String(ev.data));
   socket.onerror = () => { /* onclose fires next and drives the reconnect */ };
   socket.onclose = () => teardown(socket, 'broker connection lost — reconnecting…');

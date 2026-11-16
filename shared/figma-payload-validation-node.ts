@@ -1,9 +1,9 @@
-import { type ObjectValue, ValidationContext } from './figma-payload-validation-context';
+import { type ObjectValue, ValidationContext } from './figma-payload-validation-context.ts';
 import {
   validateComponentProperties, validateColor, validateEffect, validateFill, validateKeyedBindings,
   validateMotion, validateTextSegments,
 } from './figma-payload-validation-values';
-import { validateInnerOverrides, validateScanMetadata, validateTokenRefs } from './figma-payload-validation-node-details';
+import { validateInnerOverrides, validateScanMetadata, validateTokenRefs } from './figma-payload-validation-node-details.ts';
 
 const NODE_FIELDS = new Set([
   'type', 'name', 'width', 'height', 'layoutMode', 'itemSpacing', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',

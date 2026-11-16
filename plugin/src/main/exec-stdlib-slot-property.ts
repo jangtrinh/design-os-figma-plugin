@@ -10,8 +10,8 @@
 //  - Frame must not be nested inside another slot — the fork's own tool description
 //    claims this but its code never actually checks it; enforced here for real, by
 //    walking the frame's ancestors up to (not including) the component/set.
-import { withCode } from './executor-styles';
-import { requireDesignFile } from './exec-stdlib-editor';
+import { withCode } from './executor-styles.ts';
+import { requireDesignFile } from './exec-stdlib-editor.ts';
 
 function isNestedInsideAnotherSlot(frame: SceneNode, stopAt: BaseNode): boolean {
   let n: BaseNode | null = frame.parent;

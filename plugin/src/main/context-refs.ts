@@ -10,7 +10,7 @@
 // multi-mode collection is one mode's value wearing the collection's name — an agent that
 // codes it as "the" value ships the light-mode colour into a dark-mode component. The
 // honest fact is `modeCount`; a value is a question the caller asks with a mode named.
-import { safe } from './scan-node-utils';
+import { safe } from './scan-node-utils.ts';
 
 export interface ContextRefIds {
   variables: string[];

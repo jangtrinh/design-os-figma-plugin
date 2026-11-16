@@ -1,7 +1,7 @@
-import { pushActivity, type ActivityRecord, type ActivityResult } from './activity-feed';
-import { activitySentence } from './activity-sentence';
-import { makeLucideIcon, type LucideIconName } from './lucide-icons';
-import { applyActivityOutcome, BoundedKeySet, currentActivity, landTerminalActivity } from './panel-view-state';
+import { pushActivity, type ActivityRecord, type ActivityResult } from './activity-feed.ts';
+import { activitySentence } from './activity-sentence.ts';
+import { makeLucideIcon, type LucideIconName } from './lucide-icons.ts';
+import { applyActivityOutcome, BoundedKeySet, currentActivity, landTerminalActivity } from './panel-view-state.ts';
 
 export function replaceIcon(target: HTMLElement, name: LucideIconName, spinning = false): void {
   const kept = Array.from(target.children).filter((child) => child.classList.contains('rail-badge'));

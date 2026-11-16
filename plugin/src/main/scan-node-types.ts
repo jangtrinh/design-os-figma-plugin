@@ -2,8 +2,8 @@
 // the sub-walkers (layout / text / paint / instance) can type their `out` parameter
 // without importing scan-node.ts back (circular import).
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import type { Concealment } from './text-concealment';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import type { Concealment } from './text-concealment.ts';
 
 /** Material captured beyond the reversible FigmaExportNode fields. */
 export interface ScanExtensions {

@@ -10,7 +10,7 @@
 // The socket itself arrives through an injected transport rather than being built
 // here: that is what keeps this module free of the DOM (ui-relay.ts owns the real
 // `new WebSocket(...)`) and what lets a test drive open/greet/close per port.
-import type { BrokerHelloData } from '../../../shared/protocol';
+import type { BrokerHelloData } from '../../../shared/protocol.ts';
 
 export interface ProbeListeners {
   /** One inbound frame, exactly as the socket delivered it. */

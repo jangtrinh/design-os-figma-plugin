@@ -5,40 +5,40 @@
 // Orchestration handlers that need the dispatch itself (IMPORT_PAYLOAD, BATCH)
 // live here; single-command executors live in executor-*.ts.
 
-import type { CommandName, ErrorCode, FileContext, WireError } from '../../../shared/protocol';
-import { DEFAULT_IDLE_MS, MIN_IDLE_MS } from '../../../shared/protocol';
-import { fileMatches } from '../../../shared/file-match';
+import type { CommandName, ErrorCode, FileContext, WireError } from '../../../shared/protocol.ts';
+import { DEFAULT_IDLE_MS, MIN_IDLE_MS } from '../../../shared/protocol.ts';
+import { fileMatches } from '../../../shared/file-match.ts';
 import {
   clearLegacyGapfillDocumentData, runGapfillDiff, snapshotPageBounded, writeBaseline,
-} from './edit-gapfill';
-import { createIdleBaselineWriter } from './idle-baseline-write';
-import { runBootCapture } from './boot-capture';
-import { createClientStorageBaselineStore } from './gapfill-baseline-store';
-import { createGapfillStats, toGapfillStatus } from './gapfill-status';
+} from './edit-gapfill.ts';
+import { createIdleBaselineWriter } from './idle-baseline-write.ts';
+import { runBootCapture } from './boot-capture.ts';
+import { createClientStorageBaselineStore } from './gapfill-baseline-store.ts';
+import { createGapfillStats, toGapfillStatus } from './gapfill-status.ts';
 import {
   createPerfStats, markBootComplete, recordLoadAllPages, toPerfStatus,
-} from './perf-stats';
+} from './perf-stats.ts';
 import {
   pruneDeclaredIds, pruneLastAgentAt, AGENT_ECHO_MS, type ActorState,
-} from './edit-actor';
-import { createEditIdentityCache } from './change-node-identity';
-import { createDocumentChangeCapture } from './document-change-capture';
-import { withCode } from './executor-styles';
-import { opCreateVariable, opBindVariable } from './executor-variables';
-import { importPayload } from './import-payload-admission';
-import { serializeDesignSystem } from './serialize-node';
-import { auditDs } from './executor-audit';
-import { figmaContextEnv, opGetContext } from './executor-context';
+} from './edit-actor.ts';
+import { createEditIdentityCache } from './change-node-identity.ts';
+import { createDocumentChangeCapture } from './document-change-capture.ts';
+import { withCode } from './executor-styles.ts';
+import { opCreateVariable, opBindVariable } from './executor-variables.ts';
+import { importPayload } from './import-payload-admission.ts';
+import { serializeDesignSystem } from './serialize-node.ts';
+import { auditDs } from './executor-audit.ts';
+import { figmaContextEnv, opGetContext } from './executor-context.ts';
 import {
   opStatus, opGetSelection, opCreateFrame, opCreateInstance, opSetVariant,
   opSetAutoLayout, opSetConstraints, opSetText, opExportPng,
-} from './executor-ops';
-import { opExecJs } from './executor-exec-js';
-import { opCloneTraits } from './executor-clone-traits';
-import { importGradient } from './executor-gradient';
-import { MUTATING_COMMANDS } from '../../../shared/mutating-commands';
-import { opConnect, opDisconnect, opListConnections, opReroute, opVerifyConnections } from './executor-connector';
-import { noteChangedNodes } from './connector-reroute';
+} from './executor-ops.ts';
+import { opExecJs } from './executor-exec-js.ts';
+import { opCloneTraits } from './executor-clone-traits.ts';
+import { importGradient } from './executor-gradient.ts';
+import { MUTATING_COMMANDS } from '../../../shared/mutating-commands.ts';
+import { opConnect, opDisconnect, opListConnections, opReroute, opVerifyConnections } from './executor-connector.ts';
+import { noteChangedNodes } from './connector-reroute.ts';
 import {
   beginAgentMutation,
   beginCorrectionBatch,
@@ -48,13 +48,13 @@ import {
   recordAgentMutationBatch,
   recordDesignerCorrectionInBatch,
   writeEdgeCorrections,
-} from './correction-edge-store';
-import type { CorrectionEvent } from '../../../shared/supervised-memory';
-import { RAIL_HEIGHT, RAIL_MIN_WIDTH, resolveViewportRequest } from '../ui/panel-model';
+} from './correction-edge-store.ts';
+import type { CorrectionEvent } from '../../../shared/supervised-memory.ts';
+import { RAIL_HEIGHT, RAIL_MIN_WIDTH, resolveViewportRequest } from '../ui/panel-model.ts';
 import {
   createReadOnlyGuardState, isReadOnlyExecJs, recordDocumentChangeBatch,
   snapshotChangeEvents, violatedSinceSnapshot,
-} from './readonly-guard';
+} from './readonly-guard.ts';
 
 // The panel is ONE row that hugs its content. It opens at the narrowest width the host's
 // own title bar can still render "design:os by JANG" in full; from there the iframe measures
@@ -129,7 +129,8 @@ function maybeSetRelaunchData(bound: boolean): void {
 /** Block 2's Selection row: the first selected node's name (if any) + the count. */
 function selectionSummary(): { selectionName: string | null; selectionCount: number } {
   const sel = figma.currentPage.selection; // sync getter, allowed under dynamic-page
-  return { selectionName: sel.length > 0 ? sel[0].name : null, selectionCount: sel.length };
+  const first = sel[0];
+  return { selectionName: first ? first.name : null, selectionCount: sel.length };
 }
 
 // Announce scene identity to the UI iframe so the panel's Context block can show

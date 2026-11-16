@@ -243,7 +243,7 @@ and the command returns the nodes they touched. An owner edit arms it; an agent 
 
 ## Status and roadmap
 
-Version `0.1.0`. Shipped and merged to `main`: the adaptive semantic agent rail, the background-file
+Version `0.2.1`. Shipped and merged to `main`: the adaptive semantic agent rail, the background-file
 heartbeat and outcome-unknown recovery contract, the broker mutation admission gate, the
 connect/reconnect path (`status --wait` plus Figma's native relaunch action), the published-lint panel
 boundary, and the performance work above. Four gates run on every pull request: `typecheck` (including

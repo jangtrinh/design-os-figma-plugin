@@ -6,10 +6,10 @@
 // the child. Every id under it is new afterwards, so any map of the inner tree taken
 // before them is stale — see applyInnerOverrides, which re-walks because of this.
 
-import type { FigmaInnerOverride } from '../../../shared/figma-payload-types';
-import { resolveMainComponent } from './resolve-main-component';
-import { pushImportWarning } from './executor-styles';
-import { safe } from './scan-node-utils';
+import type { FigmaInnerOverride } from '../../../shared/figma-payload-types.ts';
+import { resolveMainComponent } from './resolve-main-component.ts';
+import { pushImportWarning } from './executor-styles.ts';
+import { safe } from './scan-node-utils.ts';
 
 type Child = Record<string, unknown>;
 

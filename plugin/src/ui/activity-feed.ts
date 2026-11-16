@@ -13,9 +13,9 @@ export interface ActivityRecord {
   /** Wire command name (EXEC_JS, IMPORT_PAYLOAD…) — the sentence's fallback stem. */
   tool: string;
   /** The CLI's intent label ("Scan · 1:23"); absent ⇒ fall back to a humanized `tool`. */
-  label?: string;
+  label?: string | undefined;
   /** Result summary once done ("→ 42 nodes", "node not found"); absent while pending. */
-  result?: string;
+  result?: string | undefined;
   /** True until the reply lands — the row renders as in-flight. */
   pending: boolean;
   ok: boolean;
@@ -24,18 +24,18 @@ export interface ActivityRecord {
   /** Epoch ms the request started — the row renders a clock time from it. */
   at: number;
   /** Wire ErrorCode, present only on a failed reply — never shown raw, only mapped to a reason. */
-  errorCode?: string;
+  errorCode?: string | undefined;
   /**
    * auto-connect slice 2 — which harness sent this (`RequestMsg.agent`, carried through
    * ui-relay.ts's `activityStart`). Absent ⇒ the row renders with no agent label at all
    * (never a fabricated "cli" here — the row-level default, if any, is a RENDER-time
    * decision in panel-ui.ts, not something this record manufactures).
    */
-  agent?: string;
+  agent?: string | undefined;
   /** The reply's own `name`, when it carried one (CREATE_FRAME/CREATE_INSTANCE/SET_TEXT/
    *  IMPORT_PAYLOAD/a scan) — lets the sentence say `Created frame "Hero card"` instead of
    *  fabricating an object no reply ever named. */
-  nodeName?: string;
+  nodeName?: string | undefined;
   /**
    * A pre-composed FULL sentence, used VERBATIM by the renderer instead of running
    * `activitySentence()`'s tool/count/name machinery. For callers that already hold the
@@ -44,7 +44,7 @@ export interface ActivityRecord {
    * this field exists to stop (the sync row used to collapse to the bare word "Synced").
    * Absent for every ordinary wire-command row, which is untouched by this field.
    */
-  sentence?: string;
+  sentence?: string | undefined;
 }
 
 /** Wall-clock stamp for a row: "14:32:07" (local time, zero-padded). Kept for the status snapshot. */
@@ -118,13 +118,13 @@ export interface ActivityResult {
   id: string;
   ok: boolean;
   ms: number;
-  result?: string;
+  result?: string | undefined;
   /** Wire ErrorCode, present only on a failure — ui-relay.ts's emitActivity adds it. */
-  code?: string;
+  code?: string | undefined;
   /** The reply's own `name`, when it carried one — ui-relay.ts's emitActivity extracts it. */
-  nodeName?: string;
+  nodeName?: string | undefined;
   /** Pre-composed full sentence to land on the row verbatim — see `ActivityRecord.sentence`. */
-  sentence?: string;
+  sentence?: string | undefined;
 }
 
 /** Coerce a done-event detail into a result patch, or null if the shape is wrong. */

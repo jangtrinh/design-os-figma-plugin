@@ -71,7 +71,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
 
   const path = contentionLogPath();
   const store = readContentionStore(path);
-  const rows = flattenContention(store, { file, sinceDays }, Date.now());
+  const rows = flattenContention(store, {
+    ...(file !== undefined ? { file } : {}),
+    ...(sinceDays !== undefined ? { sinceDays } : {}),
+  }, Date.now());
   const totalQueuedMs = rows.reduce((sum, r) => sum + r.totalQueuedMs, 0);
   const totalJobCount = rows.reduce((sum, r) => sum + r.jobCount, 0);
 

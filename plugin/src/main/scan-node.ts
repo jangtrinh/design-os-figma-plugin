@@ -19,20 +19,20 @@
 // captured as extensions only, with no reversible slot: COMPONENT / COMPONENT_SET
 // definitions and an instance's INNER (per-child) overrides.
 
-import type { FigmaExportEffect, FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types';
-import type { ScannedNode } from './scan-node-types';
-import { readExtensions, readInstance, type MainComponentRef } from './scan-node-instance';
-import { readLayout, readSelfSizing } from './scan-node-layout';
-import { asFills, effectToExport, readIndividualStrokeWeights } from './scan-node-paint';
-import { readText } from './scan-node-text';
-import { r2, safe } from './scan-node-utils';
-import type { ConcealmentMemo } from './text-concealment';
+import type { FigmaExportEffect, FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types.ts';
+import type { ScannedNode } from './scan-node-types.ts';
+import { readExtensions, readInstance, type MainComponentRef } from './scan-node-instance.ts';
+import { readLayout, readSelfSizing } from './scan-node-layout.ts';
+import { asFills, effectToExport, readIndividualStrokeWeights } from './scan-node-paint.ts';
+import { readText } from './scan-node-text.ts';
+import { r2, safe } from './scan-node-utils.ts';
+import type { ConcealmentMemo } from './text-concealment.ts';
 
-export type { ScanExtensions, ScannedNode } from './scan-node-types';
-export type { MainComponentRef } from './scan-node-instance';
+export type { ScanExtensions, ScannedNode } from './scan-node-types.ts';
+export type { MainComponentRef } from './scan-node-instance.ts';
 // Re-exported so the bundled walker (`__scan.*`, see cli/src/commands/scan-node.ts)
 // can run the THIRD async pre-pass alongside the other two.
-export { readKeyedVariableMap } from './scan-keyed-vars';
+export { readKeyedVariableMap } from './scan-keyed-vars.ts';
 
 /** Figma node.type → FigmaExportNode.type (the only ones the schema models). */
 function mapType(t: string): FigmaExportNode['type'] {
@@ -147,10 +147,9 @@ export async function readMainComponentMap(root: SceneNode): Promise<Map<string,
   return map;
 }
 
-/** Fills, corner radius, strokes, constraints, clipping — the frame-ish visuals. */
 function readFrameVisuals(n: Record<string, unknown>, out: ScannedNode): void {
-  out.fills = asFills(n.fills);
-  if (out.fills === undefined) delete out.fills;
+  const fills = asFills(n.fills);
+  if (fills !== undefined) out.fills = fills;
 
   // Corner radius: uniform number, else per-corner (getter throws figma.mixed).
   const cr = safe(() => n.cornerRadius as number);
@@ -176,7 +175,7 @@ function readFrameVisuals(n: Record<string, unknown>, out: ScannedNode): void {
       const sides = readIndividualStrokeWeights(n);
       if (sides) out.strokeWeights = sides;
     }
-    if (n.strokeAlign) out.strokeAlign = n.strokeAlign as FigmaExportNode['strokeAlign'];
+    if (n.strokeAlign) out.strokeAlign = n.strokeAlign as NonNullable<FigmaExportNode['strokeAlign']>;
   }
 
   for (const k of ['maxWidth', 'minWidth', 'maxHeight', 'minHeight'] as const) {

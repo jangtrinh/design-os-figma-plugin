@@ -3,9 +3,9 @@
 // see THIRD-PARTY.md), code.js:6530-7220, slides-tools.ts:8-63. Split across four
 // files (this one plus -types/-resolve/-crud/-view/-content) so each concern reads on
 // its own — same split-by-shape precedent as exec-stdlib-figjam.ts.
-import { list, grid, create, remove, duplicate, reorder } from './exec-stdlib-slides-crud';
-import { setTransition, transition, viewMode, focused, focus, skip } from './exec-stdlib-slides-view';
-import { background, addText, addShape, content } from './exec-stdlib-slides-content';
+import { list, grid, create, remove, duplicate, reorder } from './exec-stdlib-slides-crud.ts';
+import { setTransition, transition, viewMode, focused, focus, skip } from './exec-stdlib-slides-view.ts';
+import { background, addText, addShape, content } from './exec-stdlib-slides-content.ts';
 
 export interface ExecStdlibSlides {
   list: typeof list;

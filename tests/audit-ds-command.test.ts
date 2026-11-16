@@ -63,14 +63,14 @@ describe('audit-ds — execute()', () => {
   });
 
   it('threads an explicit --timeout into the transport opts', async () => {
-    const calls: { opts?: { timeoutMs?: number } }[] = [];
+    const calls: { opts?: { timeoutMs?: number } | undefined }[] = [];
     const runner: Runner = async (_cmd, _params, opts) => { calls.push({ opts }); return FIXTURE; };
     await execute({ timeout: 7000 }, runner);
     expect(calls[0]?.opts?.timeoutMs).toBe(7000);
   });
 
   it('falls back to the AUDIT_DS default timeout when no flag is given', async () => {
-    const calls: { opts?: { timeoutMs?: number } }[] = [];
+    const calls: { opts?: { timeoutMs?: number } | undefined }[] = [];
     const runner: Runner = async (_cmd, _params, opts) => { calls.push({ opts }); return FIXTURE; };
     await execute({}, runner);
     expect(calls[0]?.opts?.timeoutMs).toBe(COMMAND_TIMEOUTS.AUDIT_DS);

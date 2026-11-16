@@ -1264,7 +1264,9 @@
     }
     let chain = base;
     for (let i = pending.length - 1; i >= 0; i -= 1) {
-      const { node, own } = pending[i];
+      const item = pending[i];
+      if (!item) continue;
+      const { node, own } = item;
       const hops = chain.hops + 1;
       chain = {
         hidden: own.hidden || chain.hidden,
@@ -2283,7 +2285,9 @@
   }
   async function findReusableVariable(collection, type, value) {
     const vars = await figma.variables.getLocalVariablesAsync(type);
-    const modeId = collection.modes[0].modeId;
+    const firstMode = collection.modes[0];
+    if (!firstMode) return null;
+    const modeId = firstMode.modeId;
     for (const v of vars) {
       if (v.variableCollectionId !== collection.id) continue;
       const existing = v.valuesByMode[modeId];
@@ -2296,8 +2300,10 @@
   async function createOrReuseVariable(collection, name, type, value) {
     const existing = await findReusableVariable(collection, type, value);
     if (existing) return { variable: existing, reused: true };
+    const firstMode = collection.modes[0];
+    if (!firstMode) throw new Error(`Collection ${collection.name} has no modes`);
     const variable = figma.variables.createVariable(name, collection, type);
-    variable.setValueForMode(collection.modes[0].modeId, value);
+    variable.setValueForMode(firstMode.modeId, value);
     return { variable, reused: false };
   }
   async function createVariablesFromTokens(tokens) {
@@ -3229,7 +3235,7 @@
     if (exportNode.width) rect.resize(exportNode.width, exportNode.height || exportNode.width);
     if (exportNode.fills && exportNode.fills.length > 0) {
       const fill = exportNode.fills[0];
-      if (fill.color) {
+      if (fill && fill.color) {
         const hex = figmaColorToHex(fill.color);
         const paintStyle = colorStyles.get(hex);
         if (paintStyle) {
@@ -4445,10 +4451,12 @@
     let tallied = 0;
     for (const name of Object.keys(reps)) {
       const c = cnt[name];
+      const rep = reps[name];
+      if (c === void 0 || !rep) continue;
       tallied += c;
       let key = null;
       try {
-        const main = await reps[name].getMainComponentAsync();
+        const main = await rep.getMainComponentAsync();
         if (main) key = main.parent && main.parent.type === "COMPONENT_SET" ? main.parent : main;
       } catch {
         key = null;
@@ -4619,8 +4627,11 @@
       const parent = slot.parentId === null ? void 0 : byId.get(slot.parentId);
       if (parent === void 0) roots.push(i);
       else {
-        slots[parent].children.push(i);
-        slot.parentIndex = parent;
+        const parentSlot = slots[parent];
+        if (parentSlot) {
+          parentSlot.children.push(i);
+          slot.parentIndex = parent;
+        } else roots.push(i);
       }
     });
     return { slots, roots };
@@ -4631,21 +4642,25 @@
     while (stack.length > 0) {
       const frame = stack.pop();
       const slot = slots[frame.at];
+      if (!slot) continue;
       if (!frame.expanded) {
         stack.push({ at: frame.at, expanded: true });
         for (let i = slot.children.length - 1; i >= 0; i -= 1) {
-          stack.push({ at: slot.children[i], expanded: false });
+          const childIdx = slot.children[i];
+          if (childIdx !== void 0) {
+            stack.push({ at: childIdx, expanded: false });
+          }
         }
         continue;
       }
-      slot.size = 1 + slot.children.reduce((sum, child) => sum + slots[child].size, 0);
-      if (!slot.addressable || slot.children.some((child) => isPoisoned(slots[child].sig))) {
+      slot.size = 1 + slot.children.reduce((sum, child) => sum + (slots[child]?.size ?? 0), 0);
+      if (!slot.addressable || slot.children.some((child) => isPoisoned(slots[child]?.sig ?? ""))) {
         slot.sig = `${POISON}${frame.at}`;
         continue;
       }
       const shape2 = { ...slot.record };
       for (const field of PER_OCCURRENCE) delete shape2[field];
-      slot.sig = interner.intern(`${canonicalContent(shape2)}|${slot.children.map((c) => slots[c].sig).join(",")}`);
+      slot.sig = interner.intern(`${canonicalContent(shape2)}|${slot.children.map((c) => slots[c]?.sig ?? "").join(",")}`);
     }
   }
   function subtreeOrder(slots, root) {
@@ -4654,7 +4669,10 @@
     while (queue.length > 0) {
       const at = queue.shift();
       order.push(at);
-      for (const child of slots[at].children) queue.push(child);
+      const slot = slots[at];
+      if (slot) {
+        for (const child of slot.children) queue.push(child);
+      }
     }
     return order;
   }
@@ -4676,27 +4694,34 @@
     while (stack.length > 0) {
       const at = stack.pop();
       const slot = slots[at];
+      if (!slot) continue;
       if (slot.size >= MIN_TEMPLATE_NODES && (groups.get(slot.sig) ?? 0) >= MIN_OCCURRENCES) {
         const list3 = bySig.get(slot.sig);
         if (list3 === void 0) bySig.set(slot.sig, [at]);
         else list3.push(at);
         continue;
       }
-      for (let i = slot.children.length - 1; i >= 0; i -= 1) stack.push(slot.children[i]);
+      for (let i = slot.children.length - 1; i >= 0; i -= 1) {
+        const childIdx = slot.children[i];
+        if (childIdx !== void 0) stack.push(childIdx);
+      }
     }
     return bySig;
   }
   function buildTemplate(slots, order, root) {
     const relativeOf = /* @__PURE__ */ new Map();
     order.forEach((at, rel) => relativeOf.set(at, String(rel)));
+    const rootSlot = slots[root];
+    const rootDepth = rootSlot ? rootSlot.depth : 0;
     return {
       nodes: order.map((at, rel) => {
-        const shape2 = { ...slots[at].record };
+        const currentSlot = slots[at];
+        const shape2 = currentSlot ? { ...currentSlot.record } : {};
         delete shape2.name;
         shape2.id = String(rel);
-        const parentIndex = slots[at].parentIndex;
+        const parentIndex = currentSlot ? currentSlot.parentIndex : null;
         shape2.parentId = rel === 0 || parentIndex === null ? null : relativeOf.get(parentIndex) ?? null;
-        shape2.depth = slots[at].depth - slots[root].depth;
+        shape2.depth = (currentSlot ? currentSlot.depth : 0) - rootDepth;
         return shape2;
       })
     };
@@ -4716,7 +4741,10 @@
         order.forEach((at, rel) => {
           if (rel === 0) return;
           consumed.add(at);
-          rootMap[String(rel)] = { id: slots[at].id, name: slots[at].record.name, at };
+          const slotAt = slots[at];
+          if (slotAt) {
+            rootMap[String(rel)] = { id: slotAt.id, name: slotAt.record.name, at };
+          }
         });
         occurrenceOf.set(root, { sig, rootMap });
         if (templates[sig] === void 0) templates[sig] = buildTemplate(slots, order, root);
@@ -4727,6 +4755,7 @@
       if (consumed.has(at)) continue;
       const occurrence = occurrenceOf.get(at);
       const slot = slots[at];
+      if (!slot) continue;
       if (occurrence === void 0) {
         folded.push({ ...slot.record });
         continue;
@@ -5063,6 +5092,7 @@
       for (let i = 0; i < built.length; i += 1) {
         let result = built[i];
         const pending = batch[i];
+        if (!result || !pending) continue;
         let bytes;
         try {
           bytes = utf8ByteLength(JSON.stringify(result.record));
@@ -5076,8 +5106,11 @@
         }
         if (nodes.length > 0 && estimatedBytes + bytes > opts.budgetBytes) {
           for (let j = i; j < batch.length; j += 1) {
-            pushFrontier(batch[j].node, "budget");
-            omitted.budget += 1;
+            const item = batch[j];
+            if (item) {
+              pushFrontier(item.node, "budget");
+              omitted.budget += 1;
+            }
           }
           for (const rest of queue) {
             pushFrontier(rest.node, "budget");
@@ -5323,8 +5356,11 @@
     return { nodeType: innerNodeType, reason: CONTAINS_REASON };
   }
 
+  // shared/version.ts
+  var BRIDGE_VERSION = "0.2.1";
+
   // plugin/src/main/executor-ops.ts
-  var PLUGIN_VERSION = "0.2.0";
+  var PLUGIN_VERSION = BRIDGE_VERSION;
   var LAYOUT_MODE_MAP = {
     H: "HORIZONTAL",
     V: "VERTICAL",
@@ -5648,7 +5684,9 @@
     if (matches.length > 1) {
       throw new Error(`property "${name}" is ambiguous: ${matches.join(", ")}`);
     }
-    return matches[0];
+    const first = matches[0];
+    if (!first) throw new Error(`property "${name}" not found \u2014 available: ${keys.join(", ")}`);
+    return first;
   }
   async function setProps(inst, props) {
     requireDesignFile("ui.setProps");
@@ -5822,7 +5860,7 @@
     }
     variable.setValueForMode(mode.modeId, value);
     const actual = variable.valuesByMode[mode.modeId];
-    if (!valuesEqual(actual, value)) {
+    if (actual === void 0 || !valuesEqual(actual, value)) {
       throw withCode(new Error(`setModeValue applied but "${modeName}" reads back ${JSON.stringify(actual)}, not ${JSON.stringify(value)}`), "E_EVAL");
     }
     return { id: variable.id, name: variable.name, mode: { modeId: mode.modeId, name: mode.name }, value: actual };
@@ -7200,7 +7238,11 @@
           "E_EVAL"
         );
       }
-      cur = hits[0];
+      const next = hits[0];
+      if (!next) {
+        throw withCode(new Error(`byPath: "${name}" not found under "${cur.name}"`), "E_EVAL");
+      }
+      cur = next;
     }
     return cur;
   }
@@ -7689,12 +7731,17 @@
   function simplify(points) {
     const deduped = [];
     for (const point of points) {
-      if (deduped.length === 0 || !samePoint(deduped[deduped.length - 1], point)) deduped.push(point);
+      const last = deduped[deduped.length - 1];
+      if (!last || !samePoint(last, point)) deduped.push(point);
     }
     const kept = [];
     for (let i = 0; i < deduped.length; i += 1) {
+      const current = deduped[i];
+      if (!current) continue;
       const isEnd = i === 0 || i === deduped.length - 1;
-      if (isEnd || !isRedundant(deduped[i - 1], deduped[i], deduped[i + 1])) kept.push(deduped[i]);
+      const prev = deduped[i - 1];
+      const next = deduped[i + 1];
+      if (isEnd || !prev || !next || !isRedundant(prev, current, next)) kept.push(current);
     }
     return kept;
   }
@@ -7843,18 +7890,25 @@
   var PILL_PADDING_Y = 3;
   var PILL_RADIUS = 4;
   function labelAnchor(points) {
-    let best = 0;
+    const p0 = points[0] ?? { x: 0, y: 0 };
+    if (points.length <= 1) return p0;
+    let best = 1;
     let bestLength = -1;
     for (let i = 1; i < points.length; i += 1) {
-      const length = Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
+      const cur = points[i];
+      const prev = points[i - 1];
+      if (!cur || !prev) continue;
+      const length = Math.abs(cur.x - prev.x) + Math.abs(cur.y - prev.y);
       if (length > bestLength) {
         bestLength = length;
         best = i;
       }
     }
+    const curr = points[best] ?? p0;
+    const previous = points[best - 1] ?? p0;
     return {
-      x: (points[best].x + points[best - 1].x) / 2,
-      y: (points[best].y + points[best - 1].y) / 2
+      x: (curr.x + previous.x) / 2,
+      y: (curr.y + previous.y) / 2
     };
   }
   async function applyNetwork(vector, network) {
@@ -8134,7 +8188,10 @@
     return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
   }
   function samePoints(a, b) {
-    return a.length === b.length && a.every((point, i) => point.x === b[i].x && point.y === b[i].y);
+    return a.length === b.length && a.every((point, i) => {
+      const bp = b[i];
+      return bp !== void 0 && point.x === bp.x && point.y === bp.y;
+    });
   }
   async function rerouteConnections(ids) {
     const wanted = ids ? new Set(ids) : null;
@@ -8216,7 +8273,10 @@
   // shared/flow-plan.ts
   function routesMatch(a, b, epsilon = 0.5) {
     if (a.length !== b.length) return false;
-    return a.every((point, i) => Math.abs(point.x - b[i].x) <= epsilon && Math.abs(point.y - b[i].y) <= epsilon);
+    return a.every((point, i) => {
+      const target = b[i];
+      return target !== void 0 && Math.abs(point.x - target.x) <= epsilon && Math.abs(point.y - target.y) <= epsilon;
+    });
   }
 
   // plugin/src/main/connector-verify.ts
@@ -8320,7 +8380,9 @@
         `${role} name "${name}" is ambiguous on page "${page.name}" \u2014 ${matches.length} nodes match (${matches.slice(0, 4).map((n) => n.id).join(", ")})`
       ), "E_INVALID_ARGS");
     }
-    return matches[0];
+    const first = matches[0];
+    if (!first) throw withCode(new Error(`${role} node named "${name}" not found on page "${page.name}"`), "E_INVALID_ARGS");
+    return first;
   }
   async function resolveEndpoint2(id, role) {
     const node = await figma.getNodeByIdAsync(id);
@@ -8362,7 +8424,12 @@
     if (!page || pageOf(target) !== page) {
       throw withCode(new Error("CONNECT needs both nodes on the same page"), "E_INVALID_ARGS");
     }
-    const points = route({ source: boxOf3(source, "source"), target: boxOf3(target, "target"), intent, clearance });
+    const points = route({
+      source: boxOf3(source, "source"),
+      target: boxOf3(target, "target"),
+      intent,
+      ...clearance !== void 0 ? { clearance } : {}
+    });
     const existing = findConnectionByEndpoints(fromId, toId);
     connectionSequence += 1;
     const connectionId = existing?.id ?? `conn-${Date.now()}-${connectionSequence}`;
@@ -8489,7 +8556,8 @@
   }
   function selectionSummary() {
     const sel = figma.currentPage.selection;
-    return { selectionName: sel.length > 0 ? sel[0].name : null, selectionCount: sel.length };
+    const first = sel[0];
+    return { selectionName: first ? first.name : null, selectionCount: sel.length };
   }
   var announcedFileName = "";
   function announceFileInfo() {

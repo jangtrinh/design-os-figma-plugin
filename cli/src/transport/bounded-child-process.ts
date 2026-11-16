@@ -24,7 +24,7 @@ export interface ChildOutcome {
   stderrRetainedBytes: number;
   stderrTruncated: boolean;
   launchError?: string;
-  launchErrorKind?: 'throw' | 'error';
+  launchErrorKind?: 'throw' | 'error' | undefined;
 }
 
 export const RECONCILE_CHILD_BOUNDS: Readonly<ChildBounds> = Object.freeze({

@@ -1,4 +1,4 @@
-import { type ObjectValue, ValidationContext } from './figma-payload-validation-context';
+import { type ObjectValue, ValidationContext } from './figma-payload-validation-context.ts';
 import {
   validateComponentProperties, validateEffect, validateFill, validateKeyedBindings,
   validatePrimitiveRecord, validateStringRecord,

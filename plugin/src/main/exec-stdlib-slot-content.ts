@@ -15,10 +15,10 @@
 // RECTANGLE/FRAME/TEXT only, not the fork's full 8-type set — the mock and the
 // common case both cover these three; the rest are a mechanical follow-up if a real
 // task needs them.
-import { withCode } from './executor-styles';
-import type { SlotAppendContent, SlotTarget } from './exec-stdlib-slot-types';
-import { resolveSlot } from './exec-stdlib-slot-resolve';
-import { requireDesignFile } from './exec-stdlib-editor';
+import { withCode } from './executor-styles.ts';
+import type { SlotAppendContent, SlotTarget } from './exec-stdlib-slot-types.ts';
+import { resolveSlot } from './exec-stdlib-slot-resolve.ts';
+import { requireDesignFile } from './exec-stdlib-editor.ts';
 
 async function createSlotContentNode(nodeType: string, props: Record<string, string | number>): Promise<SceneNode> {
   let node: SceneNode;

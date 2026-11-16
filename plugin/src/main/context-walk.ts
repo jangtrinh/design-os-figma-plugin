@@ -14,10 +14,10 @@
 // `assertConservation` refuses to return numbers that do not add up. The failure this
 // prevents is the one every serializer reaches for first: drop a subtree, return the rest,
 // say nothing. A caller cannot ask for what it was never told is missing.
-import { utf8ByteLength } from '../../../shared/utf8-byte-length';
-import { buildContextRecord, childrenOf, messageOf, type ContextNodeLike } from './context-node-record';
-import type { ConcealmentMemo } from './text-concealment';
-import { safe } from './scan-node-utils';
+import { utf8ByteLength } from '../../../shared/utf8-byte-length.ts';
+import { buildContextRecord, childrenOf, messageOf, type ContextNodeLike } from './context-node-record.ts';
+import type { ConcealmentMemo } from './text-concealment.ts';
+import { safe } from './scan-node-utils.ts';
 
 /** Measured live: `getCSSAsync` costs ~7-8ms per node and `Promise.all` batches of 16 save
  *  only ~12% (the cost is per CALL, not per host round-trip). 16 is kept because that is
@@ -215,6 +215,7 @@ export async function walkContext(
     for (let i = 0; i < built.length; i += 1) {
       let result = built[i];
       const pending = batch[i];
+      if (!result || !pending) continue;
       let bytes: number;
       try {
         bytes = utf8ByteLength(JSON.stringify(result.record));
@@ -233,7 +234,13 @@ export async function walkContext(
       // is the call it just made — an infinite loop. The overrun is not hidden: both
       // `requestedBytes` and `estimatedBytes` are reported.
       if (nodes.length > 0 && estimatedBytes + bytes > opts.budgetBytes) {
-        for (let j = i; j < batch.length; j += 1) { pushFrontier(batch[j].node, 'budget'); omitted.budget += 1; }
+        for (let j = i; j < batch.length; j += 1) {
+          const item = batch[j];
+          if (item) {
+            pushFrontier(item.node, 'budget');
+            omitted.budget += 1;
+          }
+        }
         for (const rest of queue) { pushFrontier(rest.node, 'budget'); omitted.budget += 1; }
         queue.length = 0;
         stopped = 'budget';

@@ -12,7 +12,7 @@
 // were deleted. Measured, not theorised: a store emptied out-of-band came back on the next
 // write. So each connector command opens by dropping the cache.
 
-import type { ConnectionRecord } from '../../../shared/connector-types';
+import type { ConnectionRecord } from '../../../shared/connector-types.ts';
 
 const NAMESPACE = 'ease_design';
 const KEY = 'connections-v1';

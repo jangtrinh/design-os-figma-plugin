@@ -2,23 +2,23 @@
 // executor-frame.applyAutoLayout and applyChildSizingHints.
 // Extracted from scan-node.ts (Art IX).
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import type { ScannedNode } from './scan-node-types';
-import { safe } from './scan-node-utils';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import type { ScannedNode } from './scan-node-types.ts';
+import { safe } from './scan-node-utils.ts';
 
 /** Auto-layout + sizing block — the symmetric core of applyAutoLayout/child-sizing. */
 export function readLayout(n: Record<string, unknown>, out: ScannedNode): void {
   const mode = n.layoutMode as string | undefined;
   if (mode && mode !== 'NONE') {
-    out.layoutMode = mode as FigmaExportNode['layoutMode'];
+    out.layoutMode = mode as NonNullable<FigmaExportNode['layoutMode']>;
     if (typeof n.itemSpacing === 'number') out.itemSpacing = n.itemSpacing;
     for (const k of ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'] as const) {
       if (typeof n[k] === 'number') out[k] = n[k] as number;
     }
     if (n.primaryAxisSizingMode) out.primaryAxisSizingMode = n.primaryAxisSizingMode as 'AUTO' | 'FIXED';
     if (n.counterAxisSizingMode) out.counterAxisSizingMode = n.counterAxisSizingMode as 'AUTO' | 'FIXED';
-    if (n.primaryAxisAlignItems) out.primaryAxisAlignItems = n.primaryAxisAlignItems as FigmaExportNode['primaryAxisAlignItems'];
-    if (n.counterAxisAlignItems) out.counterAxisAlignItems = n.counterAxisAlignItems as FigmaExportNode['counterAxisAlignItems'];
+    if (n.primaryAxisAlignItems) out.primaryAxisAlignItems = n.primaryAxisAlignItems as NonNullable<FigmaExportNode['primaryAxisAlignItems']>;
+    if (n.counterAxisAlignItems) out.counterAxisAlignItems = n.counterAxisAlignItems as NonNullable<FigmaExportNode['counterAxisAlignItems']>;
     if (n.layoutWrap === 'WRAP') out.layoutWrap = 'WRAP';
     if (typeof n.counterAxisSpacing === 'number') out.counterAxisSpacing = n.counterAxisSpacing;
     if (n.counterAxisAlignContent === 'SPACE_BETWEEN') out.counterAxisAlignContent = 'SPACE_BETWEEN';

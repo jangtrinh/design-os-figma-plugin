@@ -600,6 +600,9 @@ body {
     return { base, delay };
   }
 
+  // shared/version.ts
+  var BRIDGE_VERSION = "0.2.1";
+
   // plugin/src/ui/activity-feed.ts
   function toActivityRecord(detail) {
     if (detail === null || typeof detail !== "object") return null;
@@ -652,7 +655,7 @@ body {
     return tool.toLowerCase().replace(/_/g, " ");
   }
   function capitalize(s) {
-    return s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
+    return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
   }
   var TOOL_VERBS = {
     CREATE_FRAME: { continuous: "Creating a frame", plain: "Created a frame", withObject: "Created frame" },
@@ -697,7 +700,7 @@ body {
     const message = typeof errorMessage === "string" ? errorMessage.trim() : "";
     if (errorCode === "E_INVALID_ARGS") return message || "The command was invalid";
     if (errorCode === "E_EVAL") return message ? `The script stopped: ${message}` : "The script stopped";
-    if (errorCode !== void 0 && errorCode in CODE_SENTENCES) return CODE_SENTENCES[errorCode];
+    if (errorCode !== void 0 && CODE_SENTENCES[errorCode] !== void 0) return CODE_SENTENCES[errorCode];
     const stem = `${capitalize(humanizeTool(tool))} failed`;
     return message ? `${stem} \u2014 ${message}` : stem;
   }
@@ -1865,7 +1868,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v0.2.0 \xB7 ${true ? "b16ead4" : "dev"}`;
+  var BUILD_LINE = `v${BRIDGE_VERSION} \xB7 ${true ? "32598ba" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;
@@ -2296,10 +2299,14 @@ body {
       return parseCssColor(NAMED_COLORS[c]);
     }
     const hexMatch = c.match(/^#([a-f0-9]{3,8})$/);
-    if (hexMatch) {
-      let hex = hexMatch[1];
-      if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-      if (hex.length === 4) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+    const matchedHex = hexMatch?.[1];
+    if (matchedHex) {
+      let hex = matchedHex;
+      if (hex.length === 3) {
+        hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+      } else if (hex.length === 4) {
+        hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2) + hex.charAt(3) + hex.charAt(3);
+      }
       const r = parseInt(hex.substring(0, 2), 16) / 255;
       const g = parseInt(hex.substring(2, 4), 16) / 255;
       const b = parseInt(hex.substring(4, 6), 16) / 255;
@@ -2307,7 +2314,7 @@ body {
       return { r, g, b, a };
     }
     const rgbMatch = c.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/);
-    if (rgbMatch) {
+    if (rgbMatch && rgbMatch[1] !== void 0 && rgbMatch[2] !== void 0 && rgbMatch[3] !== void 0) {
       return {
         r: parseFloat(rgbMatch[1]) / 255,
         g: parseFloat(rgbMatch[2]) / 255,
@@ -2337,7 +2344,8 @@ body {
       if (parts.length < 2) return null;
       if (isRadial) {
         let colorStartIndex2 = 0;
-        const first2 = parts[0].trim().toLowerCase();
+        const firstPart2 = parts[0];
+        const first2 = (firstPart2 !== void 0 ? firstPart2 : "").trim().toLowerCase();
         if (first2.includes("circle") || first2.includes("ellipse") || first2.includes("at ") || first2.includes("closest") || first2.includes("farthest")) {
           colorStartIndex2 = 1;
         }
@@ -2356,7 +2364,8 @@ body {
       }
       if (isConic) {
         let colorStartIndex2 = 0;
-        const first2 = parts[0].trim().toLowerCase();
+        const firstPart2 = parts[0];
+        const first2 = (firstPart2 !== void 0 ? firstPart2 : "").trim().toLowerCase();
         if (first2.includes("from") || first2.includes("at ")) {
           colorStartIndex2 = 1;
         }
@@ -2373,7 +2382,8 @@ body {
           // centered angular
         };
       }
-      const first = parts[0].trim();
+      const firstPart = parts[0];
+      const first = (firstPart !== void 0 ? firstPart : "").trim();
       let angleDeg = 180;
       let colorStartIndex = 0;
       const directionMap = {
@@ -2418,7 +2428,9 @@ body {
     const match = cleanedShadow.match(
       /([-\d.]+)(?:px)?\s+([-\d.]+)(?:px)?\s+([-\d.]+)(?:px)?(?:\s+([-\d.]+)(?:px)?)?\s+(.*)/
     );
-    if (!match) return null;
+    if (!match || match[1] === void 0 || match[2] === void 0 || match[3] === void 0 || match[5] === void 0) {
+      return null;
+    }
     const color = parseCssColor(match[5].trim());
     if (!color) return null;
     return {
@@ -2442,7 +2454,8 @@ body {
     const isHeading = /^H[1-6]$/.test(tag);
     const fontSize = parseFloat(cs.fontSize) || 16;
     const fontWeight = parseInt(cs.fontWeight) || 400;
-    const fontFamily = cs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter";
+    const firstFont = cs.fontFamily.split(",")[0];
+    const fontFamily = (firstFont !== void 0 ? firstFont : "").replace(/['"]/g, "").trim() || "Inter";
     const lineHeight = cs.lineHeight !== "normal" ? parseFloat(cs.lineHeight) : void 0;
     let normalizedLineHeight = lineHeight;
     if (lineHeight && lineHeight < 5) {
@@ -2459,15 +2472,16 @@ body {
         if (child.nodeType === 3) {
           const text = (child.textContent || "").replace(/\s+/g, " ");
           if (text.trim()) {
-            segments.push({
+            const seg = {
               characters: text,
               fontFamily,
               fontSize,
               fontWeight,
-              lineHeight,
-              letterSpacing,
-              textColor: textColor || void 0
-            });
+              ...lineHeight !== void 0 ? { lineHeight } : {},
+              ...letterSpacing !== void 0 ? { letterSpacing } : {},
+              ...textColor ? { textColor } : {}
+            };
+            segments.push(seg);
             fullText += text;
           } else if (text === " ") {
             fullText += " ";
@@ -2477,15 +2491,20 @@ body {
           const childCs = win.getComputedStyle(childEl);
           const childText = (childEl.innerText || childEl.textContent || "").replace(/\s+/g, " ");
           if (childText.trim()) {
+            const childFirstFont = childCs.fontFamily.split(",")[0];
+            const childFont = (childFirstFont !== void 0 ? childFirstFont : "").replace(/['"]/g, "").trim() || fontFamily;
+            const childLineHeight = childCs.lineHeight !== "normal" ? parseFloat(childCs.lineHeight) : lineHeight;
+            const childLetterSpacing = childCs.letterSpacing !== "normal" ? parseFloat(childCs.letterSpacing) : letterSpacing;
+            const childTextColor = parseCssColor(childCs.color) || textColor;
             const seg = {
               characters: childText,
-              fontFamily: childCs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || fontFamily,
+              fontFamily: childFont,
               fontSize: parseFloat(childCs.fontSize) || fontSize,
               fontWeight: parseInt(childCs.fontWeight) || fontWeight,
-              fontStyle: childCs.fontStyle === "italic" ? "italic" : void 0,
-              lineHeight: childCs.lineHeight !== "normal" ? parseFloat(childCs.lineHeight) : lineHeight,
-              letterSpacing: childCs.letterSpacing !== "normal" ? parseFloat(childCs.letterSpacing) : letterSpacing,
-              textColor: parseCssColor(childCs.color) || textColor || void 0
+              ...childCs.fontStyle === "italic" ? { fontStyle: "italic" } : {},
+              ...childLineHeight !== void 0 ? { lineHeight: childLineHeight } : {},
+              ...childLetterSpacing !== void 0 ? { letterSpacing: childLetterSpacing } : {},
+              ...childTextColor ? { textColor: childTextColor } : {}
             };
             const dec = childCs.textDecorationLine;
             if (dec === "underline") seg.textDecoration = "UNDERLINE";
@@ -2510,22 +2529,22 @@ body {
     const shortContent = trimmedText.length <= 40;
     const node = {
       type: "TEXT",
-      name: isHeading ? `Heading ${tag[1]}` : tag === "P" ? "Paragraph" : tag === "BUTTON" ? "Button" : "Text",
+      name: isHeading ? `Heading ${tag.charAt(1)}` : tag === "P" ? "Paragraph" : tag === "BUTTON" ? "Button" : "Text",
       characters: fullText.trim(),
       fontSize,
       fontWeight,
       fontFamily,
       fontStack: cs.fontFamily,
       // full stack → registry match falls back inside the stack
-      fontStyle: cs.fontStyle === "italic" ? "italic" : void 0,
-      lineHeight: normalizedLineHeight,
-      letterSpacing,
-      wordSpacing: cs.wordSpacing !== "normal" ? parseFloat(cs.wordSpacing) : void 0,
-      textColor: textColor || void 0,
       textAlignHorizontal,
       textAutoResize: renderedSingleLine || noWrap || shortContent ? "WIDTH_AND_HEIGHT" : "HEIGHT",
-      width: Math.round(rect.width) || void 0,
-      height: Math.round(rect.height) || void 0
+      ...cs.fontStyle === "italic" ? { fontStyle: "italic" } : {},
+      ...normalizedLineHeight !== void 0 ? { lineHeight: normalizedLineHeight } : {},
+      ...letterSpacing !== void 0 ? { letterSpacing } : {},
+      ...cs.wordSpacing !== "normal" ? { wordSpacing: parseFloat(cs.wordSpacing) } : {},
+      ...textColor ? { textColor } : {},
+      ...Math.round(rect.width) > 0 ? { width: Math.round(rect.width) } : {},
+      ...Math.round(rect.height) > 0 ? { height: Math.round(rect.height) } : {}
     };
     const clampRaw = cs.webkitLineClamp;
     const hasLineClamp = !!clampRaw && clampRaw !== "none" && parseInt(clampRaw, 10) > 0;
@@ -2563,18 +2582,21 @@ body {
       const textContent = content.replace(/^["']|["']$/g, "");
       const hasText = textContent && textContent !== "" && textContent !== '""' && textContent !== "''";
       if (hasText && textContent.length < 200) {
-        return {
+        const pcsFirstFont = pcs.fontFamily.split(",")[0];
+        const pcsFont = (pcsFirstFont !== void 0 ? pcsFirstFont : "").replace(/['"]/g, "").trim() || "Inter";
+        const node = {
           type: "TEXT",
           name: pseudo === "::before" ? "Before" : "After",
           characters: textContent,
           fontSize: parseFloat(pcs.fontSize) || 12,
           fontWeight: parseInt(pcs.fontWeight) || 400,
-          fontFamily: pcs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter",
+          fontFamily: pcsFont,
           fontStack: pcs.fontFamily,
-          textColor: textColor || void 0,
-          width: width > 0 ? Math.round(width) : void 0,
-          height: height > 0 ? Math.round(height) : void 0
+          ...textColor ? { textColor } : {},
+          ...width > 0 ? { width: Math.round(width) } : {},
+          ...height > 0 ? { height: Math.round(height) } : {}
         };
+        return node;
       }
       const hasBg = bgColor && bgColor.a > 0;
       const hasBorder = borderColor && borderColor.a > 0;
@@ -2605,19 +2627,21 @@ body {
   function buildDirectTextNode(el2, win, directText) {
     const textCs = win.getComputedStyle(el2);
     const textColor = parseCssColor(textCs.color);
+    const textCsFirstFont = textCs.fontFamily.split(",")[0];
+    const textCsFont = (textCsFirstFont !== void 0 ? textCsFirstFont : "").replace(/['"]/g, "").trim() || "Inter";
     const textNode = {
       type: "TEXT",
       name: "Text",
       characters: directText,
       fontSize: parseFloat(textCs.fontSize) || 16,
       fontWeight: parseInt(textCs.fontWeight) || 400,
-      fontFamily: textCs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter",
+      fontFamily: textCsFont,
       fontStack: textCs.fontFamily,
-      lineHeight: textCs.lineHeight !== "normal" ? parseFloat(textCs.lineHeight) : void 0,
-      letterSpacing: textCs.letterSpacing !== "normal" ? parseFloat(textCs.letterSpacing) : void 0,
-      textColor: textColor || void 0,
       textAlignHorizontal: mapTextAlign(textCs.textAlign),
-      textAutoResize: "WIDTH_AND_HEIGHT"
+      textAutoResize: "WIDTH_AND_HEIGHT",
+      ...textCs.lineHeight !== "normal" ? { lineHeight: parseFloat(textCs.lineHeight) } : {},
+      ...textCs.letterSpacing !== "normal" ? { letterSpacing: parseFloat(textCs.letterSpacing) } : {},
+      ...textColor ? { textColor } : {}
     };
     const tt2 = textCs.textTransform;
     if (tt2 === "uppercase") textNode.textCase = "UPPER";
@@ -2802,7 +2826,7 @@ body {
       if (tok.startsWith("[")) continue;
       if (/^repeat\(\s*(auto-fill|auto-fit)/.test(tok)) return 0;
       const rep = tok.match(/^repeat\((\d+)\s*,/);
-      if (rep) {
+      if (rep && rep[1] !== void 0) {
         const inner = tok.slice(tok.indexOf(",") + 1, tok.lastIndexOf(")")).trim();
         count += parseInt(rep[1], 10) * (countGridTracks(inner) || 1);
       } else {
@@ -2831,7 +2855,8 @@ body {
       TABLE: "Table",
       BUTTON: "Button"
     };
-    if (tagNames[el2.tagName]) return tagNames[el2.tagName];
+    const mappedTag = tagNames[el2.tagName];
+    if (mappedTag) return mappedTag;
     const classes = (el2.getAttribute("class") || "").split(/\s+/).filter(Boolean);
     const meaningfulClass = classes.find((c) => !c.startsWith("flex") && !c.startsWith("grid") && !c.startsWith("p-") && !c.startsWith("m-") && !c.startsWith("w-") && !c.startsWith("h-") && !c.startsWith("bg-") && !c.startsWith("text-") && !c.startsWith("rounded") && !c.startsWith("border") && !c.startsWith("shadow") && !c.startsWith("gap") && !c.startsWith("items-") && !c.startsWith("justify-") && !c.startsWith("space-") && !c.startsWith("overflow") && !c.startsWith("relative") && !c.startsWith("absolute") && !c.startsWith("min-") && !c.startsWith("max-") && c !== "inline-flex");
     if (meaningfulClass) return meaningfulClass;
@@ -2898,7 +2923,9 @@ body {
         const isVertical = node.layoutMode === "VERTICAL";
         const margins = [];
         for (let i = 0; i < Math.min(childEls.length, 5); i++) {
-          const childCs = win.getComputedStyle(childEls[i]);
+          const childEl = childEls[i];
+          if (!childEl) continue;
+          const childCs = win.getComputedStyle(childEl);
           if (isVertical) {
             margins.push(Math.max(parseFloat(childCs.marginBottom) || 0, parseFloat(childCs.marginTop) || 0));
           } else {
@@ -3028,7 +3055,7 @@ body {
     const backdropFilter = extCs.backdropFilter || extCs.webkitBackdropFilter || "";
     if (backdropFilter && backdropFilter !== "none") {
       const blurMatch = backdropFilter.match(/blur\(([\d.]+)px\)/);
-      if (blurMatch) {
+      if (blurMatch && blurMatch[1] !== void 0) {
         node.effects = [...node.effects || [], { type: "BACKGROUND_BLUR", radius: parseFloat(blurMatch[1]) }];
       }
     }
@@ -3036,9 +3063,9 @@ body {
     if (filter && filter !== "none") {
       const effects = node.effects || [];
       const blurMatch = filter.match(/blur\(([\d.]+)px\)/);
-      if (blurMatch) effects.push({ type: "LAYER_BLUR", radius: parseFloat(blurMatch[1]) });
+      if (blurMatch && blurMatch[1] !== void 0) effects.push({ type: "LAYER_BLUR", radius: parseFloat(blurMatch[1]) });
       const dsMatch = filter.match(/drop-shadow\(([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px\s+(.*?)\)/);
-      if (dsMatch) {
+      if (dsMatch && dsMatch[1] !== void 0 && dsMatch[2] !== void 0 && dsMatch[3] !== void 0 && dsMatch[4] !== void 0) {
         const dsColor = parseCssColor(dsMatch[4].trim());
         if (dsColor) {
           effects.push({
@@ -3071,17 +3098,18 @@ body {
         "color": "COLOR",
         "luminosity": "LUMINOSITY"
       };
-      node.blendMode = blendMap[blendMode] || void 0;
+      const mappedBlend = blendMap[blendMode];
+      if (mappedBlend) node.blendMode = mappedBlend;
     }
     const transform = cs.transform;
     if (transform && transform !== "none") {
       const matrixMatch = transform.match(/matrix\(([-\d.]+),\s*([-\d.]+)/);
-      if (matrixMatch) {
+      if (matrixMatch && matrixMatch[1] !== void 0 && matrixMatch[2] !== void 0) {
         const degrees = Math.atan2(parseFloat(matrixMatch[2]), parseFloat(matrixMatch[1])) * (180 / Math.PI);
         if (Math.abs(degrees) > 0.1) node.rotation = -degrees;
       }
       const rotateMatch = transform.match(/rotate\(([-\d.]+)deg\)/);
-      if (rotateMatch) node.rotation = -parseFloat(rotateMatch[1]);
+      if (rotateMatch && rotateMatch[1] !== void 0) node.rotation = -parseFloat(rotateMatch[1]);
     }
     if (cs.alignContent === "space-between") node.counterAxisAlignContent = "SPACE_BETWEEN";
     const outlineWidth = parseFloat(cs.outlineWidth) || 0;
@@ -3174,27 +3202,29 @@ body {
       const w = el2.clientWidth || parseInt(el2.getAttribute("width") || "24") || 24;
       const h = el2.clientHeight || parseInt(el2.getAttribute("height") || "24") || 24;
       const computedColor = parseCssColor(cs.color);
-      return {
+      const node = {
         type: "IMAGE",
         name: el2.closest("[data-lucide]")?.getAttribute("data-lucide") || "Icon",
         svgContent: prepareSvgContent(rawSvg, computedColor),
         width: w,
-        height: h,
-        fills: computedColor ? [{ type: "SOLID", color: computedColor }] : void 0
+        height: h
       };
+      if (computedColor) node.fills = [{ type: "SOLID", color: computedColor }];
+      return node;
     }
     if (tag === "I" && el2.hasAttribute("data-lucide")) {
       const svg = el2.querySelector("svg");
       const iconColor = parseCssColor(cs.color);
       if (svg) {
-        return {
+        const node = {
           type: "IMAGE",
           name: el2.getAttribute("data-lucide") || "Icon",
           svgContent: prepareSvgContent(svg.outerHTML, iconColor),
           width: svg.clientWidth || parseInt(svg.getAttribute("width") || "24") || 24,
-          height: svg.clientHeight || parseInt(svg.getAttribute("height") || "24") || 24,
-          fills: iconColor ? [{ type: "SOLID", color: iconColor }] : void 0
+          height: svg.clientHeight || parseInt(svg.getAttribute("height") || "24") || 24
         };
+        if (iconColor) node.fills = [{ type: "SOLID", color: iconColor }];
+        return node;
       }
       return {
         type: "RECTANGLE",
@@ -3242,17 +3272,20 @@ body {
       if (placeholder) {
         const textColor = parseCssColor(cs.color);
         const isPlaceholder = !inputEl.value;
-        node.children = [{
+        const firstFont = cs.fontFamily.split(",")[0];
+        const font = (firstFont !== void 0 ? firstFont : "").replace(/['"]/g, "").trim() || "Inter";
+        const textChild = {
           type: "TEXT",
           name: "Placeholder",
           characters: placeholder.toUpperCase(),
           fontSize: parseFloat(cs.fontSize) || 14,
           fontWeight: parseInt(cs.fontWeight) || 400,
-          fontFamily: cs.fontFamily.split(",")[0].replace(/['"]/g, "").trim() || "Inter",
-          textColor: textColor || void 0,
+          fontFamily: font,
           textAutoResize: "WIDTH_AND_HEIGHT",
           opacity: isPlaceholder ? 0.4 : 1
-        }];
+        };
+        if (textColor) textChild.textColor = textColor;
+        node.children = [textChild];
       }
       return attachMotion(el2, node);
     }
@@ -3278,7 +3311,8 @@ body {
     const raw = el2.getAttribute("data-fa-motion");
     if (raw) {
       try {
-        node.motion = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (parsed) node.motion = parsed;
       } catch {
       }
     }
@@ -3364,9 +3398,12 @@ body {
         const steps = [];
         for (let k = 0; k < r.cssRules.length; k++) {
           const kf = r.cssRules[k];
+          const style = {};
+          if (kf.style.opacity) style.opacity = kf.style.opacity;
+          if (kf.style.transform) style.transform = kf.style.transform;
           steps.push({
             offset: parseKeyframeOffset(kf.keyText),
-            style: { opacity: kf.style.opacity || void 0, transform: kf.style.transform || void 0 }
+            style
           });
         }
         return steps;
@@ -3422,7 +3459,7 @@ body {
           family: node.fontFamily || "Inter",
           size: node.fontSize,
           weight: node.fontWeight || 400,
-          lineHeight: node.lineHeight
+          ...node.lineHeight !== void 0 ? { lineHeight: node.lineHeight } : {}
         });
       }
       if (node.itemSpacing && node.itemSpacing > 0) spacingSet.add(node.itemSpacing);
@@ -3513,7 +3550,8 @@ body {
         try {
           const sheets = doc.styleSheets;
           for (let i = 0; i < sheets.length; i++) {
-            if (sheets[i].cssRules && sheets[i].cssRules.length > 50) {
+            const sheet = sheets[i];
+            if (sheet && sheet.cssRules && sheet.cssRules.length > 50) {
               hasRuntimeStyles = true;
               break;
             }
@@ -4351,7 +4389,7 @@ body {
         requestId: request.requestId,
         cmd: "IMPORT_PAYLOAD",
         params: { payload: admission.payload, ...admission.placement },
-        expectedFile: request.expectedFile,
+        ...request.expectedFile !== void 0 ? { expectedFile: request.expectedFile } : {},
         ...request.readOnly === true && { readOnly: true }
       }
     });
@@ -4362,7 +4400,7 @@ body {
       pluginMessage: {
         requestId: result.requestId,
         cmd: "IMPORT_PAYLOAD",
-        expectedFile: result.expectedFile,
+        ...result.expectedFile !== void 0 ? { expectedFile: result.expectedFile } : {},
         params: { payload: admission.payload, ...admission.placement }
       }
     });
@@ -4687,7 +4725,7 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   }
 
   // plugin/src/ui/ui-relay.ts
-  var PLUGIN_VERSION = "0.2.0";
+  var PLUGIN_VERSION = BRIDGE_VERSION;
   var PORT_PROBE_TIMEOUT_MS = 1200;
   var BACKOFF_OPTS = { minMs: RECONNECT_BACKOFF_MIN_MS, maxMs: RECONNECT_BACKOFF_MAX_MS };
   var INSTANCE_ID = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -4708,8 +4746,19 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   }
   function startActivity(req) {
     const at = Date.now();
-    activityStart.set(req.id, { cmd: req.cmd, label: req.activity, at });
-    dispatchActivity({ phase: "start", id: req.id, tool: req.cmd, label: req.activity, at, agent: req.agent });
+    activityStart.set(req.id, {
+      cmd: req.cmd,
+      at,
+      ...req.activity !== void 0 ? { label: req.activity } : {}
+    });
+    dispatchActivity({
+      phase: "start",
+      id: req.id,
+      tool: req.cmd,
+      at,
+      ...req.activity !== void 0 ? { label: req.activity } : {},
+      ...req.agent !== void 0 ? { agent: req.agent } : {}
+    });
   }
   function replyNodeName(payload2) {
     const name = payload2?.name;
@@ -4884,11 +4933,16 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
         setStatusText("rendering html\u2026", "ok");
         const payload2 = await renderHtmlToPayload(p.html, p.width ?? 1280, p.name ?? "HTML Import");
         setStatusText("connected", "ok");
+        const placement = {};
+        if (p.x !== void 0) placement.x = p.x;
+        if (p.y !== void 0) placement.y = p.y;
+        if (p.parentId !== void 0) placement.parentId = p.parentId;
+        if (p.replaceId !== void 0) placement.replaceId = p.replaceId;
         forwardValidatedHtmlImport({
           requestId: req.id,
-          expectedFile: req.expectedFile,
           payload: payload2,
-          placement: { x: p.x, y: p.y, parentId: p.parentId, replaceId: p.replaceId }
+          placement,
+          ...req.expectedFile !== void 0 ? { expectedFile: req.expectedFile } : {}
         }, (message) => parent.postMessage(message, "*"));
       } else if (req.cmd === "SHADER_GRADIENT_PROBE") {
         const p = req.params ?? {};
@@ -4961,9 +5015,9 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
       } else if (req.cmd === "IMPORT_PAYLOAD") {
         forwardValidatedDirectImport({
           requestId: req.id,
-          expectedFile: req.expectedFile,
           params: req.params,
-          readOnly: req.readOnly
+          ...req.expectedFile !== void 0 ? { expectedFile: req.expectedFile } : {},
+          ...req.readOnly !== void 0 ? { readOnly: req.readOnly } : {}
         }, (message) => parent.postMessage(message, "*"));
       } else {
         parent.postMessage({
@@ -5037,11 +5091,11 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     },
     emitConnected: () => {
       if (!ws) return;
-      const { url, port } = socketConnectionInfo(ws);
+      const info = socketConnectionInfo(ws);
       transition("READY", {
-        detail: `broker at ${url} \xB7 protocol v${PROTOCOL_VERSION}`,
-        brokerUrl: url,
-        port,
+        detail: `broker at ${info.url} \xB7 protocol v${PROTOCOL_VERSION}`,
+        brokerUrl: info.url,
+        ...info.port !== void 0 ? { port: info.port } : {},
         appState: "ready"
       });
     }
@@ -5095,7 +5149,9 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   function socketConnectionInfo(socket) {
     const url = socket.url.replace(/\/$/, "");
     const portMatch = /:(\d+)/.exec(url);
-    return { url, port: portMatch ? Number(portMatch[1]) : void 0 };
+    const info = { url };
+    if (portMatch && portMatch[1] !== void 0) info.port = Number(portMatch[1]);
+    return info;
   }
   function adoptSocket(probe) {
     const { socket, hello } = probe;
@@ -5114,8 +5170,13 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
     backoffBase = 0;
     chunkBuffers.clear();
     heartbeatMode = hello.appReadinessV === 1 ? "correlated" : "legacy";
-    const { url, port } = socketConnectionInfo(socket);
-    transition("FOUND", { detail: `broker at ${url}`, brokerUrl: url, port, appState: "probing" });
+    const info = socketConnectionInfo(socket);
+    transition("FOUND", {
+      detail: `broker at ${info.url}`,
+      brokerUrl: info.url,
+      ...info.port !== void 0 ? { port: info.port } : {},
+      appState: "probing"
+    });
     socket.onmessage = (ev) => handleWireData(String(ev.data));
     socket.onerror = () => {
     };

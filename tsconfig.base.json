@@ -4,6 +4,8 @@
     "moduleResolution": "bundler",
     "moduleDetection": "force",
     "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,

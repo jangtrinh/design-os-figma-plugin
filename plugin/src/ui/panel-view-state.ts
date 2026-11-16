@@ -1,4 +1,4 @@
-import { pushActivity, resolveActivity, type ActivityRecord, type ActivityResult } from './activity-feed';
+import { pushActivity, resolveActivity, type ActivityRecord, type ActivityResult } from './activity-feed.ts';
 
 export const VIEW_KEY_LIMIT = 64;
 

@@ -13,8 +13,8 @@
 // Both are fixed here, once, for frames and shapes alike (Art: a missing-rule bug is
 // fixed at the shared layer — ask which other consumer has the blind spot).
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import { rgbToFigma } from './executor-styles';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import { rgbToFigma } from './executor-styles.ts';
 
 /** The stroke surface we touch — structural, so FrameNode and RectangleNode both fit
  * without a cast at each call site. Individual weights are optional: not every
