@@ -195,10 +195,16 @@ export class JobTable {
   private readonly tombstoneSet = new Set<string>();
   private counter = 0;
 
+  private readonly now: () => number;
+  private readonly mintId?: () => string;
+
   constructor(
-    private readonly now: () => number = Date.now,
-    private readonly mintId?: () => string,
-  ) {}
+    now: () => number = Date.now,
+    mintId?: () => string,
+  ) {
+    this.now = now;
+    this.mintId = mintId;
+  }
 
   private mint(): string {
     if (this.mintId) return this.mintId();

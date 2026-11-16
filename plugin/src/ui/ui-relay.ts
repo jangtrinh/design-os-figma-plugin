@@ -33,7 +33,7 @@ import { summarizeError, summarizeResult } from './activity-summary';
 import { createHeartbeatDriver } from './heartbeat-driver';
 import type { HeartbeatMode } from './heartbeat-lease';
 
-const PLUGIN_VERSION = '0.1.0';
+const PLUGIN_VERSION = '0.2.0';
 const PORT_PROBE_TIMEOUT_MS = 1200; // a real broker greets in <50ms; short = fast scan
 const BACKOFF_OPTS = { minMs: RECONNECT_BACKOFF_MIN_MS, maxMs: RECONNECT_BACKOFF_MAX_MS };
 

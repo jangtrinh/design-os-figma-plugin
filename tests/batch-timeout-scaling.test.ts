@@ -81,7 +81,7 @@ describe('batch execute() — threads the scaled timeout into the transport call
     const filePath = writeBatchFile(ops);
     try {
       const calls: Array<{ opts?: { timeoutMs?: number } }> = [];
-      const runner: Runner = async (cmd, params, opts) => {
+      const runner: Runner = async (_cmd, _params, opts) => {
         calls.push({ opts });
         return { ok: true };
       };
@@ -97,7 +97,7 @@ describe('batch execute() — threads the scaled timeout into the transport call
     const filePath = writeBatchFile([{ cmd: 'SET_TEXT', params: {} }]);
     try {
       const calls: Array<{ params: unknown }> = [];
-      const runner: Runner = async (cmd, params) => {
+      const runner: Runner = async (_cmd, params) => {
         calls.push({ params });
         return { ok: true };
       };

@@ -37,7 +37,9 @@ describe('actual UI relay admission errors', () => {
           readyState = 1;
           sent: any[] = [];
           onmessage: ((event: { data: string }) => void) | null = null;
-          constructor(public url: string) {
+          url: string;
+          constructor(url: string) {
+            this.url = url;
             probe.sockets.push(this);
             setTimeout(() => this.onmessage?.({
               data: JSON.stringify({ type: 'BROKER_HELLO', data: {} }),

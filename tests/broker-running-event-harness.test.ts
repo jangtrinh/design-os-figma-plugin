@@ -122,7 +122,7 @@ function jobStates(state: { frames: WireMsg[] }): Announced[] {
 }
 
 function requestIds(state: { frames: WireMsg[] }): string[] {
-  return state.frames.filter((f) => 'cmd' in (f as Record<string, unknown>)).map((f) => (f as { id: string }).id);
+  return state.frames.filter((f) => 'cmd' in (f as unknown as Record<string, unknown>)).map((f) => (f as { id: string }).id);
 }
 
 /** A mutating EXEC_JS from its own socket; resolves with that socket's frame log. */

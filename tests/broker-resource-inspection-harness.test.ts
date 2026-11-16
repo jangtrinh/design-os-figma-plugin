@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import WebSocket from 'ws';
 import { makeRequestFrame, type EventMsg, type JobInfo, type ReplyMsg, type WireMsg } from '../shared/protocol.ts';
 import { sendWireMsg } from '../cli/src/transport/protocol-helpers.ts';
-import type { BrokerResourceSnapshot, BrokerResourceSnapshotGetter } from '../cli/src/transport/broker-resource-snapshot.ts';
+import type { BrokerResourceSnapshotGetter } from '../cli/src/transport/broker-resource-snapshot.ts';
 
 vi.setConfig({ testTimeout: 30_000 });
 

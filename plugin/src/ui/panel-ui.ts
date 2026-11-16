@@ -25,7 +25,7 @@ const activityView = new ActivityView(el('fga-failure-count'));
 const thinkingOrb = mountThinkingOrb(orbHost);
 // The version row went with the inspector; the build identity stays reachable on the orb's
 // tooltip (never its accessible name — a screen reader wants the status, not a hash).
-const BUILD_LINE = `v0.1.0 · ${typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'}`;
+const BUILD_LINE = `v0.2.0 · ${typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'}`;
 const SYNC_RESULT_HOLD_MS = 4_000;
 
 let payload: ConnectionStatePayload | null = null;

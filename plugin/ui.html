@@ -786,9 +786,9 @@ body {
   var VIEW_KEY_LIMIT = 64;
   var BoundedKeySet = class {
     constructor(limit = VIEW_KEY_LIMIT) {
-      this.limit = limit;
       this.keys = /* @__PURE__ */ new Set();
       this.overflow = 0;
+      this.limit = limit;
     }
     add(key) {
       if (this.keys.has(key)) this.keys.delete(key);
@@ -880,10 +880,10 @@ body {
   }
   var ActivityView = class {
     constructor(failureCount) {
-      this.failureCount = failureCount;
       this.records = [];
       this.activeTools = /* @__PURE__ */ new Map();
       this.failures = new BoundedKeySet();
+      this.failureCount = failureCount;
     }
     push(record) {
       this.records = pushActivity(this.records, record);
@@ -1865,7 +1865,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v0.1.0 \xB7 ${true ? "49b3815" : "dev"}`;
+  var BUILD_LINE = `v0.2.0 \xB7 ${true ? "b16ead4" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;
@@ -4687,7 +4687,7 @@ window.addEventListener('unhandledrejection', (e) => fail('E_RENDER_SCRIPT', (e.
   }
 
   // plugin/src/ui/ui-relay.ts
-  var PLUGIN_VERSION = "0.1.0";
+  var PLUGIN_VERSION = "0.2.0";
   var PORT_PROBE_TIMEOUT_MS = 1200;
   var BACKOFF_OPTS = { minMs: RECONNECT_BACKOFF_MIN_MS, maxMs: RECONNECT_BACKOFF_MAX_MS };
   var INSTANCE_ID = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;

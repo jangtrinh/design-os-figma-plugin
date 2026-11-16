@@ -3,6 +3,7 @@ dist/
 coverage/
 *.local
 *.log
+*.tsbuildinfo
 .DS_Store
 
 # Secrets / local credentials — never tracked.

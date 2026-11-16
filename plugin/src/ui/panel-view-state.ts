@@ -5,8 +5,11 @@ export const VIEW_KEY_LIMIT = 64;
 export class BoundedKeySet {
   private readonly keys = new Set<string>();
   private overflow = 0;
+  private readonly limit: number;
 
-  constructor(private readonly limit = VIEW_KEY_LIMIT) {}
+  constructor(limit = VIEW_KEY_LIMIT) {
+    this.limit = limit;
+  }
 
   add(key: string): void {
     if (this.keys.has(key)) this.keys.delete(key);

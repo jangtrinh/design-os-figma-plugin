@@ -1,0 +1,24 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": [
+      "ES2023"
+    ],
+    "typeRoots": [
+      "../node_modules/@types",
+      "../node_modules/@figma"
+    ],
+    "types": [
+      "node",
+      "plugin-typings"
+    ],
+    "rootDir": ".."
+  },
+  "include": [
+    "./executor-*.test.ts",
+    "./scan-node*.test.ts",
+    "./helpers/mock-figma.ts",
+    "./ambient.d.ts"
+  ]
+}

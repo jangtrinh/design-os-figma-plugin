@@ -31,14 +31,13 @@ describe('heartbeat driver effect ordering', () => {
 
   it('emits connected once and only for the current correlated response', () => {
     let now = 0;
-    let scheduled: (() => void) | undefined;
     const effects: string[] = [];
     let probeCounter = 0;
     const driver = createHeartbeatDriver({
       now: () => now,
       nextProbeId: () => `probe-${++probeCounter}`,
-      schedule: (callback) => { scheduled = callback; return callback; },
-      cancel: () => { scheduled = undefined; },
+      schedule: (callback) => callback,
+      cancel: () => {},
       sendProbe: (probeId) => { effects.push(`send:${probeId}`); },
       teardown: () => { effects.push('teardown'); },
       emitConnected: () => { effects.push('connected'); },
@@ -52,13 +51,12 @@ describe('heartbeat driver effect ordering', () => {
   });
 
   it('accepts an uncorrelated response in legacy mode after probing', () => {
-    let scheduled: (() => void) | undefined;
     const effects: string[] = [];
     const driver = createHeartbeatDriver({
       now: () => 0,
       nextProbeId: () => 'legacy-probe',
-      schedule: (callback) => { scheduled = callback; return callback; },
-      cancel: () => { scheduled = undefined; },
+      schedule: (callback) => callback,
+      cancel: () => {},
       sendProbe: (_probeId, mode) => { effects.push(`send:${mode}`); },
       teardown: () => { effects.push('teardown'); },
       emitConnected: () => { effects.push('connected'); },

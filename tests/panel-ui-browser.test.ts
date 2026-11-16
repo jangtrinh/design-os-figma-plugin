@@ -89,7 +89,7 @@ const failOnce = (id: string): Promise<boolean> => fire('figma-agent:activity', 
 
 const text = (selector: string): Promise<string> => page.locator(selector).evaluate((node) => node.textContent ?? '');
 const chip = (): Promise<{ hidden: boolean; text: string }> => page.locator('#fga-failure-count')
-  .evaluate((node) => ({ hidden: (node as HTMLElement).hidden, text: node.textContent ?? '' }));
+  .evaluate((node) => ({ hidden: Boolean((node as HTMLElement).hidden), text: node.textContent ?? '' }));
 const orbStatus = (): Promise<string> => page.locator('#fga-orb').evaluate((node) => node.getAttribute('aria-label') ?? '');
 
 beforeAll(async () => {

@@ -7,11 +7,18 @@ import { board, connections } from '../plugin/src/main/exec-stdlib-figjam-read.t
 import { MAX_CONNECTORS_READ } from '../plugin/src/main/exec-stdlib-figjam-types.ts';
 
 function asFigma(): {
-  createSticky(): FakeNode; createFrame(): FakeNode; createConnector(): FakeNode;
+  createSticky(): FakeNode & { text: { characters: string } };
+  createFrame(): FakeNode;
+  createConnector(): FakeNode & { text: { characters: string } };
   currentPage: FakeNode;
 } {
   return (globalThis as unknown as {
-    figma: { createSticky(): FakeNode; createFrame(): FakeNode; createConnector(): FakeNode; currentPage: FakeNode };
+    figma: {
+      createSticky(): FakeNode & { text: { characters: string } };
+      createFrame(): FakeNode;
+      createConnector(): FakeNode & { text: { characters: string } };
+      currentPage: FakeNode;
+    };
   }).figma;
 }
 

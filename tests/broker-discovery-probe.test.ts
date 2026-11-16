@@ -11,7 +11,7 @@
 // heartbeat, and runCommand() unlinked the advertisement on the FIRST failed
 // connect) — importing them fails against pre-fix code.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

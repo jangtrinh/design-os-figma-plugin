@@ -33,8 +33,11 @@ function collectImageUrls(html: string): string[] {
 }
 
 class ImageTooLargeError extends Error {
-  constructor(readonly observedBytes: number) {
+  readonly observedBytes: number;
+
+  constructor(observedBytes: number) {
     super(`observed at least ${observedBytes} bytes, exceeding ${MAX_IMAGE_BYTES}`);
+    this.observedBytes = observedBytes;
   }
 }
 

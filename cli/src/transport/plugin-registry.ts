@@ -182,7 +182,11 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
   // write, so it is a reliable total order over ALL activity, not just first-time registers.
   private activitySeqCounter = 0;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  private readonly now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.now = now;
+  }
 
   /**
    * Register or update a plugin instance. The id comes from the HELLO payload

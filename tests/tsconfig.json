@@ -1,0 +1,25 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "rootDir": ".."
+  },
+  "files": [
+    "../node_modules/@figma/plugin-typings/index.d.ts"
+  ],
+  "include": [
+    "./**/*.ts",
+    "../vitest.config.ts"
+  ],
+  "exclude": [
+    "./executor-components.test.ts"
+  ]
+}

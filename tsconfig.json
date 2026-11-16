@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./cli" },
+    { "path": "./plugin" },
+    { "path": "./plugin/tsconfig.main.json" },
+    { "path": "./tests" },
+    { "path": "./tests/tsconfig.main.json" }
+  ]
+}

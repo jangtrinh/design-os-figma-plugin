@@ -69,7 +69,10 @@ export class MutationAdmissionGate {
   private readonly rename: (from: string, to: string) => void;
   private unavailableReason: string | null = null;
 
-  constructor(readonly path: string, options: MutationAdmissionGateOptions = {}) {
+  readonly path: string;
+
+  constructor(path: string, options: MutationAdmissionGateOptions = {}) {
+    this.path = path;
     this.now = options.now ?? Date.now;
     this.writeFile = options.writeFile ?? writePrivateFileExclusive;
     this.rename = options.rename ?? renameSync;

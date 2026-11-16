@@ -200,7 +200,7 @@ describe('changes --png (run)', () => {
     ].map((l) => JSON.stringify(l)).join('\n') + '\n';
     writeFileSync(join(feedDir, 'changes', 'vsf-pcp.jsonl'), lines);
     vi.mocked(runCommand).mockReset();
-    vi.mocked(runCommand).mockImplementation(async (cmd, params) => png(`png-${(params as { nodeId: string }).nodeId}`));
+    vi.mocked(runCommand).mockImplementation(async (_cmd, params) => png(`png-${(params as { nodeId: string }).nodeId}`));
   });
   afterEach(() => {
     if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
