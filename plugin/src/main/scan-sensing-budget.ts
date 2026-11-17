@@ -18,7 +18,9 @@ export class SensingBudgetExceeded extends Error {
 export class SensingBudget {
   private ticks = 0;
   private readonly deadline: number;
-  constructor(budgetMs: number = SENSING_BUDGET_MS, private readonly now: () => number = Date.now) {
+  private readonly now: () => number;
+  constructor(budgetMs: number = SENSING_BUDGET_MS, now: () => number = Date.now) {
+    this.now = now;
     this.deadline = now() + budgetMs;
   }
   /** Milliseconds left before the deadline (never negative). */

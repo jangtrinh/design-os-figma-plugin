@@ -28,14 +28,14 @@ function codeLayer(): FakeNode {
 
 describe('scan of a node type the payload schema cannot model', () => {
   it('keeps the raw type of a code layer visible', () => {
-    const spec = nodeToSpec(codeLayer() as unknown as SceneNode) as Record<string, unknown>;
+    const spec = nodeToSpec(codeLayer() as unknown as SceneNode) as unknown as Record<string, unknown>;
     expect(spec.figmaScanSourceType).toBe('CODE_INSTANCE');
   });
 
   it('keeps the raw type of any other unmodelled type visible', () => {
     const node = figma.createFrame() as unknown as FakeNode;
     node.type = 'BOOLEAN_OPERATION';
-    const spec = nodeToSpec(node as unknown as SceneNode) as Record<string, unknown>;
+    const spec = nodeToSpec(node as unknown as SceneNode) as unknown as Record<string, unknown>;
     expect(spec.figmaScanSourceType).toBe('BOOLEAN_OPERATION');
   });
 
@@ -43,7 +43,7 @@ describe('scan of a node type the payload schema cannot model', () => {
     for (const type of ['FRAME', 'SECTION', 'GROUP', 'RECTANGLE', 'ELLIPSE']) {
       const node = figma.createFrame() as unknown as FakeNode;
       node.type = type;
-      const spec = nodeToSpec(node as unknown as SceneNode) as Record<string, unknown>;
+      const spec = nodeToSpec(node as unknown as SceneNode) as unknown as Record<string, unknown>;
       expect(spec.figmaScanSourceType, type).toBeUndefined();
     }
   });

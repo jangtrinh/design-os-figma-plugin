@@ -2,11 +2,11 @@
 // buildTextNode (with inline segment extraction), extractPseudoElement,
 // and buildDirectTextNode (direct text mixed among element children).
 
-import type { FigmaExportNode, FigmaTextSegment } from '../../../../shared/figma-payload-types';
-import { parseCssColor } from './color-utils';
-import { parseBoxShadow } from './parse-css';
+import type { FigmaExportNode, FigmaTextSegment } from '../../../../shared/figma-payload-types.ts';
+import { parseCssColor } from './color-utils.ts';
+import { parseBoxShadow } from './parse-css.ts';
 
-function mapTextAlign(cssAlign: string): FigmaExportNode['textAlignHorizontal'] {
+function mapTextAlign(cssAlign: string): 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED' {
   if (cssAlign === 'center') return 'CENTER';
   if (cssAlign === 'right') return 'RIGHT';
   if (cssAlign === 'justify') return 'JUSTIFIED';
@@ -23,7 +23,8 @@ export function buildTextNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Win
 
   const fontSize = parseFloat(cs.fontSize) || 16;
   const fontWeight = parseInt(cs.fontWeight) || 400;
-  const fontFamily = cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim() || 'Inter';
+  const firstFont = cs.fontFamily.split(',')[0];
+  const fontFamily = (firstFont !== undefined ? firstFont : '').replace(/['"]/g, '').trim() || 'Inter';
   const lineHeight = cs.lineHeight !== 'normal' ? parseFloat(cs.lineHeight) : undefined;
   // Normalize relative line-height ('1.5') to pixels; '24px' stays as-is
   let normalizedLineHeight = lineHeight;
@@ -48,11 +49,14 @@ export function buildTextNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Win
         // Text node
         const text = (child.textContent || '').replace(/\s+/g, ' ');
         if (text.trim()) {
-          segments.push({
+          const seg: FigmaTextSegment = {
             characters: text,
-            fontFamily, fontSize, fontWeight, lineHeight, letterSpacing,
-            textColor: textColor || undefined,
-          });
+            fontFamily, fontSize, fontWeight,
+            ...(lineHeight !== undefined ? { lineHeight } : {}),
+            ...(letterSpacing !== undefined ? { letterSpacing } : {}),
+            ...(textColor ? { textColor } : {}),
+          };
+          segments.push(seg);
           fullText += text;
         } else if (text === ' ') {
           fullText += ' '; // whitespace-only node → preserve as word separator
@@ -63,15 +67,20 @@ export function buildTextNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Win
         const childCs = win.getComputedStyle(childEl);
         const childText = (childEl.innerText || childEl.textContent || '').replace(/\s+/g, ' ');
         if (childText.trim()) {
+          const childFirstFont = childCs.fontFamily.split(',')[0];
+          const childFont = (childFirstFont !== undefined ? childFirstFont : '').replace(/['"]/g, '').trim() || fontFamily;
+          const childLineHeight = childCs.lineHeight !== 'normal' ? parseFloat(childCs.lineHeight) : lineHeight;
+          const childLetterSpacing = childCs.letterSpacing !== 'normal' ? parseFloat(childCs.letterSpacing) : letterSpacing;
+          const childTextColor = parseCssColor(childCs.color) || textColor;
           const seg: FigmaTextSegment = {
             characters: childText,
-            fontFamily: childCs.fontFamily.split(',')[0].replace(/['"]/g, '').trim() || fontFamily,
+            fontFamily: childFont,
             fontSize: parseFloat(childCs.fontSize) || fontSize,
             fontWeight: parseInt(childCs.fontWeight) || fontWeight,
-            fontStyle: childCs.fontStyle === 'italic' ? 'italic' : undefined,
-            lineHeight: childCs.lineHeight !== 'normal' ? parseFloat(childCs.lineHeight) : lineHeight,
-            letterSpacing: childCs.letterSpacing !== 'normal' ? parseFloat(childCs.letterSpacing) : letterSpacing,
-            textColor: parseCssColor(childCs.color) || textColor || undefined,
+            ...(childCs.fontStyle === 'italic' ? { fontStyle: 'italic' as const } : {}),
+            ...(childLineHeight !== undefined ? { lineHeight: childLineHeight } : {}),
+            ...(childLetterSpacing !== undefined ? { letterSpacing: childLetterSpacing } : {}),
+            ...(childTextColor ? { textColor: childTextColor } : {}),
           };
           const dec = childCs.textDecorationLine;
           if (dec === 'underline') seg.textDecoration = 'UNDERLINE';
@@ -104,21 +113,21 @@ export function buildTextNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Win
 
   const node: FigmaExportNode = {
     type: 'TEXT',
-    name: isHeading ? `Heading ${tag[1]}` : (tag === 'P' ? 'Paragraph' : tag === 'BUTTON' ? 'Button' : 'Text'),
+    name: isHeading ? `Heading ${tag.charAt(1)}` : (tag === 'P' ? 'Paragraph' : tag === 'BUTTON' ? 'Button' : 'Text'),
     characters: fullText.trim(),
     fontSize,
     fontWeight,
     fontFamily,
     fontStack: cs.fontFamily, // full stack → registry match falls back inside the stack
-    fontStyle: cs.fontStyle === 'italic' ? 'italic' : undefined,
-    lineHeight: normalizedLineHeight,
-    letterSpacing,
-    wordSpacing: cs.wordSpacing !== 'normal' ? parseFloat(cs.wordSpacing) : undefined,
-    textColor: textColor || undefined,
     textAlignHorizontal,
     textAutoResize: (renderedSingleLine || noWrap || shortContent) ? 'WIDTH_AND_HEIGHT' : 'HEIGHT',
-    width: Math.round(rect.width) || undefined,
-    height: Math.round(rect.height) || undefined,
+    ...(cs.fontStyle === 'italic' ? { fontStyle: 'italic' as const } : {}),
+    ...(normalizedLineHeight !== undefined ? { lineHeight: normalizedLineHeight } : {}),
+    ...(letterSpacing !== undefined ? { letterSpacing } : {}),
+    ...(cs.wordSpacing !== 'normal' ? { wordSpacing: parseFloat(cs.wordSpacing) } : {}),
+    ...(textColor ? { textColor } : {}),
+    ...(Math.round(rect.width) > 0 ? { width: Math.round(rect.width) } : {}),
+    ...(Math.round(rect.height) > 0 ? { height: Math.round(rect.height) } : {}),
   };
 
   // text-overflow: ellipsis / line-clamp → truncation. Guard carefully:
@@ -184,18 +193,21 @@ export function extractPseudoElement(el: HTMLElement, win: Window, pseudo: '::be
 
     // If it has text content, create a TEXT node
     if (hasText && textContent.length < 200) {
-      return {
+      const pcsFirstFont = pcs.fontFamily.split(',')[0];
+      const pcsFont = (pcsFirstFont !== undefined ? pcsFirstFont : '').replace(/['"]/g, '').trim() || 'Inter';
+      const node: FigmaExportNode = {
         type: 'TEXT',
         name: pseudo === '::before' ? 'Before' : 'After',
         characters: textContent,
         fontSize: parseFloat(pcs.fontSize) || 12,
         fontWeight: parseInt(pcs.fontWeight) || 400,
-        fontFamily: pcs.fontFamily.split(',')[0].replace(/['"]/g, '').trim() || 'Inter',
+        fontFamily: pcsFont,
         fontStack: pcs.fontFamily,
-        textColor: textColor || undefined,
-        width: width > 0 ? Math.round(width) : undefined,
-        height: height > 0 ? Math.round(height) : undefined,
+        ...(textColor ? { textColor } : {}),
+        ...(width > 0 ? { width: Math.round(width) } : {}),
+        ...(height > 0 ? { height: Math.round(height) } : {}),
       };
+      return node;
     }
 
     // Decorative dots, lines, shapes → RECTANGLE
@@ -235,6 +247,8 @@ export function extractPseudoElement(el: HTMLElement, win: Window, pseudo: '::be
 export function buildDirectTextNode(el: HTMLElement, win: Window, directText: string): FigmaExportNode {
   const textCs = win.getComputedStyle(el);
   const textColor = parseCssColor(textCs.color);
+  const textCsFirstFont = textCs.fontFamily.split(',')[0];
+  const textCsFont = (textCsFirstFont !== undefined ? textCsFirstFont : '').replace(/['"]/g, '').trim() || 'Inter';
 
   const textNode: FigmaExportNode = {
     type: 'TEXT',
@@ -242,13 +256,13 @@ export function buildDirectTextNode(el: HTMLElement, win: Window, directText: st
     characters: directText,
     fontSize: parseFloat(textCs.fontSize) || 16,
     fontWeight: parseInt(textCs.fontWeight) || 400,
-    fontFamily: textCs.fontFamily.split(',')[0].replace(/['"]/g, '').trim() || 'Inter',
+    fontFamily: textCsFont,
     fontStack: textCs.fontFamily,
-    lineHeight: textCs.lineHeight !== 'normal' ? parseFloat(textCs.lineHeight) : undefined,
-    letterSpacing: textCs.letterSpacing !== 'normal' ? parseFloat(textCs.letterSpacing) : undefined,
-    textColor: textColor || undefined,
     textAlignHorizontal: mapTextAlign(textCs.textAlign),
     textAutoResize: 'WIDTH_AND_HEIGHT',
+    ...(textCs.lineHeight !== 'normal' ? { lineHeight: parseFloat(textCs.lineHeight) } : {}),
+    ...(textCs.letterSpacing !== 'normal' ? { letterSpacing: parseFloat(textCs.letterSpacing) } : {}),
+    ...(textColor ? { textColor } : {}),
   };
 
   const tt = textCs.textTransform;

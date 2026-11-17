@@ -19,8 +19,8 @@
 // bindingsToKeyedBindings below — the same shape of join, against the id→key map
 // scan-keyed-vars.readKeyedVariableMap builds.
 
-import type { FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types';
-import { isUnbindableField } from '../../../shared/figma-unbindable-fields';
+import type { FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types.ts';
+import { isUnbindableField } from '../../../shared/figma-unbindable-fields.ts';
 
 type TokenRefs = NonNullable<FigmaExportNode['tokenRefs']>;
 
@@ -71,8 +71,9 @@ function resolveTokenSlots(
   }
 
   const padIds = PADDING_FIELDS.map((f) => bindings[f]);
-  if (padIds.every((id) => id && id === padIds[0])) {
-    const name = tokenNames.get(padIds[0]);
+  const firstPad = padIds[0];
+  if (firstPad && padIds.every((id) => id && id === firstPad)) {
+    const name = tokenNames.get(firstPad);
     // All four sides claimed together: applyTokenRefs replays `padding` onto each.
     if (name) for (const field of PADDING_FIELDS) out.push({ field, slot: 'padding', name });
   }

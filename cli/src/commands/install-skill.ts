@@ -27,8 +27,9 @@ interface InstallSkillResult {
  *  a stray `version:` mentioned later in the skill's prose must never be read as it. */
 function frontmatterVersion(content: string): string | null {
   const fm = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fm) return null;
-  const line = fm[1].split('\n').find((l) => l.startsWith('version:'));
+  const block = fm?.[1];
+  if (!block) return null;
+  const line = block.split('\n').find((l) => l.startsWith('version:'));
   return line ? line.slice('version:'.length).trim() : null;
 }
 

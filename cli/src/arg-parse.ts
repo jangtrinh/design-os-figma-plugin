@@ -18,15 +18,24 @@ export function parseArgs(argv: string[]): CommandArgs {
   const positionals: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (arg === undefined) continue;
     if (!arg.startsWith('--')) {
       positionals.push(arg);
       continue;
     }
     const body = arg.slice(2);
     const eq = body.indexOf('=');
-    if (eq >= 0) flags[body.slice(0, eq)] = body.slice(eq + 1);
-    else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) flags[body] = argv[++i];
-    else flags[body] = true;
+    if (eq >= 0) {
+      flags[body.slice(0, eq)] = body.slice(eq + 1);
+    } else {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        flags[body] = next;
+        i++;
+      } else {
+        flags[body] = true;
+      }
+    }
   }
   const str = (name: string): string | undefined => {
     const value = flags[name];

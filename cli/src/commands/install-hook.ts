@@ -56,7 +56,8 @@ function detectIndent(raw: string | null): string | number {
   if (raw === null) return 2;
   if (/\n\t/.test(raw)) return '\t';
   const match = raw.match(/\n( +)"/);
-  return match ? match[1].length : 2;
+  const spaces = match?.[1];
+  return spaces !== undefined ? spaces.length : 2;
 }
 
 async function confirm(question: string): Promise<boolean> {

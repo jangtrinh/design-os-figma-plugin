@@ -1,7 +1,7 @@
 // JSON-safe serialization: scene nodes (GET_SELECTION), arbitrary values
 // (EXEC_JS results), and the design-system registry (SCAN_DESIGN_SYSTEM).
-import { pageOf } from './page-of-node';
-import { applySensing, isFoldedVariant } from './scan-design-system-sensing';
+import { pageOf } from './page-of-node.ts';
+import { applySensing, isFoldedVariant } from './scan-design-system-sensing.ts';
 
 export interface SerializedNode {
   id: string;

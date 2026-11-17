@@ -53,7 +53,8 @@ describe('context refs — resolution', () => {
   it('emits modeCount and NEVER a value', async () => {
     const refs = await resolveContextRefs([records[0]], deps());
     expect(JSON.stringify(refs)).not.toContain('value');
-    expect(refs.variables['V:1'].modeCount).toBe(2);
+    const v = refs.variables['V:1'];
+    expect('modeCount' in v && v.modeCount).toBe(2);
   });
 
   it('an id nothing answers to is reported unresolved, never dropped and never guessed', async () => {

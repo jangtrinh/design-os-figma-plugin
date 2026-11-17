@@ -2,7 +2,7 @@
 // and static Tailwind constants the converter needs (no app/project deps).
 // FigmaColor (r,g,b,a all 0..1) matches shared/figma-payload-types.ts.
 
-import type { FigmaColor } from '../../../../shared/figma-payload-types';
+import type { FigmaColor } from '../../../../shared/figma-payload-types.ts';
 
 export const NAMED_COLORS: Record<string, string> = {
   white: '#ffffff', black: '#000000', red: '#ff0000', green: '#008000',
@@ -25,10 +25,14 @@ export function parseCssColor(color: string): FigmaColor | null {
 
   // #hex
   const hexMatch = c.match(/^#([a-f0-9]{3,8})$/);
-  if (hexMatch) {
-    let hex = hexMatch[1];
-    if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-    if (hex.length === 4) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+  const matchedHex = hexMatch?.[1];
+  if (matchedHex) {
+    let hex = matchedHex;
+    if (hex.length === 3) {
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+    } else if (hex.length === 4) {
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2) + hex.charAt(3) + hex.charAt(3);
+    }
     const r = parseInt(hex.substring(0, 2), 16) / 255;
     const g = parseInt(hex.substring(2, 4), 16) / 255;
     const b = parseInt(hex.substring(4, 6), 16) / 255;
@@ -38,7 +42,7 @@ export function parseCssColor(color: string): FigmaColor | null {
 
   // rgb() / rgba()
   const rgbMatch = c.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/);
-  if (rgbMatch) {
+  if (rgbMatch && rgbMatch[1] !== undefined && rgbMatch[2] !== undefined && rgbMatch[3] !== undefined) {
     return {
       r: parseFloat(rgbMatch[1]) / 255,
       g: parseFloat(rgbMatch[2]) / 255,

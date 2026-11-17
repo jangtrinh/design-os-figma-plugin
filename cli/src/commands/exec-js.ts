@@ -36,7 +36,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
 
   preflightExecJs(code, { noLint: args.bool('no-lint'), strict: args.bool('strict') });
 
-  const requested = args.num('timeout') ?? COMMAND_TIMEOUTS.EXEC_JS ?? 30_000;
+  const requested = readTimeoutFlag(args, 'timeout') ?? COMMAND_TIMEOUTS.EXEC_JS ?? 30_000;
   const { effective: timeoutMs, notice } = resolveTimeoutFlag(requested, EXEC_JS_MAX_TIMEOUT_MS, '--timeout');
   if (notice) process.stderr.write(notice);
   // Generic fallback: an ad-hoc script has no intent we can read off it. Named
@@ -45,11 +45,22 @@ export async function run(args: CommandArgs): Promise<unknown> {
   const undoGroup = args.bool('undo-group');
   // Additive-wire rule: send `undoGroup` only when true, exactly like `activity`/`expectedFile`
   // — an unset flag must serialize byte-identically to what a pre-flag CLI sent.
-  const out = await runCommand(
-    'EXEC_JS',
-    { code, timeoutMs, ...(undoGroup ? { undoGroup: true } : {}) },
-    { timeoutMs: timeoutMs + WIRE_MARGIN_MS, activity, queueTimeoutMs },
-  );
+  const ac = new AbortController();
+  const onSigInt = (): void => { ac.abort('SIGINT'); };
+  const onSigTerm = (): void => { ac.abort('SIGTERM'); };
+  process.on('SIGINT', onSigInt);
+  process.on('SIGTERM', onSigTerm);
+  let out: unknown;
+  try {
+    out = await runCommand(
+      'EXEC_JS',
+      { code, timeoutMs, ...(undoGroup ? { undoGroup: true } : {}) },
+      { timeoutMs: timeoutMs + WIRE_MARGIN_MS, activity, queueTimeoutMs, signal: ac.signal },
+    );
+  } finally {
+    process.removeListener('SIGINT', onSigInt);
+    process.removeListener('SIGTERM', onSigTerm);
+  }
   // stdout stays exactly one JSON object (the CLI contract); the human warning goes to stderr.
   const warning = (out as { warning?: unknown } | null)?.warning;
   if (typeof warning === 'string') process.stderr.write(`warning: ${warning}\n`);

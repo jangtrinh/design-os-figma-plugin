@@ -282,7 +282,11 @@ export async function run(args: CommandArgs): Promise<unknown> {
   const dir = editFeedDir();
   const { path, slug } = resolveFeedFile(dir, args.str('file'));
   const { frames: allFrames, warnings, intentWarnings, coalescedWarnings } = readEditFeed(path);
-  const filtered = filterFrames(allFrames, { since, actor, page });
+  const filtered = filterFrames(allFrames, {
+    ...(since !== undefined ? { since } : {}),
+    ...(actor !== undefined ? { actor } : {}),
+    ...(page !== undefined ? { page } : {}),
+  });
   const limited = limitFrames(filtered, limit);
   // The PNG leg covers exactly the frames listed below (post --limit), so the count of
   // exports is bounded by the same knob that bounds the listing.

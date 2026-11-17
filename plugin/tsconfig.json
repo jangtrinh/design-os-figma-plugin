@@ -1,16 +1,10 @@
 {
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "lib": ["ES2020", "DOM"],
-    "typeRoots": ["../node_modules/@figma"],
-    "allowImportingTsExtensions": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "types": [],
+    "rootDir": ".."
   },
-  "include": ["src/**/*.ts", "../shared/**/*.ts"]
+  "include": ["src/ui/**/*.ts", "../shared/**/*.ts"]
 }

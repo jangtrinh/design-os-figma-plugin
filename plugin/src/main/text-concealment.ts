@@ -132,7 +132,9 @@ function chainOf(start: unknown, memo: ConcealmentMemo): Chain {
   }
   let chain = base;
   for (let i = pending.length - 1; i >= 0; i -= 1) {
-    const { node, own } = pending[i];
+    const item = pending[i];
+    if (!item) continue;
+    const { node, own } = item;
     const hops = chain.hops + 1;
     chain = {
       hidden: own.hidden || chain.hidden,

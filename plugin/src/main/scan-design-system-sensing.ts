@@ -15,9 +15,9 @@
 // marker: a local id looks like `<n>:<n>`, a library key is a hex string.
 // Sensing runs after the existing result is complete and can never fail the scan: on any
 // throw or on budget overrun the caller keeps the pre-feature result plus `skipped`.
-import { collectOwnBindings } from './scan-bound-variables';
-import { r2 } from './scan-node-utils';
-import { LOOKUP_CONCURRENCY, SensingBudget, SensingBudgetExceeded, walkToInstanceBoundary } from './scan-sensing-budget';
+import { collectOwnBindings } from './scan-bound-variables.ts';
+import { r2 } from './scan-node-utils.ts';
+import { LOOKUP_CONCURRENCY, SensingBudget, SensingBudgetExceeded, walkToInstanceBoundary } from './scan-sensing-budget.ts';
 
 export interface InstanceCount { component: string; count: number }
 export interface ScannedFrame {
@@ -80,8 +80,10 @@ async function countInstances(insts: readonly InstanceNode[], budget: SensingBud
   const worker = async (): Promise<void> => {
     while (next < insts.length) {
       const i = next++;
+      const inst = insts[i];
+      if (!inst) continue;
       budget.check();
-      refs[i] = await lookupRef(insts[i], budget);
+      refs[i] = await lookupRef(inst, budget);
     }
   };
   await Promise.all(Array.from({ length: Math.min(LOOKUP_CONCURRENCY, insts.length) }, worker));
@@ -115,7 +117,7 @@ function frameRoots(page: PageNode): Array<{ frame: FrameNode; section?: string 
   const out: Array<{ frame: FrameNode; section?: string }> = [];
   const visit = (container: ChildrenMixin, section?: string): void => {
     for (const child of container.children) {
-      if (child.type === 'FRAME') out.push({ frame: child, section });
+      if (child.type === 'FRAME') out.push(section !== undefined ? { frame: child, section } : { frame: child });
       else if (child.type === 'SECTION') visit(child, child.name);
     }
   };

@@ -24,12 +24,12 @@
 //     every node under the slot, so the map must be re-walked before the next,
 //     deeper override is looked up.
 
-import type { FigmaExportNode, FigmaInnerOverride } from '../../../shared/figma-payload-types';
-import { keyInnerChildren } from './instance-inner-override-keys';
-import { applyChildComponentProperties, applyChildSwap } from './executor-instance-inner-slot';
-import { applyChildVisual } from './executor-instance-inner-visual';
-import { pushImportWarning } from './executor-styles';
-import { safe } from './scan-node-utils';
+import type { FigmaExportNode, FigmaInnerOverride } from '../../../shared/figma-payload-types.ts';
+import { keyInnerChildren } from './instance-inner-override-keys.ts';
+import { applyChildComponentProperties, applyChildSwap } from './executor-instance-inner-slot.ts';
+import { applyChildVisual } from './executor-instance-inner-visual.ts';
+import { pushImportWarning } from './executor-styles.ts';
+import { safe } from './scan-node-utils.ts';
 
 /**
  * Fields any `resize()` may rewrite as a side-effect. Restored to the main's value

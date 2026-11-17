@@ -9,17 +9,17 @@
 // connect. This states them once, in one shape, with a pointer to the detail.
 //
 // Pure and caller-fed — it re-derives nothing and measures nothing itself.
-import type { GapfillStatus, PerfStatus, SessionCoverage } from '../../../shared/protocol';
-import { coverageRow, sessionCoverage } from '../../../shared/session-coverage';
-import type { DocumentChangeCaptureStats } from './document-change-capture';
+import type { GapfillStatus, PerfStatus, SessionCoverage } from '../../../shared/protocol.ts';
+import { coverageRow, sessionCoverage } from '../../../shared/session-coverage.ts';
+import type { DocumentChangeCaptureStats } from './document-change-capture.ts';
 
 export interface PluginCoverageInput {
-  gapfill?: GapfillStatus;
-  capture?: DocumentChangeCaptureStats;
+  gapfill?: GapfillStatus | undefined;
+  capture?: DocumentChangeCaptureStats | undefined;
   /** Boot's own marker. `perf` is withheld (perf-stats.ts) until `markBootComplete`, and
    *  it is the ONLY feeder here that is: main.ts hands `gapfill` in from the very first
    *  STATUS, so gap-fill's presence says nothing about whether boot finished. */
-  perf?: PerfStatus;
+  perf?: PerfStatus | undefined;
 }
 
 /**

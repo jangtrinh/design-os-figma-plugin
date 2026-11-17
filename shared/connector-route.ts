@@ -6,8 +6,8 @@
 // drawn as a straight line runs through every screen between its two ends. That case gets a
 // rule, not a search: it bows below the row, which is what a flow diagram does anyway.
 
-import { resolveAnchors, resolveAnnotationAnchors } from './connector-anchor';
-import type { Anchor, ConnectorIntent, Point, Rect } from './connector-types';
+import { resolveAnchors, resolveAnnotationAnchors } from './connector-anchor.ts';
+import type { Anchor, ConnectorIntent, Point, Rect } from './connector-types.ts';
 
 /** Half a 48px grid step — far enough to read as a deliberate exit, short enough to stay tidy. */
 export const DEFAULT_CLEARANCE = 24;
@@ -47,12 +47,17 @@ function isRedundant(previous: Point, current: Point, next: Point): boolean {
 function simplify(points: readonly Point[]): Point[] {
   const deduped: Point[] = [];
   for (const point of points) {
-    if (deduped.length === 0 || !samePoint(deduped[deduped.length - 1], point)) deduped.push(point);
+    const last = deduped[deduped.length - 1];
+    if (!last || !samePoint(last, point)) deduped.push(point);
   }
   const kept: Point[] = [];
   for (let i = 0; i < deduped.length; i += 1) {
+    const current = deduped[i];
+    if (!current) continue;
     const isEnd = i === 0 || i === deduped.length - 1;
-    if (isEnd || !isRedundant(deduped[i - 1], deduped[i], deduped[i + 1])) kept.push(deduped[i]);
+    const prev = deduped[i - 1];
+    const next = deduped[i + 1];
+    if (isEnd || !prev || !next || !isRedundant(prev, current, next)) kept.push(current);
   }
   return kept;
 }

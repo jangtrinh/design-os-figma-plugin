@@ -115,12 +115,6 @@
   "plugin/src/main/scan-token-refs.ts": {
     "parenthesized finding label::p8": 1
   },
-  "plugin/src/ui/panel-model.ts": {
-    "finding number::finding-2": 1
-  },
-  "plugin/src/ui/panel-ui.ts": {
-    "finding number::finding-2": 2
-  },
   "plugin/src/ui/ui-relay.ts": {
     "parenthesized finding label::p2": 1
   },
@@ -137,10 +131,7 @@
     "parenthesized finding label::p4": 1
   },
   "shared/safe-cleanup.ts": {
-    "issue/PR number::issue #24": 1,
-    "issue/PR number::pr #12": 1,
-    "issue/PR number::pr #13": 1,
-    "issue/PR number::pr #23": 2
+    "issue/PR number::pr #23": 1
   },
   "tests/batch-op-ceiling.test.ts": {
     "issue/PR number::issue #16": 1,
@@ -153,7 +144,6 @@
     "finding number::finding-1": 1,
     "issue/PR number::issue #15": 1,
     "issue/PR number::issue #20": 1,
-    "issue/PR number::issue #32": 2,
     "issue/PR number::issue #5": 2,
     "issue/PR number::issue #7": 5,
     "issue/PR number::pr #14": 1

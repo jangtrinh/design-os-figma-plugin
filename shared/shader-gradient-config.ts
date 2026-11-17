@@ -10,8 +10,8 @@
 // string. Typing them back is this module's real job — a naive Object.assign would
 // hand the renderer `uSpeed: "0.4"` and produce a field that silently never moves.
 
-import { SHADER_GRADIENT_PRESETS, slugForUpstreamKey } from './shader-gradient-presets';
-import type { ShaderGradientProps } from './shader-gradient-presets';
+import { SHADER_GRADIENT_PRESETS, slugForUpstreamKey } from './shader-gradient-presets.ts';
+import type { ShaderGradientProps } from './shader-gradient-presets.ts';
 
 /** Keys whose value is a number. Anything else arriving numeric-looking stays a string. */
 const NUMERIC_KEYS = new Set<keyof ShaderGradientProps>([

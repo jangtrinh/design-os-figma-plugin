@@ -8,7 +8,7 @@
 // values of component property definitions.
 // NOT sensed (version 1): a variable reached only through a style applied to the node, and an
 // override on a node inside a nested instance (the walk stops at the instance boundary).
-import { safe } from './scan-node-utils';
+import { safe } from './scan-node-utils.ts';
 
 interface AliasLike { type?: unknown; id?: unknown }
 

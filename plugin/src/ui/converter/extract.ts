@@ -3,11 +3,11 @@
 // Adapted: page width is a parameter (source hardcoded 1512); payload assembly
 // lives here so render-host.ts stays a thin iframe lifecycle wrapper.
 
-import type { FigmaExportNode, FigmaExportPayload } from '../../../../shared/figma-payload-types';
-import { parseCssColor } from './color-utils';
-import { computedElementToNode } from './computed-walk';
-import { captureMotionOntoElements } from './extract-motion';
-import { annotateTokenRefs, extractFigmaTokens } from './tokens';
+import type { FigmaExportNode, FigmaExportPayload } from '../../../../shared/figma-payload-types.ts';
+import { parseCssColor } from './color-utils.ts';
+import { computedElementToNode } from './computed-walk.ts';
+import { captureMotionOntoElements } from './extract-motion.ts';
+import { annotateTokenRefs, extractFigmaTokens } from './tokens.ts';
 
 /**
  * Wait for Tailwind CDN and other runtime scripts to process.
@@ -45,7 +45,8 @@ export function waitForStylesReady(iframe: HTMLIFrameElement): Promise<void> {
       try {
         const sheets = doc.styleSheets;
         for (let i = 0; i < sheets.length; i++) {
-          if (sheets[i].cssRules && sheets[i].cssRules.length > 50) {
+          const sheet = sheets[i];
+          if (sheet && sheet.cssRules && sheet.cssRules.length > 50) {
             hasRuntimeStyles = true;
             break;
           }

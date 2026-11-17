@@ -12,7 +12,7 @@
 // EditInput per node per batch, posts EDIT_FEED over the wire; the broker stamps each
 // EditInput into an EditFrame and appends it to design/changes/<slug>.jsonl.
 
-import { capIntent, isValidEditIntent, mergeIntent, type EditIntent } from './edit-intent';
+import { capIntent, isValidEditIntent, mergeIntent, type EditIntent } from './edit-intent.ts';
 
 /** Bump when EditFrame's shape changes. Independent of CHANGE_LOG_SCHEMA_VERSION. */
 export const EDIT_FEED_SCHEMA_VERSION = 1;

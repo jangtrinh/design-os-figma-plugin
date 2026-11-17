@@ -3,7 +3,7 @@
 // fact 3: a caller's id may be stale (ids go stale across sessions), so the type is
 // asserted AFTER `getNodeByIdAsync`, never trusted from the caller's own claim of
 // what the id names (fork's own pattern, e.g. code.js:6580-6582).
-import { withCode } from './executor-styles';
+import { withCode } from './executor-styles.ts';
 
 export async function resolveSlide(slideId: string, capability: string): Promise<SlideNode> {
   const node = await figma.getNodeByIdAsync(slideId);

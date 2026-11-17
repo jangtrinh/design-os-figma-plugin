@@ -10,9 +10,9 @@
 // Nothing here corrects a value silently. A caller who asked for `--budget 0` and got 64 KB
 // learns the wrong thing about this command, so a value that cannot be honoured is refused
 // with `E_INVALID_ARGS` naming the field and what it received.
-import { withCode } from './executor-styles';
-import type { ContextNodeLike } from './context-node-record';
-import { safe } from './scan-node-utils';
+import { withCode } from './executor-styles.ts';
+import type { ContextNodeLike } from './context-node-record.ts';
+import { safe } from './scan-node-utils.ts';
 
 type Params = Record<string, unknown>;
 
