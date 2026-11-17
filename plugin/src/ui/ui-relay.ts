@@ -27,6 +27,7 @@ import {
 import { createPreOpenBuffer, handshakeBatch, isBufferableFrame, stampCapturedFrame } from './outbound-buffer.ts';
 import { flushHandshake, refuseAdoption } from './socket-adoption.ts';
 import { renderHtmlToPayload } from './render-host.ts';
+import { isMessageFromParent } from './parent-message.ts';
 import { forwardValidatedDirectImport, forwardValidatedHtmlImport } from '../../../shared/figma-payload-validation-relay.ts';
 import { PayloadValidationError } from '../../../shared/figma-payload-validation.ts';
 import { renderGradientToPng, GradientRenderError } from './gradient-host.ts';
@@ -394,10 +395,10 @@ async function handleRequest(req: RequestMsg): Promise<void> {
           requestId: req.id,
           cmd: 'IMPORT_GRADIENT',
           expectedFile: req.expectedFile,
-          // Array.from, not the Uint8Array: postMessage does not preserve a typed
-          // array's type, and main reconstructs from a plain numeric collection.
+          // Figma explicitly supports Uint8Array in UI messages. Main retains bounded
+          // array/object compatibility for panels built before this direct transport.
           params: {
-            bytes: Array.from(bytes),
+            bytes,
             nodeId: p.nodeId, config: p.config, slug: p.slug ?? null, renderer: p.renderer,
           },
         },
@@ -441,6 +442,7 @@ async function handleRequest(req: RequestMsg): Promise<void> {
 
 // ─── Replies + events from plugin main thread ───────────────────────
 window.addEventListener('message', (ev: MessageEvent) => {
+  if (!isMessageFromParent(ev)) return;
   const pm = (ev.data as { pluginMessage?: Record<string, unknown> } | null)?.pluginMessage;
   if (!pm) return;
 

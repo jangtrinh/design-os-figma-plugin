@@ -124,6 +124,23 @@ separate headroom for the existing 8 MiB image producer's base64 output. These a
 budgets bound validation and forwarding; they do not isolate arbitrary renderer JavaScript
 or establish a whole-process memory limit.
 
+## Shader renderer boundary
+
+ShaderGradient runs in an opaque `allow-scripts` child so renderer code cannot share the
+panel origin. The boundary and its exact-source lifecycle live in
+[`gradient-host.ts`](../plugin/src/ui/gradient-host.ts); the pinned renderer document stays
+separate in [`gradient-render-document.ts`](../plugin/src/ui/gradient-render-document.ts).
+The child remains in the panel viewport at zero opacity because Chromium suspends animation
+frames for an opaque offscreen child; hiding it with `visibility:hidden` has the same failure.
+
+PNG admission is shared by the UI and main executor in
+[`gradient-image-admission.ts`](../shared/gradient-image-admission.ts). Its shader-specific
+limit is derived from the supported 4096px RGBA envelope plus PNG/zlib and ancillary-chunk
+headroom; it is intentionally separate from HTML image-fetch budgets. Encoded and decoded
+ceilings bound allocation; signature and IHDR checks bound the image shape, while Figma's
+native decoder remains the final decodability check. `figma-agent shader-gradient --self-test` is read-only, but only a live
+supported Figma host can qualify WebGL availability.
+
 ## Runtime snapshot writes
 
 Advertisement, last-plugin and mutation-gate snapshots acquire temporary files exclusively,

@@ -83,6 +83,14 @@ async function buildPluginUi() {
     write: false,
   });
   const workerSource = worker.outputFiles[0].text;
+  const renderChild = await esbuild.build({
+    ...common,
+    entryPoints: [resolve(root, 'plugin/src/ui/render-child-entry.ts')],
+    platform: 'browser',
+    format: 'iife',
+    write: false,
+  });
+  const renderChildSource = renderChild.outputFiles[0].text;
   const buildUi = (buildId) => esbuild.build({
     ...common,
     entryPoints: [resolve(root, 'plugin/src/ui/ui-relay.ts')],
@@ -92,6 +100,7 @@ async function buildPluginUi() {
     define: {
       __BUILD_ID__: JSON.stringify(buildId),
       __THINKING_ORB_WORKER__: JSON.stringify(workerSource),
+      __HTML_RENDER_CHILD__: JSON.stringify(renderChildSource),
     },
   });
   const provisional = await buildUi('pending');

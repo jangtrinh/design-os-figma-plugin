@@ -214,6 +214,7 @@ rm -rf ~/.claude/skills/design-os-figma-craft ~/.codex/skills/design-os-figma-cr
 - It does not replace Code Connect, cross-library search, or work that needs the official Figma MCP server with Figma Desktop closed.
 - It is not listed in the Community catalog. You import `plugin/manifest.json` from this repository.
 - Converting an arbitrary live HTML page through a third-party scraper is out of scope. Use image fills or the typed frame builders, including the `html-to-figma` command in this CLI when that is the right tool.
+- `html-to-figma` extraction runs inside an opaque iframe with `sandbox="allow-scripts"` (loading only the pinned CDN domains declared in `plugin/manifest.json`). Repository JavaScript can update its own DOM and styles, cannot access the panel document, and only a validated result from the active child with matching protocol and request identity is accepted; this browser boundary does not enforce a separate CPU or process budget.
 
 ## Watch
 

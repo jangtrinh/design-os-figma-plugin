@@ -13,6 +13,11 @@ let repositoryPanelHtml: string;
 
 beforeAll(async () => {
   repositoryPanelHtml = await readFile(new URL('../plugin/src/ui/panel.html', import.meta.url), 'utf8');
+  const child = await esbuild.build({
+    entryPoints: [`${ROOT}/plugin/src/ui/render-child-entry.ts`],
+    bundle: true, platform: 'browser', format: 'iife', target: 'es2020',
+    write: false, logLevel: 'silent',
+  });
   const built = await esbuild.build({
     stdin: {
       contents: `
@@ -37,6 +42,7 @@ beforeAll(async () => {
     target: 'es2020',
     write: false,
     logLevel: 'silent',
+    define: { __HTML_RENDER_CHILD__: JSON.stringify(child.outputFiles[0].text) },
   });
   authoredHtmlBundle = built.outputFiles[0].text;
   try {

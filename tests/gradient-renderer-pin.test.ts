@@ -19,15 +19,17 @@ const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), 'utf8');
 
 const HOST = read('plugin/src/ui/gradient-host.ts');
+const DOCUMENT = read('plugin/src/ui/gradient-render-document.ts');
 const CLI = read('cli/src/commands/shader-gradient.ts');
+const RELAY = read('plugin/src/ui/ui-relay.ts');
 const MANIFEST = JSON.parse(read('plugin/manifest.json')) as {
   networkAccess: { allowedDomains: string[]; devAllowedDomains: string[] };
 };
 
 /** The single pinned version, read from its one definition. */
 function hostVersion(): string {
-  const m = /const RENDERER_VERSION = '([^']+)'/.exec(HOST);
-  if (!m) throw new Error('RENDERER_VERSION not found in gradient-host.ts');
+  const m = /const RENDERER_VERSION = '([^']+)'/.exec(DOCUMENT);
+  if (!m) throw new Error('RENDERER_VERSION not found in gradient-render-document.ts');
   return m[1]!;
 }
 
@@ -56,23 +58,23 @@ describe('gradient renderer pin — one React instance', () => {
   it('shares dependencies via a deps pin rather than separate per-package bundles', () => {
     // Without this the renderer resolves its own React and its hooks die on an instance
     // that never mounted: "Cannot read properties of null (reading 'useState')".
-    expect(HOST).toContain('?deps=');
+    expect(DOCUMENT).toContain('?deps=');
   });
 
   it('never loads the renderer as a standalone bundle with unpinned dependencies', () => {
-    const rendererImport = /@shadergradient\/react@\$\{RENDERER_VERSION\}([^`]*)`/.exec(HOST);
+    const rendererImport = /@shadergradient\/react@\$\{RENDERER_VERSION\}([^`]*)`/.exec(DOCUMENT);
     expect(rendererImport, 'renderer import not found').not.toBeNull();
     expect(rendererImport![1]).toContain('?deps=');
   });
 
   it('pins react-dom to the same react build the page imports', () => {
-    expect(HOST).toMatch(/react-dom@\$\{REACT_VERSION\}\/client\?deps=react@\$\{REACT_VERSION\}/);
+    expect(DOCUMENT).toMatch(/react-dom@\$\{REACT_VERSION\}\/client\?deps=react@\$\{REACT_VERSION\}/);
   });
 
   it('pins @react-three/fiber, so the resolver cannot pick a React-19-only major', () => {
     // Unpinned, the latest major (v9) is resolved; it requires React 19 and fails against
     // React 18 with an opaque internal error rather than a version complaint.
-    const deps = /const DEPS = `([^`]+)`/.exec(HOST);
+    const deps = /const DEPS = `([^`]+)`/.exec(DOCUMENT);
     expect(deps, 'DEPS not found').not.toBeNull();
     expect(deps![1]).toMatch(/@react-three\/fiber@\d+\.\d+\.\d+/);
     expect(deps![1]).toMatch(/^react@/);
@@ -82,12 +84,34 @@ describe('gradient renderer pin — one React instance', () => {
 
 describe('gradient renderer pin — manifest declares the host it fetches from', () => {
   it('the CDN base is declared in allowedDomains', () => {
-    const m = /const CDN_BASE = '([^']+)'/.exec(HOST);
+    const m = /const CDN_BASE = '([^']+)'/.exec(DOCUMENT);
     expect(m, 'CDN_BASE not found').not.toBeNull();
     const origin = m![1]!;
     // A fetch to an undeclared origin is blocked by Figma at runtime, so a render host
     // pointing anywhere the manifest does not list can never succeed.
     expect(MANIFEST.networkAccess.allowedDomains).toContain(origin);
     expect(MANIFEST.networkAccess.devAllowedDomains).toContain(origin);
+  });
+});
+
+describe('gradient renderer host — opaque placement contract', () => {
+  it('uses allow-scripts without same-origin access', () => {
+    expect(HOST).toContain("setAttribute('sandbox', 'allow-scripts')");
+    expect(HOST).not.toContain('allow-same-origin');
+  });
+
+  it('keeps the child intersecting the panel without painting or taking input', () => {
+    expect(HOST).toContain("position: 'fixed'");
+    expect(HOST).toContain("left: '0'");
+    expect(HOST).toContain("top: '0'");
+    expect(HOST).toContain("opacity: '0'");
+    expect(HOST).toContain("pointerEvents: 'none'");
+    expect(HOST).not.toMatch(/visibility:\s*['"]hidden/);
+    expect(HOST).not.toMatch(/left:\s*['"]-\d/);
+  });
+
+  it('uses Figma-supported Uint8Array transport while main retains legacy admission', () => {
+    expect(RELAY).toMatch(/params:\s*\{\s*bytes,/);
+    expect(RELAY).not.toContain('bytes: Array.from(bytes)');
   });
 });

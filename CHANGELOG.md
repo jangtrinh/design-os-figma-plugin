@@ -4,6 +4,16 @@ All notable changes to `design-os-figma-plugin` are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-16
+
+### Added
+- Extended `figma-agent scan-design-system` with additive component and screen-frame sensing (`boundVariables`, direct `instances` counts, `unresolvedInstances`, page/section `frames[]`, and `sensing` status) under an isolated time budget that never fails the base scan.
+- Added the DESIGN:OS repository logo and multi-resolution site favicons across `docs/`.
+
+### Security
+- Isolated HTML extraction inside an opaque `sandbox="allow-scripts"` child iframe, enforcing parent message sources, active-child request correlation, and schema validation before scene import.
+- Isolated ShaderGradient rendering inside an opaque `sandbox="allow-scripts"` child iframe and validated PNG dimensions, byte bounds, canonical base64, and PNG signature prior to scene admission.
+
 ## [0.2.2] - 2026-11-16
 
 ### Added
