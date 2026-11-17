@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import {
   cleanupOrphanedAdvertisementTempFiles,
   decideBrokerAction,
+  ensureBroker,
   loopbackWsUrl,
   probeBrokerHandshake,
   probeStaleButAlive,
@@ -26,15 +27,17 @@ import { isConfirmedDeadAfterFailedConnect, retryAmbiguousConnect } from '../cli
 import { PROTOCOL_VERSION, LOOPBACK_HOST } from '../shared/protocol.ts';
 import type { BrokerAdvertisement } from '../shared/protocol.ts';
 
-// Exercises the real module across `vi.resetModules()` (env-derived constants are read at
-// load time), which the setup-file guard's cached mock would freeze. Never calls `ensureBroker`.
-vi.unmock('../cli/src/transport/broker-discovery.ts');
-
+// Exercises the module across `vi.resetModules()` (env-derived constants are read at
+// load time), while the setup-file guard's `importOriginal` preserves `ensureBroker`'s refusal.
 function fakeAd(overrides: Partial<BrokerAdvertisement> = {}): BrokerAdvertisement {
   return { port: 9410, pid: 4242, protocolV: 1, buildMtime: 0, startedAt: 0, lastSeen: 0, ...overrides };
 }
 
 describe('probeStaleButAlive — heartbeat staleness alone never authorises spawning a competitor', () => {
+  it('keeps ensureBroker guarded inside this probe suite', async () => {
+    await expect(ensureBroker()).rejects.toThrow(/refusing to reach a real broker/);
+  });
+
   it('a dead pid is never trusted, and the network probe is never reached (cheap check first)', async () => {
     const probe = vi.fn().mockResolvedValue(true);
     const trusted = await probeStaleButAlive(fakeAd(), { isPidAlive: () => false, probe });

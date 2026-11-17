@@ -2527,16 +2527,19 @@ describe('daemon harness — broker-restart reconnect visibility (last-plugins.j
     await waitFor(() => existsSync(lastPluginsPath) && readFileSync(lastPluginsPath, 'utf8').includes('inst-expire-old'));
     rmSync(advertisePath, { force: true });
 
+    const expiryMs = 1_000;
     const port2 = await startTestBroker({
       FIGMA_AGENT_LAST_PLUGINS_DEBOUNCE_MS: '30',
-      FIGMA_AGENT_AWAITING_RECONNECT_EXPIRY_MS: '150',
+      FIGMA_AGENT_AWAITING_RECONNECT_EXPIRY_MS: String(expiryMs),
     });
     const { hello: helloEarly } = await connectAndAwaitBrokerHello(port2);
     expect((helloEarly.data as AwaitingReconnectHelloData).awaitingReconnect).toEqual([
       { fileName: 'Expire File', lastSeenBeforeShutdown: expect.any(Number) as number },
     ]);
 
-    await new Promise((resolve) => setTimeout(resolve, 250)); // past the shrunk 150ms expiry window
+    const earlyUptime = (helloEarly.data as { uptimeMs?: number }).uptimeMs ?? 0;
+    const remainingToExpiry = Math.max(50, expiryMs - earlyUptime + 150);
+    await new Promise((resolve) => setTimeout(resolve, remainingToExpiry));
     const { hello: helloLate } = await connectAndAwaitBrokerHello(port2);
     expect((helloLate.data as AwaitingReconnectHelloData).awaitingReconnect).toBeUndefined();
   });

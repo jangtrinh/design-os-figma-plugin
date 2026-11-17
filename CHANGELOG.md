@@ -4,6 +4,17 @@ All notable changes to `design-os-figma-plugin` are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-16
+
+### Added
+- Subscribed `documentchange` immediately after `loadAllPagesAsync` before the boot gap-fill walk, deduplicating live-captured node IDs against the post-walk diff with an explicit `gapfill.dedupedLiveEdits` counter and surfacing `gapfill.pagesWalked` and `gapfill.bootPaused` in `status`.
+- Added durable process-identity reconcile leases (`reconcile-lease.ts`) to prevent surviving `reconcile --apply` children from overlapping across broker restarts, with graceful shutdown cancellation and evidence-based dry-run recovery.
+- Forwarded CLI `SIGINT`/`SIGTERM` cancellations for queued `exec-js` jobs over the broker socket and exposed advertised plugin capabilities (`plugins[].caps`) in `figma-agent status`.
+
+### Fixed
+- Bounded `scan-node` child processes in mirror capture (`MIRROR_SCAN_CHILD_BOUNDS`), capped disconnect-log job/queue snapshots with omission counters, hardened log rotation against symlinks, and validated `exec-js --timeout` values before dispatch.
+- Updated the plugin relaunch label to `"Reconnect DESIGN:OS Bridge"`, rejected empty `concealed.reasons` arrays in payload validation, aligned `docs/deep-dive.md` with current CLI/safety contracts, and hardened test-suite live-broker isolation and child/daemon timing fixtures.
+
 ## [0.2.1] - 2026-11-16
 
 ### Changed

@@ -51,4 +51,30 @@ describe('status — plugin disconnect summary', () => {
     const out = await run(args) as Record<string, unknown>;
     expect('disconnects' in out).toBe(false);
   });
+
+  it('preserves caps advertised by plugins in status output', async () => {
+    const plugins = [
+      {
+        instanceId: 'inst_1',
+        fileName: 'F1',
+        state: 'connected' as const,
+        connectedAt: 1000,
+        lastHeartbeatAge: 10,
+        appSilenceMs: 10,
+        caps: ['fileGuard', 'appProbeV1'],
+      },
+      {
+        instanceId: 'inst_2',
+        fileName: 'F2',
+        state: 'connected' as const,
+        connectedAt: 1000,
+        lastHeartbeatAge: 10,
+        appSilenceMs: 10,
+      },
+    ];
+    vi.mocked(fetchBrokerHello).mockResolvedValue({ ...baseHello, plugins });
+    const out = await run(args) as { plugins: Array<{ instanceId: string; caps?: string[] }> };
+    expect(out.plugins[0]?.caps).toEqual(['fileGuard', 'appProbeV1']);
+    expect('caps' in (out.plugins[1] ?? {})).toBe(false);
+  });
 });

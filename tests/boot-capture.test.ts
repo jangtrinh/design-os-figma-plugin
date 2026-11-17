@@ -43,7 +43,7 @@ describe('runBootCapture — a failed gap-fill never costs the session its live 
     expect(log.notices).toEqual(['live-sync capture disabled: load refused']);
   });
 
-  it('the healthy path runs load → gapfill → subscribe, once each, and notifies nothing', async () => {
+  it('the healthy path runs load → subscribe → gapfill, once each, and notifies nothing', async () => {
     const log = recorder();
 
     await runBootCapture({
@@ -53,7 +53,7 @@ describe('runBootCapture — a failed gap-fill never costs the session its live 
       notify: (m) => log.notices.push(m),
     });
 
-    expect(log.calls).toEqual(['load', 'gapfill', 'subscribe']);
+    expect(log.calls).toEqual(['load', 'subscribe', 'gapfill']);
     expect(log.notices).toEqual([]);
   });
 

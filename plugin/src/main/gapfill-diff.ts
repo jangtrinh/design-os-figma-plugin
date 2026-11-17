@@ -204,6 +204,22 @@ export function gapfillEditsForPage(
   return edits;
 }
 
+/** Filters out gap-fill edits whose node id was already captured live during the boot walk.
+ *  Returns the filtered edits and the count of dropped duplicate edits. Pure. */
+export function filterGapfillEditsAgainstLive(
+  edits: readonly EditInput[],
+  liveNodeIds: ReadonlySet<string>,
+): { edits: EditInput[]; dropped: number } {
+  if (liveNodeIds.size === 0) return { edits: [...edits], dropped: 0 };
+  const kept: EditInput[] = [];
+  let dropped = 0;
+  for (const edit of edits) {
+    if (liveNodeIds.has(edit.nodeId)) dropped += 1;
+    else kept.push(edit);
+  }
+  return { edits: kept, dropped };
+}
+
 // ── The top-level (coarse) signal for a page over the node cap ──────────────────────
 
 /** A fingerprint entry as the diff sees it: the same identity/name/position fields a full

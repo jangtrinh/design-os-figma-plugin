@@ -29,15 +29,16 @@ export async function runBootCapture(deps: BootCaptureDeps): Promise<void> {
     return;
   }
   try {
-    await deps.gapfill();
-  } catch (err) {
-    // Announced, never silent, and deliberately NOT worded as "capture disabled": what was
-    // lost is one reconnect report, and the subscription below still happens.
-    deps.notify(`live-sync gap-fill skipped: ${messageOf(err)}`);
-  }
-  try {
     deps.subscribe();
   } catch (err) {
     deps.notify(`live-sync capture disabled: ${messageOf(err)}`);
+    return;
+  }
+  try {
+    await deps.gapfill();
+  } catch (err) {
+    // Announced, never silent, and deliberately NOT worded as "capture disabled": what was
+    // lost is one reconnect report, and the subscription above is already running.
+    deps.notify(`live-sync gap-fill skipped: ${messageOf(err)}`);
   }
 }

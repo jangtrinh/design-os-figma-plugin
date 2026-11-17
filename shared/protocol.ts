@@ -522,6 +522,12 @@ export interface GapfillStatus {
   /** Other files' baseline keys dropped to fit this one under the storage quota — an
    *  eviction is a deletion of real data and is never left off the record. */
   baselineEvicted?: string[];
+  /** Total pages walked so far during boot gapfill. Present only when > 0. */
+  pagesWalked?: number;
+  /** True when the boot walk timer yields were delayed past the pause threshold (e.g. background tab). */
+  bootPaused?: true;
+  /** Gap-fill diff edits dropped because the node id was already captured live during boot walk. Present only when > 0. */
+  dedupedLiveEdits?: number;
   /** The FIRST failure message this session, verbatim. Present only when there was one. */
   errors?: string[];
   /** Total failures this session (≥ `errors.length`) — a single message plus a count keeps
@@ -701,6 +707,8 @@ export interface PluginStatusEntry {
    */
   relayDroppedFrames?: number;
   replayedBatches?: number;
+  /** Capabilities advertised by this plugin on PLUGIN_HELLO. Absent when not advertised. */
+  caps?: readonly string[];
   /** Additive application-readiness facts; absent means an older broker. */
   appReady?: boolean | null;
   appState?: AppState;

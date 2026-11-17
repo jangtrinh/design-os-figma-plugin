@@ -13,6 +13,7 @@ import {
   makeRequestId,
   type BrokerAdvertisement,
   type CommandName,
+  type ErrorCode,
   type FileContext,
   type JobInfo,
   type ReplyMsg,
@@ -157,10 +158,21 @@ export interface ExchangeOptions {
    * never announces keeps the single clock.
    */
   queueTimeoutMs?: number;
+  /**
+   * When aborted (e.g. CLI received SIGINT / SIGTERM), cancel a queued job before exiting,
+   * or report that a running job was not cancelled.
+   */
+  signal?: AbortSignal;
+  /** Bounded wait for the JOB cancel reply when aborted by signal (default 2,000ms). */
+  signalCancelTimeoutMs?: number;
 }
 
 /** Why a queued job is being cancelled; it shapes the final error's code and wording. */
-type CancelCause = { kind: 'queue-limit' } | { kind: 'blocked'; by: string } | { kind: 'plugin-gone' };
+type CancelCause =
+  | { kind: 'queue-limit' }
+  | { kind: 'blocked'; by: string }
+  | { kind: 'plugin-gone' }
+  | { kind: 'signal'; signal: string };
 
 // Exported (not just internal to `runCommand`) so the JOB_STATE → timeout-hint wiring
 // is unit-testable with a fake socket (EventEmitter + a stubbed `send`), without needing
@@ -200,10 +212,14 @@ export function exchange(
     let runStartedAt: number | undefined;
     let cancelId: string | undefined;
     let cause: CancelCause = { kind: 'queue-limit' };
+    let onAbort: (() => void) | undefined;
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (opts?.signal && onAbort) {
+        opts.signal.removeEventListener('abort', onAbort);
+      }
       fn();
     };
     armTimer(timeoutMs, () => finish(() => reject(new CliError(
@@ -219,12 +235,17 @@ export function exchange(
       if (cause.kind === 'blocked') {
         return `file blocked by wedged job ${cause.by} — figma-agent job ${cause.by} --force-release after checking the canvas`;
       }
+      if (cause.kind === 'signal') {
+        return `interrupted by ${cause.signal}`;
+      }
       return cause.kind === 'plugin-gone'
         ? 'Figma plugin disconnected while the job was queued'
         : `queue limit of ${String(queueTimeoutMs)}ms reached`;
     };
     const failCancelled = (message: string): void => finish(() => reject(new CliError(
-      cause.kind === 'plugin-gone' ? 'E_NO_PLUGIN' : 'E_TIMEOUT', message, { jobId: queuedJobId },
+      (cause.kind === 'signal' ? ('E_CANCELLED' as unknown as ErrorCode) : cause.kind === 'plugin-gone' ? 'E_NO_PLUGIN' : 'E_TIMEOUT'),
+      message,
+      { jobId: queuedJobId },
     )));
     const cancelUnknown = (verdict: string): void => failCancelled(
       `${causeText()}; ${verdict} — job state unknown, check figma-agent job ${queuedJobId}`,
@@ -236,7 +257,8 @@ export function exchange(
       phase = 'cancelling';
       cause = why;
       cancelId = makeRequestId(++requestCounter, requestNamespace);
-      armTimer(DEFAULT_TIMEOUT_MS, () => cancelUnknown(`cancel failed (no reply within ${DEFAULT_TIMEOUT_MS}ms)`));
+      const cancelTimeoutMs = why.kind === 'signal' ? (opts?.signalCancelTimeoutMs ?? 2_000) : DEFAULT_TIMEOUT_MS;
+      armTimer(cancelTimeoutMs, () => cancelUnknown(`cancel failed (no reply within ${cancelTimeoutMs}ms)`));
       try {
         sendWireMsg(ws, makeRequestFrame(cancelId, 'JOB', { mode: 'cancel', jobId: queuedJobId }));
       } catch (err) {
@@ -246,7 +268,7 @@ export function exchange(
     // `running` is sent at dispatch on this same socket, so it precedes any refusal of a
     // cancel sent after it. It starts the run budget exactly once, from any phase.
     const startRun = (jobId: string): void => {
-      if (runStartedAt !== undefined) return;
+      if (settled || runStartedAt !== undefined) return;
       const startedAt = Date.now();
       runStartedAt = startedAt;
       phase = 'running';
@@ -258,6 +280,7 @@ export function exchange(
       ))));
     };
     const onJobState = (job: JobInfo): void => {
+      if (settled) return;
       // Keep waiting — this frame is not the reply, only the jobId the timeout
       // handler above needs so "the CLI never re-dispatches" is actually true.
       lastJob = job;
@@ -275,8 +298,7 @@ export function exchange(
       if (job.blockedBy !== undefined) startCancel({ kind: 'blocked', by: job.blockedBy });
     };
     const onCancelReply = (reply: ReplyMsg): void => {
-      // Once running, the run timer and the original reply decide; the refusal is expected.
-      if (runStartedAt !== undefined) return;
+      if (settled || runStartedAt !== undefined) return;
       if (!reply.ok) {
         cancelUnknown(`cancel failed (${reply.error.code}: ${reply.error.message})`);
         return;
@@ -292,6 +314,34 @@ export function exchange(
       // dispatched, so there is no run budget left to wait out.
       cancelUnknown(`cancel refused (${typeof verdict?.reason === 'string' ? verdict.reason : 'no reason given'})`);
     };
+
+    onAbort = (): void => {
+      if (settled) return;
+      const sigName = typeof opts?.signal?.reason === 'string' ? opts.signal.reason : 'SIGINT';
+      if (phase === 'queued') {
+        startCancel({ kind: 'signal', signal: sigName });
+      } else if (phase === 'running') {
+        finish(() => reject(new CliError(
+          'E_CANCELLED' as unknown as ErrorCode,
+          `${cmd} interrupted by ${sigName} while running — job ${lastJob?.jobId ?? ''} was NOT cancelled`,
+          lastJob?.jobId !== undefined ? { jobId: lastJob.jobId } : undefined,
+        )));
+      } else if (phase === 'legacy') {
+        if (!queuedJobId) {
+          finish(() => reject(new CliError('E_CANCELLED' as unknown as ErrorCode, `${cmd} cancelled by ${sigName}`)));
+        } else {
+          startCancel({ kind: 'signal', signal: sigName });
+        }
+      }
+    };
+
+    if (opts?.signal) {
+      if (opts.signal.aborted) {
+        onAbort();
+      } else {
+        opts.signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
 
     ws.on('message', (raw) => {
       let msg = parseWireMsg(rawToString(raw));
@@ -449,7 +499,13 @@ export async function runCommand(
   cmd: string,
   params: unknown,
   opts?: {
-    timeoutMs?: number; activity?: string; readOnly?: boolean; pluginEnforcedReadOnly?: boolean; queueTimeoutMs?: number;
+    timeoutMs?: number;
+    activity?: string;
+    readOnly?: boolean;
+    pluginEnforcedReadOnly?: boolean;
+    queueTimeoutMs?: number;
+    signal?: AbortSignal;
+    signalCancelTimeoutMs?: number;
   },
 ): Promise<unknown> {
   const wireCmd = cmd as CommandName;
@@ -517,9 +573,14 @@ export async function runCommand(
         ),
       });
     }
+    const exchangeOpts: ExchangeOptions = {
+      ...(opts?.queueTimeoutMs !== undefined ? { queueTimeoutMs: opts.queueTimeoutMs } : {}),
+      ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
+      ...(opts?.signalCancelTimeoutMs !== undefined ? { signalCancelTimeoutMs: opts.signalCancelTimeoutMs } : {}),
+    };
     return await exchange(
       ws, wireCmd, params, timeoutMs, opts?.activity, readOnlyRequested,
-      opts?.queueTimeoutMs !== undefined ? { queueTimeoutMs: opts.queueTimeoutMs } : undefined,
+      Object.keys(exchangeOpts).length > 0 ? exchangeOpts : undefined,
     );
   } finally {
     try {

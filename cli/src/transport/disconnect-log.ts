@@ -30,6 +30,11 @@ export interface DisconnectInFlightJob {
   elapsedMs: number;
 }
 
+/** Maximum in-flight jobs retained per disconnect record to prevent BROKER_HELLO bloat. */
+export const DISCONNECT_MAX_IN_FLIGHT_JOBS = 10;
+/** Maximum queue depth file entries retained per disconnect record. */
+export const DISCONNECT_MAX_QUEUE_DEPTH_FILES = 20;
+
 export interface DisconnectRecord {
   at: string;
   instanceId: string;
@@ -44,6 +49,10 @@ export interface DisconnectRecord {
   socketOpenForMs: number;
   inFlightJobs: DisconnectInFlightJob[];
   queueDepthByFile: Record<string, number>;
+  /** Count of in-flight jobs omitted by DISCONNECT_MAX_IN_FLIGHT_JOBS cap. */
+  omittedInFlightJobs?: number;
+  /** Count of queue depth file entries omitted by DISCONNECT_MAX_QUEUE_DEPTH_FILES cap. */
+  omittedQueueDepthFiles?: number;
 }
 
 /** The BROKER_HELLO `disconnects` field. */
@@ -61,6 +70,8 @@ export interface DisconnectsStatus {
 export interface PluginSocketInfo {
   instanceId: string;
   openedAt: number;
+  /** True when a same-instance re-HELLO superseded this socket. */
+  superseded?: boolean;
   /** Set when a re-HELLO superseded this socket: the registry entry's view of it at that
    *  moment, since the entry itself now describes the replacement socket. */
   supersededSnapshot?: PluginLiveness;
@@ -99,6 +110,7 @@ export interface BuildDisconnectRecordInput {
   closedBy: DisconnectClosedBy;
   closeCode: number | null;
   closeReason: string | Buffer | undefined;
+  superseded?: boolean;
   inFlightJobs: Array<{ jobId: string; cmd: string; activity?: string | undefined; startedAt?: number | undefined; createdAt: number }>;
   queueDepthByFile: Record<string, number>;
 }
@@ -106,6 +118,28 @@ export interface BuildDisconnectRecordInput {
 export function buildDisconnectRecord(input: BuildDisconnectRecordInput): DisconnectRecord {
   const { now, info } = input;
   const liveness = input.liveEntry ?? info.supersededSnapshot ?? null;
+  const mappedJobs = input.inFlightJobs.map((job) => ({
+    jobId: job.jobId,
+    cmd: job.cmd,
+    activity: job.activity ?? null,
+    elapsedMs: Math.max(0, now - (job.startedAt ?? job.createdAt)),
+  }));
+  const inFlightJobs = mappedJobs.slice(0, DISCONNECT_MAX_IN_FLIGHT_JOBS);
+  const omittedInFlightJobs = mappedJobs.length > DISCONNECT_MAX_IN_FLIGHT_JOBS
+    ? mappedJobs.length - DISCONNECT_MAX_IN_FLIGHT_JOBS
+    : undefined;
+
+  const queueKeys = Object.keys(input.queueDepthByFile);
+  const cappedKeys = queueKeys.slice(0, DISCONNECT_MAX_QUEUE_DEPTH_FILES);
+  const queueDepthByFile: Record<string, number> = {};
+  for (const k of cappedKeys) {
+    const depth = input.queueDepthByFile[k];
+    if (depth !== undefined) queueDepthByFile[k] = depth;
+  }
+  const omittedQueueDepthFiles = queueKeys.length > DISCONNECT_MAX_QUEUE_DEPTH_FILES
+    ? queueKeys.length - DISCONNECT_MAX_QUEUE_DEPTH_FILES
+    : undefined;
+
   return {
     at: new Date(now).toISOString(),
     instanceId: info.instanceId,
@@ -114,17 +148,14 @@ export function buildDisconnectRecord(input: BuildDisconnectRecordInput): Discon
     closeCode: input.closeCode,
     closeReason: boundedCloseReason(input.closeReason),
     closedBy: input.closedBy,
-    superseded: input.liveEntry === null,
+    superseded: input.superseded ?? info.superseded ?? (input.liveEntry === null),
     msSinceLastSeen: liveness ? Math.max(0, now - liveness.lastSeenAt) : null,
     msSinceLastAppFrame: liveness ? Math.max(0, now - liveness.lastAppFrameAt) : null,
     socketOpenForMs: Math.max(0, now - info.openedAt),
-    inFlightJobs: input.inFlightJobs.map((job) => ({
-      jobId: job.jobId,
-      cmd: job.cmd,
-      activity: job.activity ?? null,
-      elapsedMs: Math.max(0, now - (job.startedAt ?? job.createdAt)),
-    })),
-    queueDepthByFile: input.queueDepthByFile,
+    inFlightJobs,
+    queueDepthByFile,
+    ...(omittedInFlightJobs !== undefined && { omittedInFlightJobs }),
+    ...(omittedQueueDepthFiles !== undefined && { omittedQueueDepthFiles }),
   };
 }
 
@@ -164,12 +195,12 @@ export function pushDisconnectRing(ring: readonly DisconnectRecord[], record: Di
  * lines that do not parse as a record are counted in `skipped`. A missing file is empty.
  * Throws only on a real read error — the caller counts it.
  */
-export function readDisconnectTail(path: string): { records: DisconnectRecord[]; skipped: number } {
+export function readDisconnectTail(path: string): { records: DisconnectRecord[]; skipped: number; readFailures: number } {
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { records: [], skipped: 0 };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { records: [], skipped: 0, readFailures: 0 };
     throw err;
   }
   try {
@@ -183,7 +214,15 @@ export function readDisconnectTail(path: string): { records: DisconnectRecord[];
       filled += n;
     }
     const lines = buf.subarray(0, filled).toString('utf8').split('\n');
-    if (start > 0) lines.shift();
+    let readFailures = 0;
+    // When the tail window starts past byte 0, the first segment is an incomplete line cut by the window.
+    // If that cut line is the ONLY line in the window (and size > 0), the newest record itself is oversized (> 64 KiB).
+    if (start > 0) {
+      if (lines.length <= 1) {
+        readFailures += 1;
+      }
+      lines.shift();
+    }
     if (lines[lines.length - 1] === '') lines.pop();
     const records: DisconnectRecord[] = [];
     let skipped = 0;
@@ -195,7 +234,11 @@ export function readDisconnectTail(path: string): { records: DisconnectRecord[];
         else records.push(parsed);
       } catch { skipped += 1; }
     }
-    return { records: records.slice(-DISCONNECT_RING_SIZE).reverse(), skipped };
+    // If the file is non-empty and no records could be parsed (every line failed), count a read failure.
+    if (size > 0 && records.length === 0 && readFailures === 0) {
+      readFailures += 1;
+    }
+    return { records: records.slice(-DISCONNECT_RING_SIZE).reverse(), skipped, readFailures };
   } finally {
     closeSync(fd);
   }

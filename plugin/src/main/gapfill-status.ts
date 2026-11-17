@@ -53,7 +53,17 @@ export interface GapfillStats {
    *  refusing) is a genuinely separate fact and is always recorded, no matter how many
    *  times that keeps happening. */
   bootReadError: string | null;
+  /** Number of pages whose walk has completed during the boot diff so far. */
+  pagesWalked: number;
+  /** True when the sliced boot walk is detected as paused by timer throttling (e.g. background tab). */
+  bootPaused: boolean;
+  /** Timestamp (epoch ms) of the most recent timer hop or yield during boot. */
+  lastHopAt: number | null;
+  /** Edits dropped from gapfill diff because the node id was captured live during boot walk. */
+  dedupedLiveEdits: number;
 }
+
+export const BOOT_PAUSE_THRESHOLD_MS = 2_000;
 
 export function createGapfillStats(): GapfillStats {
   return {
@@ -62,7 +72,23 @@ export function createGapfillStats(): GapfillStats {
     legacyCleared: 0, staleBaselinesCleared: 0,
     evicted: [], errorCount: 0, firstError: null,
     baselineFirstRun: false, bootBaselineUnreadable: false, bootReadError: null,
+    pagesWalked: 0, bootPaused: false, lastHopAt: null, dedupedLiveEdits: 0,
   };
+}
+
+/** Updates stats.bootPaused based on elapsed time since the last timer hop during boot. */
+export function updateBootPaused(
+  stats: GapfillStats,
+  inFlight: boolean,
+  now = Date.now(),
+  thresholdMs = BOOT_PAUSE_THRESHOLD_MS,
+): boolean {
+  if (inFlight && stats.lastHopAt !== null && now - stats.lastHopAt >= thresholdMs) {
+    stats.bootPaused = true;
+    return true;
+  }
+  stats.bootPaused = false;
+  return false;
 }
 
 /** Every failure counts; the FIRST message is the one kept, because it is the one that
@@ -91,6 +117,9 @@ export function toGapfillStatus(stats: GapfillStats): GapfillStatus {
     ...(stats.staleBaselinesCleared > 0 && { staleBaselinesCleared: stats.staleBaselinesCleared }),
     ...(stats.baselineFirstRun && { baselineFirstRun: true as const }),
     ...(stats.evicted.length > 0 && { baselineEvicted: [...stats.evicted] }),
+    ...(stats.pagesWalked > 0 && { pagesWalked: stats.pagesWalked }),
+    ...(stats.bootPaused && { bootPaused: true as const }),
+    ...(stats.dedupedLiveEdits > 0 && { dedupedLiveEdits: stats.dedupedLiveEdits }),
     ...(stats.firstError !== null && { errors: [stats.firstError], errorCount: stats.errorCount }),
   };
 }

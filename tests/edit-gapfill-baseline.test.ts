@@ -122,8 +122,10 @@ describe('runGapfillDiff — no baseline at all', () => {
     await runGapfillDiff(pages, createMemoryBaselineStore(), stats);
 
     expect(stats.baselineFirstRun).toBe(true);
+    expect(stats.pagesWalked).toBe(1);
     expect(stats.baselineWrittenAt).not.toBeNull();
     expect(toGapfillStatus(stats).baselineFirstRun).toBe(true);
+    expect(toGapfillStatus(stats).pagesWalked).toBe(1);
   });
 
   it('a session that DID diff a prior baseline is not a first run, and says nothing about one', async () => {
@@ -136,7 +138,9 @@ describe('runGapfillDiff — no baseline at all', () => {
     await runGapfillDiff(pages, store, stats);
 
     expect(stats.baselineFirstRun).toBe(false);
+    expect(stats.pagesWalked).toBe(1);
     expect('baselineFirstRun' in toGapfillStatus(stats)).toBe(false);
+    expect(toGapfillStatus(stats).pagesWalked).toBe(1);
   });
 
   it('an unparseable stored value is treated as MISSING, never as an empty baseline (which would fabricate a whole-file create storm)', async () => {
@@ -1208,5 +1212,16 @@ describe('the perf block STATUS reports', () => {
     markBootComplete(perf);
 
     expect(toPerfStatus(perf)!.propertyReadErrors).toBe(1);
+  });
+
+  it('resets lastHopAt to null and bootPaused to false when the boot diff completes', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const stats = createGapfillStats();
+
+    await runGapfillDiff(pages, createMemoryBaselineStore(), stats);
+
+    expect(stats.lastHopAt).toBeNull();
+    expect(stats.bootPaused).toBe(false);
   });
 });

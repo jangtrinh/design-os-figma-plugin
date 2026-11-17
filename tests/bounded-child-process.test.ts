@@ -25,7 +25,7 @@ const fastBounds: ChildBounds = {
 };
 const realChildBounds: ChildBounds = {
   ...fastBounds,
-  deadlineMs: 2_500,
+  deadlineMs: 3_500,
   termGraceMs: 250,
   closeGraceMs: 300,
   reapGraceMs: 250,
@@ -56,15 +56,16 @@ function run(
   command: string,
   args: string[] = [],
   bounds: ChildBounds = fastBounds,
-): Promise<{ outcome: ChildOutcome; calls: number }> {
+): Promise<{ outcome: ChildOutcome; calls: number; pid: number | undefined }> {
   return new Promise((resolve) => {
     let calls = 0;
     let first: ChildOutcome | undefined;
-    mod.runBoundedChild(command, args, { bounds }, (outcome) => {
+    const handle = mod.runBoundedChild(command, args, { bounds }, (outcome) => {
       calls += 1;
       first ??= outcome;
-      setImmediate(() => resolve({ outcome: first!, calls }));
+      setImmediate(() => resolve({ outcome: first!, calls, pid: handle.pid }));
     });
+    if (handle.pid !== undefined) fixturePids.add(handle.pid);
   });
 }
 
@@ -184,11 +185,42 @@ console.log('complete');
     expect(Date.now() - startedAt).toBeLessThan(4_500);
   });
 
+  it('terminates and reaps a real child even when deadline precedes child readiness', async () => {
+    const readyDir = mkdtempSync(join(tmpdir(), 'bounded-child-preready-'));
+    fixtureDirs.push(readyDir);
+    const readyFile = join(readyDir, 'delayed-ready');
+    const dir = mkdtempSync(join(tmpdir(), 'bounded-child-slow-'));
+    fixtureDirs.push(dir);
+    const script = join(dir, 'slow-child');
+    writeFileSync(
+      script,
+      `#!${process.execPath}\nsetTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(readyFile)},'ready');},500);\nsetInterval(()=>{},1000);\n`,
+    );
+    chmodSync(script, 0o755);
+    const { outcome, calls, pid } = await run(await loadWithRealSpawn(), script, [], {
+      ...fastBounds,
+      deadlineMs: 60,
+      termGraceMs: 250,
+      closeGraceMs: 300,
+      reapGraceMs: 250,
+    });
+    expect(calls).toBe(1);
+    expect(pid).toEqual(expect.any(Number));
+    expect(existsSync(readyFile), JSON.stringify(outcome)).toBe(false);
+    expect(outcome).toMatchObject({ spawned: true, timedOut: true, exited: true, signal: 'SIGTERM' });
+    expect(() => process.kill(pid!, 0)).toThrow();
+  });
+
   it('times out and terminates a real child with TERM', async () => {
-    const term = writeChild('setInterval(()=>{},1000);');
-    const termOutcome = (await run(await loadWithRealSpawn(), term.script, [], realChildBounds)).outcome;
+    const readyDir = mkdtempSync(join(tmpdir(), 'bounded-child-ready-'));
+    fixtureDirs.push(readyDir);
+    const readyFile = join(readyDir, 'term-ready');
+    const term = writeChild(`require('node:fs').writeFileSync(${JSON.stringify(readyFile)},'ready');setInterval(()=>{},1000);`);
+    const { outcome: termOutcome, calls } = await run(await loadWithRealSpawn(), term.script, [], realChildBounds);
+    expect(calls).toBe(1);
     expect(termOutcome.launchError, JSON.stringify(termOutcome)).toBeUndefined();
     expect(termOutcome, JSON.stringify(termOutcome)).toMatchObject({ spawned: true, timedOut: true, exited: true });
+    expect(existsSync(readyFile), JSON.stringify(termOutcome)).toBe(true);
     expect(existsSync(term.pidFile), JSON.stringify(termOutcome)).toBe(true);
     const termPid = rememberPid(term.pidFile);
     expect(termOutcome).toMatchObject({ timedOut: true, exited: true, signal: 'SIGTERM' });
@@ -200,9 +232,10 @@ console.log('complete');
     fixtureDirs.push(readyDir);
     const readyFile = join(readyDir, 'term-handler-ready');
     const kill = writeChild(`process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(readyFile)},'ready');setInterval(()=>{},1000);`);
-    const killOutcome = (await run(await loadWithRealSpawn(), kill.script, [], realChildBounds)).outcome;
-    const killPid = rememberPid(kill.pidFile);
+    const { outcome: killOutcome, calls } = await run(await loadWithRealSpawn(), kill.script, [], realChildBounds);
+    expect(calls).toBe(1);
     expect(existsSync(readyFile), JSON.stringify(killOutcome)).toBe(true);
+    const killPid = rememberPid(kill.pidFile);
     expect(killOutcome).toMatchObject({ timedOut: true, exited: true, signal: 'SIGKILL' });
     expect(() => process.kill(killPid, 0)).toThrow();
   });

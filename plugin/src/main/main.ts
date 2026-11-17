@@ -7,14 +7,16 @@
 
 import type { CommandName, ErrorCode, FileContext, WireError } from '../../../shared/protocol.ts';
 import { DEFAULT_IDLE_MS, MIN_IDLE_MS } from '../../../shared/protocol.ts';
+import type { EditInput } from '../../../shared/edit-feed.ts';
 import { fileMatches } from '../../../shared/file-match.ts';
 import {
   clearLegacyGapfillDocumentData, runGapfillDiff, snapshotPageBounded, writeBaseline,
 } from './edit-gapfill.ts';
+import { filterGapfillEditsAgainstLive } from './gapfill-diff.ts';
 import { createIdleBaselineWriter } from './idle-baseline-write.ts';
 import { runBootCapture } from './boot-capture.ts';
 import { createClientStorageBaselineStore } from './gapfill-baseline-store.ts';
-import { createGapfillStats, toGapfillStatus } from './gapfill-status.ts';
+import { createGapfillStats, toGapfillStatus, updateBootPaused } from './gapfill-status.ts';
 import {
   createPerfStats, markBootComplete, recordLoadAllPages, toPerfStatus,
 } from './perf-stats.ts';
@@ -87,7 +89,7 @@ figma.showUI(__html__, {
 // surface has somewhere to push an entry without a STATUS payload shape change.
 const bootSkipped: string[] = [];
 
-// auto-connect slice 2 (fix round) — offer a "Reconnect figma-agent" entry in
+// auto-connect slice 2 (fix round) — offer a "Reconnect DESIGN:OS Bridge" entry in
 // Figma's own relaunch menu, but ONLY on a file the CLI has actually bound
 // (`figma-agent bind`) — never write into a document nobody asked this plugin to
 // manage. The plugin's main thread has no filesystem access and cannot read
@@ -120,7 +122,7 @@ function maybeSetRelaunchData(bound: boolean): void {
   }
   relaunchAttempted = true;
   try {
-    figma.root.setRelaunchData({ open: 'Reconnect figma-agent' });
+    figma.root.setRelaunchData({ open: 'Reconnect DESIGN:OS Bridge' });
   } catch (err) {
     bootSkipped.push(`relaunchData: refused (${err instanceof Error ? err.message : String(err)})`);
   }
@@ -259,6 +261,10 @@ function resetIdleTimer(): void {
 
 function fireIdle(): void {
   idleTimer = null;
+  // If the boot gap-fill walk is currently traversing the document, baseline writes must
+  // wait: the boot walk took its snapshot before these live edits arrived, and clearing
+  // `dirtyPageIds` now would hide those edits from the post-boot idle pass.
+  if (bootWalkInProgress) return;
   // Written on a debounce after each idle window — regardless of whether this window's
   // activity was component-scoped, since the baseline tracks EVERY node. Only the pages
   // that actually changed are re-walked (the writer claims and clears the dirty set).
@@ -274,6 +280,9 @@ function fireIdle(): void {
 // outside a live sandbox — it calls `figma.showUI` at module load — so the hottest loop in
 // the plugin is only testable from its own module). Everything session-scoped stays here:
 // this file owns the state, that module owns the pass over one delivered batch.
+let bootWalkInProgress = false;
+const bootLiveNodeIds = new Set<string>();
+
 const editIdentityCache = createEditIdentityCache();
 const capture = createDocumentChangeCapture({
   now: () => Date.now(),
@@ -301,7 +310,13 @@ const capture = createDocumentChangeCapture({
     flush: flushCorrectionBatch,
   },
   noteChangedNodes: (nodeIds) => { void noteChangedNodes(nodeIds); },
-  post: (message) => { figma.ui.postMessage(message); },
+  post: (message) => {
+    if (bootWalkInProgress && message.type === 'EDIT_FEED') {
+      const data = message.data as { edits?: readonly EditInput[] } | undefined;
+      for (const edit of data?.edits ?? []) bootLiveNodeIds.add(edit.nodeId);
+    }
+    figma.ui.postMessage(message);
+  },
   noteComponentChanges: (count) => { changesSinceCommit += count; },
   notePageDirty: (pageId) => { dirtyPageIds.add(pageId); }, // the next idle fire re-walks exactly these
   armIdle: resetIdleTimer,
@@ -310,38 +325,30 @@ const capture = createDocumentChangeCapture({
 // Reconnect gap-fill (wave 4.4 phase 02 §2) — ONE diff against the PREVIOUS session's
 // snapshot, covering the window this plugin was closed (page switches need no gap-fill:
 // `documentchange` is document-wide once `loadAllPagesAsync` has run, the spec's own
-// verdict). Completes BEFORE subscribing to `documentchange`, so a live edit can never race
-// the boot diff's read of the about-to-be-superseded snapshot. The diff yields between
-// pages (boot must not hold the plugin thread for the whole document — the measured freeze
-// on large files); an edit made during a yield is not seen live (no subscription yet) AND
-// is absent from the pre-edit baseline the diff writes, so the NEXT session's gap-fill
-// reports it — delayed, never lost. `runGapfillDiff` itself writes the fresh baseline
-// before resolving.
+// verdict). Subscribing to `documentchange` immediately after page load ensures live canvas
+// edits are never lost while the boot walk yields. Edits captured live during the boot walk
+// are tracked and excluded from the diff batch ("counted, never silent") so nothing is
+// double-reported.
 async function reportGapfill(): Promise<void> {
-  const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats, perfStats);
-  if (gapfillEdits.length > 0) {
-    // Posted DIRECTLY, never through `coalesceEdits`. `coalesceEdits` keys by nodeId ALONE
-    // across the WHOLE batch, with no notion of page — a node that moved pages between
-    // sessions (deleted on page A, created on page B, same stable node id) would collapse
-    // into ONE entry carrying the FIRST page seen and the LAST op seen, mislabelling a
-    // create as landing on the wrong page. `runGapfillDiff`/`gapfillEditsForPage` already
-    // guarantee one edit per node PER PAGE (each page's own diff is computed and coalesced
-    // independently), so a cross-page rename/move is deliberately reported as two
-    // separate, correctly-paged frames (deleted on A, created on B) rather than merged
-    // into a single frame that could carry the wrong page.
-    figma.ui.postMessage({
-      type: 'EDIT_FEED',
-      data: {
-        edits: gapfillEdits, fileKey: figma.fileKey ?? null,
-        fileName: figma.root.name, source: 'gapfill',
-      },
-    });
+  bootWalkInProgress = true;
+  try {
+    const rawEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats, perfStats);
+    const { edits: gapfillEdits, dropped } = filterGapfillEditsAgainstLive(rawEdits, bootLiveNodeIds);
+    if (dropped > 0) gapfillStats.dedupedLiveEdits += dropped;
+    if (gapfillEdits.length > 0) {
+      figma.ui.postMessage({
+        type: 'EDIT_FEED',
+        data: {
+          edits: gapfillEdits, fileKey: figma.fileKey ?? null,
+          fileName: figma.root.name, source: 'gapfill',
+        },
+      });
+    }
+  } finally {
+    bootWalkInProgress = false;
+    bootLiveNodeIds.clear();
+    if (dirtyPageIds.size > 0) resetIdleTimer();
   }
-  // The one-time removal of the pre-clientStorage in-document baseline. AFTER the diff
-  // (which never reads those keys) and BEFORE subscribing, because clearing them is a
-  // `figma.root` write and a write to the document is exactly the kind of event this
-  // handler would otherwise report back to the project as an owner edit.
-  clearLegacyGapfillDocumentData(gapfillStats);
 }
 
 // Subscribe only after all pages are loaded (dynamic-page requirement) — and subscribe even
@@ -356,6 +363,10 @@ void runBootCapture({
     const startedAt = Date.now();
     await figma.loadAllPagesAsync();
     recordLoadAllPages(perfStats, Date.now() - startedAt);
+    // The one-time removal of the pre-clientStorage in-document baseline. Runs BEFORE
+    // subscribing to `documentchange` because clearing legacy pluginData keys is a `figma.root`
+    // write and must never trigger a false owner-edit event.
+    clearLegacyGapfillDocumentData(gapfillStats);
   },
   gapfill: async () => {
     // `finally`: a gap-fill that failed still measured whatever it did, and a `perf` block
@@ -540,10 +551,13 @@ function mutationTargetIds(cmd: CommandName, params: Params): string[] {
 
 async function dispatch(cmd: CommandName, params: Params): Promise<unknown> {
   switch (cmd) {
-    case 'STATUS': return opStatus(
-      bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats), capture.stats,
-      toPerfStatus(perfStats),
-    );
+    case 'STATUS': {
+      updateBootPaused(gapfillStats, bootWalkInProgress);
+      return opStatus(
+        bootSkipped, readOnlyViolations, toGapfillStatus(gapfillStats), capture.stats,
+        toPerfStatus(perfStats),
+      );
+    }
     case 'GET_SELECTION': return opGetSelection(params);
     // The change counter handed in here is the SAME signal the read-only guard keeps
     // (one bump per documentchange batch that lands while exactly one dispatch is

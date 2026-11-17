@@ -300,6 +300,16 @@
     }
     return edits;
   }
+  function filterGapfillEditsAgainstLive(edits, liveNodeIds) {
+    if (liveNodeIds.size === 0) return { edits: [...edits], dropped: 0 };
+    const kept = [];
+    let dropped = 0;
+    for (const edit of edits) {
+      if (liveNodeIds.has(edit.nodeId)) dropped += 1;
+      else kept.push(edit);
+    }
+    return { edits: kept, dropped };
+  }
   function topLevelSnapshot(rec) {
     return { id: rec[0], name: rec[1], type: rec[2], x: rec[3], y: rec[4], parent: null };
   }
@@ -377,6 +387,7 @@
   }
 
   // plugin/src/main/gapfill-status.ts
+  var BOOT_PAUSE_THRESHOLD_MS = 2e3;
   function createGapfillStats() {
     return {
       pagesDiffed: 0,
@@ -393,8 +404,20 @@
       firstError: null,
       baselineFirstRun: false,
       bootBaselineUnreadable: false,
-      bootReadError: null
+      bootReadError: null,
+      pagesWalked: 0,
+      bootPaused: false,
+      lastHopAt: null,
+      dedupedLiveEdits: 0
     };
+  }
+  function updateBootPaused(stats, inFlight, now = Date.now(), thresholdMs = BOOT_PAUSE_THRESHOLD_MS) {
+    if (inFlight && stats.lastHopAt !== null && now - stats.lastHopAt >= thresholdMs) {
+      stats.bootPaused = true;
+      return true;
+    }
+    stats.bootPaused = false;
+    return false;
   }
   function recordGapfillError(stats, message) {
     stats.errorCount += 1;
@@ -416,6 +439,9 @@
       ...stats.staleBaselinesCleared > 0 && { staleBaselinesCleared: stats.staleBaselinesCleared },
       ...stats.baselineFirstRun && { baselineFirstRun: true },
       ...stats.evicted.length > 0 && { baselineEvicted: [...stats.evicted] },
+      ...stats.pagesWalked > 0 && { pagesWalked: stats.pagesWalked },
+      ...stats.bootPaused && { bootPaused: true },
+      ...stats.dedupedLiveEdits > 0 && { dedupedLiveEdits: stats.dedupedLiveEdits },
       ...stats.firstError !== null && { errors: [stats.firstError], errorCount: stats.errorCount }
     };
   }
@@ -737,65 +763,77 @@
       stats.bootBaselineUnreadable = true;
       return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
     }
-    if (!prev) {
-      stats.baselineFirstRun = true;
-      const firstRun = /* @__PURE__ */ new Map();
+    try {
+      if (!prev) {
+        stats.baselineFirstRun = true;
+        const firstRun = /* @__PURE__ */ new Map();
+        for (const page of pages) {
+          stats.lastHopAt = Date.now();
+          await yieldToHost();
+          stats.lastHopAt = Date.now();
+          try {
+            firstRun.set(page.id, await snapshotPageBounded(page, perf, "boot", timing));
+          } catch {
+          }
+          stats.pagesWalked += 1;
+        }
+        await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
+        return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
+      }
+      const edits = [];
+      const walked = /* @__PURE__ */ new Map();
+      const currentPageIds = new Set(pages.map((p) => p.id));
+      const prevById = new Map(prev.pages.map((p) => [p.id, p]));
+      for (const deletedId of deletedPageIds(prev.pages.map((p) => p.id), currentPageIds)) {
+        edits.push(pageDeletedNotice(prevById.get(deletedId)));
+      }
       for (const page of pages) {
+        stats.lastHopAt = Date.now();
         await yieldToHost();
+        stats.lastHopAt = Date.now();
+        const prevPage = prevById.get(page.id);
+        let walk2;
         try {
-          firstRun.set(page.id, await snapshotPageBounded(page, perf, "boot", timing));
-        } catch {
+          walk2 = await snapshotPageBounded(page, perf, "boot", timing);
+        } catch (err) {
+          recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf2(err)}`);
+          stats.pagesWalked += 1;
+          continue;
         }
-      }
-      await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
-      return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
-    }
-    const edits = [];
-    const walked = /* @__PURE__ */ new Map();
-    const currentPageIds = new Set(pages.map((p) => p.id));
-    const prevById = new Map(prev.pages.map((p) => [p.id, p]));
-    for (const deletedId of deletedPageIds(prev.pages.map((p) => p.id), currentPageIds)) {
-      edits.push(pageDeletedNotice(prevById.get(deletedId)));
-    }
-    for (const page of pages) {
-      await yieldToHost();
-      const prevPage = prevById.get(page.id);
-      let walk2;
-      try {
-        walk2 = await snapshotPageBounded(page, perf, "boot", timing);
-      } catch (err) {
-        recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf2(err)}`);
-        continue;
-      }
-      const { records: nextRecords, truncated: nextTruncated } = walk2;
-      walked.set(page.id, walk2);
-      if (walk2.propertyReadErrors > 0) {
-        stats.pagesWithReadErrors += 1;
-        recordGapfillError(stats, walkErrorMessage(page.name, walk2));
-        edits.push(walkErrorsNotice(page));
-        continue;
-      }
-      stats.pagesDiffed += 1;
-      if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
-        if (nextTruncated) {
-          stats.pagesTruncated += 1;
-          edits.push(truncatedNotice(page));
-        } else {
-          edits.push(previouslyTruncatedNotice(page));
+        stats.pagesWalked += 1;
+        const { records: nextRecords, truncated: nextTruncated } = walk2;
+        walked.set(page.id, walk2);
+        if (walk2.propertyReadErrors > 0) {
+          stats.pagesWithReadErrors += 1;
+          recordGapfillError(stats, walkErrorMessage(page.name, walk2));
+          edits.push(walkErrorsNotice(page));
+          continue;
         }
-        const prevTop = prevPage?.top;
-        if (prevTop) {
-          stats.pagesTopLevelOnly += 1;
-          const { diff: diff2, coarse } = diffTopLevel(prevTop, walk2.top);
-          edits.push(...gapfillEditsForPage(await withoutSurvivors(diff2, nodeExists, stats), page.name, coarse));
+        stats.pagesDiffed += 1;
+        if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
+          if (nextTruncated) {
+            stats.pagesTruncated += 1;
+            edits.push(truncatedNotice(page));
+          } else {
+            edits.push(previouslyTruncatedNotice(page));
+          }
+          const prevTop = prevPage?.top;
+          if (prevTop) {
+            stats.pagesTopLevelOnly += 1;
+            const { diff: diff2, coarse } = diffTopLevel(prevTop, walk2.top);
+            edits.push(...gapfillEditsForPage(await withoutSurvivors(diff2, nodeExists, stats), page.name, coarse));
+          }
+          continue;
         }
-        continue;
+        const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
+        edits.push(...gapfillEditsForPage(await withoutSurvivors(diff, nodeExists, stats), page.name));
       }
-      const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
-      edits.push(...gapfillEditsForPage(await withoutSurvivors(diff, nodeExists, stats), page.name));
+      await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
+      return edits;
+    } finally {
+      stats.lastHopAt = null;
+      stats.bootPaused = false;
     }
-    await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
-    return edits;
   }
 
   // plugin/src/main/idle-baseline-write.ts
@@ -820,14 +858,15 @@
       return;
     }
     try {
-      await deps.gapfill();
-    } catch (err) {
-      deps.notify(`live-sync gap-fill skipped: ${messageOf3(err)}`);
-    }
-    try {
       deps.subscribe();
     } catch (err) {
       deps.notify(`live-sync capture disabled: ${messageOf3(err)}`);
+      return;
+    }
+    try {
+      await deps.gapfill();
+    } catch (err) {
+      deps.notify(`live-sync gap-fill skipped: ${messageOf3(err)}`);
     }
   }
 
@@ -2799,7 +2838,7 @@
       context.object(item.concealed, `${path}.concealed`, CONCEALED_FIELDS, (concealed) => {
         context.array(concealed.reasons, `${path}.concealed.reasons`, CONCEALMENT_REASONS.length, (reason, i) => {
           context.enumValue(reason, `${path}.concealed.reasons[${i}]`, CONCEALMENT_REASONS);
-        });
+        }, 1);
       });
     }
   }
@@ -5357,7 +5396,7 @@
   }
 
   // shared/version.ts
-  var BRIDGE_VERSION = "0.2.1";
+  var BRIDGE_VERSION = "0.2.2";
 
   // plugin/src/main/executor-ops.ts
   var PLUGIN_VERSION = BRIDGE_VERSION;
@@ -8549,7 +8588,7 @@
     }
     relaunchAttempted = true;
     try {
-      figma.root.setRelaunchData({ open: "Reconnect figma-agent" });
+      figma.root.setRelaunchData({ open: "Reconnect DESIGN:OS Bridge" });
     } catch (err) {
       bootSkipped.push(`relaunchData: refused (${err instanceof Error ? err.message : String(err)})`);
     }
@@ -8614,11 +8653,14 @@
   }
   function fireIdle() {
     idleTimer = null;
+    if (bootWalkInProgress) return;
     if (dirtyPageIds.size > 0) triggerBaselineWrite();
     if (changesSinceCommit <= 0) return;
     figma.ui.postMessage({ type: "IDLE_READY", data: { count: changesSinceCommit } });
     changesSinceCommit = 0;
   }
+  var bootWalkInProgress = false;
+  var bootLiveNodeIds = /* @__PURE__ */ new Set();
   var editIdentityCache = createEditIdentityCache();
   var capture = createDocumentChangeCapture({
     now: () => Date.now(),
@@ -8646,6 +8688,10 @@
       void noteChangedNodes(nodeIds);
     },
     post: (message) => {
+      if (bootWalkInProgress && message.type === "EDIT_FEED") {
+        const data = message.data;
+        for (const edit of data?.edits ?? []) bootLiveNodeIds.add(edit.nodeId);
+      }
       figma.ui.postMessage(message);
     },
     noteComponentChanges: (count) => {
@@ -8658,25 +8704,34 @@
     armIdle: resetIdleTimer
   });
   async function reportGapfill() {
-    const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats, perfStats);
-    if (gapfillEdits.length > 0) {
-      figma.ui.postMessage({
-        type: "EDIT_FEED",
-        data: {
-          edits: gapfillEdits,
-          fileKey: figma.fileKey ?? null,
-          fileName: figma.root.name,
-          source: "gapfill"
-        }
-      });
+    bootWalkInProgress = true;
+    try {
+      const rawEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats, perfStats);
+      const { edits: gapfillEdits, dropped } = filterGapfillEditsAgainstLive(rawEdits, bootLiveNodeIds);
+      if (dropped > 0) gapfillStats.dedupedLiveEdits += dropped;
+      if (gapfillEdits.length > 0) {
+        figma.ui.postMessage({
+          type: "EDIT_FEED",
+          data: {
+            edits: gapfillEdits,
+            fileKey: figma.fileKey ?? null,
+            fileName: figma.root.name,
+            source: "gapfill"
+          }
+        });
+      }
+    } finally {
+      bootWalkInProgress = false;
+      bootLiveNodeIds.clear();
+      if (dirtyPageIds.size > 0) resetIdleTimer();
     }
-    clearLegacyGapfillDocumentData(gapfillStats);
   }
   void runBootCapture({
     loadAllPages: async () => {
       const startedAt = Date.now();
       await figma.loadAllPagesAsync();
       recordLoadAllPages(perfStats, Date.now() - startedAt);
+      clearLegacyGapfillDocumentData(gapfillStats);
     },
     gapfill: async () => {
       try {
@@ -8792,7 +8847,8 @@
   }
   async function dispatch(cmd, params) {
     switch (cmd) {
-      case "STATUS":
+      case "STATUS": {
+        updateBootPaused(gapfillStats, bootWalkInProgress);
         return opStatus(
           bootSkipped,
           readOnlyViolations,
@@ -8800,6 +8856,7 @@
           capture.stats,
           toPerfStatus(perfStats)
         );
+      }
       case "GET_SELECTION":
         return opGetSelection(params);
       // The change counter handed in here is the SAME signal the read-only guard keeps

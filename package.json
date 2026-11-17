@@ -1,6 +1,6 @@
 {
   "name": "design-os-figma-plugin",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "Thin CLI + Figma plugin relay — an agent and a designer in the same Figma file. Drives a Figma Free plugin (Plugin API) over a local WebSocket broker; never the paid official write MCP.",
   "license": "SEE LICENSE IN LICENSE",
