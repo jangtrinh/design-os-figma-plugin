@@ -45,6 +45,13 @@ async function buildPluginArtifactsInMemory(): Promise<{ codeJs: string; html: s
     write: false,
   });
   const workerSource = worker.outputFiles[0].text;
+  const renderChild = await esbuild.build({
+    ...common,
+    entryPoints: [resolve(root, 'plugin/src/ui/render-child-entry.ts')],
+    platform: 'browser',
+    format: 'iife',
+    write: false,
+  });
 
   const ui = await esbuild.build({
     ...common,
@@ -55,6 +62,7 @@ async function buildPluginArtifactsInMemory(): Promise<{ codeJs: string; html: s
     define: {
       __BUILD_ID__: JSON.stringify('pending'),
       __THINKING_ORB_WORKER__: JSON.stringify(workerSource),
+      __HTML_RENDER_CHILD__: JSON.stringify(renderChild.outputFiles[0].text),
     },
   });
 
