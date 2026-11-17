@@ -1,17 +1,17 @@
 // Opaque ShaderGradient host: the sandboxed child owns WebGL; the panel accepts one
 // correlated, bounded PNG and never reads the child DOM.
-import type { ShaderGradientProps } from '../../../shared/shader-gradient-presets';
+import type { ShaderGradientProps } from '../../../shared/shader-gradient-presets.ts';
 import {
   decodeGradientPngDataUrl,
   GradientImageAdmissionError,
   validateGradientDimensions,
-} from '../../../shared/gradient-image-admission';
-import { buildRenderDocument } from './gradient-render-document';
+} from '../../../shared/gradient-image-admission.ts';
+import { buildRenderDocument } from './gradient-render-document.ts';
 import {
   boundedGradientErrorCode,
   boundedGradientErrorMessage,
   isGradientRenderReply,
-} from './gradient-render-protocol';
+} from './gradient-render-protocol.ts';
 
 const IFRAME_LOAD_TIMEOUT_MS = 15_000;
 const RENDER_TIMEOUT_MS = 45_000;
@@ -36,7 +36,7 @@ export class GradientRenderError extends Error {
   }
 }
 
-export { buildRenderDocument } from './gradient-render-document';
+export { buildRenderDocument } from './gradient-render-document.ts';
 
 /** Decode and admit the exact PNG representation emitted by canvas.toDataURL. */
 export function decodePngDataUrl(

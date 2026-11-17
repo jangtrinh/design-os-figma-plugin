@@ -13,6 +13,8 @@ import type { CommandArgs } from '../figma-agent.ts';
 import { CliError } from '../transport/protocol-helpers.ts';
 import { runCommand } from '../transport/broker-client.ts';
 import { preflightExecJs, readScriptFile } from './exec-js-preflight.ts';
+import { readTimeoutFlag, resolveTimeoutFlag } from '../util/timeout-flag.ts';
+import type { StaticRenderNote } from '../../../shared/code-layer-static-export.ts';
 
 const WIRE_MARGIN_MS = 2_000;
 
@@ -43,7 +45,9 @@ async function runAssert(scriptPath: string, args: CommandArgs): Promise<unknown
   } catch (err) {
     if (err instanceof CliError) {
       throw new CliError(err.code, `assert script "${scriptPath}" failed before export (PNG not written): ${err.message}`, {
-        rolledBack: err.rolledBack, jobId: err.jobId, recovery: err.recovery,
+        ...(err.rolledBack !== undefined ? { rolledBack: err.rolledBack } : {}),
+        ...(err.jobId !== undefined ? { jobId: err.jobId } : {}),
+        ...(err.recovery !== undefined ? { recovery: err.recovery } : {}),
       });
     }
     throw err;
@@ -60,6 +64,13 @@ export async function run(args: CommandArgs): Promise<unknown> {
   const outPath = resolve(args.req('out'));
   const scale = args.num('scale') ?? 2;
   const assertPath = args.str('assert');
+  const requestedTimeout = readTimeoutFlag(args, 'timeout');
+  let exportTimeoutMs = COMMAND_TIMEOUTS.EXPORT_PNG ?? 60_000;
+  if (requestedTimeout !== undefined) {
+    const { effective, notice } = resolveTimeoutFlag(requestedTimeout, EXEC_JS_MAX_TIMEOUT_MS, '--timeout');
+    if (notice) process.stderr.write(notice);
+    exportTimeoutMs = effective;
+  }
   if (args.bool('assert') && assertPath === undefined) {
     throw new CliError('E_INVALID_ARGS', '--assert needs a script path, e.g. --assert verify/screen.js');
   }
@@ -69,7 +80,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     nodeId: target === 'selection' ? undefined : target,
     useSelection: target === 'selection',
     scale,
-  })) as { base64?: string; w?: number; h?: number };
+  }, { timeoutMs: exportTimeoutMs })) as { base64?: string; w?: number; h?: number; staticRender?: StaticRenderNote };
 
   if (!result || typeof result.base64 !== 'string') {
     throw new CliError('E_PLUGIN_ERROR', 'EXPORT_PNG reply missing base64 image data');
@@ -77,6 +88,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
   writeFileSync(outPath, Buffer.from(result.base64, 'base64'));
   return {
     path: outPath, w: result.w, h: result.h,
+    ...(result.staticRender && { reliable: false, reason: result.staticRender.reason }),
     ...(assertPath !== undefined && { assert: { script: assertPath, result: assertResult } }),
   };
 }

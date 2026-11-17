@@ -13,7 +13,7 @@
 import {
   gradientBytesFromUnknown,
   validateGradientPngHeader,
-} from '../../../shared/gradient-image-admission';
+} from '../../../shared/gradient-image-admission.ts';
 
 /** Namespace key for the stored config. Read by any later re-bake. */
 export const GRADIENT_DATA_KEY = 'shaderGradientConfig';

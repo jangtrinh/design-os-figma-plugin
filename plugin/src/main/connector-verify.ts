@@ -4,10 +4,10 @@
 // between reroutes, so without a checker there is no way to tell a correct canvas from one
 // that quietly stopped matching — and a picture nobody can check is decoration.
 
-import { route } from '../../../shared/connector-route';
-import { routesMatch } from '../../../shared/flow-plan';
-import { ROUTER_VERSION, type Rect } from '../../../shared/connector-types';
-import { listConnections, readNodeConnectionId } from './connector-store';
+import { route } from '../../../shared/connector-route.ts';
+import { routesMatch } from '../../../shared/flow-plan.ts';
+import { ROUTER_VERSION, type Rect } from '../../../shared/connector-types.ts';
+import { listConnections, readNodeConnectionId } from './connector-store.ts';
 
 /** Half a pixel: below it is float noise, above it the line has genuinely moved. */
 const EPSILON = 0.5;

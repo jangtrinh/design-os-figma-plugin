@@ -5,16 +5,20 @@
 // SCAN_DESIGN_SYSTEM in serialize-node.ts; IMPORT_PAYLOAD / BATCH in main.ts;
 // EXEC_JS in executor-exec-js.ts.)
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import type { GapfillStatus, PerfStatus } from '../../../shared/protocol';
-import type { DocumentChangeCaptureStats } from './document-change-capture';
-import { loadBestFont } from './executor-fonts';
-import { withCode } from './executor-styles';
-import { applyAutoLayout } from './executor-frame';
-import { serializeNode } from './serialize-node';
-import { buildPluginCoverage } from './session-coverage';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import type { GapfillStatus, PerfStatus } from '../../../shared/protocol.ts';
+import type { DocumentChangeCaptureStats } from './document-change-capture.ts';
+import { loadBestFont } from './executor-fonts.ts';
+import { withCode } from './executor-styles.ts';
+import { applyAutoLayout } from './executor-frame.ts';
+import { serializeNode } from './serialize-node.ts';
+import { buildPluginCoverage } from './session-coverage.ts';
+import {
+  STATIC_EXPORT_NODE_TYPES, containedStaticRenderNote, staticRenderNote, type StaticRenderNote,
+} from '../../../shared/code-layer-static-export.ts';
+import { BRIDGE_VERSION } from '../../../shared/version.ts';
 
-export const PLUGIN_VERSION = '0.1.0';
+export const PLUGIN_VERSION = BRIDGE_VERSION;
 
 type Params = Record<string, unknown>;
 
@@ -286,7 +290,16 @@ export async function opSetText(params: Params): Promise<{ id: string; name: str
   return { id: node.id, name: node.name };
 }
 
-export async function opExportPng(params: Params): Promise<{ base64: string; w: number; h: number }> {
+/** A code layer exports as its static shell, whether it is the node itself or a visible
+ *  layer inside it; a hidden one is not in the image, so it needs no note. */
+function staticRenderFor(target: SceneNode): StaticRenderNote | undefined {
+  const own = staticRenderNote(target.type);
+  if (own || !('findAll' in target)) return own;
+  const inner = target.findAll((n) => n.visible !== false && STATIC_EXPORT_NODE_TYPES.has(n.type));
+  return inner.length ? containedStaticRenderNote(inner[0]!.type) : undefined;
+}
+
+export async function opExportPng(params: Params): Promise<{ base64: string; w: number; h: number; staticRender?: StaticRenderNote }> {
   const id = params.nodeId ?? params.node;
   const target: SceneNode | null = typeof id === 'string' && id
     ? await getSceneNode(id)
@@ -294,10 +307,12 @@ export async function opExportPng(params: Params): Promise<{ base64: string; w: 
   if (!target) throw withCode(new Error('EXPORT_PNG: no node id given and selection is empty'), 'E_INVALID_ARGS');
   const scale = typeof params.scale === 'number' && params.scale > 0 ? params.scale : 2;
   const bytes = await target.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: scale } });
+  const staticRender = staticRenderFor(target);
   return {
     base64: figma.base64Encode(bytes),
     w: Math.round(target.width * scale),
     h: Math.round(target.height * scale),
+    ...(staticRender && { staticRender }),
   };
 }
 

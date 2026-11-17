@@ -15,8 +15,8 @@
 import {
   AUDIT_FACTS_SCHEMA,
   type AuditComponentFact, type AuditDsFacts, type AuditUnitFact, type AuditUsageFacts,
-} from '../../../shared/audit-types';
-import { unitFact } from './executor-audit-units';
+} from '../../../shared/audit-types.ts';
+import { unitFact } from './executor-audit-units.ts';
 
 /** Count SOLID paints on `node[field]` that are NOT bound to a color variable. */
 function countUnboundPaints(node: SceneNode, field: 'fills' | 'strokes'): number {
@@ -160,11 +160,13 @@ async function tallyUsagePage(page: PageNode, usage: AuditUsageFacts): Promise<n
   let tallied = 0;
   for (const name of Object.keys(reps)) {
     const c = cnt[name];
+    const rep = reps[name];
+    if (c === undefined || !rep) continue;
     tallied += c;
     let key: ComponentNode | ComponentSetNode | null = null;
     try {
       // (C1) the sync mainComponent throws under dynamic-page — async is the only safe read.
-      const main = await reps[name].getMainComponentAsync();
+      const main = await rep.getMainComponentAsync();
       // (C4) tally at the SET level: the set is the unit users pick a variant from.
       if (main) key = main.parent && main.parent.type === 'COMPONENT_SET' ? (main.parent as ComponentSetNode) : main;
     } catch {

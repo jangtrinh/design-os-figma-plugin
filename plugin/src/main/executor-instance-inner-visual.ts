@@ -21,12 +21,12 @@
 
 import type {
   FigmaExportFill, FigmaInnerVisual, FigmaKeyedBinding,
-} from '../../../shared/figma-payload-types';
-import { exportFillToPaint, mapExportEffects, pushImportWarning } from './executor-styles';
-import { resolveKeyedVariable } from './executor-keyed-vars';
-import { bindVariableToField } from './executor-variables';
-import { asFills, effectToExport } from './scan-node-paint';
-import { safe } from './scan-node-utils';
+} from '../../../shared/figma-payload-types.ts';
+import { exportFillToPaint, mapExportEffects, pushImportWarning } from './executor-styles.ts';
+import { resolveKeyedVariable } from './executor-keyed-vars.ts';
+import { bindVariableToField } from './executor-variables.ts';
+import { asFills, effectToExport } from './scan-node-paint.ts';
+import { safe } from './scan-node-utils.ts';
 
 type Child = Record<string, unknown>;
 

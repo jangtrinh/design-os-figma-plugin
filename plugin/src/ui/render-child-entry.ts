@@ -1,5 +1,5 @@
-import { buildPayloadFromDocument, waitForStylesReadyInDocument } from './converter/extract';
-import { childError, HTML_RENDER_CHANNEL, HTML_RENDER_VERSION, isRenderRequest } from './render-child-protocol';
+import { buildPayloadFromDocument, waitForStylesReadyInDocument } from './converter/extract.ts';
+import { childError, HTML_RENDER_CHANNEL, HTML_RENDER_VERSION, isRenderRequest } from './render-child-protocol.ts';
 
 window.addEventListener('message', async (event: MessageEvent) => {
   if (event.source !== window.parent) return;

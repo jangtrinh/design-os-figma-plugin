@@ -12,7 +12,7 @@ import { refusesReadOnlyAssertion } from '../cli/src/transport/broker-client.ts'
 import { run as runScanNode, scanNodeSpec } from '../cli/src/commands/scan-node.ts';
 import { execute as mirrorVerify } from '../cli/src/commands/mirror-verify.ts';
 
-interface Call { cmd: string; params: unknown; opts?: { timeoutMs?: number; activity?: string } }
+interface Call { cmd: string; params: unknown; opts?: { timeoutMs?: number; activity?: string } | undefined }
 
 const SPEC = { type: 'FRAME', name: 'Card', width: 100, height: 40 };
 

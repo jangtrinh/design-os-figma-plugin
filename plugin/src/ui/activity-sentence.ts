@@ -14,11 +14,11 @@ export interface SentenceInput {
    * does not carry over. Kept as a field, not wired in, so a future pass can revisit
    * without another interface change.
    */
-  label?: string;
-  result?: string;         // the plugin-derived result summary (activity-summary.ts's output)
-  errorCode?: string;      // wire ErrorCode, when the reply failed
-  errorMessage?: string;   // the plugin's own (already human) message
-  nodeName?: string;       // ONLY when the reply actually carried a name
+  label?: string | undefined;
+  result?: string | undefined;         // the plugin-derived result summary (activity-summary.ts's output)
+  errorCode?: string | undefined;      // wire ErrorCode, when the reply failed
+  errorMessage?: string | undefined;   // the plugin's own (already human) message
+  nodeName?: string | undefined;       // ONLY when the reply actually carried a name
   pending: boolean;
   ok: boolean;
 }
@@ -29,7 +29,7 @@ export function humanizeTool(tool: string): string {
 }
 
 function capitalize(s: string): string {
-  return s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
+  return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
 interface ToolVerbs {
@@ -98,7 +98,7 @@ function failureSentence(tool: string, errorCode: string | undefined, errorMessa
   const message = typeof errorMessage === 'string' ? errorMessage.trim() : '';
   if (errorCode === 'E_INVALID_ARGS') return message || 'The command was invalid';
   if (errorCode === 'E_EVAL') return message ? `The script stopped: ${message}` : 'The script stopped';
-  if (errorCode !== undefined && errorCode in CODE_SENTENCES) return CODE_SENTENCES[errorCode];
+  if (errorCode !== undefined && CODE_SENTENCES[errorCode] !== undefined) return CODE_SENTENCES[errorCode];
   const stem = `${capitalize(humanizeTool(tool))} failed`;
   return message ? `${stem} — ${message}` : stem;
 }

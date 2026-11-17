@@ -1,5 +1,5 @@
 ---
-name: es:figma-craft
+name: design-os-figma-craft
 description: "Generic Figma canvas engineering discipline — the battle-tested workflow, laws, and Plugin-API failure-mode catalog for building/editing Figma files programmatically (design:os figma-agent CLI or use_figma MCP). Use for ANY project's Figma build/edit/componentize/verify work. Distilled from the VSF-PCP campaigns (2026-06 → 2026-08): every rule here paid for by a real incident."
 user-invocable: true
 when_to_use: "Invoke before ANY programmatic Figma mutation session in ANY project — screen builds, component minting, variant sets, table builds, master edits, batch sweeps. Pairs with a thin per-project adapter (see references/project-adapter-template.md). Skip only for pure read-only diagnosis of a single node."
@@ -7,11 +7,11 @@ category: user
 keywords: [figma, design-os, figma-agent, exec-js, use_figma, plugin-api, component, variant, verification, pipeline]
 metadata:
   author: jang
-  version: "1.1.0"
-  lineage: "Consolidated 2026-08-07 from VSF-PCP figma-idp-rebuild references + design-os supervised update + figma-agent backlog + 25 memory entries; 1.1.0 (2026-09-03) adds screen-composition, drawer-decision-tree, section-presentation + gates 9–10 from the MCP Gateway / LLM Routing / IAM campaigns"
+  version: "1.2.0"
+  lineage: "Consolidated 2026-08-07 from VSF-PCP figma-idp-rebuild references + design-os supervised update + figma-agent backlog + 25 memory entries; 1.1.0 (2026-09-03) adds screen-composition, drawer-decision-tree, section-presentation + gates 9–10 from the MCP Gateway / LLM Routing / IAM campaigns; 1.2.0 (2026-09-24) adds gate-authoring + scoped-gate template after a whole-page-findAll gate suite froze a live file"
 ---
 
-# es:figma-craft — Figma canvas engineering, project-agnostic
+# design-os-figma-craft — Figma canvas engineering, project-agnostic
 
 **This file is the router.** It holds the pipeline, the laws, and a load-table. Details live in exactly one reference each — load on demand.
 
@@ -24,7 +24,7 @@ metadata:
 
 | Bridge | Use for | Notes |
 |---|---|---|
-| **design:os `figma-agent` CLI** (Ease Design Figma Agent plugin) | ALL mutations when the project is design:os-onboarded | Preferred canonical hand. `figma-agent status` must show `plugin.connected:true` for the RIGHT file, checked 2× ~15s apart before long batches. Prefer typed ops (`clone-traits`, `inspect`) over raw `exec-js`. |
+| **design:os `figma-agent` CLI** (DESIGN:OS Bridge plugin) | ALL mutations when the project is design:os-onboarded | Preferred canonical hand. `figma-agent status` must show `plugin.connected:true` for the RIGHT file, checked 2× ~15s apart before long batches. Prefer typed ops (`clone-traits`, `inspect`) over raw `exec-js`. |
 | **`use_figma` MCP** | Mutations where no figma-agent is wired; reads | MANDATORY: load the `figma-use` skill first, every call. |
 | **`html_to_design` (DesignAgent)** | Bulk HTML→Figma imports of authored screens | HTML-first authoring pipeline; not for surgical edits. |
 | **MCP read tools** (`get_metadata`/`get_screenshot`/`get_design_context`) | Diagnosis, recon, verification | Cheapest-first: metadata → screenshot → design_context (last resort, 25K-token cap). |
@@ -77,6 +77,7 @@ Full thinking layer (8 operating gates + rationale): [operating-gates.md](refere
 | [build-script-standard.md](references/build-script-standard.md) | Writing any mutation script — the canonical script anatomy (guards → idempotency → spec constants → mutate → assert → structured return) + anti-pattern table |
 | [script-helpers.md](references/script-helpers.md) | Writing any mutation script — copy the fail-loud helper block + ordering laws + the guards (effective-visibility, live counts, safe delete, blast radius) |
 | [quality-gate-system.md](references/quality-gate-system.md) | Setting up or evolving quality gates — executable gate suite, "no defect escapes twice", 4 catch layers, gate honesty rules, convention-DNA extraction |
+| [gate-authoring.md](references/gate-authoring.md) | Writing or converting any gate script — node-id scope + `findAllWithCriteria`, `skipInvisibleInstanceChildren`, one `page.loadAsync()`, per-gate time budget, KNOWN-RED header, concealed text; starts from [scoped-gate-template.js](references/scoped-gate-template.js) |
 | [campaign-orchestration.md](references/campaign-orchestration.md) | Multi-screen campaigns with agents — 1-agent-1-job, batch-by-budget, study-first, backup-edit, canvas organization, wave close |
 | [knowledge-sync.md](references/knowledge-sync.md) | User says they changed the file, or your docs picture may be stale — URL-drop protocol, drift channels, reconcile triggers |
 | [project-adapter-template.md](references/project-adapter-template.md) | Onboarding this discipline to a new project |

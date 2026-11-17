@@ -3,12 +3,12 @@
 // Adapted: page width is a parameter (source hardcoded 1512); payload assembly
 // lives here so render-host.ts stays a thin iframe lifecycle wrapper.
 
-import type { FigmaExportNode, FigmaExportPayload } from '../../../../shared/figma-payload-types';
-import { parseCssColor } from './color-utils';
-import { computedElementToNode } from './computed-walk';
-import { captureMotionOntoElements } from './extract-motion';
-import { annotateTokenRefs, extractFigmaTokens } from './tokens';
-export { waitForStylesReady, waitForStylesReadyInDocument } from './style-readiness';
+import type { FigmaExportNode, FigmaExportPayload } from '../../../../shared/figma-payload-types.ts';
+import { parseCssColor } from './color-utils.ts';
+import { computedElementToNode } from './computed-walk.ts';
+import { captureMotionOntoElements } from './extract-motion.ts';
+import { annotateTokenRefs, extractFigmaTokens } from './tokens.ts';
+export { waitForStylesReady, waitForStylesReadyInDocument } from './style-readiness.ts';
 
 /**
  * Prepare the document for extraction by making ALL visual content visible.

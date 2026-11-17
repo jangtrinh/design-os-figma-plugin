@@ -6,8 +6,8 @@
 
 import type {
   FigmaColor, FigmaExportEffect, FigmaExportFill, FigmaExportNode, FigmaExportTokens,
-} from '../../../shared/figma-payload-types';
-import { loadBestFont } from './executor-fonts';
+} from '../../../shared/figma-payload-types.ts';
+import { loadBestFont } from './executor-fonts.ts';
 
 // Folder prefix for generated local styles (EaseUI original used 'EaseUI/').
 export const STYLE_FOLDER = 'EaseDesign';

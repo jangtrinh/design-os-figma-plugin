@@ -9,8 +9,8 @@ import {
   MAX_GRADIENT_PNG_BYTES,
   validateGradientDimensions,
   validateGradientPngHeader,
-} from '../shared/gradient-image-admission';
-import { PNG_DATA_URL } from './gradient-png-fixture';
+} from '../shared/gradient-image-admission.ts';
+import { PNG_DATA_URL } from './gradient-png-fixture.ts';
 
 const PNG = Uint8Array.from(Buffer.from(PNG_DATA_URL.split(',')[1]!, 'base64'));
 

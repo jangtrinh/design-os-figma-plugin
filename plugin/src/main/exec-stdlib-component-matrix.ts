@@ -3,7 +3,7 @@
 // exec-stdlib-instance.ts). No `figma` global here, so these are unit-testable without
 // a live plugin or a mock — the cartesian-order determinism and the `=`/`,` rejection
 // are asserted directly against these functions.
-import { withCode } from './executor-styles';
+import { withCode } from './executor-styles.ts';
 
 export const MAX_VARIANTS = 100;
 export const WARN_ABOVE = 40;

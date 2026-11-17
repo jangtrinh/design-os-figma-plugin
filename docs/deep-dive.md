@@ -4,7 +4,7 @@ The README makes four promises in one clause each. This page is the evidence beh
 comparison with Figma's official MCP server, the observability contract, and what is shipped versus
 still open. Operational reference (structure, the editing loop, the rail, multi-file targeting,
 troubleshooting) lives in [operations.md](operations.md); the command manual is
-[`../skills/figma-agent/SKILL.md`](../skills/figma-agent/SKILL.md).
+[`../skills/design-os-figma-agent/SKILL.md`](../skills/design-os-figma-agent/SKILL.md).
 
 ## 1. The agent arrives already knowing
 
@@ -45,16 +45,19 @@ only when records were written, "Nothing synced" when the run landed nothing, an
 prompt alive so the retry is still there.
 
 Edits made while the plugin was closed are not lost either. On the next open a gap-fill diff reports
-them. On a 21-page file every page produced a signal, 21 of 21: pages under the node cap per node,
-pages over it through top-level frame fingerprints. The capture handler and the diff live in
+them. Gap-fill diffing is bounded to existence, names, and position (property-level diffing is not
+performed across the offline window): pages under the 4,000-node cap diff per node; pages exceeding
+the cap fall back to top-level frame fingerprints. On a 21-page benchmark file every page produced a
+signal, 21 of 21. The capture handler and the diff live in
 [`../plugin/src/main/document-change-capture.ts`](../plugin/src/main/document-change-capture.ts) and
 [`../plugin/src/main/edit-gapfill.ts`](../plugin/src/main/edit-gapfill.ts).
 
 ## 3. The agent cannot wreck your file
 
 Every mutating operation seals its own undo step. ⌘Z rolls back one thing, not the whole session.
-Arbitrary scripts run inside a bracket that undoes itself on error, and report `rolledBack: true` only
-when the rollback actually completed.
+Scripts run with `--undo-group` execute inside an undo bracket that rolls back on thrown errors and
+reports `rolledBack: true` only when the rollback successfully completed. If a script times out on the
+wire or runner, timeout alone does not roll back mutations that already executed on the canvas.
 
 Mutations are jobs. One runs per file at a time, the rest queue in order, reads bypass the queue. A
 timeout tells you the work was not cancelled and hands you a job id to poll. Cancel actually cancels.
@@ -76,7 +79,7 @@ Several open Figma files stay connected at once. They no longer evict each other
 target prefer a ready file, `FIGMA_AGENT_FILE` pins the default by name, and exact `--file` or
 `--instance` targets never fall through to a different file: if the exact target is connected but
 app-unready, the broker probes only that target, then dispatches once after readiness returns or fails
-with a bounded `E_APP_UNREADY`. Several agents can share one file too. Pass ``, or set
+with a bounded `E_APP_UNREADY`. Several agents can share one file too. Pass `--agent <id>`, or set
 `FIGMA_AGENT_ID`, and the panel labels each entry with the harness that sent it, so a designer watching
 the canvas can tell who just did that. Readiness gates only agent dispatch; manual edits stay available.
 
@@ -108,8 +111,12 @@ House rule, enforced in code and in review: nothing vanishes silently. Every evi
 rotation, and drop leaves a counter, an archive, or an audit record. A wrong fact is worse than an
 absent one. It is readable in `figma-agent status`:
 
-- `gapfill.pagesDiffed`, `pagesTruncated`, `pagesTopLevelOnly` show how much coverage the last
-  reconnect actually delivered, per page, rather than leaving it to inference.
+- `gapfill.pagesDiffed`, `pagesTruncated`, `pagesTopLevelOnly`, and `pagesWalked` show how much coverage
+  the last reconnect actually delivered and how far a running boot walk has progressed, per page, rather
+  than leaving it to inference.
+- `gapfill.bootPaused` appears when timer hops between boot-walk slices are delayed by background tab
+  throttling, and `gapfill.dedupedLiveEdits` counts live-captured nodes dropped from the post-walk diff so
+  nothing is double-reported or silently discarded.
 - `gapfill.pagesWithReadErrors` and `deletedRechecked` are present only when non-zero. A node that went
   missing mid-walk is carried to the next session, never reported as a deletion that did not happen.
 - `gapfill.baselineWrittenAt`, `baselineBytes`, `baselineEvicted`: a session that wrote no baseline
@@ -134,7 +141,7 @@ subtrees by identity first, content-hash only for unbound literals, and `inflate
 raw reply (deep-equal, not byte-identical: key order moves), round-trip tested. `--dev-resources` is opt-in because that one subtree-wide read
 costs a measured ≈2 s on a Free file regardless of subtree size. Measured on a 121-node frame:
 773 ms wall with CSS, 124 ms without, 36% smaller with `--dedup`. Command reference:
-[`../skills/figma-agent/SKILL.md`](../skills/figma-agent/SKILL.md).
+[`../skills/design-os-figma-agent/SKILL.md`](../skills/design-os-figma-agent/SKILL.md).
 
 ## With this plugin, or Figma's official MCP alone?
 
@@ -148,7 +155,7 @@ feature, but is currently available for free during the beta period" (Figma docs
 |---|---|---|
 | Getting connected | `status --peek` at session start, plus a skill emitted from the CLI's own command table | OAuth sign-in to `https://mcp.figma.com/mcp`, from a client in Figma's MCP catalog |
 | Write path | Public Plugin API, through a plugin you import in Figma Desktop | `use_figma`, `generate_figma_design`, `create_new_file`, `upload_assets`; writing needs a Full seat |
-| Undo granularity | One undo step per mutation; scripts roll back on error and report `rolledBack: true` only when the rollback completed | Not covered by the published tool list |
+| Undo granularity | One undo step per built-in mutation; scripts run with `--undo-group` roll back on error and report `rolledBack: true` only when the rollback completed (timeout does not roll back) | Not covered by the published tool list |
 | Seeing the designer's edits | Live `documentchange` feed, gap-fill diff across a closed window, `changes --owner-only` | Read on demand; no change-subscription tool in the published list |
 | Two actors at once | Per-file mutation FIFO, one job at a time, reads bypass, cancel, explicit outcome-unknown protocol | Not covered by the published tool list |
 | Where it runs | Broker on `127.0.0.1`, no model call in the CLI or broker | Hosted endpoint; a desktop server exists for "a Dev or Full seat for all paid plans" |
@@ -164,7 +171,11 @@ Said plainly, because the official server does these and this one will not:
   React/Tailwind, has no Code Connect mapping, and is not Dev Mode. For design-to-code the official
   MCP is the better tool.
 - **No design-system search across libraries.** `scan-design-system` reads the open file only.
-- **Nothing works with the panel closed**, and the remote server has no such requirement.
+- **No canvas operations when the plugin panel is closed.** Live canvas inspection and mutations
+  require the plugin panel to be open in Figma Desktop. Local file and broker feeds (`changes`,
+  `errors`, cached `status --peek`) read from local logs and broker discovery independently of
+  whether Figma or the plugin is open, but drawing, node inspection, and exports require an active
+  plugin connection.
 - **No hosted anything**, and it is a development plugin you import yourself, not a published Figma
   Community plugin.
 
@@ -212,7 +223,7 @@ same as absent from the product.
 | Published large-file numbers | yes, 418k nodes | no | no | no | no | no |
 | Design-to-code context | CSS + tokens, no codegen | yes, `get_design_context` and Code Connect | read tools | extraction | no | yes |
 | No desktop app needed | no | yes, remote server | no | Cloud mode, read-only | no | yes |
-| Licence | MIT | proprietary | MIT | MIT | MIT | MIT |
+| Licence | PolyForm Shield 1.0.0 | proprietary | MIT | MIT | MIT | MIT |
 
 Read the grid honestly. Row 5 is not a win: figma-console-mcp documents live change monitoring and
 cast-to-figma ships `cowork`. What is particular here is the combination of rows 6, 7 and 10:
@@ -225,7 +236,7 @@ Visual Copilot, Anima and Locofy are design-to-code or one-shot import products.
 
 ## Commands
 
-Full reference in [`../skills/figma-agent/SKILL.md`](../skills/figma-agent/SKILL.md), emitted from the
+Full reference in [`../skills/design-os-figma-agent/SKILL.md`](../skills/design-os-figma-agent/SKILL.md), emitted from the
 CLI's own command table so `--help` and the skill cannot disagree.
 
 | | |
@@ -243,13 +254,13 @@ and the command returns the nodes they touched. An owner edit arms it; an agent 
 
 ## Status and roadmap
 
-Version `0.1.0`. Shipped and merged to `main`: the adaptive semantic agent rail, the background-file
+Version `0.2.1`. Shipped and merged to `main`: the adaptive semantic agent rail, the background-file
 heartbeat and outcome-unknown recovery contract, the broker mutation admission gate, the
 connect/reconnect path (`status --wait` plus Figma's native relaunch action), the published-lint panel
 boundary, and the performance work above. Four gates run on every pull request: `typecheck` (including
-a DOM-less config that catches main-sandbox globals Vitest cannot), `lint:comments`, `test` (2,168
-tests, including a panel gate running the same layout, accessibility, taste, and content linters as
-ease-design artifacts), and `build`.
+a DOM-less config that catches main-sandbox globals Vitest cannot), `lint:comments`, `test` (covering
+the CLI, broker daemon, transports, and a panel gate running the same layout, accessibility, taste,
+and content linters as ease-design artifacts), and `build`.
 
 Known follow-ups, tracked and unshipped: bounding the serial node re-check on a mass deletion; counting
 a replayed capture as activity inside the quiet window; isolating the test harness from a live broker on

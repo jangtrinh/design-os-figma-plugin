@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildPayloadFromIframe, waitForStylesReady } from '../plugin/src/ui/converter/extract';
+import { buildPayloadFromIframe, waitForStylesReady } from '../plugin/src/ui/converter/extract.ts';
 
 afterEach(() => { vi.useRealTimers(); });
 

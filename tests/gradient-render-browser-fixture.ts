@@ -2,7 +2,7 @@ import * as esbuild from 'esbuild';
 import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
-export { PNG_DATA_URL } from './gradient-png-fixture';
+export { PNG_DATA_URL } from './gradient-png-fixture.ts';
 
 export const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -11,7 +11,7 @@ export async function launchGradientChrome(): Promise<Browser> {
   const options = {
     headless: true,
     args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader'],
-  } as const;
+  };
   if (process.platform === 'darwin') return chromium.launch({ ...options, executablePath: CHROME });
   try { return await chromium.launch(options); }
   catch { return chromium.launch({ ...options, channel: 'chrome' }); }

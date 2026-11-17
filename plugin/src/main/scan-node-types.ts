@@ -2,7 +2,8 @@
 // the sub-walkers (layout / text / paint / instance) can type their `out` parameter
 // without importing scan-node.ts back (circular import).
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import type { Concealment } from './text-concealment.ts';
 
 /** Material captured beyond the reversible FigmaExportNode fields. */
 export interface ScanExtensions {
@@ -11,7 +12,8 @@ export interface ScanExtensions {
   // variables) stay here only — the loss stays visible instead of silent.
   figmaScanBindings?: Record<string, string>;
   // The raw node.type when the schema cannot model it: COMPONENT / COMPONENT_SET
-  // still degrade to FRAME (their definition is the file's, not a payload's).
+  // still degrade to FRAME (their definition is the file's, not a payload's), and so
+  // does every type the walker does not know (a code layer is CODE_INSTANCE).
   // INSTANCE is NO LONGER here — it is a first-class type since spec-005 P2.
   figmaScanSourceType?: string;
   // Fields overridden on the instance's INNER children (deduped names). The mirror
@@ -23,6 +25,10 @@ export interface ScanExtensions {
   // as raw ids; this names them so the loss reads as Figma's limit rather than
   // ours, and so the mirror can tell the two apart (spec-005 P9).
   figmaScanUnbindable?: string[];
+  // TEXT a human cannot see on the canvas (see text-concealment.ts). A read-only
+  // annotation about where the node sits — never replayed by a rebuild, and ignored by
+  // the mirror's diff (cli/src/util/mirror-normalize-concealed.ts). Absent on visible text.
+  concealed?: Concealment;
 }
 
 export type ScannedNode = FigmaExportNode & ScanExtensions;

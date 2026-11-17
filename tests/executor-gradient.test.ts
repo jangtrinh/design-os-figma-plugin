@@ -7,9 +7,9 @@
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 
-import { importGradient, toBytes, GRADIENT_DATA_KEY } from '../plugin/src/main/executor-gradient';
-import { PNG_DATA_URL } from './gradient-png-fixture';
-import { makeNode, type FakeNode } from './gradient-node-fixture';
+import { importGradient, toBytes, GRADIENT_DATA_KEY } from '../plugin/src/main/executor-gradient.ts';
+import { PNG_DATA_URL } from './gradient-png-fixture.ts';
+import { makeNode, type FakeNode } from './gradient-node-fixture.ts';
 
 let nodes: Record<string, FakeNode>;
 let selection: FakeNode[];

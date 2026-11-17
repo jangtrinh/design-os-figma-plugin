@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import type { Browser } from 'playwright';
-import { launchInstalledChrome, ROOT } from './html-render-browser-fixture';
-import { brokerFrames, mountProductionPanel, sendBrokerRequest } from './html-render-panel-fixture';
+import { launchInstalledChrome, ROOT } from './html-render-browser-fixture.ts';
+import { brokerFrames, mountProductionPanel, sendBrokerRequest } from './html-render-panel-fixture.ts';
 
 let browser: Browser;
 let productionPanel: string;

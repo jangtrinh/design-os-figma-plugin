@@ -7,7 +7,7 @@ import {
   launchGradientChrome,
   openInstrumentedPage,
   PNG_DATA_URL,
-} from './gradient-render-browser-fixture';
+} from './gradient-render-browser-fixture.ts';
 
 let browser: Browser;
 let bundle: string;
@@ -176,7 +176,12 @@ describe('gradient renderer protocol and lifecycle', () => {
       await instrumentGradientPage(page, bundle);
       await page.evaluate(() => {
         const add = HTMLIFrameElement.prototype.addEventListener;
-        HTMLIFrameElement.prototype.addEventListener = function (type, listener, options) {
+        HTMLIFrameElement.prototype.addEventListener = function (
+          this: HTMLIFrameElement,
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: boolean | AddEventListenerOptions,
+        ) {
           if (type !== 'load') add.call(this, type, listener, options);
         };
         const descriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'srcdoc')!;

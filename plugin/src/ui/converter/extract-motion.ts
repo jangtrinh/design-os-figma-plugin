@@ -59,9 +59,12 @@ export function resolveKeyframeSteps(name: string, sheets: ArrayLike<SheetLike>)
       const steps: MotionStep[] = [];
       for (let k = 0; k < r.cssRules.length; k++) {
         const kf = r.cssRules[k]!;
+        const style: { opacity?: string; transform?: string } = {};
+        if (kf.style.opacity) style.opacity = kf.style.opacity;
+        if (kf.style.transform) style.transform = kf.style.transform;
         steps.push({
           offset: parseKeyframeOffset(kf.keyText),
-          style: { opacity: kf.style.opacity || undefined, transform: kf.style.transform || undefined },
+          style,
         });
       }
       return steps;

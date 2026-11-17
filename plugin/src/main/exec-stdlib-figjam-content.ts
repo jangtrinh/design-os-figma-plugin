@@ -2,12 +2,12 @@
 // FigJam handlers (MIT; see THIRD-PARTY.md), code.js:5970-6524, figjam-tools.ts:8-59.
 // Reuse, do not re-implement: `requireEditor` (exec-stdlib-editor.ts),
 // `hexToFigmaColor`/`rgbToFigma` (executor-styles.ts).
-import { requireEditor } from './exec-stdlib-editor';
-import { withCode, hexToFigmaColor, rgbToFigma } from './executor-styles';
+import { requireEditor } from './exec-stdlib-editor.ts';
+import { withCode, hexToFigmaColor, rgbToFigma } from './executor-styles.ts';
 import {
   MAX_STICKIES_PER_BATCH, MAX_TEXT_CHARS, STICKY_COLORS,
   type StickySpec, type StickyResult, type ShapeOpts, type SectionOpts,
-} from './exec-stdlib-figjam-types';
+} from './exec-stdlib-figjam-types.ts';
 
 const FALLBACK_FONT: FontName = { family: 'Inter', style: 'Medium' };
 

@@ -5,10 +5,10 @@
 //    gridColumnCount/gridRowCount/gridRowGap/gridColumnGap
 //  - WRAP-fallback keeps gaps (itemSpacing = colGap, counterAxisSpacing = rowGap)
 
-import type { FigmaColor, FigmaExportNode } from '../../../../shared/figma-payload-types';
-import { parseCssColor } from './color-utils';
-import { parseBoxShadow, parseCssGradient } from './parse-css';
-import { buildChildNodes, hasExplicitDimension } from './build-frame-children';
+import type { FigmaColor, FigmaExportNode } from '../../../../shared/figma-payload-types.ts';
+import { parseCssColor } from './color-utils.ts';
+import { parseBoxShadow, parseCssGradient } from './parse-css.ts';
+import { buildChildNodes, hasExplicitDimension } from './build-frame-children.ts';
 
 /**
  * NEW: count tracks in a grid-template-columns/rows value.
@@ -36,7 +36,7 @@ export function countGridTracks(template: string): number {
     if (tok.startsWith('[')) continue; // line names — not tracks
     if (/^repeat\(\s*(auto-fill|auto-fit)/.test(tok)) return 0; // content-dependent
     const rep = tok.match(/^repeat\((\d+)\s*,/);
-    if (rep) {
+    if (rep && rep[1] !== undefined) {
       // repeat(N, tracks) may contain multiple tracks: repeat(2, 1fr 2fr) → 4
       const inner = tok.slice(tok.indexOf(',') + 1, tok.lastIndexOf(')')).trim();
       count += parseInt(rep[1], 10) * (countGridTracks(inner) || 1);
@@ -60,7 +60,8 @@ function deriveComputedNodeName(el: HTMLElement): string {
     ARTICLE: 'Article', FORM: 'Form', UL: 'List', OL: 'List',
     LI: 'List Item', TABLE: 'Table', BUTTON: 'Button',
   };
-  if (tagNames[el.tagName]) return tagNames[el.tagName];
+  const mappedTag = tagNames[el.tagName];
+  if (mappedTag) return mappedTag;
 
   // First meaningful (non-utility) class
   const classes = (el.getAttribute('class') || '').split(/\s+/).filter(Boolean);
@@ -156,7 +157,9 @@ export function buildFrameNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Wi
       const isVertical = node.layoutMode === 'VERTICAL';
       const margins: number[] = [];
       for (let i = 0; i < Math.min(childEls.length, 5); i++) {
-        const childCs = win.getComputedStyle(childEls[i]);
+        const childEl = childEls[i];
+        if (!childEl) continue;
+        const childCs = win.getComputedStyle(childEl);
         if (isVertical) {
           // CSS margin collapsing: the larger of bottom/top wins
           margins.push(Math.max(parseFloat(childCs.marginBottom) || 0, parseFloat(childCs.marginTop) || 0));
@@ -320,7 +323,7 @@ export function buildFrameNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Wi
   const backdropFilter = extCs.backdropFilter || extCs.webkitBackdropFilter || '';
   if (backdropFilter && backdropFilter !== 'none') {
     const blurMatch = backdropFilter.match(/blur\(([\d.]+)px\)/);
-    if (blurMatch) {
+    if (blurMatch && blurMatch[1] !== undefined) {
       node.effects = [...(node.effects || []), { type: 'BACKGROUND_BLUR', radius: parseFloat(blurMatch[1]) }];
     }
   }
@@ -330,9 +333,9 @@ export function buildFrameNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Wi
   if (filter && filter !== 'none') {
     const effects = node.effects || [];
     const blurMatch = filter.match(/blur\(([\d.]+)px\)/);
-    if (blurMatch) effects.push({ type: 'LAYER_BLUR', radius: parseFloat(blurMatch[1]) });
+    if (blurMatch && blurMatch[1] !== undefined) effects.push({ type: 'LAYER_BLUR', radius: parseFloat(blurMatch[1]) });
     const dsMatch = filter.match(/drop-shadow\(([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px\s+(.*?)\)/);
-    if (dsMatch) {
+    if (dsMatch && dsMatch[1] !== undefined && dsMatch[2] !== undefined && dsMatch[3] !== undefined && dsMatch[4] !== undefined) {
       const dsColor = parseCssColor(dsMatch[4].trim());
       if (dsColor) {
         effects.push({
@@ -357,19 +360,20 @@ export function buildFrameNode(el: HTMLElement, cs: CSSStyleDeclaration, win: Wi
       'difference': 'DIFFERENCE', 'exclusion': 'EXCLUSION', 'hue': 'HUE',
       'saturation': 'SATURATION', 'color': 'COLOR', 'luminosity': 'LUMINOSITY',
     };
-    node.blendMode = blendMap[blendMode] || undefined;
+    const mappedBlend = blendMap[blendMode];
+    if (mappedBlend) node.blendMode = mappedBlend;
   }
 
   // ─── transform: rotate() (from matrix or explicit rotate())
   const transform = cs.transform;
   if (transform && transform !== 'none') {
     const matrixMatch = transform.match(/matrix\(([-\d.]+),\s*([-\d.]+)/);
-    if (matrixMatch) {
+    if (matrixMatch && matrixMatch[1] !== undefined && matrixMatch[2] !== undefined) {
       const degrees = Math.atan2(parseFloat(matrixMatch[2]), parseFloat(matrixMatch[1])) * (180 / Math.PI);
       if (Math.abs(degrees) > 0.1) node.rotation = -degrees; // Figma is counterclockwise
     }
     const rotateMatch = transform.match(/rotate\(([-\d.]+)deg\)/);
-    if (rotateMatch) node.rotation = -parseFloat(rotateMatch[1]);
+    if (rotateMatch && rotateMatch[1] !== undefined) node.rotation = -parseFloat(rotateMatch[1]);
   }
 
   // ─── align-content → counterAxisAlignContent

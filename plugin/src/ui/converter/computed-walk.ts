@@ -4,10 +4,10 @@
 // Note: circular import with build-frame.ts (frame recurses into the walk) is
 // intentional and safe — esbuild resolves function references at call time.
 
-import type { FigmaColor, FigmaExportNode } from '../../../../shared/figma-payload-types';
-import { parseCssColor, rgbaToHex as figmaColorToHex } from './color-utils';
-import { buildTextNode } from './build-text';
-import { buildFrameNode } from './build-frame';
+import type { FigmaColor, FigmaExportNode } from '../../../../shared/figma-payload-types.ts';
+import { parseCssColor, rgbaToHex as figmaColorToHex } from './color-utils.ts';
+import { buildTextNode } from './build-text.ts';
+import { buildFrameNode } from './build-frame.ts';
 
 // Tags to skip in the rendered tree
 const RENDERED_SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'HEAD', 'NOSCRIPT', 'BR']);
@@ -91,14 +91,15 @@ export function computedElementToNode(el: HTMLElement, win: Window, depth: numbe
     const w = el.clientWidth || parseInt(el.getAttribute('width') || '24') || 24;
     const h = el.clientHeight || parseInt(el.getAttribute('height') || '24') || 24;
     const computedColor = parseCssColor(cs.color);
-    return {
+    const node: FigmaExportNode = {
       type: 'IMAGE',
       name: el.closest('[data-lucide]')?.getAttribute('data-lucide') || 'Icon',
       svgContent: prepareSvgContent(rawSvg, computedColor),
       width: w,
       height: h,
-      fills: computedColor ? [{ type: 'SOLID', color: computedColor }] : undefined,
     };
+    if (computedColor) node.fills = [{ type: 'SOLID', color: computedColor }];
+    return node;
   }
 
   // ─── Icon element (<i data-lucide>) → rendered SVG child or placeholder
@@ -106,14 +107,15 @@ export function computedElementToNode(el: HTMLElement, win: Window, depth: numbe
     const svg = el.querySelector('svg');
     const iconColor = parseCssColor(cs.color);
     if (svg) {
-      return {
+      const node: FigmaExportNode = {
         type: 'IMAGE',
         name: el.getAttribute('data-lucide') || 'Icon',
         svgContent: prepareSvgContent(svg.outerHTML, iconColor),
         width: svg.clientWidth || parseInt(svg.getAttribute('width') || '24') || 24,
         height: svg.clientHeight || parseInt(svg.getAttribute('height') || '24') || 24,
-        fills: iconColor ? [{ type: 'SOLID', color: iconColor }] : undefined,
       };
+      if (iconColor) node.fills = [{ type: 'SOLID', color: iconColor }];
+      return node;
     }
     // Fallback: Lucide hasn't rendered yet — placeholder box
     return {
@@ -168,17 +170,20 @@ export function computedElementToNode(el: HTMLElement, win: Window, depth: numbe
     if (placeholder) {
       const textColor = parseCssColor(cs.color);
       const isPlaceholder = !inputEl.value;
-      node.children = [{
+      const firstFont = cs.fontFamily.split(',')[0];
+      const font = (firstFont !== undefined ? firstFont : '').replace(/['"]/g, '').trim() || 'Inter';
+      const textChild: FigmaExportNode = {
         type: 'TEXT',
         name: 'Placeholder',
         characters: placeholder.toUpperCase(),
         fontSize: parseFloat(cs.fontSize) || 14,
         fontWeight: parseInt(cs.fontWeight) || 400,
-        fontFamily: cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim() || 'Inter',
-        textColor: textColor || undefined,
+        fontFamily: font,
         textAutoResize: 'WIDTH_AND_HEIGHT',
         opacity: isPlaceholder ? 0.4 : 1,
-      }];
+      };
+      if (textColor) textChild.textColor = textColor;
+      node.children = [textChild];
     }
     return attachMotion(el, node);
   }
@@ -212,7 +217,10 @@ export function computedElementToNode(el: HTMLElement, win: Window, depth: numbe
 function attachMotion(el: HTMLElement, node: FigmaExportNode): FigmaExportNode {
   const raw = el.getAttribute('data-fa-motion');
   if (raw) {
-    try { node.motion = JSON.parse(raw) as FigmaExportNode['motion']; } catch { /* ignore malformed */ }
+    try {
+      const parsed = JSON.parse(raw) as FigmaExportNode['motion'];
+      if (parsed) node.motion = parsed;
+    } catch { /* ignore malformed */ }
   }
   return node;
 }

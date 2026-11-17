@@ -1,5 +1,5 @@
 import { MODE_DRAWS, resolvePreset } from 'thinking-orbs/engine';
-import type { OrbPresentation } from './thinking-orb';
+import type { OrbPresentation } from './thinking-orb.ts';
 
 export const ORB_SIZE = 20;
 const STATIC_TIME = 0.75;

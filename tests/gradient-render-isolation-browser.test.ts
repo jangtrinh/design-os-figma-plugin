@@ -5,7 +5,7 @@ import {
   launchGradientChrome,
   openInstrumentedPage,
   PNG_DATA_URL,
-} from './gradient-render-browser-fixture';
+} from './gradient-render-browser-fixture.ts';
 
 let browser: Browser;
 let bundle: string;

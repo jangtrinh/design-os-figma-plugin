@@ -93,7 +93,7 @@ export const EXEC_JS_LINT_RULES: readonly ExecJsLintRule[] = [
     message: 'font assignment without a visible loadFontAsync may throw',
     fix: 'await figma.loadFontAsync(font) before assigning the font',
   },
-  // Craft footguns (es-figma-craft, plugin-api-gotchas): a hidden template layer or an
+  // Craft footguns (design-os-figma-craft, plugin-api-gotchas): a hidden template layer or an
   // archived duplicate is exactly what a bare findAll sweeps up, and a COMPONENT_SET has
   // no componentProperties (the getter throws) — its API is componentPropertyDefinitions.
   // `\.findAll\s*\(` deliberately does not match findAllWithCriteria (no predicate to
@@ -133,6 +133,7 @@ export function maskExecJsLiterals(source: string): string {
 
   for (let i = 0; i < source.length; i++) {
     const char = source[i];
+    if (char === undefined) continue;
     const next = source[i + 1];
 
     if (state === 'code') {
@@ -168,7 +169,7 @@ export function maskExecJsLiterals(source: string): string {
         canStartRegex = true; // division is followed by an expression
       } else if (/[A-Za-z_$]/.test(char)) {
         let end = i + 1;
-        while (end < source.length && /[\w$]/.test(source[end])) end++;
+        while (end < source.length && /[\w$]/.test(source[end] ?? '')) end++;
         const token = source.slice(i, end);
         out += token;
         canStartRegex = expressionKeywords.has(token);

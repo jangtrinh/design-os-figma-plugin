@@ -1,4 +1,4 @@
-import type { FigmaExportPayload } from '../../../shared/figma-payload-types';
+import type { FigmaExportPayload } from '../../../shared/figma-payload-types.ts';
 
 export const HTML_RENDER_CHANNEL = 'design-os-html-render-v1';
 export const HTML_RENDER_VERSION = 1;

@@ -1,0 +1,20 @@
+{
+  "name": "design-os-figma-plugin",
+  "interface": {
+    "displayName": "DESIGN:OS Figma Plugin & CLI"
+  },
+  "plugins": [
+    {
+      "name": "design-os-figma-plugin",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

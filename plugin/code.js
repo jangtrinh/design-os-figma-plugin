@@ -52,6 +52,8 @@
     EXEC_JS: 3e4,
     // CLI --timeout may raise, capped at 120s
     BATCH: 6e4,
+    // A large frame at scale 2 renders past the 15s default; the CLI --timeout may raise this, capped at 120s.
+    EXPORT_PNG: 6e4,
     // Fallback only — cowork.ts always passes an explicit timeoutMs derived from the
     // caller's OWN --timeout (which can exceed this default), same "hop buffer past the
     // requested budget" shape as batch.ts's own scaled timeout.
@@ -298,6 +300,16 @@
     }
     return edits;
   }
+  function filterGapfillEditsAgainstLive(edits, liveNodeIds) {
+    if (liveNodeIds.size === 0) return { edits: [...edits], dropped: 0 };
+    const kept = [];
+    let dropped = 0;
+    for (const edit of edits) {
+      if (liveNodeIds.has(edit.nodeId)) dropped += 1;
+      else kept.push(edit);
+    }
+    return { edits: kept, dropped };
+  }
   function topLevelSnapshot(rec) {
     return { id: rec[0], name: rec[1], type: rec[2], x: rec[3], y: rec[4], parent: null };
   }
@@ -375,6 +387,7 @@
   }
 
   // plugin/src/main/gapfill-status.ts
+  var BOOT_PAUSE_THRESHOLD_MS = 2e3;
   function createGapfillStats() {
     return {
       pagesDiffed: 0,
@@ -391,8 +404,20 @@
       firstError: null,
       baselineFirstRun: false,
       bootBaselineUnreadable: false,
-      bootReadError: null
+      bootReadError: null,
+      pagesWalked: 0,
+      bootPaused: false,
+      lastHopAt: null,
+      dedupedLiveEdits: 0
     };
+  }
+  function updateBootPaused(stats, inFlight, now = Date.now(), thresholdMs = BOOT_PAUSE_THRESHOLD_MS) {
+    if (inFlight && stats.lastHopAt !== null && now - stats.lastHopAt >= thresholdMs) {
+      stats.bootPaused = true;
+      return true;
+    }
+    stats.bootPaused = false;
+    return false;
   }
   function recordGapfillError(stats, message) {
     stats.errorCount += 1;
@@ -414,6 +439,9 @@
       ...stats.staleBaselinesCleared > 0 && { staleBaselinesCleared: stats.staleBaselinesCleared },
       ...stats.baselineFirstRun && { baselineFirstRun: true },
       ...stats.evicted.length > 0 && { baselineEvicted: [...stats.evicted] },
+      ...stats.pagesWalked > 0 && { pagesWalked: stats.pagesWalked },
+      ...stats.bootPaused && { bootPaused: true },
+      ...stats.dedupedLiveEdits > 0 && { dedupedLiveEdits: stats.dedupedLiveEdits },
       ...stats.firstError !== null && { errors: [stats.firstError], errorCount: stats.errorCount }
     };
   }
@@ -735,65 +763,77 @@
       stats.bootBaselineUnreadable = true;
       return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
     }
-    if (!prev) {
-      stats.baselineFirstRun = true;
-      const firstRun = /* @__PURE__ */ new Map();
+    try {
+      if (!prev) {
+        stats.baselineFirstRun = true;
+        const firstRun = /* @__PURE__ */ new Map();
+        for (const page of pages) {
+          stats.lastHopAt = Date.now();
+          await yieldToHost();
+          stats.lastHopAt = Date.now();
+          try {
+            firstRun.set(page.id, await snapshotPageBounded(page, perf, "boot", timing));
+          } catch {
+          }
+          stats.pagesWalked += 1;
+        }
+        await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
+        return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
+      }
+      const edits = [];
+      const walked = /* @__PURE__ */ new Map();
+      const currentPageIds = new Set(pages.map((p) => p.id));
+      const prevById = new Map(prev.pages.map((p) => [p.id, p]));
+      for (const deletedId of deletedPageIds(prev.pages.map((p) => p.id), currentPageIds)) {
+        edits.push(pageDeletedNotice(prevById.get(deletedId)));
+      }
       for (const page of pages) {
+        stats.lastHopAt = Date.now();
         await yieldToHost();
+        stats.lastHopAt = Date.now();
+        const prevPage = prevById.get(page.id);
+        let walk2;
         try {
-          firstRun.set(page.id, await snapshotPageBounded(page, perf, "boot", timing));
-        } catch {
+          walk2 = await snapshotPageBounded(page, perf, "boot", timing);
+        } catch (err) {
+          recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf2(err)}`);
+          stats.pagesWalked += 1;
+          continue;
         }
-      }
-      await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
-      return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
-    }
-    const edits = [];
-    const walked = /* @__PURE__ */ new Map();
-    const currentPageIds = new Set(pages.map((p) => p.id));
-    const prevById = new Map(prev.pages.map((p) => [p.id, p]));
-    for (const deletedId of deletedPageIds(prev.pages.map((p) => p.id), currentPageIds)) {
-      edits.push(pageDeletedNotice(prevById.get(deletedId)));
-    }
-    for (const page of pages) {
-      await yieldToHost();
-      const prevPage = prevById.get(page.id);
-      let walk2;
-      try {
-        walk2 = await snapshotPageBounded(page, perf, "boot", timing);
-      } catch (err) {
-        recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf2(err)}`);
-        continue;
-      }
-      const { records: nextRecords, truncated: nextTruncated } = walk2;
-      walked.set(page.id, walk2);
-      if (walk2.propertyReadErrors > 0) {
-        stats.pagesWithReadErrors += 1;
-        recordGapfillError(stats, walkErrorMessage(page.name, walk2));
-        edits.push(walkErrorsNotice(page));
-        continue;
-      }
-      stats.pagesDiffed += 1;
-      if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
-        if (nextTruncated) {
-          stats.pagesTruncated += 1;
-          edits.push(truncatedNotice(page));
-        } else {
-          edits.push(previouslyTruncatedNotice(page));
+        stats.pagesWalked += 1;
+        const { records: nextRecords, truncated: nextTruncated } = walk2;
+        walked.set(page.id, walk2);
+        if (walk2.propertyReadErrors > 0) {
+          stats.pagesWithReadErrors += 1;
+          recordGapfillError(stats, walkErrorMessage(page.name, walk2));
+          edits.push(walkErrorsNotice(page));
+          continue;
         }
-        const prevTop = prevPage?.top;
-        if (prevTop) {
-          stats.pagesTopLevelOnly += 1;
-          const { diff: diff2, coarse } = diffTopLevel(prevTop, walk2.top);
-          edits.push(...gapfillEditsForPage(await withoutSurvivors(diff2, nodeExists, stats), page.name, coarse));
+        stats.pagesDiffed += 1;
+        if (pageWasTruncated(prevPage?.truncated, nextTruncated)) {
+          if (nextTruncated) {
+            stats.pagesTruncated += 1;
+            edits.push(truncatedNotice(page));
+          } else {
+            edits.push(previouslyTruncatedNotice(page));
+          }
+          const prevTop = prevPage?.top;
+          if (prevTop) {
+            stats.pagesTopLevelOnly += 1;
+            const { diff: diff2, coarse } = diffTopLevel(prevTop, walk2.top);
+            edits.push(...gapfillEditsForPage(await withoutSurvivors(diff2, nodeExists, stats), page.name, coarse));
+          }
+          continue;
         }
-        continue;
+        const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
+        edits.push(...gapfillEditsForPage(await withoutSurvivors(diff, nodeExists, stats), page.name));
       }
-      const diff = diffSnapshots((prevPage?.records ?? []).map(fromBaselineRecord), nextRecords);
-      edits.push(...gapfillEditsForPage(await withoutSurvivors(diff, nodeExists, stats), page.name));
+      await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
+      return edits;
+    } finally {
+      stats.lastHopAt = null;
+      stats.bootPaused = false;
     }
-    await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
-    return edits;
   }
 
   // plugin/src/main/idle-baseline-write.ts
@@ -818,14 +858,15 @@
       return;
     }
     try {
-      await deps.gapfill();
-    } catch (err) {
-      deps.notify(`live-sync gap-fill skipped: ${messageOf3(err)}`);
-    }
-    try {
       deps.subscribe();
     } catch (err) {
       deps.notify(`live-sync capture disabled: ${messageOf3(err)}`);
+      return;
+    }
+    try {
+      await deps.gapfill();
+    } catch (err) {
+      deps.notify(`live-sync gap-fill skipped: ${messageOf3(err)}`);
     }
   }
 
@@ -1188,6 +1229,159 @@
     return rec;
   }
 
+  // plugin/src/main/text-concealment.ts
+  var MIN_VISIBLE_ALPHA = 0.05;
+  var MIN_READABLE_FONT_SIZE = 4;
+  var MAX_ANCESTOR_HOPS = 64;
+  var REASON_ORDER = ["invisible", "transparent", "tiny", "clipped", "unknown"];
+  var EMPTY_CHAIN = { hidden: false, opacity: 1, clips: [], unknown: false, hops: 0 };
+  function probe(read) {
+    try {
+      return { ok: true, value: read() };
+    } catch {
+      return { ok: false };
+    }
+  }
+  var isObject = (v) => typeof v === "object" && v !== null;
+  function asBox(v) {
+    if (!isObject(v)) return null;
+    const { x, y, width, height } = v;
+    return typeof x === "number" && typeof y === "number" && typeof width === "number" && typeof height === "number" ? { x, y, width, height } : null;
+  }
+  function disjoint(a, b) {
+    return a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+  }
+  var isPageLike = (type) => type === "PAGE" || type === "DOCUMENT";
+  function readAncestor(node) {
+    let unknown = false;
+    const read = (field) => {
+      const r = probe(() => node[field]);
+      if (!r.ok) {
+        unknown = true;
+        return void 0;
+      }
+      return r.value;
+    };
+    const type = read("type");
+    if (isPageLike(type)) return "page";
+    const visible = read("visible");
+    const opacity = read("opacity");
+    const clips = [];
+    if (type !== "SECTION" && type !== "GROUP" && read("clipsContent") === true) {
+      const box = asBox(read("absoluteBoundingBox"));
+      if (box) clips.push(box);
+    }
+    const parent = read("parent");
+    return {
+      own: {
+        hidden: visible === false,
+        opacity: typeof opacity === "number" ? opacity : 1,
+        clips,
+        unknown
+      },
+      parent
+    };
+  }
+  function chainOf(start, memo) {
+    const pending = [];
+    let base = EMPTY_CHAIN;
+    let cur = start;
+    while (isObject(cur)) {
+      const cached = memo.get(cur);
+      if (cached) {
+        base = cached;
+        break;
+      }
+      if (pending.length > MAX_ANCESTOR_HOPS) {
+        base = { ...EMPTY_CHAIN, unknown: true, hops: MAX_ANCESTOR_HOPS + 1 };
+        break;
+      }
+      const read = readAncestor(cur);
+      if (read === "page") break;
+      pending.push({ node: cur, own: read.own });
+      cur = read.parent;
+    }
+    let chain = base;
+    for (let i = pending.length - 1; i >= 0; i -= 1) {
+      const item = pending[i];
+      if (!item) continue;
+      const { node, own } = item;
+      const hops = chain.hops + 1;
+      chain = {
+        hidden: own.hidden || chain.hidden,
+        opacity: own.opacity * chain.opacity,
+        clips: own.clips.length ? [...chain.clips, ...own.clips] : chain.clips,
+        unknown: own.unknown || chain.unknown || hops > MAX_ANCESTOR_HOPS,
+        hops
+      };
+      memo.set(node, chain);
+    }
+    return chain;
+  }
+  function paintVisible(p) {
+    if (!isObject(p) || p.visible === false) return false;
+    const alpha = typeof p.opacity === "number" ? p.opacity : 1;
+    if (alpha < MIN_VISIBLE_ALPHA) return false;
+    if (Array.isArray(p.gradientStops)) {
+      return p.gradientStops.some((s) => isObject(s) && isObject(s.color) && (typeof s.color.a !== "number" || s.color.a * alpha >= MIN_VISIBLE_ALPHA));
+    }
+    return true;
+  }
+  var anyVisible = (paints) => Array.isArray(paints) && paints.some(paintVisible);
+  function segments(node, field) {
+    const fn = probe(() => node.getStyledTextSegments);
+    if (!fn.ok || typeof fn.value !== "function") return null;
+    const read = probe(() => fn.value.call(node, [field]));
+    if (!read.ok || !Array.isArray(read.value)) return null;
+    return read.value.filter(isObject);
+  }
+  function readConcealment(node, memo) {
+    const found = /* @__PURE__ */ new Set();
+    const read = (field) => {
+      const r = probe(() => node[field]);
+      if (!r.ok) {
+        found.add("unknown");
+        return void 0;
+      }
+      return r.value;
+    };
+    const parent = read("parent");
+    const chain = chainOf(parent, memo);
+    if (chain.unknown) found.add("unknown");
+    if (read("visible") === false || chain.hidden) found.add("invisible");
+    const opacity = read("opacity");
+    const effective = (typeof opacity === "number" ? opacity : 1) * chain.opacity;
+    if (effective < MIN_VISIBLE_ALPHA) found.add("transparent");
+    const fills = read("fills");
+    const strokes = read("strokes");
+    const strokeWeight = read("strokeWeight");
+    const strokeShows = strokeWeight !== 0 && anyVisible(strokes);
+    if (!strokeShows) {
+      if (typeof fills === "symbol") {
+        const runs = segments(node, "fills");
+        if (runs === null) found.add("unknown");
+        else if (!runs.some((run) => anyVisible(run.fills))) found.add("transparent");
+      } else if (fills !== void 0 && !anyVisible(fills)) {
+        found.add("transparent");
+      }
+    }
+    const fontSize = read("fontSize");
+    if (typeof fontSize === "number") {
+      if (fontSize < MIN_READABLE_FONT_SIZE) found.add("tiny");
+    } else if (typeof fontSize === "symbol") {
+      const runs = segments(node, "fontSize");
+      const sizes = runs?.map((run) => run.fontSize).filter((s) => typeof s === "number") ?? [];
+      if (runs === null) found.add("unknown");
+      else if (sizes.length && Math.min(...sizes) < MIN_READABLE_FONT_SIZE) found.add("tiny");
+    }
+    if (chain.clips.length) {
+      const box = asBox(read("absoluteBoundingBox"));
+      if (box && chain.clips.some((clip) => disjoint(box, clip))) found.add("clipped");
+    }
+    if (found.size === 0) return null;
+    return { reasons: REASON_ORDER.filter((r) => found.has(r)) };
+  }
+
   // plugin/src/main/context-node-record.ts
   function readStyles(node) {
     const out = {};
@@ -1323,6 +1517,8 @@
         ));
         if (Array.isArray(read2) && read2.length > 0) record.segments = jsonSafe(read2);
       }
+      const concealed = readConcealment(node, opts.concealMemo ?? /* @__PURE__ */ new WeakMap());
+      if (concealed) record.concealed = concealed;
     }
     if (type === "INSTANCE") {
       const getMain = safe(() => node.getMainComponentAsync);
@@ -2128,7 +2324,9 @@
   }
   async function findReusableVariable(collection, type, value) {
     const vars = await figma.variables.getLocalVariablesAsync(type);
-    const modeId = collection.modes[0].modeId;
+    const firstMode = collection.modes[0];
+    if (!firstMode) return null;
+    const modeId = firstMode.modeId;
     for (const v of vars) {
       if (v.variableCollectionId !== collection.id) continue;
       const existing = v.valuesByMode[modeId];
@@ -2141,8 +2339,10 @@
   async function createOrReuseVariable(collection, name, type, value) {
     const existing = await findReusableVariable(collection, type, value);
     if (existing) return { variable: existing, reused: true };
+    const firstMode = collection.modes[0];
+    if (!firstMode) throw new Error(`Collection ${collection.name} has no modes`);
     const variable = figma.variables.createVariable(name, collection, type);
-    variable.setValueForMode(collection.modes[0].modeId, value);
+    variable.setValueForMode(firstMode.modeId, value);
     return { variable, reused: false };
   }
   async function createVariablesFromTokens(tokens) {
@@ -2553,6 +2753,8 @@
   }
 
   // shared/figma-payload-validation-node-details.ts
+  var CONCEALED_FIELDS = /* @__PURE__ */ new Set(["reasons"]);
+  var CONCEALMENT_REASONS = ["invisible", "transparent", "tiny", "clipped", "unknown"];
   var TOKEN_REF_FIELDS = /* @__PURE__ */ new Set(["fill", "stroke", "textColor", "radius", "gap", "padding"]);
   var INNER_OVERRIDE_FIELDS = /* @__PURE__ */ new Set([
     "childKey",
@@ -2630,6 +2832,13 @@
     for (const key of ["figmaScanUnreproducibleInner", "figmaScanInnerOverrides", "figmaScanUnbindable"]) {
       if (item[key] !== void 0) context.array(item[key], `${path}.${key}`, context.limits.arrayEntries, (entry, i) => {
         context.string(entry, `${path}.${key}[${i}]`);
+      });
+    }
+    if (item.concealed !== void 0) {
+      context.object(item.concealed, `${path}.concealed`, CONCEALED_FIELDS, (concealed) => {
+        context.array(concealed.reasons, `${path}.concealed.reasons`, CONCEALMENT_REASONS.length, (reason, i) => {
+          context.enumValue(reason, `${path}.concealed.reasons[${i}]`, CONCEALMENT_REASONS);
+        }, 1);
       });
     }
   }
@@ -2713,6 +2922,7 @@
     "figmaScanSourceType",
     "figmaScanInnerOverrides",
     "figmaScanUnbindable",
+    "concealed",
     "children"
   ]);
   var ENUM_FIELDS = {
@@ -3064,7 +3274,7 @@
     if (exportNode.width) rect.resize(exportNode.width, exportNode.height || exportNode.width);
     if (exportNode.fills && exportNode.fills.length > 0) {
       const fill = exportNode.fills[0];
-      if (fill.color) {
+      if (fill && fill.color) {
         const hex = figmaColorToHex(fill.color);
         const paintStyle = colorStyles.get(hex);
         if (paintStyle) {
@@ -4280,10 +4490,12 @@
     let tallied = 0;
     for (const name of Object.keys(reps)) {
       const c = cnt[name];
+      const rep = reps[name];
+      if (c === void 0 || !rep) continue;
       tallied += c;
       let key = null;
       try {
-        const main = await reps[name].getMainComponentAsync();
+        const main = await rep.getMainComponentAsync();
         if (main) key = main.parent && main.parent.type === "COMPONENT_SET" ? main.parent : main;
       } catch {
         key = null;
@@ -4454,8 +4666,11 @@
       const parent = slot.parentId === null ? void 0 : byId.get(slot.parentId);
       if (parent === void 0) roots.push(i);
       else {
-        slots[parent].children.push(i);
-        slot.parentIndex = parent;
+        const parentSlot = slots[parent];
+        if (parentSlot) {
+          parentSlot.children.push(i);
+          slot.parentIndex = parent;
+        } else roots.push(i);
       }
     });
     return { slots, roots };
@@ -4466,21 +4681,25 @@
     while (stack.length > 0) {
       const frame = stack.pop();
       const slot = slots[frame.at];
+      if (!slot) continue;
       if (!frame.expanded) {
         stack.push({ at: frame.at, expanded: true });
         for (let i = slot.children.length - 1; i >= 0; i -= 1) {
-          stack.push({ at: slot.children[i], expanded: false });
+          const childIdx = slot.children[i];
+          if (childIdx !== void 0) {
+            stack.push({ at: childIdx, expanded: false });
+          }
         }
         continue;
       }
-      slot.size = 1 + slot.children.reduce((sum, child) => sum + slots[child].size, 0);
-      if (!slot.addressable || slot.children.some((child) => isPoisoned(slots[child].sig))) {
+      slot.size = 1 + slot.children.reduce((sum, child) => sum + (slots[child]?.size ?? 0), 0);
+      if (!slot.addressable || slot.children.some((child) => isPoisoned(slots[child]?.sig ?? ""))) {
         slot.sig = `${POISON}${frame.at}`;
         continue;
       }
       const shape2 = { ...slot.record };
       for (const field of PER_OCCURRENCE) delete shape2[field];
-      slot.sig = interner.intern(`${canonicalContent(shape2)}|${slot.children.map((c) => slots[c].sig).join(",")}`);
+      slot.sig = interner.intern(`${canonicalContent(shape2)}|${slot.children.map((c) => slots[c]?.sig ?? "").join(",")}`);
     }
   }
   function subtreeOrder(slots, root) {
@@ -4489,7 +4708,10 @@
     while (queue.length > 0) {
       const at = queue.shift();
       order.push(at);
-      for (const child of slots[at].children) queue.push(child);
+      const slot = slots[at];
+      if (slot) {
+        for (const child of slot.children) queue.push(child);
+      }
     }
     return order;
   }
@@ -4511,27 +4733,34 @@
     while (stack.length > 0) {
       const at = stack.pop();
       const slot = slots[at];
+      if (!slot) continue;
       if (slot.size >= MIN_TEMPLATE_NODES && (groups.get(slot.sig) ?? 0) >= MIN_OCCURRENCES) {
         const list3 = bySig.get(slot.sig);
         if (list3 === void 0) bySig.set(slot.sig, [at]);
         else list3.push(at);
         continue;
       }
-      for (let i = slot.children.length - 1; i >= 0; i -= 1) stack.push(slot.children[i]);
+      for (let i = slot.children.length - 1; i >= 0; i -= 1) {
+        const childIdx = slot.children[i];
+        if (childIdx !== void 0) stack.push(childIdx);
+      }
     }
     return bySig;
   }
   function buildTemplate(slots, order, root) {
     const relativeOf = /* @__PURE__ */ new Map();
     order.forEach((at, rel) => relativeOf.set(at, String(rel)));
+    const rootSlot = slots[root];
+    const rootDepth = rootSlot ? rootSlot.depth : 0;
     return {
       nodes: order.map((at, rel) => {
-        const shape2 = { ...slots[at].record };
+        const currentSlot = slots[at];
+        const shape2 = currentSlot ? { ...currentSlot.record } : {};
         delete shape2.name;
         shape2.id = String(rel);
-        const parentIndex = slots[at].parentIndex;
+        const parentIndex = currentSlot ? currentSlot.parentIndex : null;
         shape2.parentId = rel === 0 || parentIndex === null ? null : relativeOf.get(parentIndex) ?? null;
-        shape2.depth = slots[at].depth - slots[root].depth;
+        shape2.depth = (currentSlot ? currentSlot.depth : 0) - rootDepth;
         return shape2;
       })
     };
@@ -4551,7 +4780,10 @@
         order.forEach((at, rel) => {
           if (rel === 0) return;
           consumed.add(at);
-          rootMap[String(rel)] = { id: slots[at].id, name: slots[at].record.name, at };
+          const slotAt = slots[at];
+          if (slotAt) {
+            rootMap[String(rel)] = { id: slotAt.id, name: slotAt.record.name, at };
+          }
         });
         occurrenceOf.set(root, { sig, rootMap });
         if (templates[sig] === void 0) templates[sig] = buildTemplate(slots, order, root);
@@ -4562,6 +4794,7 @@
       if (consumed.has(at)) continue;
       const occurrence = occurrenceOf.get(at);
       const slot = slots[at];
+      if (!slot) continue;
       if (occurrence === void 0) {
         folded.push({ ...slot.record });
         continue;
@@ -4860,6 +5093,7 @@
     let cssMs = 0;
     let batches = 0;
     let stopped = null;
+    const concealMemo = /* @__PURE__ */ new WeakMap();
     const pushFrontier = (node, reason) => {
       frontierTotal += 1;
       if (frontier.length >= FRONTIER_LIMIT) return;
@@ -4883,7 +5117,8 @@
         depth: pending.depth,
         parentId: pending.parentId,
         childIndex: pending.childIndex,
-        includeCss: opts.includeCss
+        includeCss: opts.includeCss,
+        concealMemo
         // A reader that refuses ENTIRELY still owes the caller an identified node: a record
         // silently absent from `nodes[]` with no frontier entry is the hole this walk exists
         // to make impossible.
@@ -4896,6 +5131,7 @@
       for (let i = 0; i < built.length; i += 1) {
         let result = built[i];
         const pending = batch[i];
+        if (!result || !pending) continue;
         let bytes;
         try {
           bytes = utf8ByteLength(JSON.stringify(result.record));
@@ -4909,8 +5145,11 @@
         }
         if (nodes.length > 0 && estimatedBytes + bytes > opts.budgetBytes) {
           for (let j = i; j < batch.length; j += 1) {
-            pushFrontier(batch[j].node, "budget");
-            omitted.budget += 1;
+            const item = batch[j];
+            if (item) {
+              pushFrontier(item.node, "budget");
+              omitted.budget += 1;
+            }
           }
           for (const rest of queue) {
             pushFrontier(rest.node, "budget");
@@ -5145,8 +5384,22 @@
     ], { booted });
   }
 
+  // shared/code-layer-static-export.ts
+  var STATIC_EXPORT_NODE_TYPES = /* @__PURE__ */ new Set(["CODE_INSTANCE"]);
+  var REASON = "Figma exports a code layer as its static shell, not its running code, so this PNG is not a render of what the canvas shows. To check it visually, start the layer's preview in Figma and capture the Figma window.";
+  var CONTAINS_REASON = "This node contains a code layer. Figma exports a code layer as its static shell, not its running code, so that part of this PNG is not a render of what the canvas shows. To check it visually, start the layer's preview in Figma and capture the Figma window.";
+  function staticRenderNote(nodeType) {
+    return typeof nodeType === "string" && STATIC_EXPORT_NODE_TYPES.has(nodeType) ? { nodeType, reason: REASON } : void 0;
+  }
+  function containedStaticRenderNote(innerNodeType) {
+    return { nodeType: innerNodeType, reason: CONTAINS_REASON };
+  }
+
+  // shared/version.ts
+  var BRIDGE_VERSION = "0.2.2";
+
   // plugin/src/main/executor-ops.ts
-  var PLUGIN_VERSION = "0.1.0";
+  var PLUGIN_VERSION = BRIDGE_VERSION;
   var LAYOUT_MODE_MAP = {
     H: "HORIZONTAL",
     V: "VERTICAL",
@@ -5405,16 +5658,24 @@
     if (typeof reqSize === "number") node.fontSize = reqSize;
     return { id: node.id, name: node.name };
   }
+  function staticRenderFor(target) {
+    const own = staticRenderNote(target.type);
+    if (own || !("findAll" in target)) return own;
+    const inner = target.findAll((n) => n.visible !== false && STATIC_EXPORT_NODE_TYPES.has(n.type));
+    return inner.length ? containedStaticRenderNote(inner[0].type) : void 0;
+  }
   async function opExportPng(params) {
     const id = params.nodeId ?? params.node;
     const target = typeof id === "string" && id ? await getSceneNode(id) : figma.currentPage.selection[0] ?? null;
     if (!target) throw withCode(new Error("EXPORT_PNG: no node id given and selection is empty"), "E_INVALID_ARGS");
     const scale = typeof params.scale === "number" && params.scale > 0 ? params.scale : 2;
     const bytes = await target.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
+    const staticRender = staticRenderFor(target);
     return {
       base64: figma.base64Encode(bytes),
       w: Math.round(target.width * scale),
-      h: Math.round(target.height * scale)
+      h: Math.round(target.height * scale),
+      ...staticRender && { staticRender }
     };
   }
 
@@ -5462,7 +5723,9 @@
     if (matches.length > 1) {
       throw new Error(`property "${name}" is ambiguous: ${matches.join(", ")}`);
     }
-    return matches[0];
+    const first = matches[0];
+    if (!first) throw new Error(`property "${name}" not found \u2014 available: ${keys.join(", ")}`);
+    return first;
   }
   async function setProps(inst, props) {
     requireDesignFile("ui.setProps");
@@ -5636,7 +5899,7 @@
     }
     variable.setValueForMode(mode.modeId, value);
     const actual = variable.valuesByMode[mode.modeId];
-    if (!valuesEqual(actual, value)) {
+    if (actual === void 0 || !valuesEqual(actual, value)) {
       throw withCode(new Error(`setModeValue applied but "${modeName}" reads back ${JSON.stringify(actual)}, not ${JSON.stringify(value)}`), "E_EVAL");
     }
     return { id: variable.id, name: variable.name, mode: { modeId: mode.modeId, name: mode.name }, value: actual };
@@ -7014,7 +7277,11 @@
           "E_EVAL"
         );
       }
-      cur = hits[0];
+      const next = hits[0];
+      if (!next) {
+        throw withCode(new Error(`byPath: "${name}" not found under "${cur.name}"`), "E_EVAL");
+      }
+      cur = next;
     }
     return cur;
   }
@@ -7054,6 +7321,13 @@
     const full = serializeNode(node, depth);
     return jsonSafe(fields ? projectSerialized(full, fields) : full);
   }
+  function textConcealment(node) {
+    const type = node?.type;
+    if (type !== "TEXT") {
+      throw withCode(new Error(`textConcealment: expects a TEXT node, got ${String(type)}`), "E_EVAL");
+    }
+    return readConcealment(node, /* @__PURE__ */ new WeakMap());
+  }
   function createExecStdlib() {
     const { componentSet: componentSet2 } = createExecStdlibComponentSet();
     return {
@@ -7062,6 +7336,7 @@
       boundFill,
       byPath,
       q,
+      textConcealment,
       componentSet: componentSet2,
       vars: createExecStdlibVars(),
       slot: createExecStdlibSlot(),
@@ -7567,12 +7842,17 @@
   function simplify(points) {
     const deduped = [];
     for (const point of points) {
-      if (deduped.length === 0 || !samePoint(deduped[deduped.length - 1], point)) deduped.push(point);
+      const last = deduped[deduped.length - 1];
+      if (!last || !samePoint(last, point)) deduped.push(point);
     }
     const kept = [];
     for (let i = 0; i < deduped.length; i += 1) {
+      const current = deduped[i];
+      if (!current) continue;
       const isEnd = i === 0 || i === deduped.length - 1;
-      if (isEnd || !isRedundant(deduped[i - 1], deduped[i], deduped[i + 1])) kept.push(deduped[i]);
+      const prev = deduped[i - 1];
+      const next = deduped[i + 1];
+      if (isEnd || !prev || !next || !isRedundant(prev, current, next)) kept.push(current);
     }
     return kept;
   }
@@ -7655,8 +7935,8 @@
       // vertices disagree, which is the tell that per-vertex is the real control.
       strokeCap: options.arrowAtEnd && index === lastIndex ? "ARROW_LINES" : "NONE"
     }));
-    const segments = points.slice(1).map((_, index) => ({ start: index, end: index + 1 }));
-    return { vertices, segments, origin };
+    const segments2 = points.slice(1).map((_, index) => ({ start: index, end: index + 1 }));
+    return { vertices, segments: segments2, origin };
   }
 
   // plugin/src/main/connector-store.ts
@@ -7721,18 +8001,25 @@
   var PILL_PADDING_Y = 3;
   var PILL_RADIUS = 4;
   function labelAnchor(points) {
-    let best = 0;
+    const p0 = points[0] ?? { x: 0, y: 0 };
+    if (points.length <= 1) return p0;
+    let best = 1;
     let bestLength = -1;
     for (let i = 1; i < points.length; i += 1) {
-      const length = Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
+      const cur = points[i];
+      const prev = points[i - 1];
+      if (!cur || !prev) continue;
+      const length = Math.abs(cur.x - prev.x) + Math.abs(cur.y - prev.y);
       if (length > bestLength) {
         bestLength = length;
         best = i;
       }
     }
+    const curr = points[best] ?? p0;
+    const previous = points[best - 1] ?? p0;
     return {
-      x: (points[best].x + points[best - 1].x) / 2,
-      y: (points[best].y + points[best - 1].y) / 2
+      x: (curr.x + previous.x) / 2,
+      y: (curr.y + previous.y) / 2
     };
   }
   async function applyNetwork(vector, network) {
@@ -8012,7 +8299,10 @@
     return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
   }
   function samePoints(a, b) {
-    return a.length === b.length && a.every((point, i) => point.x === b[i].x && point.y === b[i].y);
+    return a.length === b.length && a.every((point, i) => {
+      const bp = b[i];
+      return bp !== void 0 && point.x === bp.x && point.y === bp.y;
+    });
   }
   async function rerouteConnections(ids) {
     const wanted = ids ? new Set(ids) : null;
@@ -8094,7 +8384,10 @@
   // shared/flow-plan.ts
   function routesMatch(a, b, epsilon = 0.5) {
     if (a.length !== b.length) return false;
-    return a.every((point, i) => Math.abs(point.x - b[i].x) <= epsilon && Math.abs(point.y - b[i].y) <= epsilon);
+    return a.every((point, i) => {
+      const target = b[i];
+      return target !== void 0 && Math.abs(point.x - target.x) <= epsilon && Math.abs(point.y - target.y) <= epsilon;
+    });
   }
 
   // plugin/src/main/connector-verify.ts
@@ -8198,7 +8491,9 @@
         `${role} name "${name}" is ambiguous on page "${page.name}" \u2014 ${matches.length} nodes match (${matches.slice(0, 4).map((n) => n.id).join(", ")})`
       ), "E_INVALID_ARGS");
     }
-    return matches[0];
+    const first = matches[0];
+    if (!first) throw withCode(new Error(`${role} node named "${name}" not found on page "${page.name}"`), "E_INVALID_ARGS");
+    return first;
   }
   async function resolveEndpoint2(id, role) {
     const node = await figma.getNodeByIdAsync(id);
@@ -8240,7 +8535,12 @@
     if (!page || pageOf(target) !== page) {
       throw withCode(new Error("CONNECT needs both nodes on the same page"), "E_INVALID_ARGS");
     }
-    const points = route({ source: boxOf3(source, "source"), target: boxOf3(target, "target"), intent, clearance });
+    const points = route({
+      source: boxOf3(source, "source"),
+      target: boxOf3(target, "target"),
+      intent,
+      ...clearance !== void 0 ? { clearance } : {}
+    });
     const existing = findConnectionByEndpoints(fromId, toId);
     connectionSequence += 1;
     const connectionId = existing?.id ?? `conn-${Date.now()}-${connectionSequence}`;
@@ -8360,14 +8660,15 @@
     }
     relaunchAttempted = true;
     try {
-      figma.root.setRelaunchData({ open: "Reconnect figma-agent" });
+      figma.root.setRelaunchData({ open: "Reconnect DESIGN:OS Bridge" });
     } catch (err) {
       bootSkipped.push(`relaunchData: refused (${err instanceof Error ? err.message : String(err)})`);
     }
   }
   function selectionSummary() {
     const sel = figma.currentPage.selection;
-    return { selectionName: sel.length > 0 ? sel[0].name : null, selectionCount: sel.length };
+    const first = sel[0];
+    return { selectionName: first ? first.name : null, selectionCount: sel.length };
   }
   var announcedFileName = "";
   function announceFileInfo() {
@@ -8424,11 +8725,14 @@
   }
   function fireIdle() {
     idleTimer = null;
+    if (bootWalkInProgress) return;
     if (dirtyPageIds.size > 0) triggerBaselineWrite();
     if (changesSinceCommit <= 0) return;
     figma.ui.postMessage({ type: "IDLE_READY", data: { count: changesSinceCommit } });
     changesSinceCommit = 0;
   }
+  var bootWalkInProgress = false;
+  var bootLiveNodeIds = /* @__PURE__ */ new Set();
   var editIdentityCache = createEditIdentityCache();
   var capture = createDocumentChangeCapture({
     now: () => Date.now(),
@@ -8456,6 +8760,10 @@
       void noteChangedNodes(nodeIds);
     },
     post: (message) => {
+      if (bootWalkInProgress && message.type === "EDIT_FEED") {
+        const data = message.data;
+        for (const edit of data?.edits ?? []) bootLiveNodeIds.add(edit.nodeId);
+      }
       figma.ui.postMessage(message);
     },
     noteComponentChanges: (count) => {
@@ -8468,25 +8776,34 @@
     armIdle: resetIdleTimer
   });
   async function reportGapfill() {
-    const gapfillEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats, perfStats);
-    if (gapfillEdits.length > 0) {
-      figma.ui.postMessage({
-        type: "EDIT_FEED",
-        data: {
-          edits: gapfillEdits,
-          fileKey: figma.fileKey ?? null,
-          fileName: figma.root.name,
-          source: "gapfill"
-        }
-      });
+    bootWalkInProgress = true;
+    try {
+      const rawEdits = await runGapfillDiff(figma.root.children, baselineStore, gapfillStats, perfStats);
+      const { edits: gapfillEdits, dropped } = filterGapfillEditsAgainstLive(rawEdits, bootLiveNodeIds);
+      if (dropped > 0) gapfillStats.dedupedLiveEdits += dropped;
+      if (gapfillEdits.length > 0) {
+        figma.ui.postMessage({
+          type: "EDIT_FEED",
+          data: {
+            edits: gapfillEdits,
+            fileKey: figma.fileKey ?? null,
+            fileName: figma.root.name,
+            source: "gapfill"
+          }
+        });
+      }
+    } finally {
+      bootWalkInProgress = false;
+      bootLiveNodeIds.clear();
+      if (dirtyPageIds.size > 0) resetIdleTimer();
     }
-    clearLegacyGapfillDocumentData(gapfillStats);
   }
   void runBootCapture({
     loadAllPages: async () => {
       const startedAt = Date.now();
       await figma.loadAllPagesAsync();
       recordLoadAllPages(perfStats, Date.now() - startedAt);
+      clearLegacyGapfillDocumentData(gapfillStats);
     },
     gapfill: async () => {
       try {
@@ -8602,7 +8919,8 @@
   }
   async function dispatch(cmd, params) {
     switch (cmd) {
-      case "STATUS":
+      case "STATUS": {
+        updateBootPaused(gapfillStats, bootWalkInProgress);
         return opStatus(
           bootSkipped,
           readOnlyViolations,
@@ -8610,6 +8928,7 @@
           capture.stats,
           toPerfStatus(perfStats)
         );
+      }
       case "GET_SELECTION":
         return opGetSelection(params);
       // The change counter handed in here is the SAME signal the read-only guard keeps

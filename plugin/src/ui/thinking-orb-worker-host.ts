@@ -1,4 +1,4 @@
-import type { OrbPresentation, ThinkingOrbController } from './thinking-orb';
+import type { OrbPresentation, ThinkingOrbController } from './thinking-orb.ts';
 
 interface WorkerHostOptions {
   canvas: HTMLCanvasElement;

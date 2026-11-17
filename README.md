@@ -1,142 +1,270 @@
-# design-os-figma-plugin
+# DESIGN:OS Bridge
 
-**An agent and a designer in the same Figma file, without the wreckage.**
-
-One undo step per mutation. One mutation per file at a time. Every edit you make while it works
-comes back as a reviewable sync.
-
-Free write, no seat, no token, on your machine. A Figma plugin and a CLI over a local broker,
-Public Plugin API only. Built and used on a 418k-node production file.
-
-<p align="center">
-  <img src="docs/images/agent-rail-single-row.gif" width="560" alt="The figma-agent panel, one row: the orb, the current activity, a pending-sync badge, then the sync result">
+<p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/cover-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/readme/cover-light.png">
+  <img src="assets/readme/cover-dark.png" alt="design:os by Jang" width="100%">
+</picture>
 </p>
-<p align="center"><sub>One row, hugging its content: idle, an import, three changes ready, sync, done.</sub></p>
 
-## You know this moment
+**A plugin and a CLI so your coding agent can read and edit the Figma file you have open.** DESIGN:OS Bridge runs in Figma Desktop, including on the Free plan. The `figma-agent` CLI talks to the plugin over a local WebSocket on `127.0.0.1` (ports 9410 to 9419). One undo step per mutation. No seat, no access token, no model inside the bridge. You bring your own agent: Claude Code, Codex, Cursor, or any shell.
 
-**The plugin opens and Figma stops responding.** You wait, then close it and do the work by hand.
-Here the worst stall at open measured 44 ms on a cold open of the shipping build, on a 418k-node file.
-[How](docs/deep-dive.md#5-fast-on-a-file-large-enough-to-hurt)
+The repository is [`jangtrinh/design-os-figma-plugin`](https://github.com/jangtrinh/design-os-figma-plugin). The product name is DESIGN:OS Bridge.
 
-**You press ⌘Z once and twenty minutes of automated work vanishes.** One undo step per mutation.
-[How](docs/deep-dive.md#3-the-agent-cannot-wreck-your-file)
+FREE + source-available ([PolyForm Shield 1.0.0](LICENSE)).
 
-**Your registry says a component is where it no longer is.** Edits made while the panel was closed
-still arrive. [How](docs/deep-dive.md#2-every-edit-reaches-the-codebase-and-the-right-codebase)
+<p>
+  <a href="#quickstart">Quickstart</a> · <a href="#use-with-claude-code-cursor-and-codex">Use with your agent</a> · <a href="#faq">FAQ</a> · <a href="#how-it-works">How it works</a> · <a href="#install">Install</a> · <a href="#limits">Limits</a>
+</p>
 
-**A script times out and you have no idea whether it applied.** A timeout hands you a job id, never
-a shrug, and an outcome-unknown job refuses to be retried.
-[How](docs/deep-dive.md#3-the-agent-cannot-wreck-your-file)
+<p align="left">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm_Shield_1.0.0-202020?style=flat-square&labelColor=202020&color=444444" alt="PolyForm Shield 1.0.0 License"></a>
+  <a href="https://jangtrinh.github.io/design-os-figma-plugin/"><img src="https://img.shields.io/badge/live_docs-GitHub_Pages-202020?style=flat-square&labelColor=202020&color=444444" alt="Live GitHub Pages"></a>
+</p>
 
-## It is fast because someone measured it
-
-On a real 21-page, 418k-node file, before and after the September 2026 performance work:
-
-| | before | after |
-|---|---|---|
-| Worst synchronous stall at open | 0.3 to 1.5 s per page | 44 ms cold open, 21 ms for the walker alone |
-| Idle re-index / close | 10 to 15 s in one blocking tick | 0.75 s in slices / close costs nothing |
-| Bookkeeping bytes in your design file | 0 (the writer was failing silently) | 0 (baseline in `clientStorage`) |
-| Pages reporting edits made while closed | 5 of 21 | 21 of 21 |
-| Store reads per 200-change batch | 400 | 2 |
-
-Those are one real file, not a benchmark. `figma-agent status` prints yours, including the uncomfortable ones: every drop is counted, and a
-field appears only when it is real. [The full contract](docs/deep-dive.md#honesty-guarantees)
-
-## Two actors, one file
-
-You keep editing. Your changes are captured live and offered back as one reviewable sync, and
-`figma-agent changes --owner-only` reads your own edit history as plain sentences at any time. Nodes
-the agent made carry provenance, so a later edit of yours on the same node is recorded as a
-correction rather than silently overwritten.
-
-Underneath, one mutation runs per file at a time, the rest queue, reads never wait, and an exact
-`--file` target never falls through to another open file.
-
-And there is a door. `figma-agent mutation-gate pause --file-key <key>` seals one file against agent
-mutations, keyed on the raw Figma `fileKey` and never on a filename. Reads keep working. Your own
-editing is never blocked. [How it is enforced](docs/deep-dive.md#3-the-agent-cannot-wreck-your-file)
-
-## With it, or Figma's MCP alone?
-
-Not exclusive, and the official server is the better tool for a whole class of work. Its reads are
-documented as "available on all seats and plans", it has Code Connect, and for design-to-code it
-wins outright. Write to canvas is where the paths diverge: Figma documents it as needing a Full
-seat, and as something that "will eventually be a usage-based paid feature, but is currently
-available for free during the beta period" (Figma docs, September 2026).
-
-This plugin is the weaker tool for some jobs and that is not a close call: **no Code Connect, no
-cross-library search, no rendered framework code**, **nothing works with the panel closed**, and **no org layer**
-(no SSO, no roles, no per-user audit: a per-file kill switch and local logs are what you get). Use both. Read
-through the MCP, write through the plugin.
-
-`figma-agent context` returns what the Plugin API exposes on every plan — a node's Inspect-panel CSS
-declarations, the variables and styles it binds, its text and component properties, and the designer's
-intent where it exists (Ready-for-dev status, annotations, a component's description) — as data for an
-agent, budgeted before the wire and counting everything it leaves out. It does not generate
-React/Tailwind, it is not Dev Mode, and Ready-for-dev/annotations read as empty on a file where nobody
-set them.
-
-[Row-by-row comparison](docs/deep-dive.md#with-this-plugin-or-figmas-official-mcp-alone)
-
-## If you are coming from
-
-**Doing it by hand.** Keep your hands and your taste. The agent is not asked to have either. What it
-takes over is the boring 200-node pass: variant sets, re-pointing, rename sweeps. Start read-only.
-Run `scan-design-system`, then `audit-ds` on your own library, and see whether it tells you something
-true about your file before you let it write to one.
-
-**Figma's official MCP.** Everything stays: your OAuth session, every read tool, Code Connect, your
-design-to-code prompts. What changes is the write half. Writes run through a CLI against the file
-open in front of you, panel open, no seat involved. You give up working with Figma closed.
-
-**A community talk-to-Figma bridge.** They got here first and several are good. cursor-talk-to-figma
-is the most-starred write bridge; figma-console-mcp is the most actively maintained, ships far more
-tools, and does advertise real-time document change monitoring; cast-to-figma is the closest
-architectural neighbour to this project and has an `undo` command for the last operation. The mental
-model here is the same: local WebSocket, plugin panel, script the canvas. What differs is what
-happens when things go wrong. Mutations are jobs in a per-file queue with ids. A timeout gives you a
-job id to poll instead of a blind retry. Scripts are linted before dispatch, so a sync
-dynamic-page getter is refused before it can half-apply. An outcome-unknown job blocks its queue and forbids replay
-until you inspect the canvas. And a closed panel is not a blind spot: the next open diffs what
-changed while you were away, and counts anything it had to drop.
-
-## Nothing to sign up for
-
-- **Figma Free.** Public Plugin API in Figma Desktop. No OAuth, no access token, no paid seat.
-- **Local.** Broker on `127.0.0.1`, no model call in the CLI or broker. The one exception: the
-  `html-to-figma` and shader iframes load pinned CDN assets, declared in `plugin/manifest.json`.
-  HTML extraction runs inside an opaque iframe with `sandbox="allow-scripts"`. Repository JavaScript
-  can update its own DOM and styles; it cannot access the panel document. The panel accepts a result
-  only from the active child with the matching protocol and request identity, then validates the payload
-  before import. This browser boundary does not provide a separate CPU or process budget.
-- **MIT licensed**, and 2,168 tests behind four CI gates.
-
-## Start in 60 seconds
+## Quickstart
 
 ```bash
 git clone https://github.com/jangtrinh/design-os-figma-plugin.git
 cd design-os-figma-plugin
-npm install
-npm run build
+npm ci && npm run build          # Node.js 22; builds cli/dist/figma-agent.js and plugin/code.js
+node cli/dist/figma-agent.js status --peek
 ```
 
-Figma Desktop → Plugins → Development → Import plugin from manifest → `plugin/manifest.json`.
-Keep the panel open. Closing it drops the connection.
+Then, in Figma Desktop: **Plugins → Development → Import plugin from manifest…** and pick `plugin/manifest.json`. Open the plugin in a scratch file first.
+
+**In Claude Code**, you can also install the plugin from the marketplace:
+
+```text
+/plugin marketplace add jangtrinh/design-os-figma-plugin
+/plugin install design-os-figma-plugin@design-os-figma-plugin
+```
+
+Check the connection from the repository root:
 
 ```bash
-FA="node $(pwd)/cli/dist/figma-agent.js"
-$FA status --peek                                 # never spawns anything; idle is a fine answer
-$FA bind --file "Design System v4" --dir ~/code/your-app
-$FA create-frame --name Card --w 320 --h 200
+node "$PWD/cli/dist/figma-agent.js" status --wait --timeout 60
 ```
 
-Then hand the agent its own manual: `figma-agent install-skill`. Written for Claude Code, and
-usable by any agent that can run a shell command.
+## The rail
 
-Why it feels different: [`docs/deep-dive.md`](docs/deep-dive.md) · operations and troubleshooting:
-[`docs/operations.md`](docs/operations.md) · full command manual:
-[`skills/figma-agent/SKILL.md`](skills/figma-agent/SKILL.md) · part of
-[DESIGN:OS](https://github.com/jangtrinh/design-os) · attribution:
-[THIRD-PARTY.md](THIRD-PARTY.md) · MIT, see [LICENSE](LICENSE).
+The plugin shows a compact status rail in the file you have open. This is a real capture of that rail, not a mock.
+
+<p>
+  <img src="docs/images/adaptive-agent-rail.gif" alt="design:os by Jang" width="600">
+</p>
+
+<p>
+  <img src="docs/images/agent-rail-single-row.gif" alt="design:os by Jang" width="600">
+</p>
+
+Idle, Connected, and the work in flight. The orb, the sentence, and a caret to expand.
+
+## Use with Claude Code, Cursor and Codex
+
+The bridge has two parts: a **plugin** that runs inside Figma Desktop, and the **`figma-agent` CLI** that your agent runs in a shell. The CLI talks to the plugin over a local WebSocket on `127.0.0.1` (ports 9410 to 9419). No model runs inside the bridge.
+
+**Set up once (any agent)**
+
+```bash
+git clone https://github.com/jangtrinh/design-os-figma-plugin.git
+cd design-os-figma-plugin
+npm ci && npm run build
+```
+
+In Figma Desktop: **Plugins → Development → Import plugin from manifest…**, then choose `plugin/manifest.json`.
+
+```bash
+node "$PWD/cli/dist/figma-agent.js" status --wait --timeout 60
+```
+
+**Claude Code**
+
+```text
+/plugin marketplace add jangtrinh/design-os-figma-plugin
+/plugin install design-os-figma-plugin@design-os-figma-plugin
+```
+
+Or write the skill from your built CLI: `node cli/dist/figma-agent.js install-skill --folder ~/.claude/skills --with-craft --yes`.
+
+**Cursor**
+
+Cursor loads skills from `~/.cursor/skills/` and `~/.agents/skills/` ([Cursor docs](https://cursor.com/docs/skills)).
+
+```bash
+node cli/dist/figma-agent.js install-skill --folder ~/.cursor/skills --with-craft --yes
+```
+
+Then ask in Agent chat: "Inspect my current selection with the design-os-figma-agent skill."
+
+**Codex**
+
+Codex scans `~/.agents/skills/` for user skills ([Codex skills docs](https://developers.openai.com/codex/skills)).
+
+```bash
+node cli/dist/figma-agent.js install-skill --folder ~/.agents/skills --with-craft --yes
+```
+
+Without a skills folder, tell any shell agent to run `node "$PWD/cli/dist/figma-agent.js" status` and then read its command list.
+
+## FAQ
+
+**Does it replace the official MCP server?** No. They coexist. The official server is the better tool for Code Connect, cross-library search and working with Figma Desktop closed. This bridge reads and writes the open file through the Public Plugin API.
+
+**Does it need a paid seat?** No seat or access token for the bridge. It needs edit access to the file for writes, and Figma Desktop running the imported plugin.
+
+**Is it on the Community listing?** No. It is a development plugin imported from this repository.
+
+**Does it run or pay for a model?** No. You choose and pay for your own agent or provider.
+
+**Can the agent undo its own work?** Yes. Each typed mutation seals its own undo step, so one undo rolls back one change.
+
+**What licence is it under?** It is source-available under [PolyForm Shield 1.0.0](LICENSE). The [`LICENSE`](LICENSE) file governs.
+
+## How it works
+
+<p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/flow-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/readme/flow-light.png">
+  <img src="assets/readme/flow-dark.png" alt="design:os by Jang" width="100%">
+</picture>
+</p>
+
+The CLI exposes **42 commands**, from the catalog in `cli/src/command-catalog.ts`. A short sample:
+
+| Command | What it does |
+| :--- | :--- |
+| `status` | Broker and plugin connection. `--peek` never spawns a broker. `--wait` can. |
+| `inspect` · `context` · `get-selection` | Read the current selection or a node, compacted for an agent's context window. |
+| `scan-design-system` | Scan tokens and components in the open file. |
+| `create-frame` · `set-text` · `bind-variable` · `set-autolayout` | Typed writes. Each one seals its own undo step. |
+| `export-png --assert` | A PNG snapshot, checked, before or after a mutation. |
+| `install-skill` · `install-hook` | Install the agent skill or a hook into a project. |
+
+Every command prints one JSON object to stdout and exits 0, or `{error:{code,message}}` and exits 1. The full list is in [`docs/operations.md`](docs/operations.md) and in `figma-agent --help`.
+
+The official write MCP is plan-gated. This bridge is a local alternative for the file you already have open, and it coexists with that server. See [the official rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/) for what the official server requires.
+
+Nothing in the bridge sends data off your machine. See [`PRIVACY.md`](PRIVACY.md).
+
+## Install
+
+Choose the setup that matches your agent. The canonical skill is [`skills/design-os-figma-craft/SKILL.md`](skills/design-os-figma-craft/SKILL.md). After a build, `install-skill` writes it for you. The copies below are for a manual install.
+
+### Claude Code
+
+```text
+/plugin marketplace add jangtrinh/design-os-figma-plugin
+/plugin install design-os-figma-plugin@design-os-figma-plugin
+```
+
+### OpenAI Codex
+
+```bash
+git clone https://github.com/jangtrinh/design-os-figma-plugin.git /tmp/design-os-figma-plugin
+mkdir -p ~/.codex/skills/design-os-figma-craft ~/.codex/prompts
+cp -R /tmp/design-os-figma-plugin/skills/design-os-figma-craft/* ~/.codex/skills/design-os-figma-craft/
+cp /tmp/design-os-figma-plugin/prompts/doctor.md ~/.codex/prompts/design-os-figma-craft-doctor.md
+rm -rf /tmp/design-os-figma-plugin
+```
+
+### Gemini CLI and Google Antigravity
+
+```bash
+git clone https://github.com/jangtrinh/design-os-figma-plugin.git /tmp/design-os-figma-plugin
+mkdir -p ~/.gemini/skills/design-os-figma-craft
+cp -R /tmp/design-os-figma-plugin/skills/design-os-figma-craft/* ~/.gemini/skills/design-os-figma-craft/
+rm -rf /tmp/design-os-figma-plugin
+```
+
+### OpenCode, Cursor, Windsurf and other agent harnesses
+
+```bash
+git clone https://github.com/jangtrinh/design-os-figma-plugin.git /tmp/design-os-figma-plugin
+mkdir -p ~/.agents/skills/design-os-figma-craft
+cp -R /tmp/design-os-figma-plugin/skills/design-os-figma-craft/* ~/.agents/skills/design-os-figma-craft/
+rm -rf /tmp/design-os-figma-plugin
+```
+
+<details>
+<summary>Verify or uninstall</summary>
+
+**Verify:**
+
+```bash
+node cli/dist/figma-agent.js status --peek
+python3 scripts/self_check.py
+```
+
+Or run `/doctor` inside Claude Code or Codex.
+
+**Uninstall the skill copies:**
+
+```bash
+rm -rf ~/.claude/skills/design-os-figma-craft ~/.codex/skills/design-os-figma-craft ~/.gemini/skills/design-os-figma-craft ~/.cursor/skills/design-os-figma-craft ~/.agents/skills/design-os-figma-craft
+```
+
+</details>
+
+## Limits
+
+- The plugin has to be open in Figma Desktop, with the file you want to edit already open. It cannot talk to a file that is only in the cloud.
+- It does not replace Code Connect, cross-library search, or work that needs the official Figma MCP server with Figma Desktop closed.
+- It is not listed in the Community catalog. You import `plugin/manifest.json` from this repository.
+- Converting an arbitrary live HTML page through a third-party scraper is out of scope. Use image fills or the typed frame builders, including the `html-to-figma` command in this CLI when that is the right tool.
+- `html-to-figma` extraction runs inside an opaque iframe with `sandbox="allow-scripts"` (loading only the pinned CDN domains declared in `plugin/manifest.json`). Repository JavaScript can update its own DOM and styles, cannot access the panel document, and only a validated result from the active child with matching protocol and request identity is accepted; this browser boundary does not enforce a separate CPU or process budget.
+
+## Watch
+
+DESIGN:OS Bridge is FREE + source-available (PolyForm Shield). One episode of the Autonomous Design Agent series from the [design:os by Jang](https://www.youtube.com/@designosbyjang) channel (Vietnamese, with English terms):
+
+<p align="left">
+  <a href="https://www.youtube.com/watch?v=c6yc314JsTI"><img src="docs/images/video/c6yc314JsTI.jpg" alt="design:os by Jang" width="320"></a>
+</p>
+
+Watch [Autonomous Design Agent Ep. 5: Two-way bridge: One Comment, the AI Fixes Design and Code](https://www.youtube.com/watch?v=c6yc314JsTI) (2:44) for how one review comment can drive changes to both the design file and the code through DESIGN:OS Bridge.
+
+More episodes: [Autonomous Design Agent playlist](https://www.youtube.com/playlist?list=PLAgHz-2MRSJw).
+
+## DESIGN:OS
+
+This is one of the DESIGN:OS tools. The others: [Studio](https://github.com/jangtrinh/design-os-studio), [CLI](https://github.com/jangtrinh/design-os), [3D Blender](https://github.com/jangtrinh/design-os-3d-blender), [SVG Animation](https://github.com/jangtrinh/design-os-svg-animation), [Code2Flow](https://github.com/jangtrinh/design-os-code2flow), [Knowledge Builder](https://github.com/jangtrinh/design-os-knowledge-builder) and more on [jangtrinh.github.io](https://jangtrinh.github.io/).
+
+| Engine | Live docs | Repository |
+| :--- | :--- | :--- |
+| DESIGN:OS CLI | [jangtrinh.github.io/design-os](https://jangtrinh.github.io/design-os/) | [`jangtrinh/design-os`](https://github.com/jangtrinh/design-os) |
+| Knowledge Builder | [jangtrinh.github.io/design-os-knowledge-builder](https://jangtrinh.github.io/design-os-knowledge-builder/) | [`jangtrinh/design-os-knowledge-builder`](https://github.com/jangtrinh/design-os-knowledge-builder) |
+| DESIGN:OS Bridge | [jangtrinh.github.io/design-os-figma-plugin](https://jangtrinh.github.io/design-os-figma-plugin/) | [`jangtrinh/design-os-figma-plugin`](https://github.com/jangtrinh/design-os-figma-plugin) |
+| SVG Animation Engine | [jangtrinh.github.io/design-os-svg-animation](https://jangtrinh.github.io/design-os-svg-animation/) | [`jangtrinh/design-os-svg-animation`](https://github.com/jangtrinh/design-os-svg-animation) |
+| 3D Blender | [jangtrinh.github.io/design-os-3d-blender](https://jangtrinh.github.io/design-os-3d-blender/) | [`jangtrinh/design-os-3d-blender`](https://github.com/jangtrinh/design-os-3d-blender) |
+| OPAH ONE Drone | [jangtrinh.github.io/design-os-drone-showcase](https://jangtrinh.github.io/design-os-drone-showcase/) | [`jangtrinh/design-os-drone-showcase`](https://github.com/jangtrinh/design-os-drone-showcase) |
+| GitHub Pages Engine | [jangtrinh.github.io/design-os-github-page](https://jangtrinh.github.io/design-os-github-page/) | [`jangtrinh/design-os-github-page`](https://github.com/jangtrinh/design-os-github-page) |
+| Apple Design OS | [jangtrinh.github.io/design-os-apple](https://jangtrinh.github.io/design-os-apple/) | [`jangtrinh/design-os-apple`](https://github.com/jangtrinh/design-os-apple) |
+| Agent Teacher | [jangtrinh.github.io/design-os-pedagogy](https://jangtrinh.github.io/design-os-pedagogy/) | [`jangtrinh/design-os-pedagogy`](https://github.com/jangtrinh/design-os-pedagogy) |
+| Origami CAD | [jangtrinh.github.io/design-os-origami](https://jangtrinh.github.io/design-os-origami/) | [`jangtrinh/design-os-origami`](https://github.com/jangtrinh/design-os-origami) |
+| Voice UX Architecture | [jangtrinh.github.io/design-os-voice-ux](https://jangtrinh.github.io/design-os-voice-ux/) | [`jangtrinh/design-os-voice-ux`](https://github.com/jangtrinh/design-os-voice-ux) |
+| Code2Flow | [jangtrinh.github.io/design-os-code2flow](https://jangtrinh.github.io/design-os-code2flow/) | [`jangtrinh/design-os-code2flow`](https://github.com/jangtrinh/design-os-code2flow) |
+| Generative UI | [jangtrinh.github.io/design-os-generative-ui](https://jangtrinh.github.io/design-os-generative-ui/) | [`jangtrinh/design-os-generative-ui`](https://github.com/jangtrinh/design-os-generative-ui) |
+
+Docs: [jangtrinh.github.io/design-os-figma-plugin](https://jangtrinh.github.io/design-os-figma-plugin/) · Changelog: [`CHANGELOG.md`](CHANGELOG.md) · Index for AI agents: [`llms.txt`](llms.txt)
+
+## Contributing and license
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) · [`SECURITY.md`](SECURITY.md) · [`PRIVACY.md`](PRIVACY.md)
+- [PolyForm Shield 1.0.0](LICENSE). FREE to use and modify, including for paid client work; you may not resell it or build a competing product from it.
+
+## Built by
+
+Built by [Jang Trịnh](https://github.com/jangtrinh), creative technologist and autonomous system architect. More projects, case studies and writing at [jang.work](https://www.jang.work/?utm_source=github&utm_medium=readme&utm_campaign=design-os-figma-plugin).
+
+[GitHub](https://github.com/jangtrinh) · [LinkedIn](https://www.linkedin.com/in/jangtrinh/) · [Hub](https://jangtrinh.github.io/) · [YouTube](https://www.youtube.com/@designosbyjang) · [X](https://x.com/Jangtrinhvn)
+
+If DESIGN:OS Bridge saves you time, a star on GitHub helps other engineers and AI agents find it.
+
+<p align="left">
+  <a href="https://buymeacoffee.com/jangtrinh">
+    <img src="https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
+  </a>
+</p>

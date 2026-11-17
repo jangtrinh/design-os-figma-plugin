@@ -1,11 +1,11 @@
-import type { GradientRenderRequest } from './gradient-host';
-import { validateGradientDimensions } from '../../../shared/gradient-image-admission';
+import type { GradientRenderRequest } from './gradient-host.ts';
+import { validateGradientDimensions } from '../../../shared/gradient-image-admission.ts';
 import {
   GRADIENT_RENDER_CHANNEL,
   GRADIENT_RENDER_VERSION,
   MAX_GRADIENT_ERROR_CODE_LENGTH,
   MAX_GRADIENT_ERROR_MESSAGE_LENGTH,
-} from './gradient-render-protocol';
+} from './gradient-render-protocol.ts';
 
 const RENDERER_VERSION = '2.4.20';
 const CDN_BASE = 'https://esm.sh';

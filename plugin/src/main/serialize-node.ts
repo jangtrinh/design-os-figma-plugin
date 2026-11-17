@@ -1,6 +1,6 @@
 // JSON-safe serialization: scene nodes (GET_SELECTION), arbitrary values
 // (EXEC_JS results), and the design-system registry (SCAN_DESIGN_SYSTEM).
-import { pageOf } from './page-of-node';
+import { pageOf } from './page-of-node.ts';
 
 export interface SerializedNode {
   id: string;

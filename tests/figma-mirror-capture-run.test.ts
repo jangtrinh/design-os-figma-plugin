@@ -5,8 +5,16 @@
 // + an open Figma file — that is the P5 owner-in-the-loop gate, not a unit test.
 import { describe, it, expect } from 'vitest';
 import {
-  captureMirror, mergeTargetsPendingFirst, pendingTargetsFromEnvelope, splitAtScanCap, targetsFromDelta,
+  captureMirror,
+  mergeTargetsPendingFirst,
+  MIRROR_SCAN_CHILD_BOUNDS,
+  parseScan,
+  pendingTargetsFromEnvelope,
+  scanNode,
+  splitAtScanCap,
+  targetsFromDelta,
 } from '../cli/src/transport/figma-mirror-capture-run.ts';
+import type { ChildBounds, ChildOutcome } from '../cli/src/transport/bounded-child-process.ts';
 
 describe('targetsFromDelta', () => {
   it('takes ADD + EDIT, never DELETE (a deleted node has nothing to scan)', () => {
@@ -146,5 +154,126 @@ describe('mergeTargetsPendingFirst — the queue must not starve (registry-integ
     for (const t of neverAttempted) expect(scanned.some((s) => s.nodeId === t.nodeId)).toBe(true);
     // The 5 rotated out this run are from the chronically-failing set, never the fresh ones.
     for (const d of dropped) expect(chronicallyFailing.some((f) => f.nodeId === d.nodeId)).toBe(true);
+  });
+});
+
+describe('scanNode bounds and honest reporting', () => {
+  const dummyBounds: ChildBounds = {
+    stdoutBytes: 1024,
+    stderrBytes: 512,
+    deadlineMs: 1000,
+    termGraceMs: 100,
+    closeGraceMs: 50,
+    reapGraceMs: 200,
+  };
+
+  function mockRunner(outcome: Partial<ChildOutcome>) {
+    return (
+      _command: string,
+      _args: readonly string[],
+      _options: { bounds?: Readonly<ChildBounds> },
+      done: (res: ChildOutcome) => void,
+    ) => {
+      done({
+        spawned: true,
+        exited: true,
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: '',
+        stdoutBytes: 0,
+        stdoutTruncated: false,
+        stderr: '',
+        stderrBytes: 0,
+        stderrRetainedBytes: 0,
+        stderrTruncated: false,
+        ...outcome,
+      });
+      return {
+        pid: 12345,
+        terminate: () => true,
+      };
+    };
+  }
+
+  it('exports default mirror scan child bounds', () => {
+    expect(MIRROR_SCAN_CHILD_BOUNDS).toEqual({
+      stdoutBytes: 4 * 1024 * 1024,
+      stderrBytes: 256 * 1024,
+      deadlineMs: 35_000,
+      termGraceMs: 2_000,
+      closeGraceMs: 1_000,
+      reapGraceMs: 3_000,
+    });
+  });
+
+  it('handles clean scan output', async () => {
+    const runner = mockRunner({
+      stdout: JSON.stringify({ result: { id: '1:1', type: 'FRAME' } }),
+    });
+    const res = await scanNode('1:1', 'TestFile', dummyBounds, runner);
+    expect(res).toEqual({ node: { id: '1:1', type: 'FRAME' } });
+  });
+
+  it('reports launch failure honestly when process is not spawned', async () => {
+    const runner = mockRunner({
+      spawned: false,
+      launchError: 'ENOENT ui command missing',
+      launchErrorKind: 'error',
+    });
+    const res = await scanNode('1:1', undefined, dummyBounds, runner);
+    expect(res).toEqual({ reason: 'cannot launch scan-node: ENOENT ui command missing' });
+  });
+
+  it('reports timeout honestly with configured deadlineMs', async () => {
+    const runner = mockRunner({
+      timedOut: true,
+    });
+    const res = await scanNode('1:1', undefined, dummyBounds, runner);
+    expect(res).toEqual({ reason: 'scan-node timed out after 1000ms' });
+  });
+
+  it('reports stdout truncation overflow honestly with configured stdoutBytes', async () => {
+    const runner = mockRunner({
+      stdoutTruncated: true,
+      stdout: '{"result":',
+    });
+    const res = await scanNode('1:1', undefined, dummyBounds, runner);
+    expect(res).toEqual({ reason: 'scan-node stdout exceeded bounded limit (1024 bytes)' });
+  });
+
+  it('reports unconfirmed child exit honestly when process refuses kill', async () => {
+    const runner = mockRunner({
+      exited: false,
+    });
+    const res = await scanNode('1:1', undefined, dummyBounds, runner);
+    expect(res).toEqual({ reason: 'scan-node child exit not confirmed after SIGKILL' });
+  });
+
+  it('reports non-zero exit code and trimmed stderr honestly', async () => {
+    const runner = mockRunner({
+      exitCode: 1,
+      stderr: '  figma-agent: socket closed abruptly  \n',
+    });
+    const res = await scanNode('1:1', undefined, dummyBounds, runner);
+    expect(res).toEqual({ reason: 'figma-agent: socket closed abruptly' });
+  });
+
+  it('reports termination signal honestly when stderr is empty', async () => {
+    const runner = mockRunner({
+      signal: 'SIGTERM',
+      exitCode: null,
+      stderr: '',
+    });
+    const res = await scanNode('1:1', undefined, dummyBounds, runner);
+    expect(res).toEqual({ reason: 'killed by SIGTERM' });
+  });
+
+  it('reports parse errors when scan-node produces malformed or empty output', () => {
+    expect(parseScan('', '')).toEqual({ reason: 'scan-node produced no JSON (is the plugin open?)' });
+    expect(parseScan('not-json', 'socket error')).toEqual({ reason: 'socket error' });
+    expect(parseScan(JSON.stringify({ error: { message: 'Node not found' } }), '')).toEqual({ reason: 'Node not found' });
+    expect(parseScan(JSON.stringify({ error: { code: 'NOT_FOUND' } }), '')).toEqual({ reason: 'NOT_FOUND' });
+    expect(parseScan(JSON.stringify({}), '')).toEqual({ reason: 'scan-node returned no node spec' });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRenderDocument } from '../plugin/src/ui/gradient-host';
+import { buildRenderDocument } from '../plugin/src/ui/gradient-host.ts';
 
 describe('gradient render document', () => {
   it('escapes script-closing sequences in both config and correlation data', () => {

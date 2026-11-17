@@ -48,7 +48,7 @@ async function scan(node: FakeNode): Promise<Record<string, unknown>> {
   return nodeToSpec(scene, tokenNames, undefined, keyedVars) as unknown as Record<string, unknown>;
 }
 
-async function rebuildFromSpecAlone(spec: FigmaExportNode): Promise<Record<string, unknown>> {
+async function rebuildFromSpecAlone(spec: FigmaExportNode | Record<string, unknown>): Promise<Record<string, unknown>> {
   const tokenVars = await resolveTokenVars(NO_TOKENS);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const node = await createFigmaNode(spec as any, new Map(), tokenVars as any);
@@ -128,7 +128,7 @@ describe('round-trip — the font bindings survive as BINDINGS, not literals', (
       fontWeight: { key: 'KWGT', name: 'font-weight/normal' },
     });
 
-    const rebuilt = await rebuildFromSpecAlone(spec as FigmaExportNode);
+    const rebuilt = await rebuildFromSpecAlone(spec);
     const bound = rebuilt.boundVariables as Record<string, unknown>;
 
     expect(aliasOf(bound.fontFamily)).toBe(family.id);
@@ -141,7 +141,7 @@ describe('round-trip — the font bindings survive as BINDINGS, not literals', (
     setMockLocalVariables([family]);
 
     const specA = await scan(footerText({ fontFamily: family.id }));
-    const rebuilt = await rebuildFromSpecAlone(specA as FigmaExportNode);
+    const rebuilt = await rebuildFromSpecAlone(specA);
     const specB = await scan(rebuilt as unknown as FakeNode);
 
     // Pinned, not just equal: two undefineds would satisfy a bare toBe(specA.x)
@@ -181,7 +181,7 @@ describe('scan — a binding Figma REFUSES on this node type is recorded, not of
     expect(spec.keyedBindings).toEqual({ maxWidth: { key: 'KMAX', name: 'max-width/max-w-xl' } });
     expect(spec.figmaScanUnbindable).toBeUndefined();
 
-    const rebuilt = await rebuildFromSpecAlone(spec as FigmaExportNode);
+    const rebuilt = await rebuildFromSpecAlone(spec);
     expect(aliasOf((rebuilt.boundVariables as Record<string, unknown>).maxWidth)).toBe(maxW.id);
     expect(getImportWarnings()).toEqual([]);
   });
@@ -191,7 +191,7 @@ describe('scan — a binding Figma REFUSES on this node type is recorded, not of
     setMockLocalVariables([maxW]);
 
     const spec = await scan(footerText({ maxWidth: maxW.id }));
-    await rebuildFromSpecAlone(spec as FigmaExportNode);
+    await rebuildFromSpecAlone(spec);
 
     // P5 live emitted exactly one such warning, per node, forever.
     expect(getImportWarnings()).toEqual([]);

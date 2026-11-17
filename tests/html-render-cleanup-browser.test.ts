@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser, Page } from 'playwright';
-import { buildProductionRenderHostBundle, launchInstalledChrome, validRendererPayload } from './html-render-browser-fixture';
+import { buildProductionRenderHostBundle, launchInstalledChrome, validRendererPayload } from './html-render-browser-fixture.ts';
 
 let browser: Browser;
 let bundle: string;

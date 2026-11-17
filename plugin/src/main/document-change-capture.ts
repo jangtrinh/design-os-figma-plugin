@@ -12,20 +12,20 @@
 import {
   coalesceChanges, isPluginBookkeepingChange, mapChangeType,
   type ChangeOrigin, type ComponentChange,
-} from '../../../shared/figma-changes';
-import { coalesceEdits, type EditInput, type EditOrigin } from '../../../shared/edit-feed';
-import type { EditIntent } from '../../../shared/edit-intent';
-import { classifyActor, type ActorState } from './edit-actor';
-import { readEditIntent } from './edit-intent-reader';
+} from '../../../shared/figma-changes.ts';
+import { coalesceEdits, type EditInput, type EditOrigin } from '../../../shared/edit-feed.ts';
+import type { EditIntent } from '../../../shared/edit-intent.ts';
+import { classifyActor, type ActorState } from './edit-actor.ts';
+import { readEditIntent } from './edit-intent-reader.ts';
 import {
   enclosingName, resolveComponentIdentity, type CachedIdentity, type EditIdentityCache,
-} from './change-node-identity';
-import { pageOf } from './page-of-node';
-import { isSentinelId } from './undo-sentinel-registry';
+} from './change-node-identity.ts';
+import { pageOf } from './page-of-node.ts';
+import { isSentinelId } from './undo-sentinel-registry.ts';
 import {
   createIntentFrameParking, isIntentOnlyProps,
   type IntentParkingStats, type ParkedIntentFrame,
-} from './intent-frame-parking';
+} from './intent-frame-parking.ts';
 
 /**
  * The correction store, as this handler uses it: ONE read and at most ONE write per

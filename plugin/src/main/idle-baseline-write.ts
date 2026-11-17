@@ -12,7 +12,7 @@
 //
 // Host-agnostic by construction: the page type is a parameter and every figma touch is a
 // dependency, so this module imports nothing from the plugin API.
-import { createSingleFlightWriter } from './edit-gapfill';
+import { createSingleFlightWriter } from './edit-gapfill.ts';
 
 export interface IdleBaselineWriteDeps<P> {
   /** The set the `documentchange` capture marks. Owned by the caller (main.ts holds the
