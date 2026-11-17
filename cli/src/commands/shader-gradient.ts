@@ -15,7 +15,7 @@ import { SHADER_GRADIENT_PRESETS } from '../../../shared/shader-gradient-presets
  * Pinned renderer, recorded onto the node so a stale bake stays identifiable.
  * The PUBLISHED version — upstream's package.json at the read revision says 2.4.24,
  * which was never released and 404s everywhere. Keep this in step with
- * RENDERER_VERSION in plugin/src/ui/gradient-host.ts.
+ * RENDERER_VERSION in plugin/src/ui/gradient-render-document.ts.
  */
 const RENDERER = '@shadergradient/react@2.4.20';
 
