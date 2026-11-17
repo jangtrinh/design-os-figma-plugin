@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { createSingleFlightWriter, normalizeSnapshotCoord } from '../plugin/src/main/edit-gapfill.ts';
 import {
   baselineMissingNotice, deletedPageIds, deletedPageLabel, diffSnapshots, diffTopLevel,
+  filterGapfillEditsAgainstLive,
   fromBaselineRecord, gapfillEditsForPage, mergeUpdatedRecords, pageWasTruncated,
   resolveBaselinePage, snapshotProviderFrom, toBaselineRecord,
 } from '../plugin/src/main/gapfill-diff.ts';
@@ -424,5 +425,28 @@ describe('createSingleFlightWriter — an async write never overlaps itself, and
     trigger();
     trigger();
     expect(started).toBe(2); // second trigger runs — the lock was released, not held forever
+  });
+});
+
+describe('filterGapfillEditsAgainstLive — drops gapfill edits already reported live', () => {
+  it('empty live set leaves all gapfill edits intact and reports 0 dropped', () => {
+    const edits = [
+      { op: 'created' as const, nodeId: '1:1', nodeName: 'A', nodeType: 'FRAME', parentName: null, page: 'Page 1', changedProps: [], origin: 'LOCAL' as const, actor: 'owner' as const },
+    ];
+    const result = filterGapfillEditsAgainstLive(edits, new Set());
+    expect(result.edits).toEqual(edits);
+    expect(result.dropped).toBe(0);
+  });
+
+  it('filters out edits whose nodeId was seen live and returns the count', () => {
+    const editA = { op: 'created' as const, nodeId: '1:1', nodeName: 'A', nodeType: 'FRAME', parentName: null, page: 'Page 1', changedProps: [], origin: 'LOCAL' as const, actor: 'owner' as const };
+    const editB = { op: 'updated' as const, nodeId: '1:2', nodeName: 'B', nodeType: 'FRAME', parentName: null, page: 'Page 1', changedProps: ['x'], origin: 'LOCAL' as const, actor: 'owner' as const };
+    const editC = { op: 'deleted' as const, nodeId: '1:3', nodeName: 'C', nodeType: 'FRAME', parentName: null, page: 'Page 1', changedProps: [], origin: 'LOCAL' as const, actor: 'owner' as const };
+
+    const liveSeen = new Set(['1:2', '9:9']);
+    const result = filterGapfillEditsAgainstLive([editA, editB, editC], liveSeen);
+
+    expect(result.edits).toEqual([editA, editC]);
+    expect(result.dropped).toBe(1);
   });
 });

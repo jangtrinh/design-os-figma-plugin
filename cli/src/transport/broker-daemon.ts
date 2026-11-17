@@ -51,7 +51,8 @@ import {
 import { appendErrorFrame, buildErrorLogFrame, errorLogPathFor, unboundErrorStagingPath } from './error-log.ts';
 import { addQueued as addQueuedContention, contentionLogPath, contentionLogPathFor } from './contention-log.ts';
 import { readIdleMs, readIdleMsFor } from './figma-sync-config.ts';
-import { spawnReconcileApply } from './figma-sync-apply.ts';
+import { spawnReconcileApply, type ReconcileApplyHandle } from './figma-sync-apply.ts';
+import { reconcileLeaseDirFor } from './reconcile-lease.ts';
 import {
   fileIdentity, loadBindIndex, needsAliasPromotion, readBindMarker, recordBinding, removeBinding,
   resolveProjectDir, writeBindCache, writeBindMarker, type Binding,
@@ -124,7 +125,7 @@ function currentFilter(): string | null {
 
 /** A plugin advertises the guard it honours; absence means "older bundle, cannot be trusted with --file". */
 function pluginSupportsFileGuard(entry: PluginEntry<WebSocket>): boolean {
-  const caps = entry.scene.caps;
+  const caps = entry.caps ?? entry.scene.caps;
   return Array.isArray(caps) && caps.includes('fileGuard');
 }
 
@@ -633,6 +634,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // leaves the map once its record is written, so shutdown + the later close never
   // record it twice.
   const disconnectLogPath = disconnectLogPathFor(advertisePath);
+  const reconcileLeaseDir = reconcileLeaseDirFor(advertisePath);
   const pluginSockets = new WeakMap<WebSocket, PluginSocketInfo>();
   const brokerCloseCause = new WeakMap<WebSocket, DisconnectClosedBy>();
   let recentDisconnects: DisconnectRecord[] = [];
@@ -641,7 +643,8 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   try {
     const seeded = readDisconnectTail(disconnectLogPath);
     recentDisconnects = seeded.records;
-    if (seeded.records.length > 0 || seeded.skipped > 0) {
+    disconnectLogReadFailures += seeded.readFailures;
+    if (seeded.records.length > 0 || seeded.skipped > 0 || seeded.readFailures > 0) {
       log(`DISCONNECT_LOG seeded ${seeded.records.length} record(s), skipped ${seeded.skipped} malformed`);
     }
   } catch (err) {
@@ -675,9 +678,11 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
       for (const [fileSlug, q] of st.queues) {
         if (q.running !== null || q.waiting.length > 0) queueDepthByFile[fileSlug] = q.waiting.length;
       }
+      const effectiveClosedBy = info.superseded ? 'broker-superseded' : closedBy;
       record = buildDisconnectRecord({
         now: Date.now(), info, liveEntry: entry?.ws === ws ? livenessOf(entry) : null,
-        closedBy, closeCode, closeReason, inFlightJobs, queueDepthByFile,
+        closedBy: effectiveClosedBy, closeCode, closeReason, inFlightJobs, queueDepthByFile,
+        ...(info.superseded ? { superseded: true } : {}),
       });
     } catch (err) {
       disconnectLogAppendFailures += 1;
@@ -752,6 +757,7 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
   // --apply` processes.
   const idleMs = readIdleMs();
   let syncInFlight = false;
+  let activeReconcileHandle: ReconcileApplyHandle | null = null;
 
   // Target pin (#35 P2): the panel's "Target this plugin" button routes here — a
   // deliberate human act, ranked above the env pin and recency but below a per-request
@@ -875,15 +881,22 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
     // Registry-integrity phase 03 (5.2), §2 — `slug` narrows the kernel calls to THIS
     // file's own targets in a change-log the project may share with another file; `fileName`
     // (nullable → undefined) pins the live scan back to the SAME plugin instance.
-    spawnReconcileApply(bound, slug, fileName ?? undefined, (r) => {
-      if (r.childExited === false) {
-        log(`sync lane HELD — reconcile child not confirmed dead: ${r.summary}`);
-      } else {
-        syncInFlight = false;
-      }
-      log(`SYNC_RESULT ok=${r.ok} — ${r.summary}`);
-      sendEvent(ws, 'SYNC_RESULT', { ...r });
-    });
+    activeReconcileHandle = spawnReconcileApply(
+      bound,
+      slug,
+      fileName ?? undefined,
+      (r) => {
+        if (r.childExited === false) {
+          log(`sync lane HELD — reconcile child not confirmed dead: ${r.summary}`);
+        } else {
+          syncInFlight = false;
+          activeReconcileHandle = null;
+        }
+        log(`SYNC_RESULT ok=${r.ok} — ${r.summary}`);
+        sendEvent(ws, 'SYNC_RESULT', { ...r });
+      },
+      { leaseDir: reconcileLeaseDir, log },
+    );
   };
 
   // The 5 daemon-lifetime setInterval timers (heartbeat/zombie-watchdog, park-sweep, job
@@ -910,6 +923,14 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
 
   const shutdown = (code: number, reason: string): never => {
     log(`shutdown (${reason})`);
+    if (activeReconcileHandle) {
+      try {
+        activeReconcileHandle.cancelForShutdown(reason);
+      } catch (err) {
+        log(`reconcile shutdown cancellation failed: ${(err as Error).message}`);
+      }
+      activeReconcileHandle = null;
+    }
     // Every still-connected plugin drops with this process: record each one now,
     // synchronously, because `exit()` below never returns to run their close handlers.
     for (const server of wss6 ? [wss, wss6] : [wss]) {
@@ -2299,7 +2320,10 @@ export async function runBrokerDaemon(options?: BrokerDaemonOptions): Promise<vo
         if (superseded) {
           // The registry entry now describes the new socket; keep the old one's own view.
           const orphan = pluginSockets.get(superseded);
-          if (orphan !== undefined && priorEntry?.ws === superseded) orphan.supersededSnapshot = livenessOf(priorEntry);
+          if (orphan !== undefined) {
+            orphan.superseded = true;
+            if (priorEntry?.ws === superseded) orphan.supersededSnapshot = livenessOf(priorEntry);
+          }
           if (!brokerCloseCause.has(superseded)) brokerCloseCause.set(superseded, 'broker-superseded');
           try { superseded.close(); } catch { /* already gone */ }
         }

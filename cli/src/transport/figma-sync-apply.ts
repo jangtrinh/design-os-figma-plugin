@@ -32,9 +32,18 @@ import {
 import {
   RECONCILE_CHILD_BOUNDS,
   runBoundedChild,
+  type BoundedChildHandle,
   type ChildBounds,
   type ChildOutcome,
 } from './bounded-child-process.ts';
+import {
+  inspectLeaseAdmission,
+  readLeaseFile,
+  readProcessStartToken,
+  removeLeaseFile,
+  writeLeaseFile,
+  type ReconcileLeaseRecord,
+} from './reconcile-lease.ts';
 
 type ReconcileOutcome = ChildOutcome & ReconcileExecutable;
 
@@ -68,15 +77,25 @@ export interface SyncApplyResult {
   evidence?: SyncApplyEvidence;
 }
 
-/** Run `ui figma reconcile …` and hand back the parsed envelope. Never throws. */
+export interface SpawnReconcileApplyOptions {
+  leaseDir?: string;
+  log?: (msg: string) => void;
+  bounds?: Readonly<ChildBounds>;
+}
+
+export interface ReconcileApplyHandle {
+  cancelForShutdown(reason?: string): void;
+}
+
+/** Run `ui figma reconcile …` and hand back the parsed envelope and bounded child handle. Never throws. */
 function runReconcile(
   projectDir: string,
   extra: string[],
   bounds: Readonly<ChildBounds>,
   executable: ReconcileExecutable,
   done: (env: Record<string, unknown> | null, outcome: ReconcileOutcome) => void,
-): void {
-  runBoundedChild(
+): BoundedChildHandle {
+  return runBoundedChild(
     executable.uiExecutable ?? executable.uiCommand, ['figma', 'reconcile', '--dir', projectDir, '--json', ...extra],
     { cwd: projectDir, bounds }, (outcome) => {
       let env: Record<string, unknown> | null = null;
@@ -160,43 +179,174 @@ function envelopeData(env: Record<string, unknown> | null): Record<string, unkno
  * Run the full sync: preview → scoped mirror capture → apply. `done` always receives a
  * result; every failure path degrades rather than throwing.
  *
- * `fileSlug`/`fileName` (registry-integrity phase 03, §2) — the bound file's own identity
- * (`project-bind.ts`'s `fileIdentity`, the SAME chain the broker already uses to resolve
- * `bound`). `fileSlug` narrows both kernel calls to that file's own targets in a shared
- * change-log (`--file-slug`); `fileName` pins the live scan to that same plugin instance
- * (`--file`, via `captureMirror`). Undefined for a caller with no bound-file identity yet
- * — preserves today's whole-log, unfiltered behaviour exactly.
+ * `fileSlug`/`fileName` — the bound file's own identity.
+ * Undefined preserves whole-log, unfiltered behaviour.
  */
 export function spawnReconcileApply(
   projectDir: string,
   fileSlug: string | undefined,
   fileName: string | undefined,
   done: (r: SyncApplyResult) => void,
-  bounds: Readonly<ChildBounds> = RECONCILE_CHILD_BOUNDS,
-): void {
+  boundsOrOpts?: Readonly<ChildBounds> | SpawnReconcileApplyOptions,
+  optsParam?: SpawnReconcileApplyOptions,
+): ReconcileApplyHandle {
+  const options: SpawnReconcileApplyOptions =
+    optsParam !== undefined
+      ? optsParam
+      : (boundsOrOpts !== undefined && 'stdoutBytes' in boundsOrOpts)
+        ? { bounds: boundsOrOpts as Readonly<ChildBounds> }
+        : ((boundsOrOpts as SpawnReconcileApplyOptions | undefined) ?? {});
+
+  const bounds = options.bounds ?? RECONCILE_CHILD_BOUNDS;
+  const leaseDir = options.leaseDir;
+  const log = options.log ?? (() => {});
+
   let settled = false;
+  let aborted = false;
+  let activePhase: 'dry' | 'apply' | 'none' = 'none';
+  let activeChild: BoundedChildHandle | null = null;
+  let activeLeasePath: string | null = null;
+  let currentCapFile: string | undefined;
+
   const finish = (result: SyncApplyResult): void => {
     if (settled) return;
     settled = true;
     done(result);
   };
+
+  // Inspect lease before admission if leaseDir is configured
+  let existingStaleLease: ReconcileLeaseRecord | undefined;
+  if (leaseDir) {
+    const admission = inspectLeaseAdmission(leaseDir, projectDir, log);
+    if (!admission.ok) {
+      finish({
+        ok: false,
+        code: admission.code,
+        summary: `reconcile admission refused: ${admission.reason}`,
+      });
+      return { cancelForShutdown: () => {} };
+    }
+    activeLeasePath = admission.leasePath;
+    existingStaleLease = admission.existingLease;
+  }
+
   const executable = selectReconcileExecutable(projectDir);
   const fileSlugArgs = fileSlug !== undefined ? ['--file-slug', fileSlug] : [];
-  runReconcile(projectDir, ['--dry-run', ...fileSlugArgs], bounds, executable, (env, outcome) => {
+
+  activePhase = 'dry';
+  activeChild = runReconcile(projectDir, ['--dry-run', ...fileSlugArgs], bounds, executable, (env, outcome) => {
+    activeChild = null;
+
+    if (activeLeasePath && outcome.spawned && outcome.exited) {
+      // Dry run ended
+      const cur = readLeaseFile(activeLeasePath);
+      if (cur && cur.phase === 'dry') {
+        try {
+          removeLeaseFile(activeLeasePath);
+          log(`deleted clean dry-run lease: ${activeLeasePath}`);
+        } catch (delErr) {
+          log(`failed to delete dry-run lease ${activeLeasePath}: ${(delErr as Error).message}`);
+        }
+      }
+    }
+
+    if (aborted) {
+      finish({
+        ok: false,
+        code: 'RECONCILE_SHUTDOWN_ABORTED',
+        summary: 'reconcile canceled for broker shutdown',
+        evidence: evidence('dry', outcome, env),
+      });
+      return;
+    }
+
     const dryFailure = failure('dry', outcome, env);
-    if (dryFailure) { finish(dryFailure); return; }
+    if (dryFailure) {
+      if (activeLeasePath && existingStaleLease && existingStaleLease.phase === 'apply') {
+        // Evidence-based recovery failed: latch as unknown
+        try {
+          writeLeaseFile(activeLeasePath, {
+            ...existingStaleLease,
+            status: 'unknown',
+            reason: `recovery dry-run failed: ${dryFailure.summary}`,
+          });
+          log(`latched existing apply lease as unknown on disk: ${activeLeasePath}`);
+        } catch { /* ignore */ }
+      }
+      finish(dryFailure);
+      return;
+    }
+
+    // Dry-run succeeded! If there was a stale apply lease, recovery succeeded!
+    if (activeLeasePath && existingStaleLease && existingStaleLease.phase === 'apply') {
+      log(`recovery dry-run verified registry ok for stale apply lease: ${activeLeasePath}`);
+      try {
+        removeLeaseFile(activeLeasePath);
+        log(`deleted recovered stale apply lease: ${activeLeasePath}`);
+      } catch (err) {
+        log(`failed to delete recovered stale apply lease ${activeLeasePath}: ${(err as Error).message}`);
+        finish({
+          ok: false,
+          code: 'RECONCILE_LEASE_CLEANUP_FAILED',
+          summary: `reconcile lease cleanup failed during recovery: ${(err as Error).message}`,
+          evidence: evidence('dry', outcome, env),
+        });
+        return;
+      }
+    }
+
     const data = envelopeData(env)!;
-    // Registry-integrity phase 02 (5.3), §4: the kernel's retry queue (`pending`) is
-    // captured FIRST, or the same MAX_SCANS names win every run and the queue never
-    // drains. Read from the SAME dry-run envelope `targetsFromDelta` already reads.
     const pendingFirst = pendingTargetsFromEnvelope(data);
     const targets = mergeTargetsPendingFirst(pendingFirst, targetsFromDelta(data));
-    void Promise.resolve().then(() => captureMirror(targets, fileName)).then((cap) => {
+
+    void Promise.resolve().then(() => {
+      if (aborted) throw new Error('aborted for shutdown');
+      return captureMirror(targets, fileName);
+    }).then((cap) => {
+      if (aborted) {
+        if (cap.file !== undefined) removeCapture(cap.file);
+        finish({
+          ok: false,
+          code: 'RECONCILE_SHUTDOWN_ABORTED',
+          summary: 'reconcile canceled for broker shutdown',
+          evidence: evidence('dry', outcome, env),
+        });
+        return;
+      }
+
+      currentCapFile = cap.file;
       const extra = ['--apply', ...fileSlugArgs, ...(cap.file !== undefined ? ['--mirror-file', cap.file] : [])];
-      runReconcile(projectDir, extra, bounds, executable, (aEnv, aOutcome) => {
+
+      activePhase = 'apply';
+      activeChild = runReconcile(projectDir, extra, bounds, executable, (aEnv, aOutcome) => {
+        activeChild = null;
         const retainedPath = cap.file !== undefined && aOutcome.spawned ? cap.file : undefined;
         const applyFailure = failure('apply', aOutcome, aEnv, retainedPath);
+
         if (applyFailure) {
+          if (activeLeasePath) {
+            if (applyFailure.code === 'RECONCILE_OUTCOME_UNKNOWN' || applyFailure.code === 'RECONCILE_CHILD_UNKILLABLE') {
+              try {
+                const currentLease = readLeaseFile(activeLeasePath);
+                if (currentLease) {
+                  writeLeaseFile(activeLeasePath, {
+                    ...currentLease,
+                    status: 'unknown',
+                    reason: applyFailure.summary,
+                  });
+                  log(`retained unknown apply lease on disk: ${activeLeasePath}`);
+                }
+              } catch { /* ignore */ }
+            } else if (aOutcome.exited) {
+              try {
+                removeLeaseFile(activeLeasePath);
+                log(`deleted failed apply lease: ${activeLeasePath}`);
+              } catch (delErr) {
+                log(`failed to delete failed apply lease ${activeLeasePath}: ${(delErr as Error).message}`);
+              }
+            }
+          }
+
           if (cap.file !== undefined && !aOutcome.spawned) {
             const cleanupError = removeCapture(cap.file);
             if (cleanupError) {
@@ -211,20 +361,116 @@ export function spawnReconcileApply(
           finish(applyFailure);
           return;
         }
+
+        // Apply clean exit!
+        let leaseCleanupErr: string | undefined;
+        if (activeLeasePath) {
+          try {
+            removeLeaseFile(activeLeasePath);
+            log(`deleted clean apply lease: ${activeLeasePath}`);
+          } catch (delErr) {
+            leaseCleanupErr = (delErr as Error).message;
+            log(`failed to delete clean apply lease ${activeLeasePath}: ${leaseCleanupErr}`);
+          }
+        }
+
         const aData = envelopeData(aEnv)!;
         const result = applyResult(aData['apply'], cap.dropped);
         const cleanupError = cap.file !== undefined ? removeCapture(cap.file) : undefined;
+        let summary = result.summary;
+        if (cleanupError) {
+          summary = `${summary} — capture cleanup failed; kept for inspection: ${cap.file}`;
+        }
+        if (leaseCleanupErr) {
+          summary = `${summary} — lease cleanup failed`;
+        }
+
         finish({
           ...result,
-          ...(cleanupError ? { summary: `${result.summary} — capture cleanup failed; kept for inspection: ${cap.file}` } : {}),
-          evidence: evidence('apply', aOutcome, aEnv, cleanupError ? cap.file : undefined, cleanupError),
+          summary,
+          ...(leaseCleanupErr ? { code: 'RECONCILE_LEASE_CLEANUP_FAILED' } : {}),
+          evidence: evidence('apply', aOutcome, aEnv, cleanupError ? cap.file : undefined, cleanupError ?? leaseCleanupErr),
         });
       });
-    }).catch((error: unknown) => finish({
-      ok: false, code: 'RECONCILE_CAPTURE_FAILED', evidence: evidence('dry', outcome, env),
-      summary: `could not prepare mirror capture: ${(error as Error).message}`,
-    }));
+
+      // Write lease for apply child
+      if (activeLeasePath && activeChild.pid) {
+        const startToken = readProcessStartToken(activeChild.pid);
+        const record: ReconcileLeaseRecord = {
+          version: 1,
+          pid: activeChild.pid,
+          startToken: startToken.state === 'alive' ? startToken.token : null,
+          phase: 'apply',
+          status: 'running',
+          projectDir,
+          ...(fileSlug !== undefined ? { fileSlug } : {}),
+          startedAt: new Date().toISOString(),
+        };
+        try {
+          writeLeaseFile(activeLeasePath, record);
+          log(`acquired apply reconcile lease: pid=${record.pid} token=${record.startToken} path=${activeLeasePath}`);
+        } catch (writeErr) {
+          log(`failed to write apply lease: ${(writeErr as Error).message}`);
+        }
+      }
+    }).catch((error: unknown) => {
+      if (aborted) {
+        finish({
+          ok: false,
+          code: 'RECONCILE_SHUTDOWN_ABORTED',
+          summary: 'reconcile canceled for broker shutdown',
+          evidence: evidence('dry', outcome, env),
+        });
+        return;
+      }
+      finish({
+        ok: false,
+        code: 'RECONCILE_CAPTURE_FAILED',
+        evidence: evidence('dry', outcome, env),
+        summary: `could not prepare mirror capture: ${(error as Error).message}`,
+      });
+    });
   });
+
+  // Write lease for dry child
+  if (activeLeasePath && activeChild.pid) {
+    const startToken = readProcessStartToken(activeChild.pid);
+    const record: ReconcileLeaseRecord = {
+      version: 1,
+      pid: activeChild.pid,
+      startToken: startToken.state === 'alive' ? startToken.token : null,
+      phase: 'dry',
+      status: 'running',
+      projectDir,
+      ...(fileSlug !== undefined ? { fileSlug } : {}),
+      startedAt: new Date().toISOString(),
+    };
+    try {
+      writeLeaseFile(activeLeasePath, record);
+      log(`acquired dry-run reconcile lease: pid=${record.pid} token=${record.startToken} path=${activeLeasePath}`);
+    } catch (writeErr) {
+      log(`failed to write dry-run lease: ${(writeErr as Error).message}`);
+    }
+  }
+
+  return {
+    cancelForShutdown(reason = 'broker shutdown'): void {
+      if (aborted || settled) return;
+      aborted = true;
+      log(`cancelForShutdown invoked (${reason}): activePhase=${activePhase}`);
+      if (currentCapFile !== undefined) {
+        removeCapture(currentCapFile);
+      }
+      if (activeChild) {
+        try {
+          activeChild.terminate('SIGTERM');
+        } catch { /* ignore */ }
+      }
+      if (activePhase === 'apply' && activeLeasePath) {
+        log(`retained apply lease during shutdown for surviving child inspection: ${activeLeasePath}`);
+      }
+    },
+  };
 }
 
 function removeCapture(file: string): string | undefined {

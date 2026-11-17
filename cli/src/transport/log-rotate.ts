@@ -13,7 +13,7 @@
 // `change-log-rotation.ts`, a separate, read-only duplicate — this module cannot be
 // imported by the kernel, same cross-package boundary as everywhere else in this wave)
 // recognize "history rotated away" and reset explicitly rather than guess.
-import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
 export interface RotatePolicy {
   maxBytes: number;
@@ -44,6 +44,17 @@ function markerPath(path: string): string {
   return `${path}.rotated.json`;
 }
 
+function assertNotSymlink(p: string): void {
+  try {
+    if (lstatSync(p).isSymbolicLink()) {
+      throw new Error(`refusing to rotate symlinked path: ${p}`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+}
+
 /** Count non-blank lines — the SAME convention `changeLogLineCount`/`ledgerLineCount`
  *  already use. Only runs AT rotation time (a rare, size-triggered event), never on every
  *  append — this is not the O(E)-per-append cost this wave otherwise removes. */
@@ -60,9 +71,16 @@ function countLines(path: string): number {
  * the file is absent or still under the size threshold.
  */
 export function rotateIfNeeded(path: string, policy: RotatePolicy = DEFAULT_ROTATE_POLICY): RotateResult {
+  assertNotSymlink(path);
   if (!existsSync(path)) return { rotated: false };
   const size = statSync(path).size;
   if (size < policy.maxBytes) return { rotated: false };
+
+  // Refuse symlinks on any archive destination or marker path before mutating disk.
+  assertNotSymlink(markerPath(path));
+  for (let i = 1; i <= policy.keep; i++) {
+    assertNotSymlink(`${path}.${i}`);
+  }
 
   // Stage-4 MINOR18 — a REPEATED rotation (the live file rotates again before anything
   // ever consumed the PRIOR marker) must not silently overwrite that prior marker with

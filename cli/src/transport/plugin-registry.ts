@@ -89,13 +89,14 @@ export interface PluginEntry<S extends RegistrySocket = RegistrySocket> {
   // computed versionMatch/protocolMatch comparison lives in broker-peek.ts.
   pluginVersion?: string | undefined;
   protocolV?: number | undefined;
+  caps?: readonly string[] | undefined;
   /** Readiness capabilities as advertised by this HELLO. Kept separate from scene
    *  identity so capability negotiation cannot accidentally influence file matching. */
   appHeartbeatMode: AppHeartbeatMode;
 }
 
 // HELLO payload keys that are protocol plumbing, not scene identity.
-const PROTOCOL_KEYS = new Set(['instanceId', 'pluginVersion', 'protocolV']);
+const PROTOCOL_KEYS = new Set(['instanceId', 'pluginVersion', 'protocolV', 'caps']);
 
 function heartbeatMode(data: Record<string, unknown>): AppHeartbeatMode {
   const caps = Array.isArray(data.caps) ? data.caps.filter((cap): cap is string => typeof cap === 'string') : [];
@@ -234,6 +235,9 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
       // version, never a stale one left over from the superseded socket.
       pluginVersion: typeof data.pluginVersion === 'string' ? data.pluginVersion : undefined,
       protocolV: typeof data.protocolV === 'number' ? data.protocolV : undefined,
+      caps: Array.isArray(data.caps)
+        ? data.caps.filter((cap): cap is string => typeof cap === 'string')
+        : undefined,
       appHeartbeatMode: heartbeatMode(data),
     });
     return { instanceId: id, replaced: existing !== undefined, superseded };
@@ -435,6 +439,11 @@ export class PluginRegistry<S extends RegistrySocket = RegistrySocket> {
           // contract as reHelloCount/suspectedZombie above.
           ...(e.pluginVersion !== undefined && { pluginVersion: e.pluginVersion }),
           ...(e.protocolV !== undefined && { protocolV: e.protocolV }),
+          ...((e.caps !== undefined
+            ? { caps: e.caps }
+            : (Array.isArray(e.scene.caps)
+              ? { caps: e.scene.caps.filter((c): c is string => typeof c === 'string') }
+              : {}))),
           ...readiness,
         };
       });

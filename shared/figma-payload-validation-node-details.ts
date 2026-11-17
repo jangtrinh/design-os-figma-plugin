@@ -85,7 +85,7 @@ export function validateScanMetadata(item: ObjectValue, path: string, context: V
     context.object(item.concealed, `${path}.concealed`, CONCEALED_FIELDS, (concealed) => {
       context.array(concealed.reasons, `${path}.concealed.reasons`, CONCEALMENT_REASONS.length, (reason, i) => {
         context.enumValue(reason, `${path}.concealed.reasons[${i}]`, CONCEALMENT_REASONS);
-      });
+      }, 1);
     });
   }
 }

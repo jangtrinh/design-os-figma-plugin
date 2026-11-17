@@ -393,7 +393,8 @@ export async function runGapfillDiff(
     stats.bootBaselineUnreadable = true;
     return [baselineUnreadableNotice(figma.root.name, figma.currentPage.name)];
   }
-  if (!prev) {
+  try {
+    if (!prev) {
     // Nothing to diff, but start the baseline now. Recorded as a first run: the write
     // below sets `baselineWrittenAt`, and without this flag a session that diffed NOTHING
     // would read exactly like one that diffed a full history — the window before this boot
@@ -404,8 +405,11 @@ export async function runGapfillDiff(
     // its per-page skip semantics.
     const firstRun = new Map<string, PageSnapshotResult>();
     for (const page of pages) {
+      stats.lastHopAt = Date.now();
       await yieldToHost();
+      stats.lastHopAt = Date.now();
       try { firstRun.set(page.id, await snapshotPageBounded(page, perf, 'boot', timing)); } catch { /* writeBaseline re-attempts and skips */ }
+      stats.pagesWalked += 1;
     }
     await writeBaseline(pages, bootSnapshotProvider(firstRun, perf, timing), store, stats);
     return [baselineMissingNotice(figma.root.name, figma.currentPage.name)];
@@ -421,7 +425,9 @@ export async function runGapfillDiff(
   }
 
   for (const page of pages) {
+    stats.lastHopAt = Date.now();
     await yieldToHost();
+    stats.lastHopAt = Date.now();
     const prevPage = prevById.get(page.id);
     // A page that refuses to walk (an unloaded dynamic page, a host refusal) costs THIS
     // page's diff for this boot and nothing more: the failure is recorded, every other
@@ -432,12 +438,14 @@ export async function runGapfillDiff(
       walk = await snapshotPageBounded(page, perf, 'boot', timing);
     } catch (err) {
       recordGapfillError(stats, `page walk failed on "${page.name}": ${messageOf(err)}`);
+      stats.pagesWalked += 1;
       continue;
     }
+    stats.pagesWalked += 1;
     const { records: nextRecords, truncated: nextTruncated } = walk;
-    // Cached even when it is incomplete: `resolveBaselinePage` prefers the previous entry
-    // to it, and falls back to it only for a page the baseline has never held at all.
-    walked.set(page.id, walk);
+      // Cached even when it is incomplete: `resolveBaselinePage` prefers the previous entry
+      // to it, and falls back to it only for a page the baseline has never held at all.
+      walked.set(page.id, walk);
     // A walk that dropped nodes cannot be diffed AT EITHER LEVEL. Every dropped node is
     // missing from `records` — and a dropped TOP-LEVEL frame is missing from `top` — with
     // nothing to distinguish "gone" from "unreadable", so both diffs would state
@@ -495,4 +503,8 @@ export async function runGapfillDiff(
   // from the baseline, so the next session's gap-fill reports it instead of losing it.
   await writeBaseline(pages, bootSnapshotProvider(walked, perf, timing), store, stats);
   return edits;
+  } finally {
+    stats.lastHopAt = null;
+    stats.bootPaused = false;
+  }
 }

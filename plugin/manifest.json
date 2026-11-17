@@ -14,7 +14,7 @@
   "relaunchButtons": [
     {
       "command": "open",
-      "name": "Reconnect figma-agent"
+      "name": "Reconnect DESIGN:OS Bridge"
     }
   ],
   "permissions": [

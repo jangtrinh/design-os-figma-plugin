@@ -107,8 +107,13 @@ async function registerPlugin(port: number): Promise<{ ws: WebSocket; received: 
 }
 
 async function sendJob(ws: WebSocket, id: string): Promise<string> {
-  const state = nextFrame<EventMsg>(ws, (frame) => (frame as EventMsg).type === 'JOB_STATE' && (frame as EventMsg).data.jobId !== undefined);
-  ws.send(JSON.stringify(makeRequestFrame(id, 'SET_TEXT', { text: id }, undefined, undefined, undefined, undefined, undefined, undefined, rawFileKey)));
+  const state = nextFrame<EventMsg>(
+    ws,
+    (frame) => (frame as EventMsg).type === 'JOB_STATE'
+      && (frame as EventMsg).data.jobId !== undefined
+      && (frame as EventMsg).data.activity === id,
+  );
+  ws.send(JSON.stringify(makeRequestFrame(id, 'SET_TEXT', { text: id }, id, undefined, undefined, undefined, undefined, undefined, rawFileKey)));
   return ((await state).data as unknown as JobInfo).jobId;
 }
 
@@ -197,4 +202,19 @@ describe('broker retained-resource observer — actual daemon', () => {
     await waitFor(() => observerTornDown && !existsSync(advertisePath));
     expect(getSnapshot).toBeUndefined();
   });
+
+  it('correlates JOB_STATE frames to the specific requested activity rather than an arbitrary state event', async () => {
+    const port = await startBroker(false);
+    await registerPlugin(port);
+    const cli = await connect(port);
+
+    const firstJobPromise = sendJob(cli, 'first-unique-job');
+    const secondJobPromise = sendJob(cli, 'second-unique-job');
+    const [firstId, secondId] = await Promise.all([firstJobPromise, secondJobPromise]);
+
+    expect(firstId).toBeTypeOf('string');
+    expect(secondId).toBeTypeOf('string');
+    expect(firstId).not.toBe(secondId);
+  });
 });
+

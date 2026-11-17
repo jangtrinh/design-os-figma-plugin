@@ -601,7 +601,7 @@ body {
   }
 
   // shared/version.ts
-  var BRIDGE_VERSION = "0.2.1";
+  var BRIDGE_VERSION = "0.2.2";
 
   // plugin/src/ui/activity-feed.ts
   function toActivityRecord(detail) {
@@ -1868,7 +1868,7 @@ body {
   var syncBadge = el("fga-sync-badge");
   var activityView = new ActivityView(el("fga-failure-count"));
   var thinkingOrb = mountThinkingOrb(orbHost);
-  var BUILD_LINE = `v${BRIDGE_VERSION} \xB7 ${true ? "32598ba" : "dev"}`;
+  var BUILD_LINE = `v${BRIDGE_VERSION} \xB7 ${true ? "996b346" : "dev"}`;
   var SYNC_RESULT_HOLD_MS = 4e3;
   var payload = null;
   var hadConnection = false;
@@ -4086,7 +4086,7 @@ body {
       context.object(item.concealed, `${path}.concealed`, CONCEALED_FIELDS, (concealed) => {
         context.array(concealed.reasons, `${path}.concealed.reasons`, CONCEALMENT_REASONS.length, (reason, i) => {
           context.enumValue(reason, `${path}.concealed.reasons[${i}]`, CONCEALMENT_REASONS);
-        });
+        }, 1);
       });
     }
   }

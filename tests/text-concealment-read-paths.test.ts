@@ -84,6 +84,28 @@ describe('concealed text — inspect (scan-node walker)', () => {
     const { frame } = hiddenCard();
     expect(nodeToSpec(frame as unknown as SceneNode)).not.toHaveProperty('concealed');
   });
+
+  it('one scan reads each ancestor property at most once (per-scan concealMemo)', () => {
+    const reads = new Map<string, number>();
+    const outer: Fake = { id: '9:0', name: 'outer' };
+    const props: Fake = {
+      type: 'FRAME', visible: true, opacity: 0.5, clipsContent: true,
+      absoluteBoundingBox: { x: 0, y: 0, width: 1000, height: 1000 }, parent: fakePage(),
+    };
+    for (const [key, value] of Object.entries(props)) {
+      Object.defineProperty(outer, key, {
+        get() { reads.set(key, (reads.get(key) ?? 0) + 1); return value; }, enumerable: true,
+      });
+    }
+    const root = fakeFrame();
+    root.parent = outer;
+    link(root, ...Array.from({ length: 6 }, (_, i) => fakeText({ id: `10:${10 + i}` })));
+
+    const spec = nodeToSpec(root as unknown as SceneNode);
+    expect((spec.children as unknown as Record<string, unknown>[]).length).toBe(6);
+    expect(reads.size).toBeGreaterThan(0);
+    for (const [key, count] of reads) expect({ key, count }).toEqual({ key, count: 1 });
+  });
 });
 
 describe('concealed text — context record', () => {
@@ -160,11 +182,31 @@ describe('concealed text — mirror safety', () => {
     })).not.toThrow();
   });
 
-  it('IMPORT_PAYLOAD still refuses a malformed flag', () => {
-    const spec = { ...concealedSpec(), concealed: { reasons: ['made-up'] } };
+  it('IMPORT_PAYLOAD accepts valid reasons enum values on child nodes', () => {
+    const spec = concealedSpec();
+    const child = (spec.children as unknown as Record<string, unknown>[])[0]!;
+    child.concealed = { reasons: ['invisible', 'clipped', 'transparent', 'tiny', 'unknown'] };
     expect(() => validateImportPayload({
       payload: { version: 1, name: 'x', width: 320, height: 200, tokens: {}, rootNode: spec },
-    })).toThrow(/concealed/);
+    })).not.toThrow();
+  });
+
+  it('IMPORT_PAYLOAD refuses unknown reasons on child nodes', () => {
+    const spec = concealedSpec();
+    const child = (spec.children as unknown as Record<string, unknown>[])[0]!;
+    child.concealed = { reasons: ['made-up'] };
+    expect(() => validateImportPayload({
+      payload: { version: 1, name: 'x', width: 320, height: 200, tokens: {}, rootNode: spec },
+    })).toThrow(/must be one of invisible, transparent, tiny, clipped, unknown/);
+  });
+
+  it('IMPORT_PAYLOAD refuses empty reasons array on child nodes', () => {
+    const spec = concealedSpec();
+    const child = (spec.children as unknown as Record<string, unknown>[])[0]!;
+    child.concealed = { reasons: [] };
+    expect(() => validateImportPayload({
+      payload: { version: 1, name: 'x', width: 320, height: 200, tokens: {}, rootNode: spec },
+    })).toThrow(/must be an array with 1\.\.5 entries/);
   });
 
   it('mirror-verify ignores the flag and says so, rather than reporting a diff', async () => {

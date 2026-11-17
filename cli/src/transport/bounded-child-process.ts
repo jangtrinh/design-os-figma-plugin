@@ -36,6 +36,15 @@ export const RECONCILE_CHILD_BOUNDS: Readonly<ChildBounds> = Object.freeze({
   reapGraceMs: 5_000,
 });
 
+export const MIRROR_SCAN_CHILD_BOUNDS: Readonly<ChildBounds> = Object.freeze({
+  stdoutBytes: 4 * 1024 * 1024,
+  stderrBytes: 256 * 1024,
+  deadlineMs: 35_000,
+  termGraceMs: 2_000,
+  closeGraceMs: 1_000,
+  reapGraceMs: 3_000,
+});
+
 interface RunOptions {
   cwd?: string;
   bounds?: Readonly<ChildBounds>;
@@ -43,13 +52,18 @@ interface RunOptions {
 
 function ignoreLateChildError(): void { /* exit evidence already settled the result */ }
 
+export interface BoundedChildHandle {
+  readonly pid: number | undefined;
+  terminate(signal?: NodeJS.Signals): boolean;
+}
+
 /** Spawn one child with independently bounded output and exit-evidenced settlement. */
 export function runBoundedChild(
   command: string,
   args: readonly string[],
   options: RunOptions,
   done: (outcome: ChildOutcome) => void,
-): void {
+): BoundedChildHandle {
   const bounds = options.bounds ?? RECONCILE_CHILD_BOUNDS;
   let child: ReturnType<typeof spawn>;
   try {
@@ -59,7 +73,7 @@ export function runBoundedChild(
     });
   } catch (error) {
     done(emptyOutcome((error as Error).message, 'throw'));
-    return;
+    return { pid: undefined, terminate: () => false };
   }
 
   let settled = false;
@@ -147,6 +161,19 @@ export function runBoundedChild(
       reapTimer = setTimeout(settle, bounds.reapGraceMs);
     }, bounds.termGraceMs);
   }, bounds.deadlineMs);
+  return {
+    get pid() {
+      return child.pid;
+    },
+    terminate(sig: NodeJS.Signals = 'SIGTERM'): boolean {
+      if (exited || settled) return false;
+      try {
+        return child.kill(sig);
+      } catch {
+        return false;
+      }
+    },
+  };
 }
 
 function emptyOutcome(launchError: string, launchErrorKind: 'throw'): ChildOutcome {
