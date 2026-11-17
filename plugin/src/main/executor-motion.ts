@@ -13,7 +13,7 @@
 //   - on unsupported Figma the one-time warning fires and 4a runs instead
 //   - authored tracks actually play (verify via export-video frame sampling)
 //   - reaction↔timeline seam: whether ON_HOVER can trigger a Motion timeline
-import { pushImportWarning } from './executor-styles';
+import { pushImportWarning } from './executor-styles.ts';
 
 // ── Pure builders ────────────────────────────────────────────────────────
 

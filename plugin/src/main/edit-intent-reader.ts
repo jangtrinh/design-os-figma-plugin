@@ -15,11 +15,11 @@
 //   3. a cap, applied before the value crosses the wire.
 // Each getter is read ONCE and under its OWN try, so one refusing field never costs another
 // field that answered.
-import { distinctMarkdown, shapeAnnotations } from './context-intent-readers';
-import { messageOf } from './context-node-record';
+import { distinctMarkdown, shapeAnnotations } from './context-intent-readers.ts';
+import { messageOf } from './context-node-record.ts';
 import {
   capIntent, hasIntentProp, INTENT_ANNOTATION_CAP, type EditIntent,
-} from '../../../shared/edit-intent';
+} from '../../../shared/edit-intent.ts';
 
 /** Kept in step with `INTENT_PROPS` by tests in both directions: the vocabulary must have a
  *  verb for each name, and the capture pass must actually read each one. */

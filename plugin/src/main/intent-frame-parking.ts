@@ -19,9 +19,9 @@
 // (document-change-capture.ts) decides WHAT is intent-only and owns the posting; this
 // module owns the slots, the counters, the window and the flush order.
 
-import { INTENT_PROPS, mergeIntent } from '../../../shared/edit-intent';
-import type { EditInput } from '../../../shared/edit-feed';
-import type { ComponentChange } from '../../../shared/figma-changes';
+import { INTENT_PROPS, mergeIntent } from '../../../shared/edit-intent.ts';
+import type { EditInput } from '../../../shared/edit-feed.ts';
+import type { ComponentChange } from '../../../shared/figma-changes.ts';
 
 /** How long the designer must be quiet before a held follow-up goes out — longer than the
  *  ~300 ms between keystroke batches the live capture showed, short enough that an agent

@@ -1,4 +1,4 @@
-// The skill's own prose — everything in skills/figma-agent/SKILL.md that is
+// The skill's own prose — everything in skills/design-os-figma-agent/SKILL.md that is
 // NOT the command reference (that section is rendered separately from
 // command-catalog.ts by skill-emitter.ts). Pure data, no fs, no catalog import.
 
@@ -15,7 +15,7 @@ export const SKILL_DESCRIPTION =
 
 export const SKILL_INTRO = `# figma-agent
 
-A thin CLI that talks to the Figma plugin "Ease Design Figma Agent" through a local
+A thin CLI that talks to the Figma plugin "DESIGN:OS Bridge" through a local
 broker (127.0.0.1, ports 9410-9419). One command per invocation; every command prints
 exactly one JSON object to stdout and exits 0, or \`{error:{code,message}}\` and exits 1.`;
 

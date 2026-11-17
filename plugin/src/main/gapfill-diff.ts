@@ -6,9 +6,9 @@
 // clientStorage read/write, the boot diff's control flow). The dependency runs one way:
 // this module imports only the wire format plus TYPES from the walker and the baseline
 // store, and neither of those imports gap-fill — so there is no cycle to route around.
-import type { EditInput, EditOp } from '../../../shared/edit-feed';
-import type { BaselinePage, BaselineRecord } from './gapfill-baseline-store';
-import type { NodeSnapshot, TopLevelRecord } from './page-walk-bounded';
+import type { EditInput, EditOp } from '../../../shared/edit-feed.ts';
+import type { BaselinePage, BaselineRecord } from './gapfill-baseline-store.ts';
+import type { NodeSnapshot, TopLevelRecord } from './page-walk-bounded.ts';
 
 export function toBaselineRecord(rec: NodeSnapshot): BaselineRecord {
   return [rec.id, rec.name, rec.type, rec.x, rec.y, rec.parent];
@@ -202,6 +202,22 @@ export function gapfillEditsForPage(
     edits.push(toGapfillEdit('updated', rec, pageName, changedProps));
   }
   return edits;
+}
+
+/** Filters out gap-fill edits whose node id was already captured live during the boot walk.
+ *  Returns the filtered edits and the count of dropped duplicate edits. Pure. */
+export function filterGapfillEditsAgainstLive(
+  edits: readonly EditInput[],
+  liveNodeIds: ReadonlySet<string>,
+): { edits: EditInput[]; dropped: number } {
+  if (liveNodeIds.size === 0) return { edits: [...edits], dropped: 0 };
+  const kept: EditInput[] = [];
+  let dropped = 0;
+  for (const edit of edits) {
+    if (liveNodeIds.has(edit.nodeId)) dropped += 1;
+    else kept.push(edit);
+  }
+  return { edits: kept, dropped };
 }
 
 // ── The top-level (coarse) signal for a page over the node cap ──────────────────────

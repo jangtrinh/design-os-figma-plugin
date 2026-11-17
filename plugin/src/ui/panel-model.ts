@@ -1,4 +1,4 @@
-import type { ConnectionState } from '../../../shared/protocol';
+import type { ConnectionState } from '../../../shared/protocol.ts';
 
 export type Tone = 'success' | 'warning' | 'info' | 'muted';
 /** The rail is ONE row that hugs its content. 240 is the floor because the host draws the

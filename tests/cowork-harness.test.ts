@@ -281,7 +281,6 @@ describe('cowork — raw target validation and missing-target refusal', () => {
     for (const frame of invalidFrames) {
       const replyPromise = nextFrame<ReplyErr>(cli, (reply) => (reply as ReplyErr).id === frame.id);
       cli.send(JSON.stringify({
-        id: frame.id,
         cmd: 'COWORK',
         params: { waitMs: 30, timeoutMs: 100 },
         v: 1,

@@ -1,6 +1,6 @@
 # `design-os-figma-plugin` Prompt & CLI Cookbook
 
-Copy-paste recipes for **DESIGN:OS Figma Plugin & CLI** (`skills/es-figma-craft/SKILL.md`).
+Copy-paste recipes for **DESIGN:OS Figma Plugin & CLI** (`skills/design-os-figma-craft/SKILL.md`).
 
 ---
 
@@ -25,8 +25,8 @@ Copy-paste recipes for **DESIGN:OS Figma Plugin & CLI** (`skills/es-figma-craft/
 python3 scripts/self_check.py
 
 # Run primary domain verification / workflow
-node bin/figma-agent.mjs status --peek
+node cli/dist/figma-agent.js status --peek
 
 # Run primary CLI command
-node bin/figma-agent.mjs status --peek
+node cli/dist/figma-agent.js status --peek
 ```

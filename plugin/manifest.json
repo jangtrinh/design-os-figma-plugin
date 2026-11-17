@@ -1,5 +1,5 @@
 {
-  "name": "Ease Design Figma Agent",
+  "name": "DESIGN:OS Bridge",
   "id": "ease-design-figma-agent-dev",
   "api": "1.0.0",
   "main": "code.js",
@@ -14,7 +14,7 @@
   "relaunchButtons": [
     {
       "command": "open",
-      "name": "Reconnect figma-agent"
+      "name": "Reconnect DESIGN:OS Bridge"
     }
   ],
   "permissions": [

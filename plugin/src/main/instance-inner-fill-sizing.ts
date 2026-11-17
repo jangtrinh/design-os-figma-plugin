@@ -23,8 +23,8 @@
 // flag is forgiven; the geometry is still checked, by the same machinery as
 // everything else. Drop the flag, keep the measurement.
 
-import { innerChildKey, innerOverrideEntries, keyInnerChildren } from './instance-inner-override-keys';
-import { r2, safe } from './scan-node-utils';
+import { innerChildKey, innerOverrideEntries, keyInnerChildren } from './instance-inner-override-keys.ts';
+import { r2, safe } from './scan-node-utils.ts';
 
 /** Sizing field → the axis whose measurement it names. */
 const AXIS_OF: Readonly<Record<string, string>> = {

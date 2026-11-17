@@ -421,6 +421,7 @@ describe('a failing correction-store write never costs the batch its edits', () 
     const { log } = harness();
     const capture = createDocumentChangeCapture<null>({
       now: () => 1_000,
+      setTimer: () => () => {},
       onBatchStart: () => {},
       actorState: idleActor,
       identity: createEditIdentityCache(),
@@ -480,6 +481,7 @@ describe('a correction-store READ that throws never costs the batch its edits', 
     };
     const capture = createDocumentChangeCapture<CorrectionBatch>({
       now: () => Date.now(),
+      setTimer: () => () => {},
       onBatchStart: () => {},
       actorState: idleActor,
       identity: createEditIdentityCache(),
@@ -518,6 +520,7 @@ describe('the correction store is read ONCE per batch and written at most once',
   function storeBackedHarness() {
     const capture = createDocumentChangeCapture<CorrectionBatch>({
       now: () => Date.now(),
+      setTimer: () => () => {},
       onBatchStart: () => {},
       actorState: idleActor,
       identity: createEditIdentityCache(),

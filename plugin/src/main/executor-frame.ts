@@ -5,16 +5,16 @@
 // in try/catch → HORIZONTAL+WRAP fallback preserving gaps) and applyAutoLayout
 // extracted so the SET_AUTOLAYOUT op reuses the exact same mapping.
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import { createTextNode } from './executor-text';
-import { createRectangleNode, createImageNode, createSvgNode, createImageNodeWithFetch, resolveImagePaint } from './executor-shapes';
-import { figmaColorToHex, exportFillToPaint, mapExportEffects, pushImportWarning, specNodeName } from './executor-styles';
-import { applyStrokes } from './executor-strokes';
-import { createInstanceNode } from './executor-instance';
-import { applyKeyedBindings } from './executor-keyed-vars';
-import { applyTokenRefs } from './executor-variables';
-import { backgroundSizeToScaleMode } from './background-fill';
-import { applyMotionTracks } from './executor-motion';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import { createTextNode } from './executor-text.ts';
+import { createRectangleNode, createImageNode, createSvgNode, createImageNodeWithFetch, resolveImagePaint } from './executor-shapes.ts';
+import { figmaColorToHex, exportFillToPaint, mapExportEffects, pushImportWarning, specNodeName } from './executor-styles.ts';
+import { applyStrokes } from './executor-strokes.ts';
+import { createInstanceNode } from './executor-instance.ts';
+import { applyKeyedBindings } from './executor-keyed-vars.ts';
+import { applyTokenRefs } from './executor-variables.ts';
+import { backgroundSizeToScaleMode } from './background-fill.ts';
+import { applyMotionTracks } from './executor-motion.ts';
 
 /** Recursive dispatcher: payload node → Figma SceneNode. `tokenVars` = token-name → Variable (P3 leg B). */
 export async function createFigmaNode(

@@ -3,8 +3,8 @@
 // then walks the rendered DOM into a FigmaExportPayload.
 // Runs in the plugin UI iframe — pure DOM, no Figma Plugin API here.
 
-import type { FigmaExportPayload } from '../../../shared/figma-payload-types';
-import { buildPayloadFromIframe, waitForStylesReady } from './converter/extract';
+import type { FigmaExportPayload } from '../../../shared/figma-payload-types.ts';
+import { buildPayloadFromIframe, waitForStylesReady } from './converter/extract.ts';
 
 const IFRAME_LOAD_TIMEOUT_MS = 10_000;
 const DEFAULT_RENDER_HEIGHT_PX = 4000; // tall viewport; real height comes from scrollHeight

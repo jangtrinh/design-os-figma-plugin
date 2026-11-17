@@ -23,7 +23,10 @@ for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) PORTS.push(por
 class FakeSocket {
   private listeners: ProbeListeners | null = null;
   closeCount = 0;
-  constructor(readonly port: number) {}
+  readonly port: number;
+  constructor(port: number) {
+    this.port = port;
+  }
   attach(on: ProbeListeners): void { this.listeners = on; }
   detach(): void { this.listeners = null; }
   close(): void { this.closeCount += 1; }

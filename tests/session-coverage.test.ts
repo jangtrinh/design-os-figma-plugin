@@ -28,6 +28,7 @@ const perf = (over: Partial<PerfStatus> = {}): PerfStatus => ({
 });
 
 const capture = (over: Partial<DocumentChangeCaptureStats> = {}): DocumentChangeCaptureStats => ({
+  intentFramesParked: 0, intentFramesCoalesced: 0, sentinelChangesDropped: 0,
   pluginDataChangesDropped: 0, pageFallbacks: 0, errorCount: 0, firstError: null, ...over,
 });
 

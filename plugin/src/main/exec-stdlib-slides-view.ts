@@ -1,12 +1,12 @@
 // `ui.slides.*` view + slide-state helpers (absorption phase-04): transitions, grid/
 // single-slide view, focus, skip. Adapted from the fork's Slides handlers (MIT; see
 // THIRD-PARTY.md), code.js:6808-6999.
-import { requireEditor } from './exec-stdlib-editor';
-import { withCode } from './executor-styles';
-import { resolveSlide } from './exec-stdlib-slides-resolve';
+import { requireEditor } from './exec-stdlib-editor.ts';
+import { withCode } from './executor-styles.ts';
+import { resolveSlide } from './exec-stdlib-slides-resolve.ts';
 import {
   TRANSITION_STYLES, TRANSITION_CURVES, TIMING_TYPES, type TransitionConfig,
-} from './exec-stdlib-slides-types';
+} from './exec-stdlib-slides-types.ts';
 
 /** Absorbed fact 5: the valid style/curve/timing vocabularies are not in the fork's
  * plugin code — validate against them and refuse an unknown value naming the valid

@@ -1,6 +1,6 @@
-import type { FigmaExportTokens } from './figma-payload-types';
-import { type ObjectValue, ValidationContext } from './figma-payload-validation-context';
-import { validateColor, validateEffect } from './figma-payload-validation-values';
+import type { FigmaExportTokens } from './figma-payload-types.ts';
+import { type ObjectValue, ValidationContext } from './figma-payload-validation-context.ts';
+import { validateColor, validateEffect } from './figma-payload-validation-values.ts';
 
 const TOKEN_FIELDS = new Set(['colors', 'typography', 'spacing', 'radii', 'shadows']);
 const COLOR_TOKEN_FIELDS = new Set(['name', 'hex', 'color']);

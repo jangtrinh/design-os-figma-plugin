@@ -1,8 +1,8 @@
 // Slot lookup/serialization shared by `create`+`list` (exec-stdlib-slot.ts) and
 // `append`+`reset` (exec-stdlib-slot-content.ts) — kept separate so neither of those
 // files has to import the other (would be circular).
-import { withCode } from './executor-styles';
-import type { SlotInfo, SlotTarget } from './exec-stdlib-slot-types';
+import { withCode } from './executor-styles.ts';
+import type { SlotInfo, SlotTarget } from './exec-stdlib-slot-types.ts';
 
 /** `componentPropertyReferences.slotContentId` is a REAL, live field (Figma Slots,
  * GA June 2026) but `@figma/plugin-typings` (installed: ^1.130.0) has not caught up

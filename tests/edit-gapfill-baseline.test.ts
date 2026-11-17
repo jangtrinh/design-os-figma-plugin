@@ -122,8 +122,10 @@ describe('runGapfillDiff — no baseline at all', () => {
     await runGapfillDiff(pages, createMemoryBaselineStore(), stats);
 
     expect(stats.baselineFirstRun).toBe(true);
+    expect(stats.pagesWalked).toBe(1);
     expect(stats.baselineWrittenAt).not.toBeNull();
     expect(toGapfillStatus(stats).baselineFirstRun).toBe(true);
+    expect(toGapfillStatus(stats).pagesWalked).toBe(1);
   });
 
   it('a session that DID diff a prior baseline is not a first run, and says nothing about one', async () => {
@@ -136,7 +138,9 @@ describe('runGapfillDiff — no baseline at all', () => {
     await runGapfillDiff(pages, store, stats);
 
     expect(stats.baselineFirstRun).toBe(false);
+    expect(stats.pagesWalked).toBe(1);
     expect('baselineFirstRun' in toGapfillStatus(stats)).toBe(false);
+    expect(toGapfillStatus(stats).pagesWalked).toBe(1);
   });
 
   it('an unparseable stored value is treated as MISSING, never as an empty baseline (which would fabricate a whole-file create storm)', async () => {
@@ -300,7 +304,7 @@ describe('the truncation notice names the side that is actually over the cap', (
 
 describe('writeBaseline — the storage quota REFUSAL', () => {
   function otherFileBaseline(writtenAt: string): FileBaseline {
-    return { writtenAt, writtenBy: 'Owner', pages: [{ id: 'x', name: 'X', truncated: false, top: [], records: [] }] };
+    return { fileKey: null, fileName: 'Other', writtenAt, writtenBy: 'Owner', pages: [{ id: 'x', name: 'X', truncated: false, top: [], records: [] }] };
   }
 
   it('a refusal evicts the OLDEST other file\'s baseline, retries once, and succeeds', async () => {
@@ -511,7 +515,8 @@ describe('runGapfillDiff — the baseline must belong to THIS file', () => {
 
     const perf = createPerfStats();
     markBootComplete(perf);
-    const coverage = buildPluginCoverage({ gapfill: toGapfillStatus(stats), perf: toPerfStatus(perf) });
+    const perfStatus = toPerfStatus(perf);
+    const coverage = buildPluginCoverage({ gapfill: toGapfillStatus(stats), ...(perfStatus ? { perf: perfStatus } : {}) });
     expect(coverage).toEqual({
       complete: false,
       gaps: [
@@ -1207,5 +1212,16 @@ describe('the perf block STATUS reports', () => {
     markBootComplete(perf);
 
     expect(toPerfStatus(perf)!.propertyReadErrors).toBe(1);
+  });
+
+  it('resets lastHopAt to null and bootPaused to false when the boot diff completes', async () => {
+    const pages = [fakePage('p1', 'Screens', [fakeNode('a')])];
+    installFigma({ pages });
+    const stats = createGapfillStats();
+
+    await runGapfillDiff(pages, createMemoryBaselineStore(), stats);
+
+    expect(stats.lastHopAt).toBeNull();
+    expect(stats.bootPaused).toBe(false);
   });
 });

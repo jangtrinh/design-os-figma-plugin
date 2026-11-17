@@ -26,7 +26,7 @@ const PROBE_KEY = '__easeSeatProbe';
  * broker transport and is injected in unit tests.
  *
  * LIVE-E2E PENDING: exercised end-to-end only against a live Figma plugin
- * (needs the Ease Design Figma Agent plugin open in Figma Desktop). The wiring
+ * (needs the DESIGN:OS Bridge plugin open in Figma Desktop). The wiring
  * and error handling are unit-tested with a stub runner; the round-trips
  * themselves await a live-canvas smoke test.
  */

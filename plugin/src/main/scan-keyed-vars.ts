@@ -24,9 +24,9 @@
 // its token twin in scan-token-refs.ts, which keeps this module free of any import
 // back from the walker — no cycle.
 
-import type { FigmaKeyedBinding } from '../../../shared/figma-payload-types';
-import { innerChildKey, innerOverrideEntries, keyInnerChildren } from './instance-inner-override-keys';
-import { readBindings } from './scan-node-utils';
+import type { FigmaKeyedBinding } from '../../../shared/figma-payload-types.ts';
+import { innerChildKey, innerOverrideEntries, keyInnerChildren } from './instance-inner-override-keys.ts';
+import { readBindings } from './scan-node-utils.ts';
 
 /**
  * The bound ids of the inner children an instance OVERRIDES (spec-005 P15).

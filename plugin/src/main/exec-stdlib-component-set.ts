@@ -11,11 +11,11 @@
 // to this one call, not a second undo system, and it does not substitute for
 // `--undo-group`, which a caller MUST use for atomicity against a failure elsewhere
 // in the same script (stated in knowledge/component-sets.md).
-import { withCode } from './executor-styles';
-import { WARN_ABOVE, parseComboName, sameAxisMap } from './exec-stdlib-component-matrix';
-import { buildModeA, buildModeB } from './exec-stdlib-component-build';
-import { safeCleanup } from '../../../shared/safe-cleanup';
-import { requireDesignFile } from './exec-stdlib-editor';
+import { withCode } from './executor-styles.ts';
+import { WARN_ABOVE, parseComboName, sameAxisMap } from './exec-stdlib-component-matrix.ts';
+import { buildModeA, buildModeB } from './exec-stdlib-component-build.ts';
+import { safeCleanup } from '../../../shared/safe-cleanup.ts';
+import { requireDesignFile } from './exec-stdlib-editor.ts';
 
 export interface ComponentSetOpts {
   base?: string;

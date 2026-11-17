@@ -73,21 +73,38 @@ export async function execute(opts: AuditDsOpts, runner: Runner = runCommand): P
     writeFileSync(factsPath, JSON.stringify(facts, null, 2));
   }
 
-  const report = detectAudit(facts, { sections: opts.sections });
+  const report = detectAudit(facts, {
+    ...(opts.sections !== undefined ? { sections: opts.sections } : {}),
+  });
 
-  if (opts.out === undefined) return { report, factsPath };
+  if (opts.out === undefined) {
+    return {
+      report,
+      ...(factsPath !== undefined ? { factsPath } : {}),
+    };
+  }
   const abs = resolve(opts.out);
   writeFileSync(abs, JSON.stringify(report, null, 2));
-  return { path: abs, file: report.file, summary: report.summary, factsPath };
+  return {
+    path: abs,
+    file: report.file,
+    summary: report.summary,
+    ...(factsPath !== undefined ? { factsPath } : {}),
+  };
 }
 
 export async function run(args: CommandArgs): Promise<unknown> {
+  const sections = args.str('sections')?.split(',').map((s) => s.trim()).filter(Boolean);
+  const out = args.str('out');
+  const timeout = args.num('timeout');
+  const facts = args.str('facts');
+  const fromFacts = args.str('from-facts');
   const res = await execute({
-    out: args.str('out'),
-    timeout: args.num('timeout'),
-    sections: args.str('sections')?.split(',').map((s) => s.trim()).filter(Boolean),
-    facts: args.str('facts'),
-    fromFacts: args.str('from-facts'),
+    ...(out !== undefined ? { out } : {}),
+    ...(timeout !== undefined ? { timeout } : {}),
+    ...(sections !== undefined ? { sections } : {}),
+    ...(facts !== undefined ? { facts } : {}),
+    ...(fromFacts !== undefined ? { fromFacts } : {}),
   });
   // With --out stdout is the compact {path,file,summary(,factsPath)}; without it, the full report.
   return res.path !== undefined

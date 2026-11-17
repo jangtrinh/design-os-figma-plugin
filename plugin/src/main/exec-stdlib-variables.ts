@@ -5,8 +5,8 @@
 // against. Every helper verifies its own write by re-reading the canvas and throws
 // `withCode(..., 'E_EVAL')` on a mismatch — an unverified success is exactly the
 // silent-failure class this stdlib exists to kill.
-import { resolveVariable, valuesEqual } from './executor-variables';
-import { withCode } from './executor-styles';
+import { resolveVariable, valuesEqual } from './executor-variables.ts';
+import { withCode } from './executor-styles.ts';
 
 /** A candidate list for an error message, capped so one huge file can't flood a
  * reply — with an explicit "+N more" tail so a truncated list never reads as
@@ -173,7 +173,7 @@ async function setModeValue(
   // Stage-4 review (PR #10 issue 1): valuesEqual handles every real VariableValue
   // shape (RGBA epsilon, VARIABLE_ALIAS by target id, primitives strict) — it is
   // never reference equality, which broke every non-COLOR alias write.
-  if (!valuesEqual(actual, value as VariableValue)) {
+  if (actual === undefined || !valuesEqual(actual, value as VariableValue)) {
     throw withCode(new Error(`setModeValue applied but "${modeName}" reads back ${JSON.stringify(actual)}, not ${JSON.stringify(value)}`), 'E_EVAL');
   }
   return { id: variable.id, name: variable.name, mode: { modeId: mode.modeId, name: mode.name }, value: actual };

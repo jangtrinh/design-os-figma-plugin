@@ -69,13 +69,17 @@ function collectCandidates(
   while (stack.length > 0) {
     const at = stack.pop() as number;
     const slot = slots[at];
+    if (!slot) continue;
     if (slot.size >= MIN_TEMPLATE_NODES && (groups.get(slot.sig) ?? 0) >= MIN_OCCURRENCES) {
       const list = bySig.get(slot.sig);
       if (list === undefined) bySig.set(slot.sig, [at]);
       else list.push(at);
       continue;
     }
-    for (let i = slot.children.length - 1; i >= 0; i -= 1) stack.push(slot.children[i]);
+    for (let i = slot.children.length - 1; i >= 0; i -= 1) {
+      const childIdx = slot.children[i];
+      if (childIdx !== undefined) stack.push(childIdx);
+    }
   }
   return bySig;
 }
@@ -84,16 +88,19 @@ function collectCandidates(
 function buildTemplate(slots: readonly Slot[], order: readonly number[], root: number): ContextTemplate {
   const relativeOf = new Map<number, string>();
   order.forEach((at, rel) => relativeOf.set(at, String(rel)));
+  const rootSlot = slots[root];
+  const rootDepth = rootSlot ? rootSlot.depth : 0;
   return {
     nodes: order.map((at, rel) => {
-      const shape: Record_ = { ...slots[at].record };
+      const currentSlot = slots[at];
+      const shape: Record_ = currentSlot ? { ...currentSlot.record } : {};
       delete shape.name; // per-occurrence by construction
       shape.id = String(rel);
-      const parentIndex = slots[at].parentIndex;
+      const parentIndex = currentSlot ? currentSlot.parentIndex : null;
       shape.parentId = rel === 0 || parentIndex === null ? null : (relativeOf.get(parentIndex) ?? null);
       // Relative, so the same template is reusable at any depth; the occurrence supplies the
       // absolute number.
-      shape.depth = slots[at].depth - slots[root].depth;
+      shape.depth = (currentSlot ? currentSlot.depth : 0) - rootDepth;
       return shape;
     }),
   };
@@ -117,7 +124,10 @@ export function foldContextTemplates(
       order.forEach((at, rel) => {
         if (rel === 0) return; // the root's own id and name ARE the occurrence record's
         consumed.add(at);
-        rootMap[String(rel)] = { id: slots[at].id, name: slots[at].record.name as string, at };
+        const slotAt = slots[at];
+        if (slotAt) {
+          rootMap[String(rel)] = { id: slotAt.id, name: slotAt.record.name as string, at };
+        }
       });
       occurrenceOf.set(root, { sig, rootMap });
       if (templates[sig] === undefined) templates[sig] = buildTemplate(slots, order, root);
@@ -129,6 +139,7 @@ export function foldContextTemplates(
     if (consumed.has(at)) continue;
     const occurrence = occurrenceOf.get(at);
     const slot = slots[at];
+    if (!slot) continue;
     if (occurrence === undefined) { folded.push({ ...slot.record }); continue; }
     folded.push({
       id: slot.id,

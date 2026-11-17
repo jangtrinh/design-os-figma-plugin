@@ -2,8 +2,8 @@
 // the sub-walkers (layout / text / paint / instance) can type their `out` parameter
 // without importing scan-node.ts back (circular import).
 
-import type { FigmaExportNode } from '../../../shared/figma-payload-types';
-import type { Concealment } from './text-concealment';
+import type { FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import type { Concealment } from './text-concealment.ts';
 
 /** Material captured beyond the reversible FigmaExportNode fields. */
 export interface ScanExtensions {
@@ -12,7 +12,8 @@ export interface ScanExtensions {
   // variables) stay here only — the loss stays visible instead of silent.
   figmaScanBindings?: Record<string, string>;
   // The raw node.type when the schema cannot model it: COMPONENT / COMPONENT_SET
-  // still degrade to FRAME (their definition is the file's, not a payload's).
+  // still degrade to FRAME (their definition is the file's, not a payload's), and so
+  // does every type the walker does not know (a code layer is CODE_INSTANCE).
   // INSTANCE is NO LONGER here — it is a first-class type since spec-005 P2.
   figmaScanSourceType?: string;
   // Fields overridden on the instance's INNER children (deduped names). The mirror

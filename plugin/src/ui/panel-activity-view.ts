@@ -1,7 +1,7 @@
-import { pushActivity, type ActivityRecord, type ActivityResult } from './activity-feed';
-import { activitySentence } from './activity-sentence';
-import { makeLucideIcon, type LucideIconName } from './lucide-icons';
-import { applyActivityOutcome, BoundedKeySet, currentActivity, landTerminalActivity } from './panel-view-state';
+import { pushActivity, type ActivityRecord, type ActivityResult } from './activity-feed.ts';
+import { activitySentence } from './activity-sentence.ts';
+import { makeLucideIcon, type LucideIconName } from './lucide-icons.ts';
+import { applyActivityOutcome, BoundedKeySet, currentActivity, landTerminalActivity } from './panel-view-state.ts';
 
 export function replaceIcon(target: HTMLElement, name: LucideIconName, spinning = false): void {
   const kept = Array.from(target.children).filter((child) => child.classList.contains('rail-badge'));
@@ -16,7 +16,8 @@ export function labelControl(target: HTMLElement, label: string): void {
 }
 
 export interface FailureBadgeTarget {
-  hidden: boolean;
+  get hidden(): boolean | string;
+  set hidden(value: boolean);
   textContent: string | null;
   setAttribute(name: string, value: string): void;
 }
@@ -45,8 +46,11 @@ export class ActivityView {
   private records: ActivityRecord[] = [];
   private readonly activeTools = new Map<string, string>();
   readonly failures = new BoundedKeySet();
+  private readonly failureCount: FailureBadgeTarget;
 
-  constructor(private readonly failureCount: FailureBadgeTarget) {}
+  constructor(failureCount: FailureBadgeTarget) {
+    this.failureCount = failureCount;
+  }
 
   push(record: ActivityRecord): void {
     this.records = pushActivity(this.records, record);

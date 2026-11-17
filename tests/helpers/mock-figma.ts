@@ -169,12 +169,13 @@ export class FakeNode {
   parent: FakeNode | null = null;
   children: FakeNode[] = [];
   boundVariables: Record<string, unknown> = {};
+  text?: { characters: string; fontName?: FontName; fontSize?: number; fills?: unknown[] };
   private _corners: Corners = { tl: 0, tr: 0, br: 0, bl: 0 };
   private _sides: Sides = { top: 1, right: 1, bottom: 1, left: 1 };
   private _lsh: string | undefined;
   private _lsv: string | undefined;
   private _name = 'Node';
-  private _main: { id?: string; key?: string; name?: string } | null = null;
+  private _main: { id?: string | undefined; key?: string | undefined; name?: string | undefined } | null = null;
   [key: string]: unknown;
 
   constructor(type: string) {
@@ -195,7 +196,7 @@ export class FakeNode {
   get name(): string { return this._name; }
 
   // ── mainComponent: sync getter is UNUSABLE under documentAccess: dynamic-page ──
-  set mainComponent(v: { id?: string; key?: string; name?: string } | null) { this._main = v; }
+  set mainComponent(v: { id?: string | undefined; key?: string | undefined; name?: string | undefined } | null) { this._main = v; }
   get mainComponent(): never {
     throw new Error(
       'in get_mainComponent: Cannot call with documentAccess: dynamic-page. '
@@ -207,7 +208,7 @@ export class FakeNode {
   get mainRefId(): string | undefined { return this._main?.id; }
 
   /** InstanceNode.getMainComponentAsync — the ONLY way to reach the main live. */
-  async getMainComponentAsync(): Promise<{ id?: string; key?: string; name?: string } | null> {
+  async getMainComponentAsync(): Promise<{ id?: string | undefined; key?: string | undefined; name?: string | undefined } | null> {
     return this._main;
   }
 
@@ -642,7 +643,10 @@ export class FakeNode {
       }
     }
     const current = (this.componentProperties as Record<string, { type?: string; value: unknown }>) ?? {};
-    const next: Record<string, { type: string; value: unknown }> = { ...(current as never) };
+    const next: Record<string, { type: string; value: unknown }> = {};
+    for (const [k, item] of Object.entries(current)) {
+      if (item) next[k] = { type: item.type ?? 'VARIANT', value: item.value };
+    }
     let rebuildTo: FakeNode | undefined;
     for (const [k, v] of Object.entries(props)) {
       const type = defs?.[k]?.type ?? current[k]?.type ?? 'VARIANT';
@@ -795,8 +799,8 @@ export interface FakeVariable {
  * to an id absent from this list = the library/remote-variable edge (a library
  * variable is real and bindable in Figma, but this call never lists it). */
 let localVariables: FakeVariable[] = [];
-export function setMockLocalVariables(vars: FakeVariable[]): void {
-  localVariables = vars;
+export function setMockLocalVariables(vars: Array<FakeVariable | { id: string; name: string }>): void {
+  localVariables = vars.map((v) => ('remove' in v ? v : { ...v, remove: () => {} } as FakeVariable));
 }
 
 /** A local variable that already EXISTS in the file — what a rebuild-from-spec
@@ -827,8 +831,8 @@ export function makeMockKeyedLocalVariable(name: string, key: string, resolvedTy
  * spec-005 P7 gap), they DO answer getVariableByIdAsync with remote=true + a key,
  * and importVariableByKeyAsync links that same variable back by key. */
 let libraryVariables: FakeVariable[] = [];
-export function setMockLibraryVariables(vars: FakeVariable[]): void {
-  libraryVariables = vars;
+export function setMockLibraryVariables(vars: Array<FakeVariable | { id: string; name: string }>): void {
+  libraryVariables = vars.map((v) => ('remove' in v ? v : { ...v, remove: () => {} } as FakeVariable));
 }
 
 /** A published library variable: bound by id on the canvas, reattached by key. */
@@ -913,6 +917,9 @@ function createVariable(name: string, collection: FakeCollection, resolvedType: 
     // all (stage-4 review, PR #10 issue 1).
     setValueForMode(modeId: string, value: unknown) {
       (this.valuesByMode as Record<string, unknown>)[modeId] = JSON.parse(JSON.stringify(value));
+    },
+    remove() {
+      localVariables = localVariables.filter((x) => x !== v);
     },
   };
   localVariables.push(v);

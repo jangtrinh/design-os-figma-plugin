@@ -22,7 +22,9 @@ import { writePrivateFileExclusive } from './private-file-write.ts';
 // Mirrors broker-daemon.ts's own `HEARTBEAT_MS` override (same env var, same
 // fallback) — see envMs's doc for why this must be the ONE shared reader, not a
 // second hardcoded 30_000 that could drift from the cadence it is meant to track.
-const HEARTBEAT_MS = envMs('FIGMA_AGENT_HEARTBEAT_MS', HEARTBEAT_INTERVAL_MS);
+function heartbeatMs(): number {
+  return envMs('FIGMA_AGENT_HEARTBEAT_MS', HEARTBEAT_INTERVAL_MS);
+}
 
 const SPAWN_POLL_MS = 50;
 const SPAWN_DEADLINE_MS = 5_000;
@@ -86,7 +88,7 @@ export function readAdvertisement(path: string = BROKER_FILE): BrokerAdvertiseme
  * could silently drift from it.
  */
 export function isAdvertisementLive(ad: BrokerAdvertisement): boolean {
-  return isPidAlive(ad.pid) && Date.now() - ad.lastSeen < HEARTBEAT_STALE_MS + HEARTBEAT_MS;
+  return isPidAlive(ad.pid) && Date.now() - ad.lastSeen < HEARTBEAT_STALE_MS + heartbeatMs();
 }
 
 /**

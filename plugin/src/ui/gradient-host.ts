@@ -16,7 +16,7 @@
 // changes, and it sends the user's config off-machine. Pinned package, pinned version,
 // loud failure is the trade we take instead.
 
-import type { ShaderGradientProps } from '../../../shared/shader-gradient-presets';
+import type { ShaderGradientProps } from '../../../shared/shader-gradient-presets.ts';
 
 /**
  * Pinned exactly. A range would let a background republish change what a bake produces.

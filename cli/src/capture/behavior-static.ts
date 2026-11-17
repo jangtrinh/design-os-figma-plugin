@@ -68,7 +68,7 @@ export function inPageBehaviorStatic(): StaticBehavior {
           const style: Record<string, string> = {};
           for (let i = 0; i < kr.style.length; i++) {
             const prop = kr.style[i];
-            style[prop] = kr.style.getPropertyValue(prop);
+            if (prop !== undefined) style[prop] = kr.style.getPropertyValue(prop);
           }
           for (const offset of offsets) steps.push({ offset, style });
         }
@@ -83,7 +83,7 @@ export function inPageBehaviorStatic(): StaticBehavior {
           const props: Record<string, string> = {};
           for (let i = 0; i < sr.style.length; i++) {
             const p = sr.style[i];
-            props[p] = sr.style.getPropertyValue(p);
+            if (p !== undefined) props[p] = sr.style.getPropertyValue(p);
           }
           if (base && Object.keys(props).length) hoverRules.push({ selector: base, pseudo, props });
         }

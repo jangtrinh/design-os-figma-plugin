@@ -27,8 +27,10 @@ describe('safeCleanup', () => {
 
   it('preserves a custom error subclass\'s code and message byte-for-byte', () => {
     class CliError extends Error {
-      constructor(readonly code: string, message: string) {
+      readonly code: string;
+      constructor(code: string, message: string) {
         super(message);
+        this.code = code;
       }
     }
     const original = new CliError('E_EVAL', 'exact message must survive');

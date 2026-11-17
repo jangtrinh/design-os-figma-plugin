@@ -1,8 +1,8 @@
-import type { ConnectionState } from '../../../shared/protocol';
+import type { ConnectionState } from '../../../shared/protocol.ts';
 import type { OrbState } from 'thinking-orbs/engine';
-import { commandOrbPresentation } from './orb-command-state';
-import { paintThinkingOrb } from './thinking-orb-painter';
-import { mountThinkingOrbWorker } from './thinking-orb-worker-host';
+import { commandOrbPresentation } from './orb-command-state.ts';
+import { paintThinkingOrb } from './thinking-orb-painter.ts';
+import { mountThinkingOrbWorker } from './thinking-orb-worker-host.ts';
 
 declare const __THINKING_ORB_WORKER__: string;
 

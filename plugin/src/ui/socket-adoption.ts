@@ -6,7 +6,7 @@
 // Nothing here touches the DOM, a timer, or a real WebSocket type — it reads
 // `readyState` and calls `send`/`close` on whatever it is handed.
 
-import type { HandshakeBatch, PreOpenBuffer } from './outbound-buffer';
+import type { HandshakeBatch, PreOpenBuffer } from './outbound-buffer.ts';
 
 // WebSocket readiness constants, inlined so this module needs no DOM lib reference.
 export const SOCKET_CONNECTING = 0;

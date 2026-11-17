@@ -8,18 +8,18 @@
 //
 // The environment is INJECTED (`GetContextEnv`) rather than read off `figma` inline, so the
 // whole command is drivable from plain fixture objects. main.ts supplies the live one.
-import { assertDedupConservation, dedupContextPayload } from '../../../shared/context-dedup';
-import { CHUNK_LIMIT, CONTEXT_SCHEMA, EXEC_JS_MAX_TIMEOUT_MS } from '../../../shared/protocol';
-import { utf8ByteLength } from '../../../shared/utf8-byte-length';
+import { assertDedupConservation, dedupContextPayload } from '../../../shared/context-dedup.ts';
+import { CHUNK_LIMIT, CONTEXT_SCHEMA, EXEC_JS_MAX_TIMEOUT_MS } from '../../../shared/protocol.ts';
+import { utf8ByteLength } from '../../../shared/utf8-byte-length.ts';
 import {
   countAttachedDevResources, createContextIntentReader, noDevResourcesRead, readSubtreeDevResources,
-} from './context-intent';
-import type { ContextNodeLike } from './context-node-record';
+} from './context-intent.ts';
+import type { ContextNodeLike } from './context-node-record.ts';
 import {
   contextBoundedNumber, contextFlag, contextMaxDepth, resolveContextTarget,
-} from './context-params';
-import { resolveContextRefs, type ContextRefsDeps } from './context-refs';
-import { walkContext } from './context-walk';
+} from './context-params.ts';
+import { resolveContextRefs, type ContextRefsDeps } from './context-refs.ts';
+import { walkContext } from './context-walk.ts';
 
 type Params = Record<string, unknown>;
 

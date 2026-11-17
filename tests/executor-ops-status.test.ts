@@ -9,6 +9,7 @@ import { opStatus } from '../plugin/src/main/executor-ops.ts';
 import type { DocumentChangeCaptureStats } from '../plugin/src/main/document-change-capture.ts';
 import {
   createGapfillStats, recordGapfillError, recordGapfillEviction, toGapfillStatus,
+  updateBootPaused,
 } from '../plugin/src/main/gapfill-status.ts';
 
 describe('opStatus — editorType', () => {
@@ -88,6 +89,9 @@ describe('opStatus — the gap-fill block', () => {
     recordGapfillEviction(stats, 'figma-edit-baseline-v2:other');
     recordGapfillError(stats, 'first failure');
     recordGapfillError(stats, 'a later, derived failure');
+    stats.pagesWalked = 5;
+    stats.bootPaused = true;
+    stats.dedupedLiveEdits = 3;
 
     const gapfill = opStatus([], 0, toGapfillStatus(stats)).gapfill as Record<string, unknown>;
 
@@ -99,9 +103,35 @@ describe('opStatus — the gap-fill block', () => {
       baselineBytes: 1234,
       legacyCleared: 2,
       baselineEvicted: ['figma-edit-baseline-v2:other'],
+      pagesWalked: 5,
+      bootPaused: true,
+      dedupedLiveEdits: 3,
       errors: ['first failure'], // the FIRST message — the cause, not the cascade
       errorCount: 2,
     });
+  });
+
+  it('updateBootPaused marks bootPaused when elapsed since last hop reaches threshold', () => {
+    const stats = createGapfillStats();
+    stats.lastHopAt = 1000;
+    expect(updateBootPaused(stats, false, 4000)).toBe(false);
+    expect(stats.bootPaused).toBe(false);
+
+    expect(updateBootPaused(stats, true, 2500)).toBe(false);
+    expect(stats.bootPaused).toBe(false);
+
+    expect(updateBootPaused(stats, true, 3000)).toBe(true);
+    expect(stats.bootPaused).toBe(true);
+    expect(toGapfillStatus(stats).bootPaused).toBe(true);
+
+    // When a timer hop occurs, lastHopAt is refreshed and elapsed falls below threshold
+    stats.lastHopAt = 3000;
+    expect(updateBootPaused(stats, true, 3050)).toBe(false);
+    expect(stats.bootPaused).toBe(false);
+
+    // When boot completes (inFlight becomes false), bootPaused is false
+    expect(updateBootPaused(stats, false, 6000)).toBe(false);
+    expect(stats.bootPaused).toBe(false);
   });
 });
 
