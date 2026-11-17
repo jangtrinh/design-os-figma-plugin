@@ -8,10 +8,10 @@
 //   - A vector auto-resizes to its network's bounding box but does NOT move, so x/y has to
 //     be set from the network's absolute origin or the line lands wherever the node was.
 
-import { pointsToVectorNetwork } from '../../../shared/connector-geometry';
-import type { ConnectorIntent, Point, VectorNetworkSpec } from '../../../shared/connector-types';
-import { loadBestFont } from './executor-fonts';
-import { stampNodeConnectionId } from './connector-store';
+import { pointsToVectorNetwork } from '../../../shared/connector-geometry.ts';
+import type { ConnectorIntent, Point, VectorNetworkSpec } from '../../../shared/connector-types.ts';
+import { loadBestFont } from './executor-fonts.ts';
+import { stampNodeConnectionId } from './connector-store.ts';
 
 const LABEL_SIZE = 11;
 
@@ -32,15 +32,22 @@ const PILL_RADIUS = 4;
 
 /** Where a label reads best: the middle of the polyline's longest straight run. */
 function labelAnchor(points: readonly Point[]): Point {
-  let best = 0;
+  const p0 = points[0] ?? { x: 0, y: 0 };
+  if (points.length <= 1) return p0;
+  let best = 1;
   let bestLength = -1;
   for (let i = 1; i < points.length; i += 1) {
-    const length = Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
+    const cur = points[i];
+    const prev = points[i - 1];
+    if (!cur || !prev) continue;
+    const length = Math.abs(cur.x - prev.x) + Math.abs(cur.y - prev.y);
     if (length > bestLength) { bestLength = length; best = i; }
   }
+  const curr = points[best] ?? p0;
+  const previous = points[best - 1] ?? p0;
   return {
-    x: (points[best].x + points[best - 1].x) / 2,
-    y: (points[best].y + points[best - 1].y) / 2,
+    x: (curr.x + previous.x) / 2,
+    y: (curr.y + previous.y) / 2,
   };
 }
 

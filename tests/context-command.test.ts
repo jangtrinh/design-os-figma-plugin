@@ -14,7 +14,7 @@ const reply = { schema: 'context/1', nodes: [{ id: '1:2' }], refs: {}, budget: {
  *  keeps that a failed assertion rather than live broker I/O in CI: the round-1 RED for the
  *  valueless-flag bug was produced by a `run()` call that genuinely reached the owner's
  *  plugin. */
-function stubRunner(calls: { cmd: string; params: unknown; opts?: Record<string, unknown> }[] = []) {
+function stubRunner(calls: { cmd: string; params: unknown; opts?: Record<string, unknown> | undefined }[] = []) {
   return async (cmd: string, params: unknown, opts?: Record<string, unknown>): Promise<unknown> => {
     calls.push({ cmd, params, opts });
     if (cmd === 'GET_CONTEXT') return reply;
@@ -63,7 +63,7 @@ describe('context command — params', () => {
 
 describe('context command — the call', () => {
   it('asserts read-only so the read bypasses the mutation FIFO, and prints the reply', async () => {
-    const calls: { cmd: string; params: unknown; opts?: Record<string, unknown> }[] = [];
+    const calls: { cmd: string; params: unknown; opts?: Record<string, unknown> | undefined }[] = [];
     const runner = async (cmd: string, params: unknown, opts?: Record<string, unknown>): Promise<unknown> => {
       calls.push({ cmd, params, opts });
       if (cmd === 'GET_CONTEXT') return reply;

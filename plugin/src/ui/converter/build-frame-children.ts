@@ -7,9 +7,9 @@
 // Note: circular import with computed-walk.ts/build-frame.ts is intentional and
 // safe — esbuild resolves function references at call time (see computed-walk.ts).
 
-import type { FigmaExportNode } from '../../../../shared/figma-payload-types';
-import { buildDirectTextNode, extractPseudoElement } from './build-text';
-import { computedElementToNode } from './computed-walk';
+import type { FigmaExportNode } from '../../../../shared/figma-payload-types.ts';
+import { buildDirectTextNode, extractPseudoElement } from './build-text.ts';
+import { computedElementToNode } from './computed-walk.ts';
 
 /**
  * Heuristic: does this element have an explicitly authored width/height

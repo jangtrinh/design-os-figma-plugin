@@ -1,9 +1,9 @@
 // `ui.figjam.board` / `ui.figjam.connections` — read-only helpers (absorption
 // phase-03). Adapted from the fork's board-walk/connections handlers (MIT; see
 // THIRD-PARTY.md), code.js:6361-6501.
-import { requireEditor } from './exec-stdlib-editor';
-import { figmaColorToHex } from './executor-styles';
-import { MAX_BOARD_READ_NODES, MAX_CONNECTORS_READ, type BoardOpts } from './exec-stdlib-figjam-types';
+import { requireEditor } from './exec-stdlib-editor.ts';
+import { figmaColorToHex } from './executor-styles.ts';
+import { MAX_BOARD_READ_NODES, MAX_CONNECTORS_READ, type BoardOpts } from './exec-stdlib-figjam-types.ts';
 
 const TABLE_READ_ROW_CAP = 10;
 

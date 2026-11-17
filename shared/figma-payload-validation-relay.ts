@@ -1,5 +1,5 @@
-import type { FigmaExportPayload } from './figma-payload-types';
-import { validateImportPayload } from './figma-payload-validation';
+import type { FigmaExportPayload } from './figma-payload-types.ts';
+import { validateImportPayload } from './figma-payload-validation.ts';
 
 export interface HtmlImportRelayResult {
   requestId: string;
@@ -42,7 +42,7 @@ export function forwardValidatedDirectImport(
       requestId: request.requestId,
       cmd: 'IMPORT_PAYLOAD',
       params: { payload: admission.payload, ...admission.placement },
-      expectedFile: request.expectedFile,
+      ...(request.expectedFile !== undefined ? { expectedFile: request.expectedFile } : {}),
       ...(request.readOnly === true && { readOnly: true as const }),
     },
   });
@@ -58,7 +58,7 @@ export function forwardValidatedHtmlImport(
     pluginMessage: {
       requestId: result.requestId,
       cmd: 'IMPORT_PAYLOAD',
-      expectedFile: result.expectedFile,
+      ...(result.expectedFile !== undefined ? { expectedFile: result.expectedFile } : {}),
       params: { payload: admission.payload, ...admission.placement },
     },
   });

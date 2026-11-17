@@ -71,7 +71,7 @@ describe('setProps — re-read assertion rejects type-coerced equality', () => {
       componentProperties: { Enabled: { type: 'BOOLEAN', value: false } },
       setProperties(props: Record<string, unknown>) {
         this.componentProperties = {
-          Enabled: { type: 'BOOLEAN', value: props.Enabled === true ? 'true' : 'false' },
+          Enabled: { type: 'BOOLEAN', value: (props.Enabled === true ? 'true' : 'false') as unknown as boolean },
         };
       },
     };

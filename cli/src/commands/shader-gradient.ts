@@ -35,11 +35,14 @@ export async function run(args: CommandArgs): Promise<unknown> {
   if (args.bool('self-test')) {
     // Read-only: renders a tiny field in the plugin UI and reports whether this
     // environment can bake at all. It exists because the only other way to answer that
-    // question is to bake onto the user's real canvas and look at the result.
+    const timeoutMs = args.num('timeout');
     const probe = (await runCommand(
       'SHADER_GRADIENT_PROBE',
       { props: SHADER_GRADIENT_PRESETS['halo']!.props, width: 64, height: 64 },
-      { timeoutMs: args.num('timeout'), readOnly: true },
+      {
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        readOnly: true,
+      },
     )) as { renderable?: boolean; code?: string; message?: string; ms?: number; bytes?: number };
 
     if (probe.renderable === true) {
@@ -60,7 +63,11 @@ export async function run(args: CommandArgs): Promise<unknown> {
   const rawSet = args.str('set');
   const overrides = rawSet === undefined ? undefined : rawSet.split(',').map((s) => s.trim()).filter((s) => s !== '');
 
-  const resolved = resolveConfig({ preset, url, overrides });
+  const resolved = resolveConfig({
+    ...(preset !== undefined ? { preset } : {}),
+    ...(url !== undefined ? { url } : {}),
+    ...(overrides !== undefined ? { overrides } : {}),
+  });
   if (!resolved.ok) throw new CliError('E_INVALID_ARGS', resolved.message);
 
   const node = args.str('node');
@@ -79,6 +86,7 @@ export async function run(args: CommandArgs): Promise<unknown> {
     );
   }
 
+  const timeoutMs = args.num('timeout');
   const result = await runCommand(
     'SHADER_GRADIENT',
     {
@@ -92,7 +100,9 @@ export async function run(args: CommandArgs): Promise<unknown> {
       staticFrame: args.bool('static'),
       renderer: RENDERER,
     },
-    { timeoutMs: args.num('timeout') },
+    {
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    },
   );
 
   // Surfaced, never swallowed: a user who pasted a customize URL should be told which of

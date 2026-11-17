@@ -11,7 +11,7 @@
 // completed, so "0" always means measured-zero rather than never-ran, and
 // `propertyReadErrors` is present ONLY when non-zero — a node dropped mid-walk is a real
 // loss and must leave a trace, while a clean session keeps the payload unchanged.
-import type { PerfStatus } from '../../../shared/protocol';
+import type { PerfStatus } from '../../../shared/protocol.ts';
 
 /** Which walk a measurement belongs to. Boot and idle are budgeted differently: boot walks
  *  every page once, idle walks only the pages an edit actually touched. */

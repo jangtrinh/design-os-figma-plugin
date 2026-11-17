@@ -4,7 +4,7 @@ import {
   buildProductionRenderHostBundle,
   launchInstalledChrome,
   validRendererPayload,
-} from './html-render-browser-fixture';
+} from './html-render-browser-fixture.ts';
 
 let browser: Browser;
 let bundle: string;
@@ -24,7 +24,7 @@ async function instrumentHost(page: Page, source: string = bundle): Promise<void
     (window as any).__hostProbe = probe;
     add('message', (event) => probe.seen.push({
       origin: event.origin,
-      sourceIsActive: event.source === document.querySelector('iframe[sandbox="allow-scripts"]')?.contentWindow,
+      sourceIsActive: event.source === document.querySelector<HTMLIFrameElement>('iframe[sandbox="allow-scripts"]')?.contentWindow,
       data: event.data,
     }));
     window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {

@@ -17,12 +17,12 @@
 //  5. componentPropertyDefinitions throws on a variant COMPONENT — `list` never
 //     needs it directly (it walks SLOT nodes, not property definitions), but the
 //     SAME predicate class applies to resolving a COMPONENT_SET's variants below.
-import { withCode } from './executor-styles';
-import type { SlotAppendContent, SlotCreateOpts, SlotInfo, SlotTarget } from './exec-stdlib-slot-types';
-import { resolveSlot, serializeSlotsFromNode } from './exec-stdlib-slot-resolve';
-import { append, reset } from './exec-stdlib-slot-content';
-import { addSlotProperty } from './exec-stdlib-slot-property';
-import { requireDesignFile } from './exec-stdlib-editor';
+import { withCode } from './executor-styles.ts';
+import type { SlotAppendContent, SlotCreateOpts, SlotInfo, SlotTarget } from './exec-stdlib-slot-types.ts';
+import { resolveSlot, serializeSlotsFromNode } from './exec-stdlib-slot-resolve.ts';
+import { append, reset } from './exec-stdlib-slot-content.ts';
+import { addSlotProperty } from './exec-stdlib-slot-property.ts';
+import { requireDesignFile } from './exec-stdlib-editor.ts';
 
 const CREATE_LAYOUT_MODES = new Set(['NONE', 'HORIZONTAL', 'VERTICAL']);
 

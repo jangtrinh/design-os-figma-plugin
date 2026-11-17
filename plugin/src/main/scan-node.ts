@@ -19,19 +19,20 @@
 // captured as extensions only, with no reversible slot: COMPONENT / COMPONENT_SET
 // definitions and an instance's INNER (per-child) overrides.
 
-import type { FigmaExportEffect, FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types';
-import type { ScannedNode } from './scan-node-types';
-import { readExtensions, readInstance, type MainComponentRef } from './scan-node-instance';
-import { readLayout, readSelfSizing } from './scan-node-layout';
-import { asFills, effectToExport, readIndividualStrokeWeights } from './scan-node-paint';
-import { readText } from './scan-node-text';
-import { r2, safe } from './scan-node-utils';
+import type { FigmaExportEffect, FigmaExportNode, FigmaKeyedBinding } from '../../../shared/figma-payload-types.ts';
+import type { ScannedNode } from './scan-node-types.ts';
+import { readExtensions, readInstance, type MainComponentRef } from './scan-node-instance.ts';
+import { readLayout, readSelfSizing } from './scan-node-layout.ts';
+import { asFills, effectToExport, readIndividualStrokeWeights } from './scan-node-paint.ts';
+import { readText } from './scan-node-text.ts';
+import { r2, safe } from './scan-node-utils.ts';
+import type { ConcealmentMemo } from './text-concealment.ts';
 
-export type { ScanExtensions, ScannedNode } from './scan-node-types';
-export type { MainComponentRef } from './scan-node-instance';
+export type { ScanExtensions, ScannedNode } from './scan-node-types.ts';
+export type { MainComponentRef } from './scan-node-instance.ts';
 // Re-exported so the bundled walker (`__scan.*`, see cli/src/commands/scan-node.ts)
 // can run the THIRD async pre-pass alongside the other two.
-export { readKeyedVariableMap } from './scan-keyed-vars';
+export { readKeyedVariableMap } from './scan-keyed-vars.ts';
 
 /** Figma node.type → FigmaExportNode.type (the only ones the schema models). */
 function mapType(t: string): FigmaExportNode['type'] {
@@ -42,6 +43,14 @@ function mapType(t: string): FigmaExportNode['type'] {
     || t === 'LINE' || t === 'STAR' || t === 'POLYGON') return 'RECTANGLE';
   return 'FRAME'; // FRAME / COMPONENT / COMPONENT_SET / SECTION
 }
+
+/** Raw types that map to a schema type without losing what the node is. Any other
+ *  type (a code layer, a boolean operation, a type Figma adds later) still degrades
+ *  to FRAME, but its raw type is recorded so nobody mistakes it for a frame. */
+const MODELLED_SOURCE_TYPES: ReadonlySet<string> = new Set([
+  'FRAME', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'TEXT', 'GROUP', 'INSTANCE',
+  'RECTANGLE', 'ELLIPSE', 'VECTOR', 'LINE', 'STAR', 'POLYGON',
+]);
 
 /**
  * The file's variable id → name map — the join source that makes bindings
@@ -138,10 +147,9 @@ export async function readMainComponentMap(root: SceneNode): Promise<Map<string,
   return map;
 }
 
-/** Fills, corner radius, strokes, constraints, clipping — the frame-ish visuals. */
 function readFrameVisuals(n: Record<string, unknown>, out: ScannedNode): void {
-  out.fills = asFills(n.fills);
-  if (out.fills === undefined) delete out.fills;
+  const fills = asFills(n.fills);
+  if (fills !== undefined) out.fills = fills;
 
   // Corner radius: uniform number, else per-corner (getter throws figma.mixed).
   const cr = safe(() => n.cornerRadius as number);
@@ -167,7 +175,7 @@ function readFrameVisuals(n: Record<string, unknown>, out: ScannedNode): void {
       const sides = readIndividualStrokeWeights(n);
       if (sides) out.strokeWeights = sides;
     }
-    if (n.strokeAlign) out.strokeAlign = n.strokeAlign as FigmaExportNode['strokeAlign'];
+    if (n.strokeAlign) out.strokeAlign = n.strokeAlign as NonNullable<FigmaExportNode['strokeAlign']>;
   }
 
   for (const k of ['maxWidth', 'minWidth', 'maxHeight', 'minHeight'] as const) {
@@ -193,16 +201,20 @@ function readFrameVisuals(n: Record<string, unknown>, out: ScannedNode): void {
  * INSTANCE composition is NOT recursed: an instance is captured as a reference to
  * its main component plus its overrides (spec-005 P2) — the inner tree is the
  * component's definition, and the builder rebuilds it via createInstance().
+ * `concealMemo` is the scan's ONE concealment memo (text-concealment.ts): created at the
+ * root call and handed down, so each ancestor is read once per scan, never across scans.
  */
 export function nodeToSpec(
   node: SceneNode,
   tokenNames?: Map<string, string>,
   mainComps?: Map<string, MainComponentRef>,
   keyedVars?: ReadonlyMap<string, FigmaKeyedBinding>,
+  concealMemo: ConcealmentMemo = new WeakMap(),
 ): ScannedNode {
   const n = node as unknown as Record<string, unknown>;
   const type = node.type;
   const out: ScannedNode = { type: mapType(type), name: node.name };
+  if (!MODELLED_SOURCE_TYPES.has(type)) out.figmaScanSourceType = type;
 
   const w = safe(() => node.width);
   const h = safe(() => node.height);
@@ -212,7 +224,7 @@ export function nodeToSpec(
   readSelfSizing(n, out); // applies to text + frame children alike
 
   if (out.type === 'TEXT') {
-    readText(n, out);
+    readText(n, out, concealMemo);
   } else {
     readLayout(n, out);
     readFrameVisuals(n, out);
@@ -233,7 +245,7 @@ export function nodeToSpec(
   // Children — recurse, EXCEPT into an instance (composition is the component's).
   if (type !== 'INSTANCE' && 'children' in node) {
     const kids = (node as SceneNode & ChildrenMixin).children;
-    if (kids.length) out.children = kids.map((c) => nodeToSpec(c as SceneNode, tokenNames, mainComps, keyedVars));
+    if (kids.length) out.children = kids.map((c) => nodeToSpec(c as SceneNode, tokenNames, mainComps, keyedVars, concealMemo));
   }
 
   return out;

@@ -13,8 +13,8 @@
 //
 // Split from `context-intent.ts`, which holds the wiring — the record-builder wrapper and the
 // per-component-key memo — while this file holds the field shapes.
-import { messageOf, type ContextNodeLike } from './context-node-record';
-import { safe } from './scan-node-utils';
+import { messageOf, type ContextNodeLike } from './context-node-record.ts';
+import { safe } from './scan-node-utils.ts';
 
 /** `nodeId` is deliberately NOT kept: it is the record's own id. `inheritedNodeId` IS kept —
  *  "this link came from the main component, not from this layer" is a fact the caller cannot

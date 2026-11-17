@@ -2,7 +2,7 @@
 // drawing tool that would have let a designer pick a side is not built, so exposing a port
 // argument would be an API with no caller. Pure — no `figma` access.
 
-import type { Anchor, Point, Rect, Side } from './connector-types';
+import type { Anchor, Point, Rect, Side } from './connector-types.ts';
 
 const OPPOSITE: Record<Side, Side> = { TOP: 'BOTTOM', BOTTOM: 'TOP', LEFT: 'RIGHT', RIGHT: 'LEFT' };
 

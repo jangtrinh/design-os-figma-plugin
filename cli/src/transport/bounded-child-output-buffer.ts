@@ -35,7 +35,13 @@ export class BoundedOutputBuffer {
   private head = Buffer.alloc(0);
   private tail = Buffer.alloc(0);
 
-  constructor(private readonly limit: number, private readonly mode: RetentionMode) {}
+  private readonly limit: number;
+  private readonly mode: RetentionMode;
+
+  constructor(limit: number, mode: RetentionMode) {
+    this.limit = limit;
+    this.mode = mode;
+  }
 
   push(chunk: unknown): void {
     const buffer = bytes(chunk);

@@ -1,4 +1,4 @@
-// Renders the full skills/figma-agent/SKILL.md text: frontmatter + the prose in
+// Renders the full skills/design-os-figma-agent/SKILL.md text: frontmatter + the prose in
 // skill-template.ts + a "Command reference" section built from command-catalog.ts
 // — the SAME catalog help-text.ts reads, so the skill's command list can never
 // drift from the CLI's own --help without the drift test (skill-emitter-drift.test.ts)
@@ -17,7 +17,7 @@ import { CLI_VERSION } from './version.ts';
 function renderFrontmatter(): string {
   return [
     '---',
-    'name: figma-agent',
+    'name: design-os-figma-agent',
     `description: "${SKILL_DESCRIPTION}"`,
     `version: ${CLI_VERSION}`,
     `requiresCli: ">=${CLI_VERSION}"`,

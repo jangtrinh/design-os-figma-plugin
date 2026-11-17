@@ -8,8 +8,8 @@ import { CliError } from '../cli/src/transport/protocol-helpers.ts';
 import type { JobInfo } from '../shared/protocol.ts';
 
 /** The minimal surface `exchange` touches: EventEmitter (on/emit) + a stubbed `send`. */
-function fakeWs(): EventEmitter & { send: (text: string) => void; sent: string[] } {
-  const emitter = new EventEmitter() as EventEmitter & { send: (text: string) => void; sent: string[] };
+function fakeWs(): EventEmitter & { send: (text: string) => void; sent: string[] } & import('ws').WebSocket {
+  const emitter = new EventEmitter() as EventEmitter & { send: (text: string) => void; sent: string[] } & import('ws').WebSocket;
   emitter.sent = [];
   emitter.send = (text: string) => { emitter.sent.push(text); };
   return emitter;

@@ -4,7 +4,8 @@
 // interval acts on (no new timer).
 import { describe, expect, it } from 'vitest';
 import {
-  abandonedChunkIds, deleteConnectionChunk, getConnectionChunks, sweepAbandonedChunks, type ChunkBuffers,
+  abandonedChunkIds, deleteConnectionChunk, deleteConnectionChunks, getConnectionChunks, summarizeChunkCleanups,
+  sweepAbandonedChunks, type ChunkBuffers,
 } from '../cli/src/transport/protocol-helpers.ts';
 
 describe('abandonedChunkIds', () => {
@@ -86,6 +87,23 @@ describe('getConnectionChunks / deleteConnectionChunk — per-connection scoping
     const buffers: ChunkBuffers<string> = new Map();
     expect(() => deleteConnectionChunk(buffers, 'never-seen', 'id')).not.toThrow();
   });
+
+  it('returns exact UTF-8 accounting while releasing every id owned by one connection', () => {
+    const buffers: ChunkBuffers<string> = new Map();
+    getConnectionChunks(buffers, 'closing').set('one', { frames: ['a', '你好'], lastFrameAt: 1 });
+    getConnectionChunks(buffers, 'closing').set('two', { frames: ['🧪'], lastFrameAt: 1 });
+    getConnectionChunks(buffers, 'survivor').set('three', { frames: ['safe'], lastFrameAt: 1 });
+
+    const released = summarizeChunkCleanups(deleteConnectionChunks(buffers, 'closing'));
+
+    expect(released).toEqual({
+      requestCount: 2,
+      frameCount: 3,
+      utf8Bytes: Buffer.byteLength('a你好🧪', 'utf8'),
+    });
+    expect(buffers.has('closing')).toBe(false);
+    expect(buffers.has('survivor')).toBe(true);
+  });
 });
 
 describe('sweepAbandonedChunks — per-connection sweep', () => {
@@ -93,9 +111,10 @@ describe('sweepAbandonedChunks — per-connection sweep', () => {
     const buffers: ChunkBuffers<string> = new Map();
     getConnectionChunks(buffers, 'conn-A').set('id-old', { frames: ['a'], lastFrameAt: 0 });
     getConnectionChunks(buffers, 'conn-B').set('id-fresh', { frames: ['b'], lastFrameAt: 900 });
-    sweepAbandonedChunks(buffers, 1_000, 500);
+    const swept = sweepAbandonedChunks(buffers, 1_000, 500);
     expect(buffers.has('conn-A')).toBe(false); // abandoned entry swept, connection pruned
     expect(getConnectionChunks(buffers, 'conn-B').has('id-fresh')).toBe(true); // untouched
+    expect(summarizeChunkCleanups(swept)).toEqual({ requestCount: 1, frameCount: 1, utf8Bytes: 1 });
   });
 
   it('a connection with a mix of stale and fresh entries keeps only the fresh one', () => {

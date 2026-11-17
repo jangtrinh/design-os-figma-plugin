@@ -56,7 +56,10 @@ async function probeState(
     const before = await handle.evaluate((el, props) => {
       const cs = getComputedStyle(el as Element);
       const o: Record<string, string> = {};
-      for (const p of props) o[p] = (cs as unknown as Record<string, string>)[p];
+      for (const p of props) {
+        const val = (cs as unknown as Record<string, string | undefined>)[p];
+        if (val !== undefined) o[p] = val;
+      }
       return o;
     }, DIFF_PROPS);
 
@@ -67,7 +70,10 @@ async function probeState(
     const after = await handle.evaluate((el, props) => {
       const cs = getComputedStyle(el as Element);
       const o: Record<string, string> = {};
-      for (const p of props) o[p] = (cs as unknown as Record<string, string>)[p];
+      for (const p of props) {
+        const val = (cs as unknown as Record<string, string | undefined>)[p];
+        if (val !== undefined) o[p] = val;
+      }
       return o;
     }, DIFF_PROPS);
     await page.mouse.move(0, 0).catch(() => {});
@@ -185,7 +191,13 @@ export async function buildBehavior(
   for (const c of sb.carousels.slice(0, 3)) {
     const autoplayMs = await measureCarousel(page, c.selector, carouselWindowMs);
     const st = await slideTransition(page, c.selector);
-    carousels.push({ selector: c.selector, library: c.library, slideCount: c.slideCount, autoplayMs, slideTransition: st });
+    carousels.push({
+      selector: c.selector,
+      library: c.library,
+      slideCount: c.slideCount,
+      ...(autoplayMs !== undefined ? { autoplayMs } : {}),
+      ...(st !== undefined ? { slideTransition: st } : {}),
+    });
     if (autoplayMs) timers.push({ delayMs: autoplayMs, kind: 'interval', linkedSelector: c.selector });
   }
 

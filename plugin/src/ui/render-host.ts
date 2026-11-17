@@ -1,7 +1,7 @@
 // Opaque-origin HTML renderer. The child owns its DOM; the panel receives one bounded result.
-import type { FigmaExportPayload } from '../../../shared/figma-payload-types';
-import { validateImportPayload } from '../../../shared/figma-payload-validation';
-import { HTML_RENDER_CHANNEL, HTML_RENDER_VERSION, MAX_CHILD_ERROR_LENGTH } from './render-child-protocol';
+import type { FigmaExportPayload } from '../../../shared/figma-payload-types.ts';
+import { validateImportPayload } from '../../../shared/figma-payload-validation.ts';
+import { HTML_RENDER_CHANNEL, HTML_RENDER_VERSION, MAX_CHILD_ERROR_LENGTH } from './render-child-protocol.ts';
 
 declare const __HTML_RENDER_CHILD__: string;
 const IFRAME_LOAD_TIMEOUT_MS = 10_000;

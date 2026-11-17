@@ -200,7 +200,7 @@ describe('changes --png (run)', () => {
     ].map((l) => JSON.stringify(l)).join('\n') + '\n';
     writeFileSync(join(feedDir, 'changes', 'vsf-pcp.jsonl'), lines);
     vi.mocked(runCommand).mockReset();
-    vi.mocked(runCommand).mockImplementation(async (cmd, params) => png(`png-${(params as { nodeId: string }).nodeId}`));
+    vi.mocked(runCommand).mockImplementation(async (_cmd, params) => png(`png-${(params as { nodeId: string }).nodeId}`));
   });
   afterEach(() => {
     if (prevEnv === undefined) delete process.env['FIGMA_AGENT_CHANGES_DIR'];
@@ -258,5 +258,27 @@ describe('changes --png (run)', () => {
 
   it('--png with no directory value is refused', async () => {
     await expect(run(parseArgs(['--owner-only', '--png']))).rejects.toMatchObject({ code: 'E_INVALID_ARGS' });
+  });
+});
+
+describe('exportChangePngs of a code layer', () => {
+  // A code layer's PNG is its static shell, not its running code: the entry must say so,
+  // from the plugin's own note or, for a plugin build without it, from the feed's type.
+  it('marks the after PNG unreliable when the plugin flags a static render', async () => {
+    const runner = (async () => ({ ...png('shell'), staticRender: { nodeType: 'CODE_INSTANCE', reason: 'static shell only' } })) as unknown as typeof runCommand;
+    const out = await exportChangePngs([frame({ nodeType: 'CODE_INSTANCE' })], join(dir, 'shots'), { scale: 1, runner });
+    expect(out.exported[0]).toMatchObject({ reliable: false, reason: 'static shell only' });
+  });
+
+  it('marks it unreliable from the edit feed\'s node type when the plugin sends no note', async () => {
+    const runner = runnerFor({ '1:23': 'shell' });
+    const out = await exportChangePngs([frame({ nodeType: 'CODE_INSTANCE' })], join(dir, 'shots'), { scale: 1, runner });
+    expect(out.exported[0]).toMatchObject({ reliable: false });
+    expect(out.exported[0]!.reason).toMatch(/window/i);
+  });
+
+  it('adds nothing for an ordinary frame', async () => {
+    const out = await exportChangePngs([frame()], join(dir, 'shots'), { scale: 1, runner: runnerFor({ '1:23': 'hero' }) });
+    expect(out.exported[0]!.reliable).toBeUndefined();
   });
 });

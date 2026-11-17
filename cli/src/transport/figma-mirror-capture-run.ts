@@ -12,11 +12,17 @@
 // file. Best-effort by design: every scan failure becomes a named `failed` entry, so an
 // apply with the plugin down still commits what the log implies and reports the rest as
 // un-mirrored. Nothing here ever throws at the broker.
-import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selfBundlePath } from './broker-discovery.ts';
+import {
+  MIRROR_SCAN_CHILD_BOUNDS,
+  runBoundedChild,
+  type ChildBounds,
+} from './bounded-child-process.ts';
+
+export { MIRROR_SCAN_CHILD_BOUNDS };
 
 /**
  * Must equal the kernel's MIRROR_CAPTURE_VERSION (src/core/figma-mirror-capture.ts).
@@ -125,30 +131,45 @@ export function mergeTargetsPendingFirst(
  * whichever plugin instance is most recently active, silently undoing the file filter one
  * layer down from `ui figma reconcile --file-slug`.
  */
-function scanNode(nodeId: string, fileName?: string): Promise<{ node?: unknown; reason?: string }> {
+export function scanNode(
+  nodeId: string,
+  fileName?: string,
+  bounds: Readonly<ChildBounds> = MIRROR_SCAN_CHILD_BOUNDS,
+  runner: typeof runBoundedChild = runBoundedChild,
+): Promise<{ node?: unknown; reason?: string }> {
   return new Promise((resolve) => {
-    let child;
-    try {
-      const args = [selfBundlePath(), 'scan-node', nodeId, '--timeout', String(SCAN_TIMEOUT_MS)];
-      if (fileName !== undefined) args.push('--file', fileName);
-      child = spawn(process.execPath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (err) {
-      resolve({ reason: `cannot launch scan-node: ${(err as Error).message}` });
-      return;
-    }
-    let out = '';
-    let err = '';
-    child.stdout?.on('data', (d) => { out += String(d); });
-    child.stderr?.on('data', (d) => { err += String(d); });
-    child.on('error', (e) => resolve({ reason: `scan-node not runnable: ${e.message}` }));
-    child.on('close', () => resolve(parseScan(out, err)));
+    const args = [selfBundlePath(), 'scan-node', nodeId, '--timeout', String(SCAN_TIMEOUT_MS)];
+    if (fileName !== undefined) args.push('--file', fileName);
+    runner(process.execPath, args, { bounds }, (outcome) => {
+      if (!outcome.spawned) {
+        resolve({ reason: `cannot launch scan-node: ${outcome.launchError ?? 'unknown'}` });
+        return;
+      }
+      if (outcome.timedOut) {
+        resolve({ reason: `scan-node timed out after ${bounds.deadlineMs}ms` });
+        return;
+      }
+      if (outcome.stdoutTruncated) {
+        resolve({ reason: `scan-node stdout exceeded bounded limit (${bounds.stdoutBytes} bytes)` });
+        return;
+      }
+      if (!outcome.exited) {
+        resolve({ reason: 'scan-node child exit not confirmed after SIGKILL' });
+        return;
+      }
+      if (outcome.signal !== null || outcome.exitCode !== 0) {
+        const detail = outcome.stderr.trim()
+          || (outcome.signal !== null ? `killed by ${outcome.signal}` : `exit code ${outcome.exitCode}`);
+        resolve({ reason: detail });
+        return;
+      }
+      resolve(parseScan(outcome.stdout, outcome.stderr));
+    });
   });
 }
 
 /** `scan-node` prints one JSON object: the EXEC_JS result `{result, console, ms}` or `{error}`. */
-function parseScan(out: string, err: string): { node?: unknown; reason?: string } {
+export function parseScan(out: string, err: string): { node?: unknown; reason?: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(out.trim());

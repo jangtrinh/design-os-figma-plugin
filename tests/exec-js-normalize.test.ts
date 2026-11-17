@@ -4,7 +4,7 @@
 // under test stays free of top-level figma access so a plain import works.
 import { describe, it, expect } from 'vitest';
 import {
-  compile, expressionCandidates, resultWarning, summarize,
+  compile, resultWarning, summarize,
 } from '../plugin/src/main/exec-js-normalize.ts';
 
 describe('expressionCandidates / compile — mode selection', () => {

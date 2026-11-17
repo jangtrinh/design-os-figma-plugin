@@ -1,12 +1,12 @@
-import type { FigmaExportPayload } from './figma-payload-types';
+import type { FigmaExportPayload } from './figma-payload-types.ts';
 import {
   type ImportPayloadLimits, type ObjectValue, ValidationContext,
 } from './figma-payload-validation-context';
-import { validateNode } from './figma-payload-validation-node';
-import { validateTokens } from './figma-payload-validation-tokens';
+import { validateNode } from './figma-payload-validation-node.ts';
+import { validateTokens } from './figma-payload-validation-tokens.ts';
 
-export { IMPORT_PAYLOAD_LIMITS, PayloadValidationError } from './figma-payload-validation-context';
-export type { ImportPayloadLimits } from './figma-payload-validation-context';
+export { IMPORT_PAYLOAD_LIMITS, PayloadValidationError } from './figma-payload-validation-context.ts';
+export type { ImportPayloadLimits } from './figma-payload-validation-context.ts';
 
 export interface ImportPayloadAdmission {
   payload: FigmaExportPayload;

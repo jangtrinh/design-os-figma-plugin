@@ -50,7 +50,7 @@ describe('resolveComponentIdentity — the canonical component container', () =>
 describe('the edit identity cache — bounded, oldest-out', () => {
   it('remembers a node so a later DELETE (id + type only) can still be described', () => {
     const cache = createEditIdentityCache(3);
-    cache.remember('a', { name: 'Card', type: 'FRAME', parentName: 'Section', page: 'Page 1' });
+    cache.remember('a', { name: 'Card', type: 'FRAME', parentName: 'Section', page: 'Page 1', pageId: '0:1' });
     expect(cache.get('a')?.name).toBe('Card');
     expect(cache.get('missing')).toBeUndefined();
   });
@@ -58,7 +58,7 @@ describe('the edit identity cache — bounded, oldest-out', () => {
   it('evicts the OLDEST entry past the cap — a long session must not leak', () => {
     const cache = createEditIdentityCache(2);
     for (const id of ['a', 'b', 'c']) {
-      cache.remember(id, { name: id, type: 'FRAME', parentName: null, page: 'Page 1' });
+      cache.remember(id, { name: id, type: 'FRAME', parentName: null, page: 'Page 1', pageId: '0:1' });
     }
     expect(cache.size()).toBe(2);
     expect(cache.get('a')).toBeUndefined(); // oldest out

@@ -8,7 +8,7 @@
 //    captured by the entry; recursing would re-serialize whole nested components as noise).
 //  - Hard caps (nodes / depth / text) with a literal '…capped' marker keep the walk bounded
 //    AND the resulting hash deterministic (an elided subtree always hashes the same).
-import type { AuditUnitFact } from '../../../shared/audit-types';
+import type { AuditUnitFact } from '../../../shared/audit-types.ts';
 
 const MAX_UNIT_NODES = 300; // total nodes visited per unit
 const MAX_UNIT_DEPTH = 10; // deepest level we descend into

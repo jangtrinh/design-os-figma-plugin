@@ -1,7 +1,7 @@
 // `ui.annotate.*` — Figma Annotations (absorption phase-02). Adapted from the fork's
 // GET/SET_ANNOTATIONS handlers (MIT; see THIRD-PARTY.md), code.js:2454-2692, and the
 // property-type vocabulary in annotation-tools.ts:22-56.
-import { withCode } from './executor-styles';
+import { withCode } from './executor-styles.ts';
 
 /** The closed `AnnotationPropertyType` vocabulary — copied as VALUES (an API fact,
  * cited not attributed) from @figma/plugin-typings, per annotation-tools.ts:22-56.
@@ -102,7 +102,7 @@ async function get(nodeId: string, opts: { includeChildren?: boolean; depth?: nu
       if (depth > maxDepth) return;
       for (const child of parent.children) {
         try {
-          const anns = 'annotations' in child ? ((child as { annotations?: readonly RawAnnotation[] }).annotations ?? []).map((a) => toOutput(a, categoryMap)) : [];
+          const anns = 'annotations' in child ? (((child as unknown) as { annotations?: readonly RawAnnotation[] }).annotations ?? []).map((a) => toOutput(a, categoryMap)) : [];
           if (anns.length > 0) childResults.push({ nodeId: child.id, nodeName: child.name, nodeType: child.type, annotations: anns });
           if ('children' in child) walk(child as SceneNode & ChildrenMixin, depth + 1);
         } catch {

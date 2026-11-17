@@ -1,4 +1,4 @@
-import { parseCssColor } from './color-utils';
+import { parseCssColor } from './color-utils.ts';
 
 /** Wait for runtime scripts such as Tailwind CDN to apply their styles. */
 export function waitForStylesReadyInDocument(doc: Document, win: Window): Promise<void> {
@@ -19,7 +19,8 @@ export function waitForStylesReadyInDocument(doc: Document, win: Window): Promis
       let hasRuntimeStyles = false;
       try {
         for (let i = 0; i < doc.styleSheets.length; i++) {
-          if (doc.styleSheets[i].cssRules && doc.styleSheets[i].cssRules.length > 50) {
+          const sheet = doc.styleSheets[i];
+          if (sheet && sheet.cssRules && sheet.cssRules.length > 50) {
             hasRuntimeStyles = true;
             break;
           }

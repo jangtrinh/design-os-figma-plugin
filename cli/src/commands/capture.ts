@@ -23,10 +23,11 @@ export async function run(args: CommandArgs): Promise<unknown> {
   if (!url) throw new CliError('E_INVALID_ARGS', 'capture requires a URL (positional or --url)');
 
   const baseDir = args.str('out') ? args.str('out')! : process.cwd();
+  const channel = args.str('channel') ?? (args.bool('headless') ? undefined : 'chrome');
   const opts: AccessOptions = {
     url,
     headed: !args.bool('headless'),          // headed real-browser is the default (WAF long-tail)
-    channel: args.str('channel') ?? (args.bool('headless') ? undefined : 'chrome'),
+    ...(channel !== undefined ? { channel } : {}),
     width: args.num('width') ?? 1440,
     timeoutMs: args.num('timeout') ?? 45000,
   };

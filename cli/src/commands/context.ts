@@ -132,7 +132,11 @@ export async function contextTarget(input: ContextInput, runner: Runner = runCom
     : ((await runner('GET_CORRECTION_MEMORY', {}, { activity: 'Resolve recent target' })) as {
       events?: CorrectionEvent[];
     }).events?.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((event) => event.nodeId) ?? [];
-  const target = resolveSafeTarget({ explicit: input.explicit, selection: selected, recent });
+  const target = resolveSafeTarget({
+    ...(input.explicit !== undefined ? { explicit: input.explicit } : {}),
+    selection: selected,
+    recent,
+  });
   const reply = await runner('GET_CONTEXT', { nodeId: target.nodeId, ...params }, {
     readOnly: true, timeoutMs, activity: `Context · ${target.nodeId}`,
   }) as Record<string, unknown> | null;
@@ -166,13 +170,17 @@ export async function run(args: CommandArgs, runner: Runner = runCommand): Promi
       + 'Use --no-css for a smaller answer, or --budget/--depth to bound it.',
     );
   }
+  const explicit = args.str('node') ?? args.positionals[0];
+  const budgetKb = numericFlag(args, 'budget');
+  const depth = numericFlag(args, 'depth');
+  const timeout = numericFlag(args, 'timeout');
   return contextTarget({
-    explicit: args.str('node') ?? args.positionals[0],
-    budgetKb: numericFlag(args, 'budget'),
-    depth: numericFlag(args, 'depth'),
+    ...(explicit !== undefined ? { explicit } : {}),
+    ...(budgetKb !== undefined ? { budgetKb } : {}),
+    ...(depth !== undefined ? { depth } : {}),
     noCss: args.bool('no-css'),
     dedup: args.bool('dedup'),
     devResources: args.bool('dev-resources'),
-    timeout: numericFlag(args, 'timeout'),
+    ...(timeout !== undefined ? { timeout } : {}),
   }, runner);
 }

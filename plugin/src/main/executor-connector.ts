@@ -3,18 +3,18 @@
 // Design files only. A FigJam board has native connectors and a Slides deck has no flow to
 // draw, so this refuses both through the shared editor guard rather than half-working.
 
-import { editorRefusal, type EditorType } from '../../../shared/editor-surface';
-import { route } from '../../../shared/connector-route';
-import { ROUTER_VERSION, type ConnectionRecord, type ConnectorIntent, type Rect } from '../../../shared/connector-types';
-import { withCode } from './executor-styles';
-import { renderConnector } from './connector-render';
-import { pageOf } from './page-of-node';
-import { invalidateConnectorIndex, rerouteConnections } from './connector-reroute';
-import { verifyConnections } from './connector-verify';
+import { editorRefusal, type EditorType } from '../../../shared/editor-surface.ts';
+import { route } from '../../../shared/connector-route.ts';
+import { ROUTER_VERSION, type ConnectionRecord, type ConnectorIntent, type Rect } from '../../../shared/connector-types.ts';
+import { withCode } from './executor-styles.ts';
+import { renderConnector } from './connector-render.ts';
+import { pageOf } from './page-of-node.ts';
+import { invalidateConnectorIndex, rerouteConnections } from './connector-reroute.ts';
+import { verifyConnections } from './connector-verify.ts';
 import {
   findConnection, findConnectionByEndpoints, listConnections, removeConnection,
   resetConnectionCache, upsertConnection,
-} from './connector-store';
+} from './connector-store.ts';
 
 type Params = Record<string, unknown>;
 
@@ -69,7 +69,9 @@ async function resolveByName(name: string, pageName: string | null, role: string
       `${role} name "${name}" is ambiguous on page "${page.name}" — ${matches.length} nodes match (${matches.slice(0, 4).map((n) => n.id).join(', ')})`,
     ), 'E_INVALID_ARGS');
   }
-  return matches[0];
+  const first = matches[0];
+  if (!first) throw withCode(new Error(`${role} node named "${name}" not found on page "${page.name}"`), 'E_INVALID_ARGS');
+  return first;
 }
 
 async function resolveEndpoint(id: string, role: string): Promise<SceneNode> {
@@ -121,7 +123,12 @@ export async function opConnect(params: Params): Promise<Record<string, unknown>
     throw withCode(new Error('CONNECT needs both nodes on the same page'), 'E_INVALID_ARGS');
   }
 
-  const points = route({ source: boxOf(source, 'source'), target: boxOf(target, 'target'), intent, clearance });
+  const points = route({
+    source: boxOf(source, 'source'),
+    target: boxOf(target, 'target'),
+    intent,
+    ...(clearance !== undefined ? { clearance } : {}),
+  });
 
   // Connecting the same pair twice is a REDRAW, not a second line: an agent re-running a
   // flow must converge on one edge per transition, or the canvas grows a duplicate every run.

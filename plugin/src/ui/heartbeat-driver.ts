@@ -5,7 +5,7 @@ import {
   type HeartbeatLeaseDecision,
   type HeartbeatLeaseState,
   type HeartbeatMode,
-} from './heartbeat-lease';
+} from './heartbeat-lease.ts';
 
 export interface HeartbeatDriverPorts {
   now: () => number;

@@ -1,10 +1,10 @@
-import { utf8ByteLength } from '../../../shared/utf8-byte-length';
+import { utf8ByteLength } from '../../../shared/utf8-byte-length.ts';
 import {
   buildCorrectionEvent,
   EDGE_RAW_LIMIT,
   retainCorrectionEvents,
   type CorrectionEvent,
-} from '../../../shared/supervised-memory';
+} from '../../../shared/supervised-memory.ts';
 
 const NAMESPACE = 'ease_design';
 /** Legacy single-key value (pre phase-04 §3) — read as a fallback, migrated + cleared the

@@ -1,10 +1,11 @@
 // Reverse-walker: TEXT-only readers — the inverse of executor-text.createTextNode.
 // Extracted from scan-node.ts (Art IX).
 
-import type { FigmaColor, FigmaExportNode } from '../../../shared/figma-payload-types';
-import type { ScannedNode } from './scan-node-types';
-import { asFills } from './scan-node-paint';
-import { safe } from './scan-node-utils';
+import type { FigmaColor, FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import type { ScannedNode } from './scan-node-types.ts';
+import { asFills } from './scan-node-paint.ts';
+import { safe } from './scan-node-utils.ts';
+import { readConcealment, type ConcealmentMemo } from './text-concealment.ts';
 
 // Inverse of executor-fonts.getFontStyleVariants: a Figma style name → numeric
 // weight. Only recovers the weight the build path could have emitted; unknown
@@ -54,8 +55,9 @@ function readFontName(n: Record<string, unknown>): FontName | undefined {
   return isFontName(font) ? font : undefined;
 }
 
-/** Text-only fields — inverse of executor-text.createTextNode. */
-export function readText(n: Record<string, unknown>, out: ScannedNode): void {
+/** Text-only fields — inverse of executor-text.createTextNode. `memo` is the scan's
+ *  one concealment memo, so sibling texts share each ancestor read. */
+export function readText(n: Record<string, unknown>, out: ScannedNode, memo: ConcealmentMemo = new WeakMap()): void {
   if (typeof n.characters === 'string') out.characters = n.characters;
   const font = readFontName(n);
   if (font) {
@@ -69,11 +71,14 @@ export function readText(n: Record<string, unknown>, out: ScannedNode): void {
   if (lh && typeof lh === 'object' && lh.unit === 'PIXELS') out.lineHeight = lh.value;
   const ls = safe(() => n.letterSpacing as LetterSpacing);
   if (ls && typeof ls === 'object' && ls.unit === 'PIXELS') out.letterSpacing = ls.value;
-  if (n.textAlignHorizontal) out.textAlignHorizontal = n.textAlignHorizontal as FigmaExportNode['textAlignHorizontal'];
-  if (n.textAutoResize) out.textAutoResize = n.textAutoResize as FigmaExportNode['textAutoResize'];
-  if (n.textDecoration && n.textDecoration !== 'NONE') out.textDecoration = n.textDecoration as FigmaExportNode['textDecoration'];
-  if (n.textCase && n.textCase !== 'ORIGINAL') out.textCase = n.textCase as FigmaExportNode['textCase'];
+  if (n.textAlignHorizontal) out.textAlignHorizontal = n.textAlignHorizontal as NonNullable<FigmaExportNode['textAlignHorizontal']>;
+  if (n.textAutoResize) out.textAutoResize = n.textAutoResize as NonNullable<FigmaExportNode['textAutoResize']>;
+  if (n.textDecoration && n.textDecoration !== 'NONE') out.textDecoration = n.textDecoration as NonNullable<FigmaExportNode['textDecoration']>;
+  if (n.textCase && n.textCase !== 'ORIGINAL') out.textCase = n.textCase as NonNullable<FigmaExportNode['textCase']>;
   // TEXT colour lives in fills[0]; surface it as textColor (build-path convention).
   const fills = asFills(n.fills);
   if (fills && fills[0]?.type === 'SOLID' && fills[0].color) out.textColor = fills[0].color as FigmaColor;
+  // Set only when something conceals the text: a visible node serialises exactly as before.
+  const concealed = readConcealment(n, memo);
+  if (concealed) out.concealed = concealed;
 }

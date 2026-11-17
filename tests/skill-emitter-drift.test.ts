@@ -1,4 +1,4 @@
-// Drift guard: skills/figma-agent/SKILL.md is a COMMITTED, generated artifact
+// Drift guard: skills/design-os-figma-agent/SKILL.md is a COMMITTED, generated artifact
 // (`npm run emit:skill`) — this test fails the moment it stops matching a fresh
 // render, and separately fails the moment a command is added to COMMAND_MODULES
 // without a matching command-catalog.ts entry (or vice versa) — the point where
@@ -11,7 +11,7 @@ import { COMMANDS, GLOBAL_FLAGS } from '../cli/src/command-catalog.ts';
 import { renderHelp } from '../cli/src/help-text.ts';
 import { COMMAND_MODULES } from '../cli/src/figma-agent.ts';
 
-const SKILL_PATH = fileURLToPath(new URL('../skills/figma-agent/SKILL.md', import.meta.url));
+const SKILL_PATH = fileURLToPath(new URL('../skills/design-os-figma-agent/SKILL.md', import.meta.url));
 
 describe('skill-emitter-drift', () => {
   it('the committed SKILL.md matches a fresh renderSkill() output', () => {
@@ -22,7 +22,7 @@ describe('skill-emitter-drift', () => {
       const freshLines = fresh.split('\n');
       const at = committedLines.findIndex((line, i) => line !== freshLines[i]);
       throw new Error(
-        `skills/figma-agent/SKILL.md is stale at line ${at + 1} — run \`npm run emit:skill\` to regenerate it.\n`
+        `skills/design-os-figma-agent/SKILL.md is stale at line ${at + 1} — run \`npm run emit:skill\` to regenerate it.\n`
         + `  committed: ${JSON.stringify(committedLines[at] ?? '<eof>')}\n`
         + `  emitted:   ${JSON.stringify(freshLines[at] ?? '<eof>')}`,
       );

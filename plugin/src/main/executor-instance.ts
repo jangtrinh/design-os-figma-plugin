@@ -10,11 +10,11 @@
 // Nothing here throws: an unresolvable main degrades to the plain frame the build
 // path would have produced before P2, with a warning (visible loss, not silent).
 
-import type { FigmaExportEffect, FigmaExportFill, FigmaExportNode } from '../../../shared/figma-payload-types';
-import { applyInnerOverrides } from './executor-instance-inner-overrides';
-import { exportFillToPaint, mapExportEffects, pushImportWarning } from './executor-styles';
-import { resolveMainComponent } from './resolve-main-component';
-import { asFills, effectToExport } from './scan-node-paint';
+import type { FigmaExportEffect, FigmaExportFill, FigmaExportNode } from '../../../shared/figma-payload-types.ts';
+import { applyInnerOverrides } from './executor-instance-inner-overrides.ts';
+import { exportFillToPaint, mapExportEffects, pushImportWarning } from './executor-styles.ts';
+import { resolveMainComponent } from './resolve-main-component.ts';
+import { asFills, effectToExport } from './scan-node-paint.ts';
 
 /** Builds the degrade-to-frame placeholder — injected to avoid an import cycle. */
 export type FrameFallback = (spec: FigmaExportNode) => Promise<SceneNode | null>;

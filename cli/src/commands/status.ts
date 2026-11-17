@@ -79,11 +79,12 @@ export async function run(args: CommandArgs): Promise<unknown> {
     process.stderr.write(link.url ? `${link.url}\n` : `(no deep link: ${link.reason})\n`);
     process.stderr.write('Open the file above, then open the figma-agent plugin panel.\n');
 
+    const instanceFilter = args.str('instance');
     const result = await waitForPlugin({
       port: ad.port,
       timeoutMs,
-      fileFilter: wantedFile,
-      instanceFilter: args.str('instance'),
+      ...(wantedFile !== undefined ? { fileFilter: wantedFile } : {}),
+      ...(instanceFilter !== undefined ? { instanceFilter } : {}),
     });
     if (!result.registered) {
       throw new CliError(
@@ -259,6 +260,10 @@ export async function run(args: CommandArgs): Promise<unknown> {
     // as `senderMismatchCount`/`legacyMigrationDeferred` on `broker` above.
     ...(Array.isArray(hello.awaitingReconnect) && hello.awaitingReconnect.length > 0
       && { awaitingReconnect: hello.awaitingReconnect }),
+    // Plugin-disconnect record: the file path, the broker's newest records, and its
+    // append-failure count. Absent from a broker that predates the record.
+    ...(hello.disconnects !== null && typeof hello.disconnects === 'object'
+      && { disconnects: hello.disconnects }),
     // auto-connect slice 2 — present only when `--wait` actually waited (mirror-only-
     // when-relevant contract, same as the fields above).
     ...(waitedMs !== undefined && { waitedMs }),

@@ -1,4 +1,4 @@
-import { type ObjectValue, ValidationContext } from './figma-payload-validation-context';
+import { type ObjectValue, ValidationContext } from './figma-payload-validation-context.ts';
 
 const COLOR_FIELDS = new Set(['r', 'g', 'b', 'a']);
 const FILL_FIELDS = new Set(['type', 'color', 'gradientStops', 'gradientTransform']);

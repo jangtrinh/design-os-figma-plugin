@@ -18,8 +18,16 @@ function parsePadding(raw: string): { top: number; right: number; bottom: number
   if (parts.some(Number.isNaN) || (parts.length !== 1 && parts.length !== 4)) {
     throw new CliError('E_INVALID_ARGS', `--pad expects "n" or "t,r,b,l" numbers, got "${raw}"`);
   }
-  if (parts.length === 1) return { top: parts[0], right: parts[0], bottom: parts[0], left: parts[0] };
-  return { top: parts[0], right: parts[1], bottom: parts[2], left: parts[3] };
+  if (parts.length === 1) {
+    const p = parts[0] ?? 0;
+    return { top: p, right: p, bottom: p, left: p };
+  }
+  return {
+    top: parts[0] ?? 0,
+    right: parts[1] ?? 0,
+    bottom: parts[2] ?? 0,
+    left: parts[3] ?? 0,
+  };
 }
 
 export async function run(args: CommandArgs): Promise<unknown> {

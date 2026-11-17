@@ -78,7 +78,7 @@ describe('IMPORT_PAYLOAD admission', () => {
     input.rootNode = {
       type: 'FRAME', name: 'alias', textColor: sharedColor,
       fills: [{ type: 'SOLID', color: sharedColor }],
-    } as typeof input.rootNode;
+    } as unknown as typeof input.rootNode;
     expect(() => validateImportPayload(input)).not.toThrow();
   });
 
@@ -88,7 +88,7 @@ describe('IMPORT_PAYLOAD admission', () => {
     input.rootNode = {
       type: 'FRAME', name: 'image',
       backgroundImageUrl: `data:image/png;base64,${'A'.repeat(encodedLength)}`,
-    } as typeof input.rootNode;
+    } as unknown as typeof input.rootNode;
     expect(() => validateImportPayload(input)).not.toThrow();
   });
 
@@ -118,7 +118,7 @@ describe('IMPORT_PAYLOAD admission', () => {
     expect(() => validateImportPayload({ ...valid(), unexpected: true })).toThrow(PayloadValidationError);
     expect(() => validateImportPayload({ ...valid(), rootNode: { type: 'ALIEN', name: 'bad' } })).toThrow(PayloadValidationError);
     expect(() => validateImportPayload({ ...valid(), width: Number.NaN })).toThrow(PayloadValidationError);
-    const cyclic = valid(); cyclic.rootNode.children = [cyclic.rootNode];
+    const cyclic = valid(); (cyclic.rootNode.children as any[]) = [cyclic.rootNode];
     expect(() => validateImportPayload(cyclic)).toThrow(PayloadValidationError);
     let child: Record<string, unknown> = { type: 'FRAME', name: 'end' };
     for (let i = 0; i < 65; i++) child = { type: 'FRAME', name: 'deep', children: [child] };

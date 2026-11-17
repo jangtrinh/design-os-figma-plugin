@@ -148,65 +148,17 @@ export class ChunkAssembler {
   }
 }
 
-/**
- * Concurrency & jobs (backlog 1.1+2.6+4.3), stage-4 fold — a CLI-originated chunked
- * request's frames are buffered (broker-daemon.ts's `admitChunk`) until `last` arrives;
- * a CLI that dies mid-send must not leak that buffer forever. Pure: given each entry's
- * `lastFrameAt` and `now`, which ids are abandoned (no frame in over `boundMs`) — the
- * caller (the SAME park-sweeper interval, no new timer) does the actual `Map.delete`.
- * A still-in-progress send keeps refreshing `lastFrameAt` on every frame and survives.
- */
-export function abandonedChunkIds(
-  pendingChunks: ReadonlyMap<string, { lastFrameAt: number }>,
-  now: number,
-  boundMs: number,
-): string[] {
-  const ids: string[] = [];
-  for (const [id, entry] of pendingChunks) {
-    if (now - entry.lastFrameAt > boundMs) ids.push(id);
-  }
-  return ids;
-}
-
-/**
- * Stage-4 fix round (minor 6) — chunk buffering keyed per CONNECTION (the socket in
- * hand), not by request id alone. Current ids include a random per-process namespace, but
- * the broker does not trust an unassembled frame to honour that contract: legacy or
- * malformed clients can still reuse an id, and a flat map would let their chunk payloads
- * merge into one garbled reassembly. `Conn` is a type param (a real
- * WebSocket in the broker, anything with reference identity in a test) so this stays
- * pure and testable without a socket.
- */
-export type ChunkBuffers<Conn> = Map<Conn, Map<string, { frames: string[]; lastFrameAt: number }>>;
-
-/** Get-or-create the per-connection inner buffer map. */
-export function getConnectionChunks<Conn>(
-  buffers: ChunkBuffers<Conn>,
-  conn: Conn,
-): Map<string, { frames: string[]; lastFrameAt: number }> {
-  let inner = buffers.get(conn);
-  if (!inner) {
-    inner = new Map();
-    buffers.set(conn, inner);
-  }
-  return inner;
-}
-
-/** Drop one id's buffer (fully reassembled, or explicitly abandoned) — and drop the
- *  connection's own outer entry once it has nothing buffered left, so a closed
- *  connection never leaves an empty inner Map sitting in the outer table forever. */
-export function deleteConnectionChunk<Conn>(buffers: ChunkBuffers<Conn>, conn: Conn, id: string): void {
-  const inner = buffers.get(conn);
-  if (!inner) return;
-  inner.delete(id);
-  if (inner.size === 0) buffers.delete(conn);
-}
-
-/** Sweep EVERY connection's own buffer for abandoned entries (reusing `abandonedChunkIds`
- *  per inner map), then prune any connection left holding nothing. */
-export function sweepAbandonedChunks<Conn>(buffers: ChunkBuffers<Conn>, now: number, boundMs: number): void {
-  for (const [conn, inner] of buffers) {
-    for (const id of abandonedChunkIds(inner, now, boundMs)) inner.delete(id);
-    if (inner.size === 0) buffers.delete(conn);
-  }
-}
+// Request-side admission and cleanup live in their own transport boundary. Re-export the
+// established buffer helpers here so existing callers keep the same internal API.
+export {
+  abandonedChunkIds,
+  deleteConnectionChunk,
+  deleteConnectionChunks,
+  getConnectionChunks,
+  requestChunkCandidateId,
+  summarizeChunkCleanups,
+  sweepAbandonedChunks,
+  validateRequestChunkFrame,
+  type ChunkBuffers,
+  type ChunkCleanup,
+} from './request-chunk-admission.ts';

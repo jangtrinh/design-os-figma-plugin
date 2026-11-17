@@ -1,4 +1,4 @@
-import { withCode } from './executor-styles';
+import { withCode } from './executor-styles.ts';
 
 export const TRAIT_GROUPS = [
   'layout', 'fills-variables', 'typography', 'spacing', 'text',

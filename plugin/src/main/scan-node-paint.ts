@@ -2,8 +2,8 @@
 // The symmetric inverse of executor-frame's fill mapping and
 // executor-styles.mapExportEffects. Extracted from scan-node.ts (Art IX).
 
-import type { FigmaExportEffect, FigmaExportFill } from '../../../shared/figma-payload-types';
-import { safe } from './scan-node-utils';
+import type { FigmaExportEffect, FigmaExportFill } from '../../../shared/figma-payload-types.ts';
+import { safe } from './scan-node-utils.ts';
 
 /** One Figma Paint → FigmaExportFill (SOLID alpha lives in paint.opacity → color.a). */
 export function paintToFill(p: Paint): FigmaExportFill | null {

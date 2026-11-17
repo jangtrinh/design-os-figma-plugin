@@ -2,8 +2,8 @@
 // Walks the built payload node tree and collects unique design tokens
 // (colors / typography / spacing / radii) with deterministic names.
 
-import type { FigmaColor, FigmaExportNode, FigmaExportTokens } from '../../../../shared/figma-payload-types';
-import { rgbaToHex as figmaColorToHex } from './color-utils';
+import type { FigmaColor, FigmaExportNode, FigmaExportTokens } from '../../../../shared/figma-payload-types.ts';
+import { rgbaToHex as figmaColorToHex } from './color-utils.ts';
 
 /** Walk the Figma export node tree and collect unique design tokens. */
 export function extractFigmaTokens(rootNode: FigmaExportNode): FigmaExportTokens {
@@ -37,7 +37,7 @@ export function extractFigmaTokens(rootNode: FigmaExportNode): FigmaExportTokens
         family: node.fontFamily || 'Inter',
         size: node.fontSize,
         weight: node.fontWeight || 400,
-        lineHeight: node.lineHeight,
+        ...(node.lineHeight !== undefined ? { lineHeight: node.lineHeight } : {}),
       });
     }
 

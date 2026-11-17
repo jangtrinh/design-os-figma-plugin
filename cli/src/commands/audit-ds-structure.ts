@@ -157,12 +157,14 @@ export function detectStructure(
 
   for (const [hash, owned] of groups) {
     if (owned.length < 2) continue;
+    const firstOwned = owned[0];
+    if (!firstOwned) continue;
     const masterIds = new Set(owned.map((o) => o.masterId));
 
     if (masterIds.size === 1) {
       // Within-set: N identical variants inside ONE set → one flag on that master.
       const names = owned.map((o) => o.unit.name);
-      addFlag(flagsById, owned[0].masterId, {
+      addFlag(flagsById, firstOwned.masterId, {
         id: 'duplicate-structure', severity: 'warning',
         detail: `${owned.length} identical variants inside this set: ${names.join(', ')}`,
       });
@@ -180,17 +182,19 @@ export function detectStructure(
     const reps = [...firstPerMaster.values()];
     for (const o of reps) {
       const others = reps.filter((x) => x.masterId !== o.masterId);
+      const firstOther = others[0];
+      if (!firstOther) continue;
       const more = others.length - 1;
       const suffix = more > 0 ? ` +${more} more` : '';
       addFlag(flagsById, o.masterId, {
         id: 'duplicate-structure', severity: 'warning',
-        detail: `variant/unit structurally identical to ${others[0].masterName}("${others[0].unit.name}")${suffix}`,
+        detail: `variant/unit structurally identical to ${firstOther.masterName}("${firstOther.unit.name}")${suffix}`,
       });
     }
     crossMasterGroups.push({
       hash,
       masters: [...new Set(owned.map((o) => o.masterName))].sort(),
-      texts: owned[0].unit.texts,
+      texts: firstOwned.unit.texts,
     });
   }
 

@@ -71,7 +71,7 @@ export function classifySeat(s: ProbeSignals): SeatClassification {
   if (!s.pluginReachable) {
     return {
       seat: 'free',
-      reason: `figma-agent plugin not reachable — defaulting to the figma-agent-cli bridge (open the Ease Design Figma Agent plugin in Figma Desktop). ${PAID_HINT}`,
+      reason: `figma-agent plugin not reachable — defaulting to the figma-agent-cli bridge (open the DESIGN:OS Bridge plugin in Figma Desktop). ${PAID_HINT}`,
     };
   }
   if (s.writeOk) {

@@ -32,7 +32,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 /** True when `keys` is strictly ascending — which also proves it duplicate-free. */
 function strictlyAscending(keys: string[]): boolean {
-  for (let i = 1; i < keys.length; i++) if (!(keys[i - 1] < keys[i])) return false;
+  for (let i = 1; i < keys.length; i++) {
+    const prev = keys[i - 1];
+    const curr = keys[i];
+    if (prev === undefined || curr === undefined || !(prev < curr)) return false;
+  }
   return true;
 }
 

@@ -5,7 +5,7 @@
 // (trim/empty/length/control-char/env-fallback) and the built-CLI subprocess
 // path for the one guard that exits the process (`printErrorJson`), which a
 // direct unit call cannot safely exercise.
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

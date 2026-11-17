@@ -11,12 +11,12 @@
 // inside the thing that moved — which is every annotation pointer, and every flow screen
 // that lives in a column.
 
-import { route } from '../../../shared/connector-route';
-import { ROUTER_VERSION, type ConnectionRecord, type Point, type Rect } from '../../../shared/connector-types';
-import { beginAgentMutation } from './correction-edge-store';
-import { listConnections, upsertConnection } from './connector-store';
-import { renderConnector } from './connector-render';
-import { pageOf } from './page-of-node';
+import { route } from '../../../shared/connector-route.ts';
+import { ROUTER_VERSION, type ConnectionRecord, type Point, type Rect } from '../../../shared/connector-types.ts';
+import { beginAgentMutation } from './correction-edge-store.ts';
+import { listConnections, upsertConnection } from './connector-store.ts';
+import { renderConnector } from './connector-render.ts';
+import { pageOf } from './page-of-node.ts';
 
 const DEBOUNCE_MS = 120;
 
@@ -63,7 +63,10 @@ function boxOf(node: SceneNode): Rect | null {
 }
 
 function samePoints(a: readonly Point[], b: readonly Point[]): boolean {
-  return a.length === b.length && a.every((point, i) => point.x === b[i].x && point.y === b[i].y);
+  return a.length === b.length && a.every((point, i) => {
+    const bp = b[i];
+    return bp !== undefined && point.x === bp.x && point.y === bp.y;
+  });
 }
 
 export interface RerouteOutcome {

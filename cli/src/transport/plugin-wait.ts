@@ -40,7 +40,7 @@ export interface WaitResult {
   registered: boolean;
   waitedMs: number;
   /** The BROKER_HELLO data from the poll that matched — present only when registered. */
-  hello?: Record<string, unknown>;
+  hello?: Record<string, unknown> | undefined;
 }
 
 const DEFAULT_POLL_MS = 500;
